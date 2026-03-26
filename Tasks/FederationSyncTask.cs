@@ -107,7 +107,7 @@ _logger.LogInformation("[Federation] Starting scheduled sync task");
     {
      new TaskTriggerInfo
     {
-       Type = TaskTriggerInfo.TriggerDaily,
+       Type = TaskTriggerInfoType.DailyTrigger,
    TimeOfDayTicks = TimeSpan.FromHours(3).Ticks
     }
             };

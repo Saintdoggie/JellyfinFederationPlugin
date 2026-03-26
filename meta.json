@@ -7,7 +7,7 @@
   "category": "General",
   "version": "1.0.0.0",
   "changelog": "Initial release - Multi-server content aggregation, virtual libraries, remote streaming",
-  "targetAbi": "10.10.0.0",
+  "targetAbi": "10.11.0.0",
   "timestamp": "2025-01-28T00:00:00Z",
   "imageUrl": "thumb.png"
 }
