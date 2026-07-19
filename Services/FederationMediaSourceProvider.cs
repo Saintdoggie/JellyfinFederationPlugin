@@ -6,131 +6,114 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
-    /// Provides media sources for federated content.
+    /// Provides multiple media sources for federated content: one per remote source
+    /// so the user can pick which server to play from in the Jellyfin UI.
     /// </summary>
     public class FederationMediaSourceProvider : IMediaSourceProvider
     {
         private readonly ILogger<FederationMediaSourceProvider> _logger;
-        private readonly ILibraryManager _libraryManager;
-   private readonly ILoggerFactory _loggerFactory;
-        private FederationLibraryManager? _federationManager;
+        private readonly FederationLibraryManager _federationManager;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceProvider"/> class.
         /// </summary>
-        /// <param name="logger">Logger instance.</param>
-        /// <param name="libraryManager">Library manager instance.</param>
-        /// <param name="loggerFactory">Logger factory instance.</param>
-     public FederationMediaSourceProvider(
-ILogger<FederationMediaSourceProvider> logger,
-       ILibraryManager libraryManager,
-         ILoggerFactory loggerFactory)
+        public FederationMediaSourceProvider(
+            ILogger<FederationMediaSourceProvider> logger,
+            FederationLibraryManager federationManager)
         {
-     _logger = logger;
-        _libraryManager = libraryManager;
-            _loggerFactory = loggerFactory;
-     }
+            _logger = logger;
+            _federationManager = federationManager;
+        }
 
-    /// <inheritdoc />
-      public Task<IEnumerable<MediaSourceInfo>> GetMediaSources(BaseItem item, CancellationToken cancellationToken)
+        /// <inheritdoc />
+        public Task<IEnumerable<MediaSourceInfo>> GetMediaSources(BaseItem item, CancellationToken cancellationToken)
         {
-      if (item == null || !IsFederatedItem(item))
- {
-        return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
-   }
+            if (item == null || !_federationManager.IsFederatedItem(item))
+            {
+                return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
+            }
 
-       _logger.LogInformation("Getting media sources for federated item: {ItemName}", item.Name);
-    return GetFederatedMediaSourcesAsync(item, cancellationToken);
+            try
+            {
+                if (!FederationLibraryManager.TryParseFederationPath(
+                        item.Path,
+                        out var mapping,
+                        out _,
+                        out _,
+                        out _,
+                        out _))
+                {
+                    return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
+                }
+
+                var entry = _federationManager.Cache.GetEntry(item.Path);
+                if (entry == null)
+                {
+                    return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
+                }
+
+                var sources = new List<MediaSourceInfo>();
+                for (int i = 0; i < entry.Sources.Count; i++)
+                {
+                    var src = entry.Sources[i];
+                    var server = _federationManager.GetServer(src.ServerId);
+                    if (server == null)
+                    {
+                        continue;
+                    }
+
+                    var client = _federationManager.GetClient(src.ServerId);
+                    if (client == null)
+                    {
+                        continue;
+                    }
+
+                    var sourceName = entry.Sources.Count > 1
+                        ? $"{server.Name}{(i == entry.PrimarySourceIndex ? " (primary)" : string.Empty)}"
+                        : server.Name;
+
+                    sources.Add(new MediaSourceInfo
+                    {
+                        Id = $"{src.ServerId}:{src.RemoteItemId}",
+                        Name = sourceName,
+                        Path = client.BuildDirectStreamUrl(src.RemoteItemId.ToString()),
+                        Protocol = MediaProtocol.Http,
+                        IsRemote = true,
+                        SupportsDirectPlay = true,
+                        SupportsDirectStream = true,
+                        SupportsTranscoding = false,
+                        RequiresOpening = false,
+                        RequiresClosing = false,
+                        RunTimeTicks = entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,
+                        Type = i == entry.PrimarySourceIndex ? MediaSourceType.Default : MediaSourceType.Grouping
+                    });
+                }
+
+                if (sources.Count == 0)
+                {
+                    _logger.LogWarning("[Federation] No live sources for {Path}", item.Path);
+                }
+
+                return Task.FromResult<IEnumerable<MediaSourceInfo>>(sources);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error getting media sources for {Path}", item.Path);
+                return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
+            }
         }
 
         /// <inheritdoc />
         public Task<ILiveStream> OpenMediaSource(string openToken, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)
         {
-        throw new NotImplementedException("Live stream opening is not supported for federated content");
+            throw new NotImplementedException("Live stream opening is not supported for federated content");
         }
-
-     private async Task<IEnumerable<MediaSourceInfo>> GetFederatedMediaSourcesAsync(BaseItem item, CancellationToken cancellationToken)
-      {
-      try
- {
-     if (!FederationLibraryManager.TryParseFederationPath(item.Path, out var serverId, out var itemId))
-                {
-                    _logger.LogWarning("Failed to parse federation path: {Path}", item.Path);
-  return Enumerable.Empty<MediaSourceInfo>();
-         }
-
-        _federationManager ??= new FederationLibraryManager(_libraryManager, _loggerFactory.CreateLogger<FederationLibraryManager>(), _loggerFactory);
-
-            var client = _federationManager.GetClient(serverId);
-  if (client == null)
-       {
-        _logger.LogWarning("Client not found for server ID: {ServerId}", serverId);
-          return Enumerable.Empty<MediaSourceInfo>();
- }
-
-   var playbackInfo = await client.GetPlaybackInfoAsync(itemId, cancellationToken: cancellationToken);
-      if (playbackInfo?.MediaSources == null || playbackInfo.MediaSources.Count == 0)
-    {
-      _logger.LogWarning("No media sources found for item {ItemId}", itemId);
-   return Enumerable.Empty<MediaSourceInfo>();
-                }
-
-      return playbackInfo.MediaSources.Select(ms => EnhanceMediaSource(ms, item, serverId, itemId)).ToList();
-            }
-            catch (Exception ex)
-     {
-         _logger.LogError(ex, "Error getting media sources for federated item");
-       return Enumerable.Empty<MediaSourceInfo>();
-            }
-    }
-
-private MediaSourceInfo EnhanceMediaSource(MediaSourceInfo mediaSource, BaseItem item, string serverId, string itemId)
-   {
-            var enhanced = new MediaSourceInfo
-       {
-     Id = mediaSource.Id ?? Guid.NewGuid().ToString(),
-            Name = $"Federation: {mediaSource.Name ?? "Default"}",
-           Path = $"federation://{serverId}/{itemId}/{mediaSource.Id}",
-    Protocol = MediaProtocol.Http,
-    Container = mediaSource.Container,
-                Size = mediaSource.Size,
-          Bitrate = mediaSource.Bitrate,
-  VideoType = mediaSource.VideoType,
-       RunTimeTicks = mediaSource.RunTimeTicks ?? item.RunTimeTicks,
-        IsRemote = true,
-         RequiresOpening = false,
-     RequiresClosing = false,
-       SupportsDirectStream = true,
-                SupportsDirectPlay = true,
-           SupportsTranscoding = true,
-      Type = MediaSourceType.Default
- };
-
-            if (mediaSource.MediaStreams != null && mediaSource.MediaStreams.Count > 0)
-            {
-              enhanced.MediaStreams = new List<MediaStream>(mediaSource.MediaStreams);
-    }
-
-            enhanced.RequiredHttpHeaders = new Dictionary<string, string>
-            {
-   ["X-Federation-Server"] = serverId,
-        ["X-Federation-ItemId"] = itemId
-            };
-
-            return enhanced;
-        }
-
-        private bool IsFederatedItem(BaseItem item)
-        {
-    return !string.IsNullOrEmpty(item.Path) &&
-          item.Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase);
-   }
     }
 }

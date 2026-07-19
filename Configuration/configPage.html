@@ -3,1012 +3,379 @@
 <head>
     <meta charset="utf-8">
     <title>Jellyfin Federation Configuration</title>
-  <style>
+    <style>
         body { font-family: system-ui, -apple-system, sans-serif; padding: 20px; background: #101010; color: #fff; }
-     .error { color: #f44; padding: 15px; background: rgba(255,68,68,0.1); border-radius: 6px; margin: 20px 0; }
- .section { margin: 30px 0; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; }
-     input, select { width: 100%; padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; }
-    button { padding: 10px 20px; margin: 10px 5px 10px 0; background: #00a4dc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+        .error { color: #f44; padding: 15px; background: rgba(255,68,68,0.1); border-radius: 6px; margin: 20px 0; }
+        .section { margin: 30px 0; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; }
+        input, select { width: 100%; padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; box-sizing: border-box; }
+        button { padding: 10px 20px; margin: 10px 5px 10px 0; background: #00a4dc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
         button:hover { background: #0288bb; }
         button.remove { background: #c44; }
         button.remove:hover { background: #a22; }
- h2, h3 { margin-top: 0; }
-   label { display: block; margin: 10px 0 5px; opacity: 0.8; font-size: 0.9em; }
-        
-        /* Floating Progress Card */
-     #progressCard {
-            position: fixed;
-      top: 20px;
- right: 20px;
-            width: 350px;
-   background: rgba(20, 20, 20, 0.98);
-     border: 1px solid rgba(0, 164, 220, 0.5);
-     border-radius: 8px;
-            padding: 20px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    z-index: 10000;
-        display: none;
-            animation: slideIn 0.3s ease-out;
-     }
-        
-        @keyframes slideIn {
-   from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-     }
-        
-   #progressCard.visible { display: block; }
-      
-        #progressCard .title {
-          font-size: 1.1em;
-    font-weight: bold;
-            margin-bottom: 15px;
-     color: #00a4dc;
-        }
-        
-        #progressCard .close-btn {
-        position: absolute;
- top: 10px;
-right: 10px;
-        background: transparent;
-     border: none;
-            color: #fff;
-         font-size: 1.5em;
-         cursor: pointer;
-        padding: 0;
-    width: 30px;
-            height: 30px;
-            line-height: 30px;
-  text-align: center;
-   }
-        
-        #progressCard .close-btn:hover {
-            background: rgba(255, 255, 255, 0.1);
-       border-radius: 50%;
-   }
-        
-        .progress-bar-container {
-        width: 100%;
-            height: 8px;
-        background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
-   overflow: hidden;
-            margin: 15px 0;
-        }
-        
-        .progress-bar {
-            height: 100%;
-  background: linear-gradient(90deg, #00a4dc, #52b54b);
-         border-radius: 4px;
-     transition: width 0.3s ease;
- width: 0%;
-        }
-      
-        .progress-status {
-margin-top: 10px;
-   font-size: 0.9em;
-            opacity: 0.8;
-     }
-        
-        .progress-details {
-            margin-top: 15px;
-  max-height: 200px;
-            overflow-y: auto;
-         font-size: 0.85em;
-    line-height: 1.6;
-      }
-     
-        .progress-item {
-            padding: 5px 0;
-       display: flex;
-            align-items: center;
-    gap: 8px;
-      }
-   
-        .progress-item.success { color: #52b54b; }
-      .progress-item.error { color: #f44; }
-        .progress-item.info { color: #00a4dc; }
-        
-.spinner {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-radius: 50%;
-    border-top-color: #00a4dc;
- animation: spin 0.6s linear infinite;
-  }
-        
-   @keyframes spin {
-    to { transform: rotate(360deg); }
-        }
+        button.success { background: #52b54b; }
+        h2, h3 { margin-top: 0; }
+        label { display: block; margin: 10px 0 5px; opacity: 0.8; font-size: 0.9em; }
+        .warning { padding: 10px; background: rgba(255,153,0,0.15); border-left: 3px solid #f90; border-radius: 4px; margin: 15px 0; font-size: 0.9em; }
+        .diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; }
+        .diagnostic div { padding: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; }
+        .diagnostic strong { display: block; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
+        code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
     </style>
 </head>
 <body>
-    <!-- Floating Progress Card -->
-    <div id="progressCard">
-        <button class="close-btn" onclick="hideProgressCard()">×</button>
-        <div class="title" id="progressTitle">Syncing...</div>
-        <div class="progress-bar-container">
-          <div class="progress-bar" id="progressBar"></div>
-     </div>
-        <div class="progress-status" id="progressStatus">Initializing...</div>
-        <div class="progress-details" id="progressDetails"></div>
+    <h1>Jellyfin Federation Configuration</h1>
+    <div id="errorContainer"></div>
+    <div id="statusContainer" style="padding:10px; background:rgba(82,181,75,0.2); border-radius:6px; margin:20px 0;"></div>
+
+    <div class="section">
+        <h2>Diagnostics</h2>
+        <div id="diagnostics" class="diagnostic">
+            <div><strong>Loading...</strong></div>
+        </div>
+        <div style="margin-top:15px;">
+            <button type="button" id="btnRefreshCache" class="success">Refresh Cache Now</button>
+            <button type="button" id="btnProvision">Provision Libraries</button>
+            <button type="button" id="btnTestAll">Test All Servers</button>
+            <button type="button" id="btnRefreshDiag">Refresh Diagnostics</button>
+        </div>
     </div>
 
- <h1>Jellyfin Federation Configuration</h1>
-    <div id="errorContainer"></div>
- <div id="statusContainer" style="padding:10px; background:rgba(82,181,75,0.2); border-radius:6px; margin:20px 0;"></div>
-    
-  <div class="section" style="background:rgba(0,164,220,0.1);">
-        <h2>Federation Status</h2>
-  <div id="federationStatus" style="margin:15px 0;">
-     <p>Loading status...</p>
- </div>
-  <div style="margin-top:15px;">
-      <button type="button" id="btnSyncAll" style="background:#52b54b;">Sync All Servers</button>
-     <button type="button" id="btnRefreshStatus">Refresh Status</button>
-   </div>
-        <div id="libraryCreationHelp" style="margin-top:15px;padding:10px;background:rgba(0,164,220,0.1);border-radius:4px;display:none;">
-  <strong>📁 Next Step: Add Libraries in Jellyfin</strong>
-   <p style="margin:10px 0;">After syncing, follow these steps to make content visible:</p>
-    <ol style="margin:10px 0;padding-left:20px;line-height:1.6;">
-      <li>Go to <strong>Dashboard → Libraries → Add Media Library</strong></li>
-   <li>Select content type (<strong>Movies</strong> or <strong>TV Shows</strong>)</li>
-     <li>Click <strong>"Add folder"</strong> and enter: <code id="federationPath" style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:3px;">/config/data/federation/[Mapping Name]</code></li>
-         <li>Click <strong>"OK"</strong> and wait for scan to complete</li>
-                <li>View your content in the new library! 🎉</li>
-     </ol>
-       <p style="margin:10px 0;opacity:0.8;font-size:0.9em;">
-    <strong>Note:</strong> This is a one-time setup per mapping. Future syncs will automatically update the library.
-         </p>
-      </div>
-   </div>
-
     <form id="configForm">
-  <div class="section">
-  <h2>Remote Servers</h2>
-  <div id="serverList"></div>
-   <button type="button" id="btnAddServer">Add Server</button>
+        <div class="section">
+            <h2>General</h2>
+            <label>Local Server URL (auto-detected, overridable):</label>
+            <input type="text" id="txtServerUrl" placeholder="http://your-jellyfin:8096" />
+            <label>Cache Path (blank = plugin data dir):</label>
+            <input type="text" id="txtCachePath" placeholder="Default" />
+            <label><input type="checkbox" id="chkAutoProvision" /> Auto-provision libraries</label>
+            <label><input type="checkbox" id="chkDedup" /> Enable deduplication by provider ID</label>
+            <label>Dedup Provider IDs (comma-separated):</label>
+            <input type="text" id="txtDedupIds" placeholder="imdb,tmdb,tvdb" />
+            <label>Refresh interval (hours):</label>
+            <input type="number" id="txtRefreshHours" min="1" max="168" />
         </div>
 
-   <div class="section">
-       <h2>Virtual Library Mappings</h2>
-     <div id="mappingList"></div>
-  <button type="button" id="btnAddMapping">Add Mapping</button>
+        <div class="section">
+            <h2>Remote Servers</h2>
+            <div id="serverList"></div>
+            <button type="button" id="btnAddServer">Add Server</button>
         </div>
 
-      <div class="section">
-          <button type="submit" id="btnSave">Save Configuration</button>
+        <div class="section">
+            <h2>Library Mappings</h2>
+            <div id="mappingList"></div>
+            <button type="button" id="btnAddMapping">Add Mapping</button>
+        </div>
+
+        <div class="section">
+            <button type="submit" id="btnSave">Save Configuration</button>
         </div>
     </form>
 
     <script>
     (function() {
-      'use strict';
- 
-   console.log('[Federation] Config page loaded');
-   console.log('[Federation] Window location:', window.location.href);
-   
-        var pluginId = '12345678-1234-1234-1234-123456789abc';
+        'use strict';
+
+        var apiBase = window.location.origin;
         var currentConfig = { RemoteServers: [], LibraryMappings: [] };
-        var apiBaseUrl = window.location.origin;
-     
-        // Progress tracking
-   var progressState = {
-   total: 0,
-         current: 0,
-      details: []
-        };
-   
-   // Progress Card Functions
- window.showProgressCard = function(title) {
-      var card = document.getElementById('progressCard');
-  var titleEl = document.getElementById('progressTitle');
-    var progressBar = document.getElementById('progressBar');
-            var statusEl = document.getElementById('progressStatus');
-  var detailsEl = document.getElementById('progressDetails');
-          
-         titleEl.textContent = title || 'Processing...';
-   progressBar.style.width = '0%';
-     statusEl.textContent = 'Starting...';
-     detailsEl.innerHTML = '';
-  card.className = 'visible';
-     
-            progressState = { total: 0, current: 0, details: [] };
-        };
-   
-     window.hideProgressCard = function() {
-            var card = document.getElementById('progressCard');
-            card.className = '';
-        };
-      
-        window.updateProgress = function(current, total, status, detail) {
-        progressState.current = current;
-progressState.total = total;
- 
-      var percentage = total > 0 ? Math.round((current / total) * 100) : 0;
-    document.getElementById('progressBar').style.width = percentage + '%';
-      
-     // Update status with percentage
- var statusText = status || 'Processing...';
-     if (total > 0 && percentage < 100) {
-   statusText += ' (' + percentage + '%)';
-        }
-   document.getElementById('progressStatus').textContent = statusText;
-  
-       if (detail) {
-      addProgressDetail(detail.message, detail.type);
-     }
-};
-        
-        function addProgressDetail(message, type) {
-  var detailsEl = document.getElementById('progressDetails');
-       var item = document.createElement('div');
-   item.className = 'progress-item ' + (type || 'info');
-  
- var icon = type === 'success' ? '✓' : 
-        type === 'error' ? '✗' : 
-   type === 'info' ? 'ℹ' : '•';
-      
- if (type === 'loading') {
-        item.innerHTML = '<span class="spinner"></span> ' + escapeHtml(message);
-         } else {
-           item.innerHTML = '<span>' + icon + '</span> ' + escapeHtml(message);
-  }
-   
-      progressState.details.push({ message: message, type: type });
-   detailsEl.appendChild(item);
- detailsEl.scrollTop = detailsEl.scrollHeight; // Auto-scroll to bottom
-        
-  // Keep only last 50 messages to prevent memory issues
-  var items = detailsEl.getElementsByClassName('progress-item');
-   if (items.length > 50) {
-     detailsEl.removeChild(items[0]);
-  }
-  };
-        
-   function completeProgress(success, message) {
-            var progressBar = document.getElementById('progressBar');
-     var statusEl = document.getElementById('progressStatus');
-         
-     progressBar.style.width = '100%';
-            progressBar.style.background = success ? '#52b54b' : '#f44';
-     statusEl.textContent = message || (success ? 'Completed!' : 'Failed');
-         
-      addProgressDetail(message, success ? 'success' : 'error');
-        
-  // Auto-hide after 3 seconds if successful
-   if (success) {
-        setTimeout(function() {
-        hideProgressCard();
-   }, 3000);
-}
-        }
- 
- function setStatus(msg, isError) {
- var el = document.getElementById('statusContainer');
-     if (el) {
-       el.textContent = msg;
-el.style.background = isError ? 'rgba(255,68,68,0.2)' : 'rgba(82,181,75,0.2)';
-       }
-   console.log('[Federation]', msg);
+
+        function setStatus(msg, isError) {
+            var el = document.getElementById('statusContainer');
+            el.textContent = msg;
+            el.style.background = isError ? 'rgba(255,68,68,0.2)' : 'rgba(82,181,75,0.2)';
         }
 
-   function showError(msg) {
- var container = document.getElementById('errorContainer');
-container.innerHTML = '<div class="error">' + msg + '</div>';
-            setStatus('Error: ' + msg, true);
+        function showError(msg) {
+            document.getElementById('errorContainer').innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
         }
 
-      function escapeHtml(str) {
-   if (!str) return '';
-            var div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-      }
+        function escapeHtml(s) {
+            if (!s) return '';
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
 
-  function generateGuid() {
-       return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-var r = Math.random() * 16 | 0;
-    var v = c === 'x' ? r : (r & 0x3 | 0x8);
- return v.toString(16);
- });
-  }
+        function generateGuid() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+        }
 
-     function renderServers() {
-     console.log('[Federation] Rendering servers:', currentConfig.RemoteServers.length);
-        var container = document.getElementById('serverList');
-      var servers = currentConfig.RemoteServers || [];
-   
-    if (servers.length === 0) {
-  container.innerHTML = '<p style="opacity:0.6;">No servers configured. Click "Add Server" to begin.</p>';
-   return;
- }
-
-  var html = '';
-    servers.forEach(function(server, i) {
-            html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
+        function renderServers() {
+            var c = document.getElementById('serverList');
+            var s = currentConfig.RemoteServers || [];
+            if (s.length === 0) { c.innerHTML = '<p style="opacity:0.6;">No servers configured.</p>'; return; }
+            var html = '';
+            s.forEach(function(server, i) {
+                html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
                 html += '<h3>Server ' + (i + 1) + '</h3>';
-   html += '<label>Name:</label><input type="text" class="txtServerName" data-index="' + i + '" value="' + escapeHtml(server.Name) + '" />';
-   html += '<label>URL:</label><input type="text" class="txtServerUrl" data-index="' + i + '" value="' + escapeHtml(server.Url) + '" placeholder="http://server:8096" />';
-  html += '<label>API Key:</label><input type="password" class="txtServerApiKey" data-index="' + i + '" value="' + escapeHtml(server.ApiKey) + '" />';
-        html += '<label><input type="checkbox" class="chkServerEnabled" data-index="' + i + '" ' + (server.Enabled ? 'checked' : '') + ' /> Enabled</label>';
-    html += '<div style="margin-top:15px;">';
-          html += '<button type="button" class="btnTestServer" data-index="' + i + '">Test Connection</button>';
-            html += '<button type="button" class="btnSyncServer" data-index="' + i + '">Sync Now</button>';
-   html += '<button type="button" class="remove btnRemoveServer" data-index="' + i + '">Remove</button>';
-       html += '</div>';
-      html += '<div id="serverStatus' + i + '" style="margin-top:10px;padding:10px;border-radius:4px;display:none;"></div>';
-  html += '</div>';
-   });
-       container.innerHTML = html;
+                html += '<label>Name:</label><input type="text" class="srvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" />';
+                html += '<label>URL:</label><input type="text" class="srvUrl" data-i="' + i + '" value="' + escapeHtml(server.Url) + '" placeholder="http://server:8096" />';
+                html += '<label>API Key:</label><input type="password" class="srvKey" data-i="' + i + '" value="' + escapeHtml(server.ApiKey) + '" />';
+                html += '<label>User ID (blank = first user):</label><input type="text" class="srvUser" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" />';
+                html += '<label>Streaming Mode:</label><select class="srvMode" data-i="' + i + '">';
+                html += '<option value="Direct"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (302 redirect)</option>';
+                html += '<option value="Proxy"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key)</option>';
+                html += '</select>';
+                html += '<label>Priority (lower = preferred source):</label><input type="number" class="srvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" />';
+                html += '<label><input type="checkbox" class="srvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Require api_key for image fetches</label>';
+                html += '<label><input type="checkbox" class="srvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                html += '<div style="margin-top:10px;">';
+                html += '<button type="button" class="btnTest" data-i="' + i + '">Test</button>';
+                html += '<button type="button" class="remove btnRemoveServer" data-i="' + i + '">Remove</button>';
+                html += '</div>';
+                html += '<div id="srvStatus' + i + '" style="margin-top:10px;display:none;"></div>';
+                html += '</div>';
+            });
+            c.innerHTML = html;
         }
 
         function renderMappings() {
-    console.log('[Federation] Rendering mappings:', currentConfig.LibraryMappings.length);
-     var container = document.getElementById('mappingList');
-      var mappings = currentConfig.LibraryMappings || [];
-      
-     if (mappings.length === 0) {
-         container.innerHTML = '<p style="opacity:0.6;">No mappings configured. Click "Add Mapping" to begin.</p>';
-   return;
-  }
-
-      var html = '';
-   mappings.forEach(function(mapping, i) {
-    html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
-       html += '<h3>Mapping ' + (i + 1) + '</h3>';
-
-    html += '<label>Federated Library Name (shown in Jellyfin):</label>';
-    html += '<input type="text" class="txtMappingName" data-index="' + i + '" value="' + escapeHtml(mapping.LocalLibraryName) + '" placeholder="Federated Movies" />';
-       html += '<label>Media Type:</label><select class="selMappingType" data-index="' + i + '">';
-  html += '<option value=""' + (mapping.MediaType === '' || !mapping.MediaType ? ' selected' : '') + '>All Types (Mixed Library)</option>';
-     html += '<option value="Movie"' + (mapping.MediaType === 'Movie' ? ' selected' : '') + '>Movies</option>';
-        html += '<option value="Series"' + (mapping.MediaType === 'Series' ? ' selected' : '') + '>TV Series (Containers)</option>';
-        html += '<option value="Season"' + (mapping.MediaType === 'Season' ? ' selected' : '') + '>TV Seasons</option>';
-        html += '<option value="Episode"' + (mapping.MediaType === 'Episode' ? ' selected' : '') + '>TV Episodes (Files)</option>';
-  html += '<option value="MusicAlbum"' + (mapping.MediaType === 'MusicAlbum' ? ' selected' : '') + '>Music Albums</option>';
-        html += '<option value="Audio"' + (mapping.MediaType === 'Audio' ? ' selected' : '') + '>Music Tracks</option>';
-        html += '<option value="MusicVideo"' + (mapping.MediaType === 'MusicVideo' ? ' selected' : '') + '>Music Videos</option>';
-        html += '<option value="Book"' + (mapping.MediaType === 'Book' ? ' selected' : '') + '>Books</option>';
-        html += '<option value="Photo"' + (mapping.MediaType === 'Photo' ? ' selected' : '') + '>Photos</option>';
-        html += '<option value="PhotoAlbum"' + (mapping.MediaType === 'PhotoAlbum' ? ' selected' : '') + '>Photo Albums</option>';
-        html += '<option value="Video"' + (mapping.MediaType === 'Video' ? ' selected' : '') + '>Videos (Generic)</option>';
-        html += '<option value="Playlist"' + (mapping.MediaType === 'Playlist' ? ' selected' : '') + '>Playlists</option>';
-        html += '<option value="BoxSet"' + (mapping.MediaType === 'BoxSet' ? ' selected' : '') + '>Collections/Box Sets</option>';
-        html += '</select>';
-      
-        html += '<div style="margin:10px 0;padding:10px;background:rgba(0,164,220,0.1);border-radius:4px;font-size:0.9em;">';
-  html += '<strong>💡 Media Type Guide:</strong><br>';
-        html += '• <strong>All Types</strong>: Get everything (recommended for mixed libraries)<br>';
- html += '• <strong>Movies</strong>: Movie files only<br>';
-        html += '• <strong>TV Episodes</strong>: Individual episode files (for watching)<br>';
-        html += '• <strong>TV Series</strong>: Show containers (for organization)<br>';
-   html += '• <strong>Music Tracks</strong>: Individual songs<br>';
-  html += '• Leave empty for libraries with multiple content types';
-        html += '</div>';
-
-        // Remote library sources section
-        html += '<div style="margin-top:15px;"><strong>Remote Library Sources:</strong></div>';
-    html += '<div style="margin-left:20px;">';
-        html += '<button type="button" class="btnBrowseLibraries" data-index="' + i + '" style="margin:10px 0;">Browse Remote Libraries</button>';
-        html += '<div id="remoteLibraries' + i + '" style="margin-top:10px;"></div>';
-        
-        // Show currently selected remote libraries
-        if (mapping.RemoteLibrarySources && mapping.RemoteLibrarySources.length > 0) {
-  html += '<div style="margin-top:10px;padding:10px;background:rgba(82,181,75,0.1);border-radius:4px;">';
-            html += '<strong>Selected Sources (' + mapping.RemoteLibrarySources.length + '):</strong><ul style="margin:5px 0;padding-left:20px;">';
-            mapping.RemoteLibrarySources.forEach(function(source) {
-    html += '<li>' + escapeHtml(source.ServerName) + ' → ' + escapeHtml(source.RemoteLibraryName) + '</li>';
-    });
-    html += '</ul></div>';
-        } else {
-            html += '<p style="opacity:0.6;font-size:0.9em;">No remote libraries selected. Click "Browse Remote Libraries" to add sources.</p>';
-}
-        
-        html += '</div>';
-    
- html += '<label style="margin-top:15px;"><input type="checkbox" class="chkMappingEnabled" data-index="' + i + '" ' + (mapping.Enabled ? 'checked' : '') + ' /> Enabled</label>';
-    html += '<button type="button" class="remove btnRemoveMapping" data-index="' + i + '" style="margin-top:10px;">Remove Mapping</button>';
-    html += '</div>';
-  });
-     container.innerHTML = html;
-   }
-
-   function attachHandlers() {
-          console.log('[Federation] Attaching handlers');
-
-  document.getElementById('btnAddServer').addEventListener('click', function(e) {
-      e.preventDefault();
-    console.log('[Federation] ADD SERVER');
-          currentConfig.RemoteServers.push({
-   Id: generateGuid(),
-  Name: '',
-        Url: '',
-       ApiKey: '',
-UserId: '',
-       Enabled: true
-          });
-   renderServers();
-    });
-
-    document.getElementById('btnAddMapping').addEventListener('click', function(e) {
-  e.preventDefault();
-            console.log('[Federation] ADD MAPPING');
-     currentConfig.LibraryMappings.push({
-            LocalLibraryName: '',
-  MediaType: 'Movie',
-      RemoteServerIds: [],
- Enabled: true
-    });
-   renderMappings();
-      });
-
-  document.getElementById('btnSyncAll').addEventListener('click', function(e) {
-     e.preventDefault();
-       console.log('[Federation] SYNC ALL');
-    syncAllServers();
-  });
-
-  document.getElementById('btnRefreshStatus').addEventListener('click', function(e) {
-  e.preventDefault();
-   console.log('[Federation] REFRESH STATUS');
-  loadFederationStatus();
- });
-
-        document.getElementById('configForm').addEventListener('submit', function(e) {
- e.preventDefault();
-     console.log('[Federation] SAVE');
-      saveConfiguration();
-          });
-
-        document.body.addEventListener('click', function(e) {
-  var target = e.target.closest('.btnRemoveServer');
-       if (target) {
-    e.preventDefault();
-  var index = parseInt(target.getAttribute('data-index'));
-      if (confirm('Remove this server?')) {
-    currentConfig.RemoteServers.splice(index, 1);
-  renderServers();
-      }
-      return;
-    }
-
-  target = e.target.closest('.btnRemoveMapping');
-     if (target) {
-     e.preventDefault();
-     var index = parseInt(target.getAttribute('data-index'));
-    if (confirm('Remove this mapping?')) {
-  currentConfig.LibraryMappings.splice(index, 1);
-          renderMappings();
-      }
-     return;
-       }
-
- target = e.target.closest('.btnTestServer');
-           if (target) {
-       e.preventDefault();
-     var index = parseInt(target.getAttribute('data-index'));
-         testServerConnection(index);
-       return;
-     }
-
-   target = e.target.closest('.btnSyncServer');
- if (target) {
-   e.preventDefault();
-   var index = parseInt(target.getAttribute('data-index'));
- triggerServerSync(index);
-   return;
-    }
-        
- target = e.target.closest('.btnBrowseLibraries');
-        if (target) {
-   e.preventDefault();
-            var index = parseInt(target.getAttribute('data-index'));
-        browseRemoteLibraries(index);
-      return;
-        }
-    });
-
-  console.log('[Federation] Handlers attached');
-}
-
-      function collectFormData() {
-   if (currentConfig.RemoteServers) {
-   currentConfig.RemoteServers.forEach(function(server, i) {
-      var nameEl = document.querySelector('.txtServerName[data-index="' + i + '"]');
-      var urlEl = document.querySelector('.txtServerUrl[data-index="' + i + '"]');
- var apiKeyEl = document.querySelector('.txtServerApiKey[data-index="' + i + '"]');
-      var enabledEl = document.querySelector('.chkServerEnabled[data-index="' + i + '"]');
-
-       if (nameEl) server.Name = nameEl.value;
-        if (urlEl) server.Url = urlEl.value;
-if (apiKeyEl) server.ApiKey = apiKeyEl.value;
-        if (enabledEl) server.Enabled = enabledEl.checked;
-        });
-         }
-
-  if (currentConfig.LibraryMappings) {
-currentConfig.LibraryMappings.forEach(function(mapping, i) {
- var nameEl = document.querySelector('.txtMappingName[data-index="' + i + '"]');
-      var typeEl = document.querySelector('.selMappingType[data-index="' + i + '"]');
-              var enabledEl = document.querySelector('.chkMappingEnabled[data-index="' + i + '"]');
-
-      if (nameEl) mapping.LocalLibraryName = nameEl.value;
-   if (typeEl) mapping.MediaType = typeEl.value;
-     if (enabledEl) mapping.Enabled = enabledEl.checked;
-      });
-            }
-        }
-
-  function saveConfiguration() {
- setStatus('Saving...');
-  collectFormData();
-     
-       console.log('[Federation] Saving config:', currentConfig);
-
- // Use custom plugin API endpoint
- fetch(apiBaseUrl + '/Plugins/Federation/Configuration', {
-    method: 'POST',
-   headers: {
-       'Content-Type': 'application/json'
-  },
-   body: JSON.stringify(currentConfig)
-     })
-    .then(function(response) {
-        if (!response.ok) {
-           return response.text().then(function(text) {
-      throw new Error('HTTP ' + response.status + ': ' + text);
-           });
-  }
-       return response.json();
-            })
-     .then(function(result) {
- console.log('[Federation] Configuration saved successfully:', result);
-         setStatus('✓ Configuration saved successfully!');
-       alert('Configuration saved!');
-       })
-            .catch(function(err) {
-   console.error('[Federation] Save error:', err);
-     showError('Failed to save: ' + err.message);
-     });
-        }
-
-   function testServerConnection(index) {
-   var server = currentConfig.RemoteServers[index];
-    var statusEl = document.getElementById('serverStatus' + index);
- 
-      if (!statusEl) return;
-
-   statusEl.style.display = 'block';
-        statusEl.style.background = 'rgba(0,164,220,0.2)';
-  statusEl.textContent = 'Testing connection...';
-   
-   console.log('[Federation] Testing server:', server);
-
-   fetch(apiBaseUrl + '/Plugins/Federation/TestServer', {
-  method: 'POST',
-  headers: {
-       'Content-Type': 'application/json'
-  },
-  body: JSON.stringify(server)
- })
-   .then(function(response) {
-     if (!response.ok) throw new Error('HTTP ' + response.status);
-  return response.json();
- })
-      .then(function(result) {
-   console.log('[Federation] Test result:', result);
-        if (result.success) {
-   statusEl.style.background = 'rgba(82,181,75,0.2)';
-   statusEl.innerHTML = '<strong>✓ Connection successful!</strong><br>' +
-  'Server: ' + escapeHtml(result.serverInfo.name) + '<br>' +
-     'Version: ' + escapeHtml(result.serverInfo.version) + '<br>' +
-     'OS: ' + escapeHtml(result.serverInfo.operatingSystem);
-            
-     // Save the suggested UserId back to the server config if we don't have one
-if (result.serverInfo.suggestedUserId && !server.UserId) {
-      console.log('[Federation] Saving suggested UserId:', result.serverInfo.suggestedUserId);
-    server.UserId = result.serverInfo.suggestedUserId;
-        statusEl.innerHTML += '<br><em>User ID automatically configured</em>';
-  }
- } else {
-   statusEl.style.background = 'rgba(255,68,68,0.2)';
-  statusEl.textContent = '✗ ' + result.message;
- }
-   })
- .catch(function(err) {
-     console.error('[Federation] Test error:', err);
-    statusEl.style.background = 'rgba(255,68,68,0.2)';
-    statusEl.textContent = '✗ Error: ' + err.message;
-    });
-        }
-
-    function triggerServerSync(index) {
-  var server = currentConfig.RemoteServers[index];
-  var statusEl = document.getElementById('serverStatus' + index);
-  
-  if (!statusEl) return;
-
-       statusEl.style.display = 'block';
- statusEl.style.background = 'rgba(0,164,220,0.2)';
-  statusEl.textContent = 'Starting sync...';
-   
-        // Show progress card
-     showProgressCard('🔄 Syncing ' + (server.Name || 'Server'));
-  updateProgress(0, 1, 'Connecting to server...', { message: 'Initiating sync for ' + server.Name, type: 'info' });
-        
-        console.log('[Federation] Triggering sync for server:', server);
-
- fetch(apiBaseUrl + '/Plugins/Federation/SyncServer', {
-     method: 'POST',
-   headers: {
-       'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ serverId: server.Id })
-  })
-  .then(function(response) {
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-    updateProgress(0, 1, 'Processing response...', { message: 'Sync request sent', type: 'loading' });
-        return response.json();
- })
-  .then(function(result) {
- console.log('[Federation] Sync result:', result);
-   
-        updateProgress(1, 1, 'Completed');
-        
-    if (result.success) {
-statusEl.style.background = 'rgba(82,181,75,0.2)';
-  statusEl.textContent = '✓ ' + result.message;
- 
-         var itemCount = result.itemCount || 0;
-       completeProgress(true, 'Synced ' + itemCount + ' item' + (itemCount === 1 ? '' : 's') + ' from ' + server.Name);
-         addProgressDetail(result.message, 'success');
-        } else {
-      statusEl.style.background = 'rgba(255,68,68,0.2)';
-    statusEl.textContent = '✗ ' + result.message;
-          completeProgress(false, result.message);
-  }
-    })
-    .catch(function(err) {
-   console.error('[Federation] Sync error:', err);
-  statusEl.style.background = 'rgba(255,68,68,0.2)';
-      statusEl.textContent = '✗ Error: ' + err.message;
-   completeProgress(false, 'Error: ' + err.message);
-     });
- }
-
- function syncAllServers() {
-  setStatus('Syncing all servers...');
-console.log('[Federation] Syncing all servers');
-   
-   // Show progress card
-      showProgressCard('🔄 Syncing All Servers');
-  updateProgress(0, 100, 'Initializing sync...', { message: 'Starting sync operation', type: 'info' });
-   
-   fetch(apiBaseUrl + '/Plugins/Federation/SyncAll', {
-   method: 'POST'
- })
-  .then(function(response) {
-   if (!response.ok) throw new Error('HTTP ' + response.status);
-   return response.json();
- })
-   .then(function(result) {
-  console.log('[Federation] Sync all result:', result);
-
-  if (result.success && result.operationId) {
-       // Start polling for progress
-   pollProgress(result.operationId);
-      } else {
-    // No progress tracking, complete immediately
-      var itemCount = result.itemCount || 0;
-      completeProgress(result.success, result.message || ('Synced ' + itemCount + ' items'));
-       
-  if (result.success) {
-            addProgressDetail('Created ' + itemCount + ' .strm files', 'success');
-    
-     var helpDiv = document.getElementById('libraryCreationHelp');
-    if (helpDiv) {
-      helpDiv.style.display = 'block';
-    addProgressDetail('View instructions below to add library', 'info');
-   }
-  
-       loadFederationStatus();
-      setStatus('✓ All servers synced successfully!');
-   }
-  }
- })
- .catch(function(err) {
-       console.error('[Federation] Sync all error:', err);
-   completeProgress(false, 'Failed to sync: ' + err.message);
- showError('Failed to sync: ' + err.message);
-   });
-     }
-   
-    var progressPollInterval = null;
- 
-   function pollProgress(operationId) {
-     console.log('[Federation] Starting progress polling for:', operationId);
-   
-      // Clear any existing polling
-  if (progressPollInterval) {
-  clearInterval(progressPollInterval);
-}
-  
-      // Poll every 250ms for more responsive updates
-     progressPollInterval = setInterval(function() {
-  fetch(apiBaseUrl + '/Plugins/Federation/Progress/' + operationId)
-   .then(function(response) {
-     if (!response.ok) {
-        if (response.status === 404) {
-      // Operation not found, might be too old
-  clearInterval(progressPollInterval);
-       return null;
-       }
-      throw new Error('HTTP ' + response.status);
-   }
-    return response.json();
-            })
- .then(function(progress) {
-   if (!progress) return;
-             
-   console.log('[Federation] Progress:', progress);
-     
- // Update progress bar and status
-      var percentage = progress.percentage || 0;
-   updateProgress(progress.processedItems, progress.totalItems, progress.status);
-        
-         // Update progress bar width
-   var progressBar = document.getElementById('progressBar');
-   if (progressBar) {
- progressBar.style.width = percentage + '%';
-   }
- 
- // Add status detail if changed
-   if (progress.status && progress.status !== window.lastProgressStatus) {
-      // Determine message type based on content
-     var messageType = 'info';
-          if (progress.status.includes('Fetching page')) {
-      messageType = 'loading';
-      } else if (progress.status.includes('Creating files')) {
-           messageType = 'loading';
-  } else if (progress.status.includes('Processing mapping')) {
-      messageType = 'info';
-    }
-      
-       addProgressDetail(progress.status, messageType);
-          window.lastProgressStatus = progress.status;
-  }
-     
- // Check if complete
-    if (progress.isComplete) {
-      clearInterval(progressPollInterval);
-      completeProgress(progress.success, progress.status);
- 
-  if (progress.success) {
-    addProgressDetail('Sync completed successfully', 'success');
-    loadFederationStatus();
-         
-    var helpDiv = document.getElementById('libraryCreationHelp');
- if (helpDiv) {
-   helpDiv.style.display = 'block';
-      }
-   }
-         }
-      })
-   .catch(function(err) {
-    console.error('[Federation] Progress poll error:', err);
-      // Don't stop polling on error, might be temporary
-  });
-  }, 250); // Poll every 250ms for more responsive updates
-    }
-
-    function loadFederationStatus() {
-   console.log('[Federation] Loading federation status');
-   var statusEl = document.getElementById('federationStatus');
- 
-  statusEl.innerHTML = '<p>Loading status...</p>';
-
-   fetch(apiBaseUrl + '/Plugins/Federation/Status')
-    .then(function(response) {
-     if (!response.ok) throw new Error('HTTP ' + response.status);
-    return response.json();
-  })
-    .then(function(status) {
-  console.log('[Federation] Status:', status);
-    
-   var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;">';
-       html += '<div><strong>Total Servers:</strong> ' + (status.totalServers || 0) + '</div>';
-    html += '<div><strong>Active Servers:</strong> ' + (status.activeServers || 0) + '</div>';
-         html += '<div><strong>Federated Items:</strong> ' + (status.federatedItems || 0) + '</div>';
-   html += '<div><strong>Last Sync:</strong> ' + (status.lastSync || 'Never') + '</div>';
-   html += '</div>';
-   
-   if (status.servers && status.servers.length > 0) {
-  html += '<div style="margin-top:20px;"><strong>Server Status:</strong></div>';
-  html += '<ul style="list-style:none;padding:0;">';
-   status.servers.forEach(function(server) {
-    var statusIcon = server.online ? '🟢' : '🔴';
-      html += '<li style="padding:5px 0;">' + statusIcon + ' ' + escapeHtml(server.name) + 
-  ' - ' + (server.itemCount || 0) + ' items</li>';
-  });
-      html += '</ul>';
-}
- 
-   statusEl.innerHTML = html;
-        })
-  .catch(function(err) {
-       console.error('[Federation] Status error:', err);
-      statusEl.innerHTML = '<p style="color:#f44;">Failed to load status: ' + escapeHtml(err.message) + '</p>';
-    });
-    }
-
-    function browseRemoteLibraries(mappingIndex) {
-  console.log('[Federation] Browsing remote libraries for mapping:', mappingIndex);
-        var container = document.getElementById('remoteLibraries' + mappingIndex);
-    var mapping = currentConfig.LibraryMappings[mappingIndex];
-        
- if (!container) return;
-        
-  container.innerHTML = '<p>Loading libraries from remote servers...</p>';
-        
-        // Get libraries from all configured servers
-  fetch(apiBaseUrl + '/Plugins/Federation/GetRemoteLibraries')
-    .then(function(response) {
-     if (!response.ok) throw new Error('HTTP ' + response.status);
-   return response.json();
-    })
-   .then(function(result) {
-      console.log('[Federation] Remote libraries:', result);
-      console.log('[Federation] Full response:', JSON.stringify(result, null, 2));
-   
-     if (!result.success || !result.servers || result.servers.length === 0) {
-     container.innerHTML = '<p style="color:#f90;">No remote servers available. Please configure and test servers first.</p>';
-   return;
-       }
-      
-   // Initialize RemoteLibrarySources if it doesn't exist
-      if (!mapping.RemoteLibrarySources) {
-     mapping.RemoteLibrarySources = [];
-    }
-    
-       var html = '<div style="max-height:400px;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);border-radius:4px;padding:10px;">';
- 
-   var hasAnyLibraries = false;
-   
-   result.servers.forEach(function(server) {
-          html += '<div style="margin-bottom:20px;padding:10px;background:rgba(255,255,255,0.05);border-radius:4px;">';
-   html += '<strong>' + escapeHtml(server.serverName) + '</strong>';
-     
-     // Show error if present
-  if (server.error) {
- html += '<div style="color:#f44;margin-top:5px;">❌ Error: ' + escapeHtml(server.error) + '</div>';
-     }
-   
-        // Show warning if present
-   if (server.warning) {
-      html += '<div style="color:#f90;margin-top:5px;">⚠️ ' + escapeHtml(server.warning) + '</div>';
-        }
-   
-        if (server.libraries && server.libraries.length > 0) {
-     hasAnyLibraries = true;
-   html += '<div style="margin-top:10px;">';
-    server.libraries.forEach(function(library) {
-    // Check if this library is already selected
-var isSelected = mapping.RemoteLibrarySources.some(function(source) {
-   return source.ServerId === server.serverId && source.RemoteLibraryId === library.id;
+            var c = document.getElementById('mappingList');
+            var m = currentConfig.LibraryMappings || [];
+            if (m.length === 0) { c.innerHTML = '<p style="opacity:0.6;">No mappings configured.</p>'; return; }
+            var html = '';
+            m.forEach(function(mp, i) {
+                html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
+                html += '<h3>Mapping ' + (i + 1) + '</h3>';
+                html += '<label>Library Name (shown in Jellyfin):</label>';
+                html += '<input type="text" class="mapName" data-i="' + i + '" value="' + escapeHtml(mp.LocalLibraryName) + '" />';
+                html += '<label>Media Type:</label><select class="mapType" data-i="' + i + '">';
+                ['Movie','Series','Season','Episode','MusicAlbum','Audio','MusicVideo','Book','Photo','PhotoAlbum','Video','Playlist','BoxSet'].forEach(function(t) {
+                    html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
                 });
-       
-       html += '<label style="display:block;padding:5px;cursor:pointer;hover:background:rgba(255,255,255,0.05);">';
-      html += '<input type="checkbox" class="chkRemoteLibrary" ';
-    html += 'data-mapping-index="' + mappingIndex + '" ';
-           html += 'data-server-id="' + escapeHtml(server.serverId) + '" ';
-html += 'data-server-name="' + escapeHtml(server.serverName) + '" ';
-      html += 'data-library-id="' + escapeHtml(library.id) + '" ';
-  html += 'data-library-name="' + escapeHtml(library.name) + '" ';
-       html += (isSelected ? 'checked' : '') + ' /> ';
-      html += escapeHtml(library.name) + ' <span style="opacity:0.6;">(' + library.collectionType + ') - ' + (library.itemCount || 0) + ' items</span>';
-            html += '</label>';
-    });
-  html += '</div>';
-      } else if (!server.error && !server.warning) {
-   html += '<div style="color:#f90;margin-top:5px;">⚠️ No libraries found on this server.</div>';
-   html += '<div style="opacity:0.6;font-size:0.85em;margin-top:5px;">Make sure:<br>';
-   html += '• The server has at least one library configured<br>';
-     html += '• You have tested the connection (click "Test Connection" button)<br>';
-   html += '• You have saved the configuration after testing</div>';
-    }
-     
-      html += '</div>';
-  });
-     
-   html += '</div>';
-   
-   if (hasAnyLibraries) {
-      html += '<button type="button" class="btnApplyLibrarySelection" data-index="' + mappingIndex + '" style="margin-top:10px;">Apply Selection</button>';
-        } else {
-      html += '<div style="margin-top:10px;padding:10px;background:rgba(255,153,0,0.1);border-radius:4px;">';
-            html += '<strong>⚠️ No libraries available</strong><br>';
- html += 'Please test the connection for each server first, then save the configuration, then try browsing again.';
-   html += '</div>';
-   }
-       
-   container.innerHTML = html;
-   
-      // Add event handlers for checkboxes
-  container.querySelectorAll('.btnApplyLibrarySelection').forEach(function(btn) {
-       btn.addEventListener('click', function() {
-    applyLibrarySelection(mappingIndex);
-       });
-    });
- })
-      .catch(function(err) {
-    console.error('[Federation] Error loading remote libraries:', err);
-  container.innerHTML = '<p style="color:#f44;">Error loading libraries: ' + escapeHtml(err.message) + '</p>';
-        });
-    }
+                html += '</select>';
+                html += '<label><input type="checkbox" class="mapAuto" data-i="' + i + '" ' + (mp.AutoProvision !== false ? 'checked' : '') + ' /> Auto-provision library</label>';
+                html += '<label><input type="checkbox" class="mapEnabled" data-i="' + i + '" ' + (mp.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                html += '<div style="margin-top:10px;"><button type="button" class="btnBrowse" data-i="' + i + '">Browse Remote Libraries</button></div>';
+                html += '<div id="mapLibs' + i + '" style="margin-top:10px;"></div>';
+                if (mp.RemoteLibrarySources && mp.RemoteLibrarySources.length > 0) {
+                    html += '<div style="margin-top:10px;padding:10px;background:rgba(82,181,75,0.1);border-radius:4px;">';
+                    html += '<strong>Selected (' + mp.RemoteLibrarySources.length + '):</strong><ul style="margin:5px 0;padding-left:20px;">';
+                    mp.RemoteLibrarySources.forEach(function(src) {
+                        html += '<li>' + escapeHtml(src.ServerName) + ' → ' + escapeHtml(src.RemoteLibraryName) + '</li>';
+                    });
+                    html += '</ul></div>';
+                }
+                html += '<button type="button" class="remove btnRemoveMapping" data-i="' + i + '" style="margin-top:10px;">Remove</button>';
+                html += '</div>';
+            });
+            c.innerHTML = html;
+        }
 
-    function applyLibrarySelection(mappingIndex) {
-console.log('[Federation] Applying library selection for mapping:', mappingIndex);
-  var mapping = currentConfig.LibraryMappings[mappingIndex];
- var container = document.getElementById('remoteLibraries' + mappingIndex);
-        
-        if (!container) return;
- 
-        // Collect selected libraries
-        var selectedSources = [];
-        container.querySelectorAll('.chkRemoteLibrary:checked').forEach(function(checkbox) {
-       selectedSources.push({
-    ServerId: checkbox.getAttribute('data-server-id'),
-    ServerName: checkbox.getAttribute('data-server-name'),
-       RemoteLibraryId: checkbox.getAttribute('data-library-id'),
-   RemoteLibraryName: checkbox.getAttribute('data-library-name')
-      });
-  });
-   
-        mapping.RemoteLibrarySources = selectedSources;
-        
-   console.log('[Federation] Selected sources:', selectedSources);
- alert('Selected ' + selectedSources.length + ' remote librar' + (selectedSources.length === 1 ? 'y' : 'ies') + '. Click Save to apply changes.');
-   
-   // Re-render mappings to show updated selection
-  renderMappings();
-    }
+        function collectFormData() {
+            (currentConfig.RemoteServers || []).forEach(function(s, i) {
+                var n = document.querySelector('.srvName[data-i="' + i + '"]');
+                var u = document.querySelector('.srvUrl[data-i="' + i + '"]');
+                var k = document.querySelector('.srvKey[data-i="' + i + '"]');
+                var ui = document.querySelector('.srvUser[data-i="' + i + '"]');
+                var m = document.querySelector('.srvMode[data-i="' + i + '"]');
+                var p = document.querySelector('.srvPri[data-i="' + i + '"]');
+                var ik = document.querySelector('.srvImgKey[data-i="' + i + '"]');
+                var e = document.querySelector('.srvEnabled[data-i="' + i + '"]');
+                if (n) s.Name = n.value;
+                if (u) s.Url = u.value;
+                if (k) s.ApiKey = k.value;
+                if (ui) s.UserId = ui.value;
+                if (m) s.StreamingMode = m.value === 'Proxy' ? 1 : 0;
+                if (p) s.Priority = parseInt(p.value) || 0;
+                if (ik) s.RequireApiKeyForImages = ik.checked;
+                if (e) s.Enabled = e.checked;
+            });
+            (currentConfig.LibraryMappings || []).forEach(function(mp, i) {
+                var n = document.querySelector('.mapName[data-i="' + i + '"]');
+                var t = document.querySelector('.mapType[data-i="' + i + '"]');
+                var a = document.querySelector('.mapAuto[data-i="' + i + '"]');
+                var en = document.querySelector('.mapEnabled[data-i="' + i + '"]');
+                if (n) mp.LocalLibraryName = n.value;
+                if (t) mp.MediaType = t.value;
+                if (a) mp.AutoProvision = a.checked;
+                if (en) mp.Enabled = en.checked;
+            });
 
- function loadConfiguration() {
-     setStatus('Loading configuration...');
-   console.log('[Federation] Loading config from:', apiBaseUrl + '/Plugins/Federation/Configuration');
+            currentConfig.ServerUrl = document.getElementById('txtServerUrl').value;
+            currentConfig.CachePath = document.getElementById('txtCachePath').value;
+            currentConfig.AutoProvisionLibraries = document.getElementById('chkAutoProvision').checked;
+            currentConfig.EnableDedup = document.getElementById('chkDedup').checked;
+            currentConfig.DedupProviderIds = document.getElementById('txtDedupIds').value
+                .split(',').map(function(s){return s.trim();}).filter(Boolean);
+            currentConfig.RefreshIntervalHours = parseInt(document.getElementById('txtRefreshHours').value) || 1;
+        }
 
-  // Use custom plugin API endpoint
-  fetch(apiBaseUrl + '/Plugins/Federation/Configuration')
-     .then(function(response) {
-    if (!response.ok) {
-    return response.text().then(function(text) {
-      throw new Error('HTTP ' + response.status + ': ' + text);
-  });
-    }
-      return response.json();
- })
-  .then(function(config) {
-   console.log('[Federation] Config loaded:', config);
-         currentConfig = config || { RemoteServers: [], LibraryMappings: [] };
-renderServers();
-    renderMappings();
-       attachHandlers();
-  setStatus('Ready - ' + currentConfig.RemoteServers.length + ' servers, ' + currentConfig.LibraryMappings.length + ' mappings');
-  
-    // Load federation status after config is loaded
-   loadFederationStatus();
-     })
- .catch(function(err) {
-       console.error('[Federation] Load error:', err);
-     showError('Failed to load configuration: ' + err.message);
-      });
-    }
+        function saveConfiguration() {
+            setStatus('Saving...');
+            collectFormData();
+            fetch(apiBase + '/Plugins/Federation/Configuration', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(currentConfig)
+            })
+            .then(function(r) { return r.ok ? r.json() : r.text().then(function(t){throw new Error(t);}); })
+            .then(function() { setStatus('Configuration saved!'); loadDiagnostics(); })
+            .catch(function(e) { showError('Save failed: ' + e.message); });
+        }
 
-  // Start loading immediately
-        setStatus('Initializing...');
-      loadConfiguration();
+        function testServer(i) {
+            var s = currentConfig.RemoteServers[i];
+            var st = document.getElementById('srvStatus' + i);
+            st.style.display = 'block';
+            st.style.background = 'rgba(0,164,220,0.2)';
+            st.textContent = 'Testing...';
+            fetch(apiBase + '/Plugins/Federation/TestServer', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(s)
+            })
+            .then(function(r){return r.json();})
+            .then(function(res) {
+                if (res.success) {
+                    st.style.background = 'rgba(82,181,75,0.2)';
+                    st.innerHTML = '<strong>OK</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version);
+                    if (res.serverInfo.suggestedUserId && !s.UserId) {
+                        s.UserId = res.serverInfo.suggestedUserId;
+                        renderServers();
+                    }
+                } else {
+                    st.style.background = 'rgba(255,68,68,0.2)';
+                    st.textContent = 'Failed: ' + res.message;
+                }
+            })
+            .catch(function(e){st.textContent = 'Error: ' + e.message;});
+        }
+
+        function browseLibraries(i) {
+            var c = document.getElementById('mapLibs' + i);
+            c.innerHTML = '<p>Loading...</p>';
+            fetch(apiBase + '/Plugins/Federation/GetRemoteLibraries')
+            .then(function(r){return r.json();})
+            .then(function(res) {
+                if (!res.success || !res.servers) { c.innerHTML = '<p style="color:#f90;">No servers available.</p>'; return; }
+                var mp = currentConfig.LibraryMappings[i];
+                if (!mp.RemoteLibrarySources) mp.RemoteLibrarySources = [];
+                var html = '<div style="max-height:300px;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);border-radius:4px;padding:10px;">';
+                res.servers.forEach(function(srv) {
+                    html += '<strong>' + escapeHtml(srv.serverName) + '</strong>';
+                    if (srv.error) { html += '<div style="color:#f44;">' + escapeHtml(srv.error) + '</div>'; }
+                    (srv.libraries || []).forEach(function(lib) {
+                        var checked = mp.RemoteLibrarySources.some(function(x){return x.ServerId===srv.serverId && x.RemoteLibraryId===lib.id;});
+                        html += '<label><input type="checkbox" class="chkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked?'checked':'') + ' /> ' + escapeHtml(lib.name) + ' (' + lib.collectionType + ', ' + (lib.itemCount||0) + ')</label>';
+                    });
+                });
+                html += '</div><button type="button" class="btnApply" data-i="' + i + '" style="margin-top:10px;">Apply</button>';
+                c.innerHTML = html;
+            })
+            .catch(function(e){c.innerHTML = '<p style="color:#f44;">' + escapeHtml(e.message) + '</p>';});
+        }
+
+        function applyLibraries(i) {
+            var mp = currentConfig.LibraryMappings[i];
+            var selected = [];
+            document.querySelectorAll('.chkLib[data-mi="' + i + '"]:checked').forEach(function(cb) {
+                selected.push({
+                    ServerId: cb.getAttribute('data-sid'),
+                    ServerName: cb.getAttribute('data-sname'),
+                    RemoteLibraryId: cb.getAttribute('data-lid'),
+                    RemoteLibraryName: cb.getAttribute('data-lname')
+                });
+            });
+            mp.RemoteLibrarySources = selected;
+            renderMappings();
+        }
+
+        function loadDiagnostics() {
+            fetch(apiBase + '/Plugins/Federation/SystemInfo')
+            .then(function(r){return r.json();})
+            .then(function(d) {
+                var el = document.getElementById('diagnostics');
+                el.innerHTML =
+                    '<div><strong>Local Server URL</strong>' + escapeHtml(d.detectedUrl || 'not set') + '</div>' +
+                    '<div><strong>Cache Path</strong>' + escapeHtml(d.cachePath || 'default') + '</div>' +
+                    '<div><strong>Cache Entries</strong>' + (d.cacheEntries || 0) + '</div>' +
+                    '<div><strong>Last Refresh</strong>' + (d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never') + '</div>' +
+                    '<div><strong>Auto-Provision</strong>' + (d.autoProvisionLibraries ? 'Yes' : 'No') + '</div>' +
+                    '<div><strong>Dedup</strong>' + (d.enableDedup ? 'On (' + (d.dedupProviderIds||[]).join(',') + ')' : 'Off') + '</div>' +
+                    '<div><strong>Refresh Interval</strong>' + (d.refreshIntervalHours || 1) + 'h</div>';
+            })
+            .catch(function(e){
+                document.getElementById('diagnostics').innerHTML = '<div><strong>Error</strong>' + escapeHtml(e.message) + '</div>';
+            });
+        }
+
+        function loadConfiguration() {
+            setStatus('Loading...');
+            fetch(apiBase + '/Plugins/Federation/Configuration')
+            .then(function(r){return r.json();})
+            .then(function(c) {
+                currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
+                document.getElementById('txtServerUrl').value = currentConfig.ServerUrl || '';
+                document.getElementById('txtCachePath').value = currentConfig.CachePath || '';
+                document.getElementById('chkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
+                document.getElementById('chkDedup').checked = currentConfig.EnableDedup !== false;
+                document.getElementById('txtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb','tmdb','tvdb']).join(',');
+                document.getElementById('txtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
+                renderServers();
+                renderMappings();
+                attachHandlers();
+                loadDiagnostics();
+                setStatus('Ready');
+            })
+            .catch(function(e){showError('Load failed: ' + e.message);});
+        }
+
+        function attachHandlers() {
+            document.getElementById('btnAddServer').onclick = function() {
+                currentConfig.RemoteServers.push({Id: generateGuid(), Name:'', Url:'', ApiKey:'', UserId:'', Enabled:true, StreamingMode:0, Priority:0});
+                renderServers();
+            };
+            document.getElementById('btnAddMapping').onclick = function() {
+                currentConfig.LibraryMappings.push({LocalLibraryName:'', MediaType:'Movie', RemoteServerIds:[], RemoteLibrarySources:[], Enabled:true, AutoProvision:true});
+                renderMappings();
+            };
+            document.getElementById('btnSave').onclick = function(e){e.preventDefault(); saveConfiguration();};
+            document.getElementById('btnRefreshCache').onclick = function() {
+                setStatus('Refreshing cache...');
+                fetch(apiBase + '/Plugins/Federation/Refresh', {method:'POST'})
+                .then(function(r){return r.json();})
+                .then(function(res){setStatus(res.Message || 'Done'); loadDiagnostics();})
+                .catch(function(e){showError('Refresh failed: ' + e.message);});
+            };
+            document.getElementById('btnProvision').onclick = function() {
+                fetch(apiBase + '/Plugins/Federation/ProvisionLibraries', {method:'POST'})
+                .then(function(r){return r.json();})
+                .then(function(res){setStatus(res.message || 'Provisioned');})
+                .catch(function(e){showError('Provision failed: ' + e.message);});
+            };
+            document.getElementById('btnTestAll').onclick = function() {
+                fetch(apiBase + '/Plugins/Federation/TestAllServers', {method:'POST'})
+                .then(function(r){return r.json();})
+                .then(function(res){setStatus('Tested ' + (res.results||[]).length + ' servers');})
+                .catch(function(e){showError('Test failed: ' + e.message);});
+            };
+            document.getElementById('btnRefreshDiag').onclick = loadDiagnostics;
+
+            document.body.addEventListener('click', function(e) {
+                var t = e.target.closest('.btnRemoveServer,.btnRemoveMapping,.btnTest,.btnBrowse,.btnApply');
+                if (!t) return;
+                e.preventDefault();
+                if (t.classList.contains('btnRemoveServer')) {
+                    currentConfig.RemoteServers.splice(parseInt(t.getAttribute('data-i')),1);
+                    renderServers();
+                } else if (t.classList.contains('btnRemoveMapping')) {
+                    currentConfig.LibraryMappings.splice(parseInt(t.getAttribute('data-i')),1);
+                    renderMappings();
+                } else if (t.classList.contains('btnTest')) {
+                    testServer(parseInt(t.getAttribute('data-i')));
+                } else if (t.classList.contains('btnBrowse')) {
+                    browseLibraries(parseInt(t.getAttribute('data-i')));
+                } else if (t.classList.contains('btnApply')) {
+                    applyLibraries(parseInt(t.getAttribute('data-i')));
+                }
+            });
+        }
+
+        loadConfiguration();
     })();
     </script>
 </body>
