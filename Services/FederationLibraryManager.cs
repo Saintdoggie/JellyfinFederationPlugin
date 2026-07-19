@@ -9,6 +9,7 @@ using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
@@ -16,321 +17,233 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
-    /// Manages federated library integration with Jellyfin.
-/// </summary>
+    /// Coordinates federation resolution: looks up items in the cache, builds virtual
+    /// <see cref="BaseItem"/> shells, and exposes remote server clients via the shared
+    /// <see cref="IRemoteServerClientFactory"/>.
+    /// </summary>
     public class FederationLibraryManager : IDisposable
     {
         private readonly ILibraryManager _libraryManager;
-  private readonly ILogger<FederationLibraryManager> _logger;
+        private readonly ILogger<FederationLibraryManager> _logger;
         private readonly ILoggerFactory _loggerFactory;
-    private readonly ConcurrentDictionary<string, RemoteServerClient> _clients;
-  private readonly ConcurrentDictionary<string, BaseItem> _federatedItems;
+        private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly FederationItemCache _cache;
 
         /// <summary>
-   /// Initializes a new instance of the <see cref="FederationLibraryManager"/> class.
-   /// </summary>
-     /// <param name="libraryManager">Library manager instance.</param>
-        /// <param name="logger">Logger instance.</param>
-        /// <param name="loggerFactory">Logger factory instance.</param>
+        /// Initializes a new instance of the <see cref="FederationLibraryManager"/> class.
+        /// </summary>
         public FederationLibraryManager(
             ILibraryManager libraryManager,
-   ILogger<FederationLibraryManager> logger,
-     ILoggerFactory loggerFactory)
-    {
- _libraryManager = libraryManager;
- _logger = logger;
-        _loggerFactory = loggerFactory;
-_clients = new ConcurrentDictionary<string, RemoteServerClient>();
-            _federatedItems = new ConcurrentDictionary<string, BaseItem>();
-   }
-
-      /// <summary>
-        /// Initializes the federation library manager.
-        /// </summary>
-    public void Initialize()
+            ILogger<FederationLibraryManager> logger,
+            ILoggerFactory loggerFactory,
+            IRemoteServerClientFactory clientFactory,
+            FederationItemCache cache)
         {
-       _logger.LogInformation("[Federation] Initializing Federation Library Manager");
-
-         var config = Plugin.Instance?.Configuration;
-        if (config == null)
-     {
-        _logger.LogWarning("[Federation] Plugin configuration is null");
-       return;
-    }
-
-     InitializeClients();
-   }
-
-        /// <summary>
-        /// Initializes clients for all configured remote servers.
-        /// </summary>
-        public void InitializeClients()
-     {
-          var config = Plugin.Instance?.Configuration;
-   if (config?.RemoteServers == null)
-  {
-    return;
-   }
-
-          // Dispose existing clients
-            foreach (var client in _clients.Values)
- {
-   client.Dispose();
- }
-     _clients.Clear();
-
-            // Create new clients for enabled servers
-            foreach (var server in config.RemoteServers.Where(s => s.Enabled))
-            {
-  try
-       {
-           var client = new RemoteServerClient(
-   server,
-        _loggerFactory.CreateLogger<RemoteServerClient>());
-
-             _clients.TryAdd(server.Id, client);
-         _logger.LogInformation("[Federation] Initialized client for remote server: {ServerName} ({ServerId})", 
-               server.Name, server.Id);
-   }
-                catch (Exception ex)
- {
-   _logger.LogError(ex, "[Federation] Failed to initialize client for remote server: {ServerName}", 
-              server.Name);
-         }
-            }
+            _libraryManager = libraryManager;
+            _logger = logger;
+            _loggerFactory = loggerFactory;
+            _clientFactory = clientFactory;
+            _cache = cache;
         }
 
         /// <summary>
-        /// Creates or updates virtual folders based on configured mappings.
+        /// Gets the item cache.
         /// </summary>
-     /// <param name="cancellationToken">Cancellation token.</param>
-     /// <returns>Task.</returns>
-  public async Task SyncVirtualFoldersAsync(CancellationToken cancellationToken = default)
+        public FederationItemCache Cache => _cache;
+
+        /// <summary>
+        /// Gets the client factory.
+        /// </summary>
+        public IRemoteServerClientFactory ClientFactory => _clientFactory;
+
+        /// <summary>
+        /// Initializes the manager (loads cache if not already loaded).
+        /// </summary>
+        public void Initialize(string cacheFilePath)
         {
-            _logger.LogInformation("[Federation] Syncing virtual folders");
+            _logger.LogInformation("[Federation] Initializing Federation Library Manager");
+            _cache.Initialize(cacheFilePath);
+        }
 
-  var config = Plugin.Instance?.Configuration;
-            if (config?.LibraryMappings == null)
-  {
-     _logger.LogWarning("[Federation] No library mappings configured");
-                return;
-  }
-
-      var enabledMappings = config.LibraryMappings.Where(m => m.Enabled).ToList();
-            _logger.LogInformation("[Federation] Found {Count} enabled mappings", enabledMappings.Count);
-
- foreach (var mapping in enabledMappings)
-     {
-     try
-      {
-         await EnsureVirtualFolderExistsAsync(mapping, cancellationToken);
-    }
-   catch (Exception ex)
+        /// <summary>
+        /// Resolves a federation:// path to a virtual <see cref="BaseItem"/>, looking up the
+        /// cache live. Returns null when the path is not a federation path or no cache entry
+        /// exists yet.
+        /// </summary>
+        public BaseItem? ResolvePath(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
             {
-        _logger.LogError(ex, "[Federation] Error creating virtual folder for mapping: {Name}", 
-   mapping.LocalLibraryName);
+                return null;
+            }
+
+            var entry = _cache.GetEntry(path);
+            if (entry == null)
+            {
+                return null;
+            }
+
+            return MaterializeItem(entry);
+        }
+
+        /// <summary>
+        /// Materializes a cache entry into a Jellyfin <see cref="BaseItem"/> shell.
+        /// </summary>
+        public BaseItem MaterializeItem(FederatedCacheEntry entry)
+        {
+            var item = CreateItemShell(entry.ItemType);
+            item.Name = entry.Metadata.Name ?? "Unknown";
+            item.Path = entry.FederationPath;
+            item.Overview = entry.Metadata.Overview;
+            item.ProductionYear = entry.Metadata.ProductionYear;
+            item.PremiereDate = entry.Metadata.PremiereDate;
+            item.CommunityRating = entry.Metadata.CommunityRating;
+            item.OfficialRating = entry.Metadata.OfficialRating;
+            item.RunTimeTicks = entry.Metadata.RunTimeTicks;
+            item.Studios = entry.Metadata.Studios ?? Array.Empty<string>();
+            item.Genres = entry.Metadata.Genres ?? Array.Empty<string>();
+            item.Tags = entry.Metadata.Tags ?? Array.Empty<string>();
+
+            if (item is Episode ep)
+            {
+                ep.SeriesName = entry.Metadata.SeriesName;
+                ep.IndexNumber = entry.Metadata.IndexNumber;
+                ep.ParentIndexNumber = entry.Metadata.ParentIndexNumber;
+            }
+
+            if (item is Audio audio)
+            {
+                audio.Album = entry.Metadata.Album;
+                audio.AlbumArtists = entry.Metadata.AlbumArtist != null ? new[] { entry.Metadata.AlbumArtist } : Array.Empty<string>();
+                audio.Artists = entry.Metadata.Artists ?? Array.Empty<string>();
+                audio.IndexNumber = entry.Metadata.IndexNumber;
+            }
+
+            // Provider IDs - record all dedup provider ids on the local shell so Jellyfin
+            // can match against them.
+            item.ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (entry.Metadata.ProviderIds != null)
+            {
+                foreach (var kvp in entry.Metadata.ProviderIds)
+                {
+                    item.ProviderIds[kvp.Key] = kvp.Value;
                 }
             }
-   }
 
-        /// <summary>
-     /// Ensures a virtual folder exists for a mapping.
-        /// </summary>
-        /// <param name="mapping">Library mapping.</param>
-        /// <param name="cancellationToken">Cancellation token.</param>
-   /// <returns>The virtual folder.</returns>
-  public async Task<Folder?> EnsureVirtualFolderExistsAsync(
-  LibraryMapping mapping, 
-       CancellationToken cancellationToken = default)
-        {
-            _logger.LogInformation("[Federation] Ensuring virtual folder exists: {Name}", mapping.LocalLibraryName);
+            // Federation tracking ids
+            if (entry.PrimarySource != null)
+            {
+                item.ProviderIds["FederationSource"] = entry.PrimarySource.ServerId;
+                item.ProviderIds["FederationRemoteId"] = entry.PrimarySource.RemoteItemId.ToString();
+            }
 
-   // Note: With file-based approach, we don't need to create virtual folders in Jellyfin
-            // The user will add the federation file directory as a library manually
-   // This method is kept for backward compatibility but does nothing
-      
-    _logger.LogInformation("[Federation] File-based approach - user will add folder as library manually");
+            // Stable local id derived from cache key so the same virtual item survives refreshes.
+            item.Id = _libraryManager.GetNewItemId(entry.FederationPath, item.GetType());
+            item.DateCreated = entry.LastRefreshedUtc == default ? DateTime.UtcNow : entry.LastRefreshedUtc;
+            item.DateModified = item.DateCreated;
+            item.IsVirtualItem = true;
 
- // Create a placeholder folder object (not registered with Jellyfin)
-    var folder = new Folder
-     {
-    Name = mapping.LocalLibraryName,
-      DateCreated = DateTime.UtcNow,
-    DateModified = DateTime.UtcNow
-  };
-
-     return folder;
-   }
-
-        /// <summary>
-        /// Adds a federated item to the library.
-        /// </summary>
-        /// <param name="item">The item to add.</param>
-        /// <param name="parentFolder">Parent folder.</param>
-  /// <param name="cancellationToken">Cancellation token.</param>
-        /// <returns>Task.</returns>
-        public async Task AddFederatedItemAsync(
-            BaseItem item, 
-         Folder parentFolder, 
-            CancellationToken cancellationToken = default)
-        {
-  _logger.LogInformation("[Federation] Adding federated item: {Name}", item.Name);
-
-         try
-   {
-         // Store in our cache
-         _federatedItems.TryAdd(item.Id.ToString(), item);
-
-         // TODO: Add to Jellyfin's library manager
-     // This requires using the appropriate LibraryManager API
-    // await _libraryManager.CreateItem(item, parentFolder, cancellationToken);
-
-     _logger.LogInformation("[Federation] Federated item cached: {Name} (Id: {Id})", item.Name, item.Id);
-     }
-     catch (Exception ex)
-          {
-     _logger.LogError(ex, "[Federation] Error adding federated item: {Name}", item.Name);
-    }
+            return item;
         }
 
         /// <summary>
-        /// Gets a federated item by ID.
+        /// Gets a remote server client for the given server ID.
         /// </summary>
-        /// <param name="itemId">Item ID.</param>
-      /// <returns>The federated item, or null if not found.</returns>
-        public BaseItem? GetFederatedItem(string itemId)
+        public RemoteServerClient? GetClient(string serverId) => _clientFactory.GetClient(serverId);
+
+        /// <summary>
+        /// Gets all cache entries for a mapping.
+        /// </summary>
+        public IEnumerable<FederatedCacheEntry> GetEntriesForMapping(string mappingName)
+            => _cache.GetEntriesForMapping(mappingName);
+
+        /// <summary>
+        /// Gets all cache entries.
+        /// </summary>
+        public IEnumerable<FederatedCacheEntry> GetAllEntries() => _cache.GetAllEntries();
+
+        /// <summary>
+        /// Returns the remote server configuration for an ID, or null.
+        /// </summary>
+        public RemoteServer? GetServer(string serverId)
         {
-       _federatedItems.TryGetValue(itemId, out var item);
-    return item;
+            return Plugin.Instance?.Configuration?.RemoteServers?.Find(s => s.Id == serverId);
         }
 
-/// <summary>
-        /// Gets a federated item by federation path.
+        /// <summary>
+        /// Gets the configured local server URL (auto-detected or overridden).
         /// </summary>
-        /// <param name="federationPath">Federation path (federation://serverId/itemId).</param>
-      /// <returns>The federated item, or null if not found.</returns>
-      public BaseItem? GetFederatedItemByPath(string federationPath)
+        public string GetLocalServerUrl()
         {
-     if (TryParseFederationPath(federationPath, out var serverId, out var remoteItemId))
-   {
-         // Find item by remote ID
-       return _federatedItems.Values.FirstOrDefault(item =>
-   item.ProviderIds != null &&
-     item.ProviderIds.TryGetValue("FederationSource", out var itemServerId) &&
-          itemServerId == serverId &&
-    item.ProviderIds.TryGetValue("FederationRemoteId", out var itemRemoteId) &&
-  itemRemoteId == remoteItemId);
-      }
+            var config = Plugin.Instance?.Configuration;
+            if (!string.IsNullOrEmpty(config?.ServerUrl))
+            {
+                return config.ServerUrl.TrimEnd('/');
+            }
 
-    return null;
+            return string.Empty;
         }
 
         /// <summary>
         /// Checks if an item is federated.
         /// </summary>
-     /// <param name="item">The item to check.</param>
-        /// <returns>True if federated, false otherwise.</returns>
         public bool IsFederatedItem(BaseItem item)
         {
-            return item?.ProviderIds?.ContainsKey("FederationSource") == true;
+            return item?.Path != null && item.Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
-    /// Gets the remote server ID for a federated item.
-     /// </summary>
-        /// <param name="item">The federated item.</param>
-        /// <returns>Server ID, or null if not federated.</returns>
-        public string? GetFederatedServerId(BaseItem item)
-        {
-  if (item?.ProviderIds == null)
-  {
-       return null;
-    }
-
-  item.ProviderIds.TryGetValue("FederationSource", out var serverId);
-            return serverId;
-        }
-
-     /// <summary>
-    /// Gets the remote item ID for a federated item.
-   /// </summary>
-        /// <param name="item">The federated item.</param>
-        /// <returns>Remote item ID, or null if not federated.</returns>
-        public string? GetFederatedRemoteId(BaseItem item)
-        {
-    if (item?.ProviderIds == null)
-      {
-    return null;
-}
-
- item.ProviderIds.TryGetValue("FederationRemoteId", out var remoteId);
-  return remoteId;
-}
+        /// Parses a federation path into components (delegates to <see cref="FederationItemCache.TryParsePath"/>).
+        /// </summary>
+        public static bool TryParseFederationPath(
+            string federationPath,
+            out string mappingName,
+            out string? providerName,
+            out string? providerId,
+            out string? rawServerId,
+            out Guid? rawRemoteItemId)
+            => FederationItemCache.TryParsePath(federationPath, out mappingName, out providerName, out providerId, out rawServerId, out rawRemoteItemId);
 
         /// <summary>
-     /// Gets a remote server client by server ID.
+        /// Legacy 2-component parser kept for migration diagnostics only.
         /// </summary>
-/// <param name="serverId">The server ID.</param>
-        /// <returns>The client, or null if not found.</returns>
-        public RemoteServerClient? GetClient(string serverId)
-      {
-     _clients.TryGetValue(serverId, out var client);
-    return client;
-      }
-
-        /// <summary>
-        /// Parses a federation path into server ID and item ID.
-        /// </summary>
-        /// <param name="federationPath">The federation path.</param>
-      /// <param name="serverId">Output server ID.</param>
-    /// <param name="itemId">Output item ID.</param>
-        /// <returns>True if parsing succeeded.</returns>
-        public static bool TryParseFederationPath(string federationPath, out string serverId, out string itemId)
+        public static bool TryParseLegacyFederationPath(string federationPath, out string serverId, out string itemId)
         {
-          serverId = string.Empty;
-    itemId = string.Empty;
-
-    if (string.IsNullOrEmpty(federationPath))
-            {
-        return false;
-            }
-
-            if (!federationPath.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
+            serverId = string.Empty;
+            itemId = string.Empty;
+            if (string.IsNullOrEmpty(federationPath) || !federationPath.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
 
-     var pathPart = federationPath.Substring("federation://".Length);
-            var parts = pathPart.Split('/', 2);
-
+            var rest = federationPath.Substring("federation://".Length);
+            var parts = rest.Split('/', 2);
             if (parts.Length != 2)
-    {
-  return false;
+            {
+                return false;
             }
 
             serverId = parts[0];
-       itemId = parts[1];
-          return true;
+            itemId = parts[1];
+            return true;
         }
 
-      /// <summary>
-        /// Gets all federated items.
-        /// </summary>
-        /// <returns>Collection of federated items.</returns>
- public IEnumerable<BaseItem> GetAllFederatedItems()
-      {
-        return _federatedItems.Values;
+        private static BaseItem CreateItemShell(string itemType)
+        {
+            return itemType switch
+            {
+                "Movie" => new Movie(),
+                "Series" => new Series(),
+                "Episode" => new Episode(),
+                "Audio" => new Audio(),
+                _ => new Movie()
+            };
         }
 
         /// <inheritdoc />
         public void Dispose()
         {
-    foreach (var client in _clients.Values)
-   {
-                client.Dispose();
-      }
-            _clients.Clear();
-    _federatedItems.Clear();
+            // Cache and client factory are owned by DI.
         }
     }
 }

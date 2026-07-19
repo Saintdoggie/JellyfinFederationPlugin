@@ -5,12 +5,13 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation
 {
     /// <summary>
-    /// Jellyfin Federation Plugin - Aggregate content from multiple Jellyfin servers.
+    /// Jellyfin Federation Plugin - aggregate content from multiple Jellyfin servers.
     /// </summary>
     public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
@@ -19,9 +20,6 @@ namespace Jellyfin.Plugin.Federation
         /// <summary>
         /// Initializes a new instance of the <see cref="Plugin"/> class.
         /// </summary>
-        /// <param name="applicationPaths">Application paths.</param>
-        /// <param name="xmlSerializer">XML serializer.</param>
-        /// <param name="logger">Logger instance.</param>
         public Plugin(
             IApplicationPaths applicationPaths,
             IXmlSerializer xmlSerializer,
@@ -30,7 +28,6 @@ namespace Jellyfin.Plugin.Federation
         {
             _logger = logger;
             Instance = this;
-
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
         }
 
@@ -48,15 +45,17 @@ namespace Jellyfin.Plugin.Federation
         /// </summary>
         public static Plugin? Instance { get; private set; }
 
+        /// <summary>
+        /// Resolves the default cache path inside the plugin data directory.
+        /// </summary>
+        public string GetDefaultCachePath() => System.IO.Path.Combine(DataFolderPath, "federation-cache.json");
+
         /// <inheritdoc />
         public IEnumerable<PluginPageInfo> GetPages()
         {
-            _logger.LogInformation("GetPages() called - Registering redirect page");
-
-            // Return a simple redirect page that points to our API controller
             yield return new PluginPageInfo
             {
-                Name = this.Name,
+                Name = Name,
                 EmbeddedResourcePath = GetType().Namespace + ".Configuration.redirectPage.html"
             };
         }
@@ -64,10 +63,24 @@ namespace Jellyfin.Plugin.Federation
         /// <summary>
         /// Gets the configuration page URL.
         /// </summary>
-        /// <returns>The URL to the configuration page.</returns>
-        public string GetConfigurationPageUrl()
+        public string GetConfigurationPageUrl() => "/Plugins/Federation/ConfigPage";
+
+        /// <summary>
+        /// Registers federation services with the Jellyfin DI container.
+        /// </summary>
+        public static void RegisterServices(IServiceCollection serviceCollection)
         {
-            return "/Plugins/Federation/ConfigPage";
+            serviceCollection.AddSingleton<Services.IRemoteServerClientFactory, Services.RemoteServerClientFactory>();
+            serviceCollection.AddSingleton<Services.FederationItemCache>();
+            serviceCollection.AddSingleton<Services.FederationLibraryManager>();
+            serviceCollection.AddSingleton<Services.FederationSyncService>();
+            serviceCollection.AddSingleton<Services.LibraryProvisioningService>();
+            serviceCollection.AddSingleton<Services.FederationStreamHandler>();
+            serviceCollection.AddSingleton<Resolvers.FederationItemResolver>();
+            serviceCollection.AddSingleton<Providers.FederationImageProvider>();
+            serviceCollection.AddSingleton<Providers.FederationMetadataProvider>();
+            serviceCollection.AddSingleton<Tasks.FederationRefreshTask>();
+            serviceCollection.AddSingleton<FederationEntryPoint>();
         }
     }
 }

@@ -16,6 +16,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Tests\**" />
+    <None Remove="Tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="meta.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

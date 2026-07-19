@@ -4,337 +4,288 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
-using MediaBrowser.Controller.Entities;
-using MediaBrowser.Controller.Entities.Movies;
-using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
-using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
-  /// Service for syncing content from remote federated servers.
+    /// Refreshes the federation cache by walking each mapping and pulling items
+    /// from remote servers. Replaces the old <c>FederationSyncService</c> file writer.
     /// </summary>
     public class FederationSyncService
     {
         private readonly ILogger<FederationSyncService> _logger;
-        private readonly ILibraryManager _libraryManager;
-        private readonly ILoggerFactory _loggerFactory;
+        private readonly FederationLibraryManager _federationManager;
+        private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly FederationItemCache _cache;
 
-   /// <summary>
+        /// <summary>
         /// Initializes a new instance of the <see cref="FederationSyncService"/> class.
- /// </summary>
-        /// <param name="logger">Logger instance.</param>
-        /// <param name="libraryManager">Library manager instance.</param>
-        /// <param name="loggerFactory">Logger factory.</param>
+        /// </summary>
         public FederationSyncService(
-     ILogger<FederationSyncService> logger,
-        ILibraryManager libraryManager,
-     ILoggerFactory loggerFactory)
+            ILogger<FederationSyncService> logger,
+            FederationLibraryManager federationManager,
+            IRemoteServerClientFactory clientFactory,
+            FederationItemCache cache)
         {
-        _logger = logger;
-        _libraryManager = libraryManager;
-    _loggerFactory = loggerFactory;
+            _logger = logger;
+            _federationManager = federationManager;
+            _clientFactory = clientFactory;
+            _cache = cache;
         }
 
         /// <summary>
-      /// Syncs all enabled mappings from the configuration.
+        /// Refreshes all mappings from all configured remote servers. Never throws:
+        /// a failed server leaves the existing cache intact.
         /// </summary>
-  /// <param name="cancellationToken">Cancellation token.</param>
-      /// <returns>Sync result.</returns>
-   public async Task<SyncResult> SyncAllAsync(CancellationToken cancellationToken = default)
-      {
-       try
-     {
-   _logger.LogInformation("[Federation] Starting sync of all libraries");
-
-  // Generate operation ID for progress tracking
-      var operationId = Guid.NewGuid().ToString();
-
-    // Use the file-based service to create .strm and .nfo files
-    var fileService = new FederationFileService(
-         _loggerFactory.CreateLogger<FederationFileService>(),
-   _libraryManager,
-   _loggerFactory);
-
-      SyncProgressTracker.Start(operationId, 100); // Start with estimate, will update
-            SyncProgressTracker.Update(operationId, 0, "Starting sync...");
-
-  var fileCount = await fileService.CreateFederationFilesAsync(operationId, cancellationToken);
-  var basePath = fileService.GetFederationBasePath();
-
-_logger.LogInformation("[Federation] Created {Count} .strm files at {Path}", fileCount, basePath);
-
-       SyncProgressTracker.Complete(operationId, true, $"Synced {fileCount} items");
-
-  // For now, we'll skip automatic library creation and guide user
-    // TODO: Inject IServerConfigurationManager and use FederationLibraryCreationService
-  
-       var message = $"Created {fileCount} .strm files at {basePath}.\n\n" +
-     $"To view content:\n" +
-    $"1. Go to Dashboard → Libraries → Add Media Library\n" +
-    $"2. Select content type (Movies/TV Shows)\n" +
-      $"3. Add folder: {basePath}/[Mapping Name]\n" +
-    $"4. Save and wait for scan to complete\n\n" +
-          $"Or use the 'Create Libraries' button to do this automatically.\n\n" +
-        $"Progress ID: {operationId}";
-
-return new SyncResult
-    {
-     Success = true,
-    ItemCount = fileCount,
-    Message = message,
-  OperationId = operationId
-          };
-  }
-      catch (Exception ex)
-   {
-    _logger.LogError(ex, "[Federation] Error creating federation files");
-       return new SyncResult { Success = false, Message = $"Error: {ex.Message}" };
- }
-   }
-
-        /// <summary>
-        /// Syncs a specific server by its ID.
-        /// </summary>
-      /// <param name="serverId">Server ID.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-        /// <returns>Sync result.</returns>
-        public async Task<SyncResult> SyncServerAsync(string serverId, CancellationToken cancellationToken = default)
-    {
-     _logger.LogInformation("[Federation] Syncing server: {ServerId}", serverId);
-
-  var config = Plugin.Instance?.Configuration;
-    if (config == null)
-{
-      return new SyncResult { Success = false, Message = "Plugin not initialized" };
-    }
-
-     var server = config.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
- if (server == null)
-  {
-   return new SyncResult { Success = false, Message = "Server not found" };
-  }
-
- // Find all mappings that use this server
-          var relevantMappings = config.LibraryMappings?
-            .Where(m => m.Enabled && m.RemoteLibrarySources?.Any(s => s.ServerId == serverId) == true)
-       .ToList();
-
-if (relevantMappings == null || relevantMappings.Count == 0)
- {
-        return new SyncResult { Success = false, Message = "No mappings use this server" };
-         }
-
-   _logger.LogInformation("[Federation] Found {Count} mappings using server {ServerName}", 
- relevantMappings.Count, server.Name);
-
-            // Use the file-based service to create .strm and .nfo files
-  var fileService = new FederationFileService(
-         _loggerFactory.CreateLogger<FederationFileService>(),
-       _libraryManager,
-     _loggerFactory);
-
-    try
-   {
-     var fileCount = await fileService.CreateFederationFilesAsync(null, cancellationToken);
-  var basePath = fileService.GetFederationBasePath();
-
-    _logger.LogInformation("[Federation] Created {Count} .strm files for server {ServerName}", 
-        fileCount, server.Name);
-
-    return new SyncResult
-     {
-     Success = true,
-             ItemCount = fileCount,
-  Message = $"Synced {fileCount} items from server"
-   };
- }
- catch (Exception ex)
-   {
-      _logger.LogError(ex, "[Federation] Error syncing server {ServerId}", serverId);
-      return new SyncResult { Success = false, Message = $"Error: {ex.Message}" };
-  }
-        }
-
-    /// <summary>
-   /// Syncs a single mapping.
-        /// </summary>
-        private async Task<SyncResult> SyncMappingAsync(
-  LibraryMapping mapping,
-         PluginConfiguration config,
-            CancellationToken cancellationToken)
-  {
-            _logger.LogInformation("[Federation] Processing mapping: {Name} with {Count} sources",
-       mapping.LocalLibraryName,
-          mapping.RemoteLibrarySources?.Count ?? 0);
-
-        if (mapping.RemoteLibrarySources == null || mapping.RemoteLibrarySources.Count == 0)
-    {
-       _logger.LogWarning("[Federation] Mapping {Name} has no remote sources", mapping.LocalLibraryName);
-  return new SyncResult { Success = false, Message = "No remote sources configured" };
-          }
-
-            // Get or create the virtual library folder
-            var virtualFolder = await GetOrCreateVirtualFolderAsync(mapping);
-            if (virtualFolder == null)
+        public async Task<SyncResult> SyncAllAsync(CancellationToken cancellationToken = default)
         {
-    return new SyncResult { Success = false, Message = "Failed to create virtual folder" };
-     }
+            var operationId = Guid.NewGuid().ToString();
+            SyncProgressTracker.Start(operationId, 100);
+            SyncProgressTracker.Update(operationId, 0, "Starting refresh...");
 
-            int totalItems = 0;
-
-     // Sync from each remote source
-        foreach (var source in mapping.RemoteLibrarySources)
+            try
             {
-                try
-           {
-           var server = config.RemoteServers?.FirstOrDefault(s => s.Id == source.ServerId);
-  if (server == null || !server.Enabled)
-           {
-   _logger.LogWarning("[Federation] Server {ServerId} not found or disabled", source.ServerId);
-       continue;
-  }
-
-      _logger.LogInformation("[Federation] Syncing from {ServerName} → {LibraryName}",
-            source.ServerName, source.RemoteLibraryName);
-
-  using var client = new RemoteServerClient(server, _loggerFactory.CreateLogger<RemoteServerClient>());
-
-               // Get items from remote library
-     var items = await client.GetItemsAsync(
-     userId: server.UserId,
-  mediaType: mapping.MediaType,
-        parentId: source.RemoteLibraryId,
- limit: 100, // Start with first 100 items
-      cancellationToken: cancellationToken);
-
-      _logger.LogInformation("[Federation] Retrieved {Count} items from {ServerName}", 
-              items.Count, source.ServerName);
-
-       // Create federated items
-          foreach (var remoteItem in items)
-            {
-          try
-   {
-             await CreateFederatedItemAsync(remoteItem, server, virtualFolder, cancellationToken);
-           totalItems++;
-       }
-      catch (Exception ex)
-     {
-     _logger.LogError(ex, "[Federation] Error creating federated item: {ItemName}", remoteItem.Name);
-      }
-            }
+                var config = Plugin.Instance?.Configuration;
+                if (config == null)
+                {
+                    return Failed("Plugin not initialized", operationId);
                 }
-    catch (Exception ex)
-            {
-          _logger.LogError(ex, "[Federation] Error syncing from source: {SourceName}", source.RemoteLibraryName);
-   }
+
+                var mappings = config.LibraryMappings?.Where(m => m.Enabled).ToList() ?? new List<LibraryMapping>();
+                if (mappings.Count == 0)
+                {
+                    SyncProgressTracker.Complete(operationId, true, "No mappings configured");
+                    return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
+                }
+
+                int totalItems = 0;
+                for (int i = 0; i < mappings.Count; i++)
+                {
+                    var mapping = mappings[i];
+                    cancellationToken.ThrowIfCancellationRequested();
+                    SyncProgressTracker.Update(operationId, totalItems, mappings.Count, $"Processing mapping {i + 1}/{mappings.Count}: {mapping.LocalLibraryName}");
+                    totalItems += await RefreshMappingAsync(mapping, config, cancellationToken).ConfigureAwait(false);
+                }
+
+                await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
+                SyncProgressTracker.Complete(operationId, true, $"Refreshed {totalItems} items");
+                return new SyncResult
+                {
+                    Success = true,
+                    ItemCount = totalItems,
+                    Message = $"Refreshed {totalItems} items across {mappings.Count} mapping(s)",
+                    OperationId = operationId
+                };
             }
-
-            _logger.LogInformation("[Federation] Sync complete for {Name}: {Count} items", 
-         mapping.LocalLibraryName, totalItems);
-
-            return new SyncResult
+            catch (OperationCanceledException)
             {
- Success = true,
-           ItemCount = totalItems,
-    Message = $"Synced {totalItems} items"
-   };
+                SyncProgressTracker.Complete(operationId, false, "Cancelled");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error during refresh");
+                SyncProgressTracker.Complete(operationId, false, ex.Message);
+                return Failed(ex.Message, operationId);
+            }
         }
-
-    /// <summary>
-        /// Gets or creates a virtual folder for a mapping.
-  /// </summary>
-    private async Task<Folder?> GetOrCreateVirtualFolderAsync(LibraryMapping mapping)
-    {
-   _logger.LogInformation("[Federation] Creating placeholder folder for: {Name}", mapping.LocalLibraryName);
-
-   // Note: With file-based approach, we don't actually create virtual folders
-   // We create .strm files that Jellyfin scans as a regular library
-   // This method creates a placeholder folder object that's not registered with Jellyfin
-
-var folder = new Folder
-   {
-  Name = mapping.LocalLibraryName,
-   DateCreated = DateTime.UtcNow,
-     DateModified = DateTime.UtcNow
-            };
-
-   _logger.LogInformation("[Federation] Placeholder folder created (not registered with Jellyfin)");
-    return folder;
-    }
 
         /// <summary>
-        /// Creates a federated item (placeholder) that points to a remote item.
+        /// Refreshes a specific server by its ID (refreshes all mappings that use it).
         /// </summary>
- private async Task<BaseItem?> CreateFederatedItemAsync(
-       BaseItemDto remoteItem,
-     RemoteServer server,
-    Folder parentFolder,
-CancellationToken cancellationToken)
-{
-    BaseItem localItem;
-
-   // Create appropriate item type based on remote item
-  if (remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Movie)
-{
-     localItem = new Movie
-       {
-Name = remoteItem.Name,
-   Overview = remoteItem.Overview,
-       CommunityRating = remoteItem.CommunityRating,
-   OfficialRating = remoteItem.OfficialRating,
-      PremiereDate = remoteItem.PremiereDate,
-   ProductionYear = remoteItem.ProductionYear,
-   RunTimeTicks = remoteItem.RunTimeTicks
-      };
- }
-  else if (remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Series)
-  {
-     localItem = new Series
+        public async Task<SyncResult> SyncServerAsync(string serverId, CancellationToken cancellationToken = default)
         {
-     Name = remoteItem.Name,
-           Overview = remoteItem.Overview,
-      CommunityRating = remoteItem.CommunityRating,
-        OfficialRating = remoteItem.OfficialRating,
-   PremiereDate = remoteItem.PremiereDate,
-  ProductionYear = remoteItem.ProductionYear
-    };
-    }
-   else
-   {
-   // For other types, use Movie as a generic placeholder
-     localItem = new Movie
-{
-     Name = remoteItem.Name,
-           Overview = remoteItem.Overview
-      };
+            try
+            {
+                var config = Plugin.Instance?.Configuration;
+                var server = config?.RemoteServers?.Find(s => s.Id == serverId);
+                if (server == null)
+                {
+                    return Failed("Server not found");
+                }
+
+                var mappings = config!.LibraryMappings?
+                    .Where(m => m.Enabled && (m.RemoteLibrarySources?.Any(s => s.ServerId == serverId) == true || m.RemoteServerIds.Contains(serverId)))
+                    .ToList();
+
+                if (mappings == null || mappings.Count == 0)
+                {
+                    return Failed("No mappings use this server");
+                }
+
+                int total = 0;
+                foreach (var mapping in mappings)
+                {
+                    total += await RefreshMappingAsync(mapping, config!, cancellationToken, onlyServerId: serverId).ConfigureAwait(false);
+                }
+
+                await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
+                return new SyncResult { Success = true, ItemCount = total, Message = $"Refreshed {total} items from {server.Name}" };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error syncing server {ServerId}", serverId);
+                return Failed(ex.Message);
+            }
         }
 
-   // Set common properties
-     localItem.Id = Guid.NewGuid();
-        localItem.DateCreated = DateTime.UtcNow;
-  localItem.DateModified = DateTime.UtcNow;
+        private async Task<int> RefreshMappingAsync(
+            LibraryMapping mapping,
+            PluginConfiguration config,
+            CancellationToken cancellationToken,
+            string? onlyServerId = null)
+        {
+            _logger.LogInformation("[Federation] Refreshing mapping {Name}", mapping.LocalLibraryName);
+            _cache.ClearMapping(mapping.LocalLibraryName);
 
-     // Store federation metadata using ProviderIds dictionary
-    if (localItem.ProviderIds == null)
-   {
-     localItem.ProviderIds = new Dictionary<string, string>();
-   }
-       localItem.ProviderIds["FederationSource"] = server.Id;
-         localItem.ProviderIds["FederationRemoteId"] = remoteItem.Id.ToString();
-          localItem.ProviderIds["FederationServerUrl"] = server.Url;
+            int total = 0;
+            foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+            {
+                if (onlyServerId != null && source.ServerId != onlyServerId)
+                {
+                    continue;
+                }
 
-      // TODO: Add the item to the library manager
-  // _libraryManager.CreateItem(localItem, parentFolder);
+                var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
+                if (server == null || !server.Enabled)
+                {
+                    _logger.LogWarning("[Federation] Skipping disabled/missing server {ServerId}", source.ServerId);
+                    continue;
+                }
 
-      _logger.LogDebug("[Federation] Created federated item: {Name} (Remote: {RemoteId})", 
-    localItem.Name, remoteItem.Id);
+                try
+                {
+                    total += await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
+                }
+            }
 
- return localItem;
-   }
+            return total;
+        }
+
+        private async Task<int> RefreshSourceAsync(
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            CancellationToken cancellationToken)
+        {
+            var client = _clientFactory.GetClient(server);
+            if (client == null)
+            {
+                return 0;
+            }
+
+            int total = 0;
+            int pageSize = 200;
+            int startIndex = 0;
+            int pageNumber = 1;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var page = await client.GetItemsAsync(
+                    userId: server.UserId,
+                    mediaType: mapping.MediaType,
+                    parentId: source.RemoteLibraryId,
+                    startIndex: startIndex,
+                    limit: pageSize,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                if (page == null || page.Count == 0)
+                {
+                    break;
+                }
+
+                foreach (var remoteItem in page)
+                {
+                    try
+                    {
+                        UpsertRemoteItem(mapping, remoteItem, server, config);
+                        total++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Failed to upsert item {Name}", remoteItem.Name);
+                    }
+                }
+
+                if (page.Count < pageSize)
+                {
+                    break;
+                }
+
+                startIndex += pageSize;
+                pageNumber++;
+                if (pageNumber > 1000)
+                {
+                    _logger.LogWarning("[Federation] Safety cap reached at 1000 pages for {Source}", source.RemoteLibraryName);
+                    break;
+                }
+            }
+
+            _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
+            return total;
+        }
+
+        private void UpsertRemoteItem(
+            LibraryMapping mapping,
+            MediaBrowser.Model.Dto.BaseItemDto remoteItem,
+            RemoteServer server,
+            PluginConfiguration config)
+        {
+            var itemType = remoteItem.Type.ToString();
+            var providerIds = remoteItem.ProviderIds;
+            var dedupKeys = config.EnableDedup ? (config.DedupProviderIds ?? new List<string>()) : new List<string>();
+
+            string? matchedProvider = null;
+            string? matchedId = null;
+            if (providerIds != null && dedupKeys.Count > 0)
+            {
+                foreach (var key in dedupKeys)
+                {
+                    if (providerIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
+                    {
+                        matchedProvider = key;
+                        matchedId = val;
+                        break;
+                    }
+                }
+            }
+
+            if (matchedProvider != null && matchedId != null)
+            {
+                _cache.UpsertByProviderId(
+                    mappingName: mapping.LocalLibraryName,
+                    providerName: matchedProvider,
+                    providerId: matchedId,
+                    remoteItem: remoteItem,
+                    serverId: server.Id,
+                    remoteItemId: remoteItem.Id,
+                    serverPriority: server.Priority,
+                    itemType: itemType);
+            }
+            else
+            {
+                _cache.UpsertRaw(
+                    mappingName: mapping.LocalLibraryName,
+                    serverId: server.Id,
+                    remoteItemId: remoteItem.Id,
+                    remoteItem: remoteItem,
+                    serverPriority: server.Priority,
+                    itemType: itemType);
+            }
+        }
+
+        private static SyncResult Failed(string message, string? operationId = null)
+        {
+            return new SyncResult { Success = false, Message = message, OperationId = operationId };
+        }
     }
 
     /// <summary>
@@ -342,24 +293,24 @@ Name = remoteItem.Name,
     /// </summary>
     public class SyncResult
     {
-  /// <summary>
+        /// <summary>
         /// Gets or sets a value indicating whether the sync was successful.
         /// </summary>
         public bool Success { get; set; }
 
-      /// <summary>
-     /// Gets or sets the number of items synced.
+        /// <summary>
+        /// Gets or sets the number of items synced.
         /// </summary>
-public int ItemCount { get; set; }
+        public int ItemCount { get; set; }
 
         /// <summary>
         /// Gets or sets a message describing the result.
-  /// </summary>
+        /// </summary>
         public string Message { get; set; } = string.Empty;
-  
+
         /// <summary>
         /// Gets or sets the operation ID for progress tracking.
-     /// </summary>
-  public string? OperationId { get; set; }
+        /// </summary>
+        public string? OperationId { get; set; }
     }
 }
