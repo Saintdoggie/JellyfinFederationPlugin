@@ -158,6 +158,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// live but no top-level library is created.
         /// </summary>
         public bool AutoProvision { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this mapping is managed by the
+        /// simplified "Choose what to share" picker on the config page. Auto-managed
+        /// mappings are rebuilt whenever the picker selection is saved; custom
+        /// (hand-made) mappings are left untouched.
+        /// </summary>
+        public bool AutoManaged { get; set; } = false;
     }
 
     /// <summary>
