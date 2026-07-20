@@ -104,8 +104,7 @@ namespace Jellyfin.Plugin.Federation.Tasks
                 new TaskTriggerInfo
                 {
                     Type = TaskTriggerInfoType.IntervalTrigger,
-                    IntervalTicks = TimeSpan.FromHours(intervalHours).Ticks,
-                    MaxRuntimeTicks = TimeSpan.FromMinutes(30).Ticks
+                    IntervalTicks = TimeSpan.FromHours(intervalHours).Ticks
                 }
             };
         }

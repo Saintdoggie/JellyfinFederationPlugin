@@ -95,7 +95,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (existing != null)
             {
-                _logger.LogDebug("[Federation] Library {Name} already provisioned", mapping.LocalLibraryName);
+                if (!IsFederationFolder(existing))
+                {
+                    _logger.LogWarning(
+                        "[Federation] A non-federation library named {Name} already exists; not touching it. Rename the mapping or the library.",
+                        mapping.LocalLibraryName);
+                }
+                else
+                {
+                    _logger.LogDebug("[Federation] Library {Name} already provisioned", mapping.LocalLibraryName);
+                }
+
                 return;
             }
 
@@ -130,8 +140,9 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var name in names)
             {
                 var vf = virtualFolders.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
-                if (vf == null)
+                if (vf == null || !IsFederationFolder(vf))
                 {
+                    // Never remove libraries the plugin did not create.
                     continue;
                 }
 
@@ -149,7 +160,20 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task RemoveLibraryAsync(string name)
         {
+            var vf = _libraryManager.GetVirtualFolders()?.FirstOrDefault(v =>
+                string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (vf == null || !IsFederationFolder(vf))
+            {
+                return;
+            }
+
             await _libraryManager.RemoveVirtualFolder(name, refreshLibrary: true).ConfigureAwait(false);
+        }
+
+        private static bool IsFederationFolder(VirtualFolderInfo vf)
+        {
+            return vf.Locations != null
+                && vf.Locations.Any(l => l.StartsWith("federation://", StringComparison.OrdinalIgnoreCase));
         }
 
         private static CollectionTypeOptions? GetCollectionType(string mediaType)

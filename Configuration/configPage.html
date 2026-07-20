@@ -1,382 +1,608 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Jellyfin Federation Configuration</title>
-    <style>
-        body { font-family: system-ui, -apple-system, sans-serif; padding: 20px; background: #101010; color: #fff; }
-        .error { color: #f44; padding: 15px; background: rgba(255,68,68,0.1); border-radius: 6px; margin: 20px 0; }
-        .section { margin: 30px 0; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; }
-        input, select { width: 100%; padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; box-sizing: border-box; }
-        button { padding: 10px 20px; margin: 10px 5px 10px 0; background: #00a4dc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #0288bb; }
-        button.remove { background: #c44; }
-        button.remove:hover { background: #a22; }
-        button.success { background: #52b54b; }
-        h2, h3 { margin-top: 0; }
-        label { display: block; margin: 10px 0 5px; opacity: 0.8; font-size: 0.9em; }
-        .warning { padding: 10px; background: rgba(255,153,0,0.15); border-left: 3px solid #f90; border-radius: 4px; margin: 15px 0; font-size: 0.9em; }
-        .diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; }
-        .diagnostic div { padding: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; }
-        .diagnostic strong { display: block; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
-        code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-    </style>
-</head>
-<body>
-    <h1>Jellyfin Federation Configuration</h1>
-    <div id="errorContainer"></div>
-    <div id="statusContainer" style="padding:10px; background:rgba(82,181,75,0.2); border-radius:6px; margin:20px 0;"></div>
+<div id="federationConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
+    <div data-role="content">
+        <div class="content-primary">
+            <style>
+                #federationConfigPage h1 { font-size: 1.6em; }
+                #federationConfigPage h2, #federationConfigPage h3 { margin-top: 0; }
+                #federationConfigPage label { display: block; margin: 10px 0 5px; opacity: 0.8; font-size: 0.9em; }
+                #federationConfigPage input[type="text"],
+                #federationConfigPage input[type="password"],
+                #federationConfigPage input[type="number"],
+                #federationConfigPage select { width: 100%; padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: inherit; border-radius: 4px; box-sizing: border-box; }
+                #federationConfigPage input[type="checkbox"] { width: auto; margin-right: 6px; }
+                #federationConfigPage button { padding: 10px 20px; margin: 10px 5px 10px 0; background: #00a4dc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+                #federationConfigPage button:hover { background: #0288bb; }
+                #federationConfigPage button.fed-remove { background: #c44; }
+                #federationConfigPage button.fed-remove:hover { background: #a22; }
+                #federationConfigPage button.fed-success { background: #52b54b; }
+                #federationConfigPage .fed-section { margin: 30px 0; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; }
+                #federationConfigPage .fed-subsection { background: rgba(255,255,255,0.05); margin: 15px 0; padding: 15px; border-radius: 8px; }
+                #federationConfigPage .fed-error { color: #f44; padding: 15px; background: rgba(255,68,68,0.1); border-radius: 6px; margin: 20px 0; }
+                #federationConfigPage .fed-status { padding: 10px; background: rgba(82,181,75,0.2); border-radius: 6px; margin: 20px 0; }
+                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; }
+                #federationConfigPage .fed-diagnostic div { padding: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; }
+                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
+                #federationConfigPage .fed-hint { font-size: 0.85em; opacity: 0.7; margin: 4px 0 0; }
+                #federationConfigPage .fed-liblist { max-height: 300px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 10px; }
+                #federationConfigPage .fed-selected { margin-top: 10px; padding: 10px; background: rgba(82,181,75,0.1); border-radius: 4px; }
+                #federationConfigPage .fed-muted { opacity: 0.6; }
+                #federationConfigPage code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+            </style>
 
-    <div class="section">
-        <h2>Diagnostics</h2>
-        <div id="diagnostics" class="diagnostic">
-            <div><strong>Loading...</strong></div>
-        </div>
-        <div style="margin-top:15px;">
-            <button type="button" id="btnRefreshCache" class="success">Refresh Cache Now</button>
-            <button type="button" id="btnProvision">Provision Libraries</button>
-            <button type="button" id="btnTestAll">Test All Servers</button>
-            <button type="button" id="btnRefreshDiag">Refresh Diagnostics</button>
+            <h1>Jellyfin Federation</h1>
+            <div id="fedErrorContainer"></div>
+            <div id="fedStatusContainer" class="fed-status">Loading…</div>
+
+            <div class="fed-section">
+                <h2>Diagnostics</h2>
+                <div id="fedDiagnostics" class="fed-diagnostic">
+                    <div><strong>Loading…</strong></div>
+                </div>
+                <div>
+                    <button type="button" id="fedBtnRefreshCache" class="fed-success" data-fed-action="refresh-cache">Refresh Cache Now</button>
+                    <button type="button" id="fedBtnProvision" data-fed-action="provision">Provision Libraries</button>
+                    <button type="button" id="fedBtnTestAll" data-fed-action="test-all">Test All Servers</button>
+                    <button type="button" id="fedBtnRefreshDiag" data-fed-action="refresh-diag">Refresh Diagnostics</button>
+                </div>
+            </div>
+
+            <form id="fedConfigForm">
+                <div class="fed-section">
+                    <h2>General</h2>
+                    <label for="fedTxtServerUrl">Local Server URL (required for Proxy streaming mode):</label>
+                    <input type="text" id="fedTxtServerUrl" placeholder="http://your-jellyfin:8096" />
+                    <p class="fed-hint" id="fedRequestUrlHint" style="display:none;"></p>
+                    <label for="fedTxtCachePath">Cache Path (blank = plugin data dir):</label>
+                    <input type="text" id="fedTxtCachePath" placeholder="Default" />
+                    <label><input type="checkbox" id="fedChkAutoProvision" /> Auto-provision libraries</label>
+                    <label><input type="checkbox" id="fedChkDedup" /> Enable deduplication by provider ID</label>
+                    <label for="fedTxtDedupIds">Dedup Provider IDs (comma-separated):</label>
+                    <input type="text" id="fedTxtDedupIds" placeholder="imdb,tmdb,tvdb" />
+                    <label for="fedTxtRefreshHours">Refresh interval (hours):</label>
+                    <input type="number" id="fedTxtRefreshHours" min="1" max="168" />
+                </div>
+
+                <div class="fed-section">
+                    <h2>Remote Servers</h2>
+                    <div id="fedServerList"></div>
+                    <button type="button" id="fedBtnAddServer" data-fed-action="add-server">Add Server</button>
+                </div>
+
+                <div class="fed-section">
+                    <h2>Library Mappings</h2>
+                    <div id="fedMappingList"></div>
+                    <button type="button" id="fedBtnAddMapping" data-fed-action="add-mapping">Add Mapping</button>
+                </div>
+
+                <div class="fed-section">
+                    <button type="submit" id="fedBtnSave">Save Configuration</button>
+                </div>
+            </form>
         </div>
     </div>
+</div>
 
-    <form id="configForm">
-        <div class="section">
-            <h2>General</h2>
-            <label>Local Server URL (auto-detected, overridable):</label>
-            <input type="text" id="txtServerUrl" placeholder="http://your-jellyfin:8096" />
-            <label>Cache Path (blank = plugin data dir):</label>
-            <input type="text" id="txtCachePath" placeholder="Default" />
-            <label><input type="checkbox" id="chkAutoProvision" /> Auto-provision libraries</label>
-            <label><input type="checkbox" id="chkDedup" /> Enable deduplication by provider ID</label>
-            <label>Dedup Provider IDs (comma-separated):</label>
-            <input type="text" id="txtDedupIds" placeholder="imdb,tmdb,tvdb" />
-            <label>Refresh interval (hours):</label>
-            <input type="number" id="txtRefreshHours" min="1" max="168" />
-        </div>
+<script>
+(function () {
+    'use strict';
 
-        <div class="section">
-            <h2>Remote Servers</h2>
-            <div id="serverList"></div>
-            <button type="button" id="btnAddServer">Add Server</button>
-        </div>
+    var apiBase = window.location.origin;
+    var currentConfig = { RemoteServers: [], LibraryMappings: [] };
+    var pageEl = null;
 
-        <div class="section">
-            <h2>Library Mappings</h2>
-            <div id="mappingList"></div>
-            <button type="button" id="btnAddMapping">Add Mapping</button>
-        </div>
-
-        <div class="section">
-            <button type="submit" id="btnSave">Save Configuration</button>
-        </div>
-    </form>
-
-    <script>
-    (function() {
-        'use strict';
-
-        var apiBase = window.location.origin;
-        var currentConfig = { RemoteServers: [], LibraryMappings: [] };
-
-        function setStatus(msg, isError) {
-            var el = document.getElementById('statusContainer');
-            el.textContent = msg;
-            el.style.background = isError ? 'rgba(255,68,68,0.2)' : 'rgba(82,181,75,0.2)';
-        }
-
-        function showError(msg) {
-            document.getElementById('errorContainer').innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
-        }
-
-        function escapeHtml(s) {
-            if (!s) return '';
-            var d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        function generateGuid() {
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-                var r = Math.random() * 16 | 0;
-                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-            });
-        }
-
-        function renderServers() {
-            var c = document.getElementById('serverList');
-            var s = currentConfig.RemoteServers || [];
-            if (s.length === 0) { c.innerHTML = '<p style="opacity:0.6;">No servers configured.</p>'; return; }
-            var html = '';
-            s.forEach(function(server, i) {
-                html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
-                html += '<h3>Server ' + (i + 1) + '</h3>';
-                html += '<label>Name:</label><input type="text" class="srvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" />';
-                html += '<label>URL:</label><input type="text" class="srvUrl" data-i="' + i + '" value="' + escapeHtml(server.Url) + '" placeholder="http://server:8096" />';
-                html += '<label>API Key:</label><input type="password" class="srvKey" data-i="' + i + '" value="' + escapeHtml(server.ApiKey) + '" />';
-                html += '<label>User ID (blank = first user):</label><input type="text" class="srvUser" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" />';
-                html += '<label>Streaming Mode:</label><select class="srvMode" data-i="' + i + '">';
-                html += '<option value="Direct"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (302 redirect)</option>';
-                html += '<option value="Proxy"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key)</option>';
-                html += '</select>';
-                html += '<label>Priority (lower = preferred source):</label><input type="number" class="srvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" />';
-                html += '<label><input type="checkbox" class="srvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Require api_key for image fetches</label>';
-                html += '<label><input type="checkbox" class="srvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
-                html += '<div style="margin-top:10px;">';
-                html += '<button type="button" class="btnTest" data-i="' + i + '">Test</button>';
-                html += '<button type="button" class="remove btnRemoveServer" data-i="' + i + '">Remove</button>';
-                html += '</div>';
-                html += '<div id="srvStatus' + i + '" style="margin-top:10px;display:none;"></div>';
-                html += '</div>';
-            });
-            c.innerHTML = html;
-        }
-
-        function renderMappings() {
-            var c = document.getElementById('mappingList');
-            var m = currentConfig.LibraryMappings || [];
-            if (m.length === 0) { c.innerHTML = '<p style="opacity:0.6;">No mappings configured.</p>'; return; }
-            var html = '';
-            m.forEach(function(mp, i) {
-                html += '<div class="section" style="background:rgba(255,255,255,0.05);margin:15px 0;">';
-                html += '<h3>Mapping ' + (i + 1) + '</h3>';
-                html += '<label>Library Name (shown in Jellyfin):</label>';
-                html += '<input type="text" class="mapName" data-i="' + i + '" value="' + escapeHtml(mp.LocalLibraryName) + '" />';
-                html += '<label>Media Type:</label><select class="mapType" data-i="' + i + '">';
-                ['Movie','Series','Season','Episode','MusicAlbum','Audio','MusicVideo','Book','Photo','PhotoAlbum','Video','Playlist','BoxSet'].forEach(function(t) {
-                    html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
-                });
-                html += '</select>';
-                html += '<label><input type="checkbox" class="mapAuto" data-i="' + i + '" ' + (mp.AutoProvision !== false ? 'checked' : '') + ' /> Auto-provision library</label>';
-                html += '<label><input type="checkbox" class="mapEnabled" data-i="' + i + '" ' + (mp.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
-                html += '<div style="margin-top:10px;"><button type="button" class="btnBrowse" data-i="' + i + '">Browse Remote Libraries</button></div>';
-                html += '<div id="mapLibs' + i + '" style="margin-top:10px;"></div>';
-                if (mp.RemoteLibrarySources && mp.RemoteLibrarySources.length > 0) {
-                    html += '<div style="margin-top:10px;padding:10px;background:rgba(82,181,75,0.1);border-radius:4px;">';
-                    html += '<strong>Selected (' + mp.RemoteLibrarySources.length + '):</strong><ul style="margin:5px 0;padding-left:20px;">';
-                    mp.RemoteLibrarySources.forEach(function(src) {
-                        html += '<li>' + escapeHtml(src.ServerName) + ' → ' + escapeHtml(src.RemoteLibraryName) + '</li>';
-                    });
-                    html += '</ul></div>';
+    function getToken() {
+        try {
+            if (window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
+                var t = window.ApiClient.accessToken();
+                if (t) {
+                    return t;
                 }
-                html += '<button type="button" class="remove btnRemoveMapping" data-i="' + i + '" style="margin-top:10px;">Remove</button>';
-                html += '</div>';
-            });
-            c.innerHTML = html;
+            }
+        } catch (e) { /* fall through to credentials store */ }
+
+        try {
+            var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+            var servers = creds.Servers || [];
+            var origin = window.location.origin.replace(/\/+$/, '');
+            var i, s;
+            for (i = 0; i < servers.length; i++) {
+                s = servers[i];
+                if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
+                    return s.AccessToken;
+                }
+            }
+            for (i = 0; i < servers.length; i++) {
+                if (servers[i] && servers[i].AccessToken) {
+                    return servers[i].AccessToken;
+                }
+            }
+        } catch (e) { /* no token available */ }
+
+        return null;
+    }
+
+    function fedFetch(path, options) {
+        options = options || {};
+        var headers = {};
+        if (options.headers) {
+            for (var k in options.headers) {
+                if (Object.prototype.hasOwnProperty.call(options.headers, k)) {
+                    headers[k] = options.headers[k];
+                }
+            }
         }
 
-        function collectFormData() {
-            (currentConfig.RemoteServers || []).forEach(function(s, i) {
-                var n = document.querySelector('.srvName[data-i="' + i + '"]');
-                var u = document.querySelector('.srvUrl[data-i="' + i + '"]');
-                var k = document.querySelector('.srvKey[data-i="' + i + '"]');
-                var ui = document.querySelector('.srvUser[data-i="' + i + '"]');
-                var m = document.querySelector('.srvMode[data-i="' + i + '"]');
-                var p = document.querySelector('.srvPri[data-i="' + i + '"]');
-                var ik = document.querySelector('.srvImgKey[data-i="' + i + '"]');
-                var e = document.querySelector('.srvEnabled[data-i="' + i + '"]');
-                if (n) s.Name = n.value;
-                if (u) s.Url = u.value;
-                if (k) s.ApiKey = k.value;
-                if (ui) s.UserId = ui.value;
-                if (m) s.StreamingMode = m.value === 'Proxy' ? 1 : 0;
-                if (p) s.Priority = parseInt(p.value) || 0;
-                if (ik) s.RequireApiKeyForImages = ik.checked;
-                if (e) s.Enabled = e.checked;
-            });
-            (currentConfig.LibraryMappings || []).forEach(function(mp, i) {
-                var n = document.querySelector('.mapName[data-i="' + i + '"]');
-                var t = document.querySelector('.mapType[data-i="' + i + '"]');
-                var a = document.querySelector('.mapAuto[data-i="' + i + '"]');
-                var en = document.querySelector('.mapEnabled[data-i="' + i + '"]');
-                if (n) mp.LocalLibraryName = n.value;
-                if (t) mp.MediaType = t.value;
-                if (a) mp.AutoProvision = a.checked;
-                if (en) mp.Enabled = en.checked;
-            });
-
-            currentConfig.ServerUrl = document.getElementById('txtServerUrl').value;
-            currentConfig.CachePath = document.getElementById('txtCachePath').value;
-            currentConfig.AutoProvisionLibraries = document.getElementById('chkAutoProvision').checked;
-            currentConfig.EnableDedup = document.getElementById('chkDedup').checked;
-            currentConfig.DedupProviderIds = document.getElementById('txtDedupIds').value
-                .split(',').map(function(s){return s.trim();}).filter(Boolean);
-            currentConfig.RefreshIntervalHours = parseInt(document.getElementById('txtRefreshHours').value) || 1;
+        var token = getToken();
+        if (token) {
+            headers['X-Emby-Token'] = token;
         }
 
-        function saveConfiguration() {
-            setStatus('Saving...');
-            collectFormData();
-            fetch(apiBase + '/Plugins/Federation/Configuration', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(currentConfig)
-            })
-            .then(function(r) { return r.ok ? r.json() : r.text().then(function(t){throw new Error(t);}); })
-            .then(function() { setStatus('Configuration saved!'); loadDiagnostics(); })
-            .catch(function(e) { showError('Save failed: ' + e.message); });
+        if (options.body && !headers['Content-Type']) {
+            headers['Content-Type'] = 'application/json';
         }
 
-        function testServer(i) {
-            var s = currentConfig.RemoteServers[i];
-            var st = document.getElementById('srvStatus' + i);
-            st.style.display = 'block';
-            st.style.background = 'rgba(0,164,220,0.2)';
-            st.textContent = 'Testing...';
-            fetch(apiBase + '/Plugins/Federation/TestServer', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(s)
-            })
-            .then(function(r){return r.json();})
-            .then(function(res) {
-                if (res.success) {
-                    st.style.background = 'rgba(82,181,75,0.2)';
-                    st.innerHTML = '<strong>OK</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version);
-                    if (res.serverInfo.suggestedUserId && !s.UserId) {
-                        s.UserId = res.serverInfo.suggestedUserId;
-                        renderServers();
+        options.headers = headers;
+        return fetch(apiBase + path, options).then(function (r) {
+            if (r.status === 401 || r.status === 403) {
+                throw new Error('Not authorized. Open this page from the Jellyfin dashboard while logged in as an administrator.');
+            }
+
+            return r;
+        });
+    }
+
+    function q(selector) {
+        return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
+    }
+
+    function qa(selector) {
+        return (pageEl ? pageEl : document).querySelectorAll(selector);
+    }
+
+    function setStatus(msg, isError) {
+        var el = q('#fedStatusContainer');
+        if (!el) {
+            return;
+        }
+
+        el.textContent = msg;
+        el.style.background = isError ? 'rgba(255,68,68,0.2)' : 'rgba(82,181,75,0.2)';
+    }
+
+    function showError(msg) {
+        var el = q('#fedErrorContainer');
+        if (el) {
+            el.innerHTML = '<div class="fed-error">' + escapeHtml(msg) + '</div>';
+        }
+    }
+
+    function clearError() {
+        var el = q('#fedErrorContainer');
+        if (el) {
+            el.innerHTML = '';
+        }
+    }
+
+    function escapeHtml(s) {
+        if (s === null || s === undefined) {
+            return '';
+        }
+
+        var d = document.createElement('div');
+        d.textContent = String(s);
+        return d.innerHTML;
+    }
+
+    function generateGuid() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    }
+
+    function renderServers() {
+        var c = q('#fedServerList');
+        if (!c) {
+            return;
+        }
+
+        var s = currentConfig.RemoteServers || [];
+        if (s.length === 0) {
+            c.innerHTML = '<p class="fed-muted">No servers configured.</p>';
+            return;
+        }
+
+        var html = '';
+        s.forEach(function (server, i) {
+            var keyPlaceholder = server.HasApiKey ? '•••• (saved — blank keeps current)' : 'API key';
+            html += '<div class="fed-subsection">';
+            html += '<h3>Server ' + (i + 1) + '</h3>';
+            html += '<label>Name:</label><input type="text" class="fedSrvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" />';
+            html += '<label>URL:</label><input type="text" class="fedSrvUrl" data-i="' + i + '" value="' + escapeHtml(server.Url) + '" placeholder="http://server:8096" />';
+            html += '<label>API Key:</label><input type="password" class="fedSrvKey" data-i="' + i + '" value="" placeholder="' + keyPlaceholder + '" autocomplete="new-password" />';
+            html += '<label>User ID (blank = first user):</label><input type="text" class="fedSrvUser" id="fedSrvUser' + i + '" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" />';
+            html += '<label>Streaming Mode:</label><select class="fedSrvMode" data-i="' + i + '">';
+            html += '<option value="Direct"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (remote URL with api_key)</option>';
+            html += '<option value="Proxy"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key)</option>';
+            html += '</select>';
+            html += '<label>Priority (lower = preferred source):</label><input type="number" class="fedSrvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" />';
+            html += '<label><input type="checkbox" class="fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Require api_key for image fetches</label>';
+            html += '<label><input type="checkbox" class="fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+            html += '<div>';
+            html += '<button type="button" data-fed-action="test-server" data-i="' + i + '">Test</button>';
+            html += '<button type="button" class="fed-remove" data-fed-action="remove-server" data-i="' + i + '">Remove</button>';
+            html += '</div>';
+            html += '<div id="fedSrvStatus' + i + '" style="margin-top:10px;display:none;padding:8px;border-radius:4px;"></div>';
+            html += '</div>';
+        });
+        c.innerHTML = html;
+    }
+
+    function renderMappings() {
+        var c = q('#fedMappingList');
+        if (!c) {
+            return;
+        }
+
+        var m = currentConfig.LibraryMappings || [];
+        if (m.length === 0) {
+            c.innerHTML = '<p class="fed-muted">No mappings configured.</p>';
+            return;
+        }
+
+        var html = '';
+        m.forEach(function (mp, i) {
+            html += '<div class="fed-subsection">';
+            html += '<h3>Mapping ' + (i + 1) + '</h3>';
+            html += '<label>Library Name (shown in Jellyfin):</label>';
+            html += '<input type="text" class="fedMapName" data-i="' + i + '" value="' + escapeHtml(mp.LocalLibraryName) + '" />';
+            html += '<label>Media Type:</label><select class="fedMapType" data-i="' + i + '">';
+            ['Movie', 'Series', 'Season', 'Episode', 'MusicAlbum', 'Audio', 'MusicVideo', 'Book', 'Photo', 'PhotoAlbum', 'Video', 'Playlist', 'BoxSet'].forEach(function (t) {
+                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
+            });
+            html += '</select>';
+            html += '<label><input type="checkbox" class="fedMapAuto" data-i="' + i + '" ' + (mp.AutoProvision !== false ? 'checked' : '') + ' /> Auto-provision library</label>';
+            html += '<label><input type="checkbox" class="fedMapEnabled" data-i="' + i + '" ' + (mp.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+            html += '<div><button type="button" data-fed-action="browse" data-i="' + i + '">Browse Remote Libraries</button></div>';
+            html += '<div id="fedMapLibs' + i + '" style="margin-top:10px;"></div>';
+            if (mp.RemoteLibrarySources && mp.RemoteLibrarySources.length > 0) {
+                html += '<div class="fed-selected">';
+                html += '<strong>Selected (' + mp.RemoteLibrarySources.length + '):</strong><ul style="margin:5px 0;padding-left:20px;">';
+                mp.RemoteLibrarySources.forEach(function (src) {
+                    html += '<li>' + escapeHtml(src.ServerName) + ' → ' + escapeHtml(src.RemoteLibraryName) + '</li>';
+                });
+                html += '</ul></div>';
+            }
+
+            html += '<button type="button" class="fed-remove" data-fed-action="remove-mapping" data-i="' + i + '" style="margin-top:10px;">Remove</button>';
+            html += '</div>';
+        });
+        c.innerHTML = html;
+    }
+
+    function collectFormData() {
+        (currentConfig.RemoteServers || []).forEach(function (s, i) {
+            var n = q('.fedSrvName[data-i="' + i + '"]');
+            var u = q('.fedSrvUrl[data-i="' + i + '"]');
+            var k = q('.fedSrvKey[data-i="' + i + '"]');
+            var ui = q('.fedSrvUser[data-i="' + i + '"]');
+            var m = q('.fedSrvMode[data-i="' + i + '"]');
+            var p = q('.fedSrvPri[data-i="' + i + '"]');
+            var ik = q('.fedSrvImgKey[data-i="' + i + '"]');
+            var e = q('.fedSrvEnabled[data-i="' + i + '"]');
+            if (n) { s.Name = n.value; }
+            if (u) { s.Url = u.value; }
+            if (k && k.value) { s.ApiKey = k.value; }
+            if (ui) { s.UserId = ui.value; }
+            if (m) { s.StreamingMode = m.value === 'Proxy' ? 1 : 0; }
+            if (p) { s.Priority = parseInt(p.value, 10) || 0; }
+            if (ik) { s.RequireApiKeyForImages = ik.checked; }
+            if (e) { s.Enabled = e.checked; }
+        });
+        (currentConfig.LibraryMappings || []).forEach(function (mp, i) {
+            var n = q('.fedMapName[data-i="' + i + '"]');
+            var t = q('.fedMapType[data-i="' + i + '"]');
+            var a = q('.fedMapAuto[data-i="' + i + '"]');
+            var en = q('.fedMapEnabled[data-i="' + i + '"]');
+            if (n) { mp.LocalLibraryName = n.value; }
+            if (t) { mp.MediaType = t.value; }
+            if (a) { mp.AutoProvision = a.checked; }
+            if (en) { mp.Enabled = en.checked; }
+        });
+
+        currentConfig.ServerUrl = q('#fedTxtServerUrl').value;
+        currentConfig.CachePath = q('#fedTxtCachePath').value;
+        currentConfig.AutoProvisionLibraries = q('#fedChkAutoProvision').checked;
+        currentConfig.EnableDedup = q('#fedChkDedup').checked;
+        currentConfig.DedupProviderIds = q('#fedTxtDedupIds').value
+            .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        currentConfig.RefreshIntervalHours = parseInt(q('#fedTxtRefreshHours').value, 10) || 1;
+    }
+
+    function saveConfiguration() {
+        clearError();
+        setStatus('Saving…');
+        collectFormData();
+        fedFetch('/Plugins/Federation/Configuration', {
+            method: 'POST',
+            body: JSON.stringify(currentConfig)
+        })
+        .then(function (r) {
+            return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t); });
+        })
+        .then(function () {
+            // Reload so password fields clear and HasApiKey placeholders refresh.
+            return loadConfiguration(true).then(function () {
+                setStatus('Configuration saved!');
+            });
+        })
+        .catch(function (e) { showError('Save failed: ' + e.message); setStatus('Save failed', true); });
+    }
+
+    function testServer(i) {
+        collectFormData();
+        var s = currentConfig.RemoteServers[i];
+        var st = q('#fedSrvStatus' + i);
+        if (!st) {
+            return;
+        }
+
+        st.style.display = 'block';
+        st.style.background = 'rgba(0,164,220,0.2)';
+        st.textContent = 'Testing…';
+        fedFetch('/Plugins/Federation/TestServer', {
+            method: 'POST',
+            body: JSON.stringify(s)
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+            if (res.success) {
+                st.style.background = 'rgba(82,181,75,0.2)';
+                st.innerHTML = '<strong>OK</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version);
+                if (res.serverInfo.suggestedUserId && !s.UserId) {
+                    s.UserId = res.serverInfo.suggestedUserId;
+                    var ui = q('#fedSrvUser' + i);
+                    if (ui) {
+                        ui.value = s.UserId;
                     }
-                } else {
-                    st.style.background = 'rgba(255,68,68,0.2)';
-                    st.textContent = 'Failed: ' + res.message;
                 }
-            })
-            .catch(function(e){st.textContent = 'Error: ' + e.message;});
+            } else {
+                st.style.background = 'rgba(255,68,68,0.2)';
+                st.textContent = 'Failed: ' + res.message;
+            }
+        })
+        .catch(function (e) {
+            st.style.background = 'rgba(255,68,68,0.2)';
+            st.textContent = 'Error: ' + e.message;
+        });
+    }
+
+    function browseLibraries(i) {
+        var c = q('#fedMapLibs' + i);
+        if (!c) {
+            return;
         }
 
-        function browseLibraries(i) {
-            var c = document.getElementById('mapLibs' + i);
-            c.innerHTML = '<p>Loading...</p>';
-            fetch(apiBase + '/Plugins/Federation/GetRemoteLibraries')
-            .then(function(r){return r.json();})
-            .then(function(res) {
-                if (!res.success || !res.servers) { c.innerHTML = '<p style="color:#f90;">No servers available.</p>'; return; }
-                var mp = currentConfig.LibraryMappings[i];
-                if (!mp.RemoteLibrarySources) mp.RemoteLibrarySources = [];
-                var html = '<div style="max-height:300px;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);border-radius:4px;padding:10px;">';
-                res.servers.forEach(function(srv) {
-                    html += '<strong>' + escapeHtml(srv.serverName) + '</strong>';
-                    if (srv.error) { html += '<div style="color:#f44;">' + escapeHtml(srv.error) + '</div>'; }
-                    (srv.libraries || []).forEach(function(lib) {
-                        var checked = mp.RemoteLibrarySources.some(function(x){return x.ServerId===srv.serverId && x.RemoteLibraryId===lib.id;});
-                        html += '<label><input type="checkbox" class="chkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked?'checked':'') + ' /> ' + escapeHtml(lib.name) + ' (' + lib.collectionType + ', ' + (lib.itemCount||0) + ')</label>';
-                    });
-                });
-                html += '</div><button type="button" class="btnApply" data-i="' + i + '" style="margin-top:10px;">Apply</button>';
-                c.innerHTML = html;
-            })
-            .catch(function(e){c.innerHTML = '<p style="color:#f44;">' + escapeHtml(e.message) + '</p>';});
-        }
+        c.innerHTML = '<p>Loading…</p>';
+        fedFetch('/Plugins/Federation/GetRemoteLibraries')
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+            if (!res.success || !res.servers) {
+                c.innerHTML = '<p style="color:#f90;">No servers available.</p>';
+                return;
+            }
 
-        function applyLibraries(i) {
             var mp = currentConfig.LibraryMappings[i];
-            var selected = [];
-            document.querySelectorAll('.chkLib[data-mi="' + i + '"]:checked').forEach(function(cb) {
-                selected.push({
-                    ServerId: cb.getAttribute('data-sid'),
-                    ServerName: cb.getAttribute('data-sname'),
-                    RemoteLibraryId: cb.getAttribute('data-lid'),
-                    RemoteLibraryName: cb.getAttribute('data-lname')
+            if (!mp.RemoteLibrarySources) {
+                mp.RemoteLibrarySources = [];
+            }
+
+            var html = '<div class="fed-liblist">';
+            res.servers.forEach(function (srv) {
+                html += '<strong>' + escapeHtml(srv.serverName) + '</strong>';
+                if (srv.error) {
+                    html += '<div style="color:#f44;">' + escapeHtml(srv.error) + '</div>';
+                }
+
+                (srv.libraries || []).forEach(function (lib) {
+                    var checked = mp.RemoteLibrarySources.some(function (x) { return x.ServerId === srv.serverId && x.RemoteLibraryId === lib.id; });
+                    html += '<label><input type="checkbox" class="fedChkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + ' (' + escapeHtml(lib.collectionType) + ', ' + (lib.itemCount || 0) + ')</label>';
                 });
             });
-            mp.RemoteLibrarySources = selected;
-            renderMappings();
+            html += '</div><button type="button" data-fed-action="apply-libs" data-i="' + i + '" style="margin-top:10px;">Apply</button>';
+            c.innerHTML = html;
+        })
+        .catch(function (e) { c.innerHTML = '<p style="color:#f44;">' + escapeHtml(e.message) + '</p>'; });
+    }
+
+    function applyLibraries(i) {
+        var mp = currentConfig.LibraryMappings[i];
+        var selected = [];
+        var boxes = qa('.fedChkLib[data-mi="' + i + '"]:checked');
+        for (var n = 0; n < boxes.length; n++) {
+            var cb = boxes[n];
+            selected.push({
+                ServerId: cb.getAttribute('data-sid'),
+                ServerName: cb.getAttribute('data-sname'),
+                RemoteLibraryId: cb.getAttribute('data-lid'),
+                RemoteLibraryName: cb.getAttribute('data-lname')
+            });
         }
 
-        function loadDiagnostics() {
-            fetch(apiBase + '/Plugins/Federation/SystemInfo')
-            .then(function(r){return r.json();})
-            .then(function(d) {
-                var el = document.getElementById('diagnostics');
+        mp.RemoteLibrarySources = selected;
+        renderMappings();
+    }
+
+    function loadDiagnostics() {
+        fedFetch('/Plugins/Federation/SystemInfo')
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            var el = q('#fedDiagnostics');
+            if (el) {
                 el.innerHTML =
                     '<div><strong>Local Server URL</strong>' + escapeHtml(d.detectedUrl || 'not set') + '</div>' +
                     '<div><strong>Cache Path</strong>' + escapeHtml(d.cachePath || 'default') + '</div>' +
                     '<div><strong>Cache Entries</strong>' + (d.cacheEntries || 0) + '</div>' +
                     '<div><strong>Last Refresh</strong>' + (d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never') + '</div>' +
                     '<div><strong>Auto-Provision</strong>' + (d.autoProvisionLibraries ? 'Yes' : 'No') + '</div>' +
-                    '<div><strong>Dedup</strong>' + (d.enableDedup ? 'On (' + (d.dedupProviderIds||[]).join(',') + ')' : 'Off') + '</div>' +
+                    '<div><strong>Dedup</strong>' + (d.enableDedup ? 'On (' + (d.dedupProviderIds || []).join(',') + ')' : 'Off') + '</div>' +
                     '<div><strong>Refresh Interval</strong>' + (d.refreshIntervalHours || 1) + 'h</div>';
-            })
-            .catch(function(e){
-                document.getElementById('diagnostics').innerHTML = '<div><strong>Error</strong>' + escapeHtml(e.message) + '</div>';
-            });
-        }
+            }
 
-        function loadConfiguration() {
-            setStatus('Loading...');
-            fetch(apiBase + '/Plugins/Federation/Configuration')
-            .then(function(r){return r.json();})
-            .then(function(c) {
-                currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
-                document.getElementById('txtServerUrl').value = currentConfig.ServerUrl || '';
-                document.getElementById('txtCachePath').value = currentConfig.CachePath || '';
-                document.getElementById('chkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
-                document.getElementById('chkDedup').checked = currentConfig.EnableDedup !== false;
-                document.getElementById('txtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb','tmdb','tvdb']).join(',');
-                document.getElementById('txtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
-                renderServers();
-                renderMappings();
-                attachHandlers();
-                loadDiagnostics();
-                setStatus('Ready');
-            })
-            .catch(function(e){showError('Load failed: ' + e.message);});
-        }
-
-        function attachHandlers() {
-            document.getElementById('btnAddServer').onclick = function() {
-                currentConfig.RemoteServers.push({Id: generateGuid(), Name:'', Url:'', ApiKey:'', UserId:'', Enabled:true, StreamingMode:0, Priority:0});
-                renderServers();
-            };
-            document.getElementById('btnAddMapping').onclick = function() {
-                currentConfig.LibraryMappings.push({LocalLibraryName:'', MediaType:'Movie', RemoteServerIds:[], RemoteLibrarySources:[], Enabled:true, AutoProvision:true});
-                renderMappings();
-            };
-            document.getElementById('btnSave').onclick = function(e){e.preventDefault(); saveConfiguration();};
-            document.getElementById('btnRefreshCache').onclick = function() {
-                setStatus('Refreshing cache...');
-                fetch(apiBase + '/Plugins/Federation/Refresh', {method:'POST'})
-                .then(function(r){return r.json();})
-                .then(function(res){setStatus(res.Message || 'Done'); loadDiagnostics();})
-                .catch(function(e){showError('Refresh failed: ' + e.message);});
-            };
-            document.getElementById('btnProvision').onclick = function() {
-                fetch(apiBase + '/Plugins/Federation/ProvisionLibraries', {method:'POST'})
-                .then(function(r){return r.json();})
-                .then(function(res){setStatus(res.message || 'Provisioned');})
-                .catch(function(e){showError('Provision failed: ' + e.message);});
-            };
-            document.getElementById('btnTestAll').onclick = function() {
-                fetch(apiBase + '/Plugins/Federation/TestAllServers', {method:'POST'})
-                .then(function(r){return r.json();})
-                .then(function(res){setStatus('Tested ' + (res.results||[]).length + ' servers');})
-                .catch(function(e){showError('Test failed: ' + e.message);});
-            };
-            document.getElementById('btnRefreshDiag').onclick = loadDiagnostics;
-
-            document.body.addEventListener('click', function(e) {
-                var t = e.target.closest('.btnRemoveServer,.btnRemoveMapping,.btnTest,.btnBrowse,.btnApply');
-                if (!t) return;
-                e.preventDefault();
-                if (t.classList.contains('btnRemoveServer')) {
-                    currentConfig.RemoteServers.splice(parseInt(t.getAttribute('data-i')),1);
-                    renderServers();
-                } else if (t.classList.contains('btnRemoveMapping')) {
-                    currentConfig.LibraryMappings.splice(parseInt(t.getAttribute('data-i')),1);
-                    renderMappings();
-                } else if (t.classList.contains('btnTest')) {
-                    testServer(parseInt(t.getAttribute('data-i')));
-                } else if (t.classList.contains('btnBrowse')) {
-                    browseLibraries(parseInt(t.getAttribute('data-i')));
-                } else if (t.classList.contains('btnApply')) {
-                    applyLibraries(parseInt(t.getAttribute('data-i')));
+            var hint = q('#fedRequestUrlHint');
+            if (hint) {
+                if (d.requestUrl) {
+                    hint.innerHTML = 'This server answered the current request at <code>' + escapeHtml(d.requestUrl) + '</code>. For Proxy mode, set the URL above to the address your clients use to reach this server.';
+                    hint.style.display = 'block';
+                } else {
+                    hint.style.display = 'none';
                 }
-            });
+            }
+        })
+        .catch(function (e) {
+            var el = q('#fedDiagnostics');
+            if (el) {
+                el.innerHTML = '<div><strong>Error</strong>' + escapeHtml(e.message) + '</div>';
+            }
+        });
+    }
+
+    function loadConfiguration(silent) {
+        if (!silent) {
+            setStatus('Loading…');
         }
 
-        loadConfiguration();
-    })();
-    </script>
-</body>
-</html>
+        clearError();
+        return fedFetch('/Plugins/Federation/Configuration')
+        .then(function (r) { return r.json(); })
+        .then(function (c) {
+            currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
+            if (!currentConfig.RemoteServers) { currentConfig.RemoteServers = []; }
+            if (!currentConfig.LibraryMappings) { currentConfig.LibraryMappings = []; }
+            q('#fedTxtServerUrl').value = currentConfig.ServerUrl || '';
+            q('#fedTxtCachePath').value = currentConfig.CachePath || '';
+            q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
+            q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
+            q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
+            q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
+            renderServers();
+            renderMappings();
+            loadDiagnostics();
+            if (!silent) {
+                setStatus('Ready');
+            }
+        })
+        .catch(function (e) {
+            showError('Load failed: ' + e.message);
+            setStatus('Load failed', true);
+        });
+    }
+
+    function attachHandlers(page) {
+        if (page.dataset.handlersAttached) {
+            return;
+        }
+
+        page.dataset.handlersAttached = '1';
+
+        page.addEventListener('click', function (e) {
+            var t = e.target && e.target.closest ? e.target.closest('[data-fed-action]') : null;
+            if (!t || !page.contains(t)) {
+                return;
+            }
+
+            e.preventDefault();
+            var i = parseInt(t.getAttribute('data-i') || '0', 10);
+            switch (t.getAttribute('data-fed-action')) {
+                case 'add-server':
+                    collectFormData();
+                    currentConfig.RemoteServers.push({ Id: generateGuid(), Name: '', Url: '', ApiKey: '', UserId: '', Enabled: true, StreamingMode: 0, Priority: 0, RequireApiKeyForImages: false });
+                    renderServers();
+                    break;
+                case 'remove-server':
+                    collectFormData();
+                    currentConfig.RemoteServers.splice(i, 1);
+                    renderServers();
+                    break;
+                case 'test-server':
+                    testServer(i);
+                    break;
+                case 'add-mapping':
+                    collectFormData();
+                    currentConfig.LibraryMappings.push({ LocalLibraryName: '', MediaType: 'Movie', RemoteServerIds: [], RemoteLibrarySources: [], Enabled: true, AutoProvision: true });
+                    renderMappings();
+                    break;
+                case 'remove-mapping':
+                    collectFormData();
+                    currentConfig.LibraryMappings.splice(i, 1);
+                    renderMappings();
+                    break;
+                case 'browse':
+                    browseLibraries(i);
+                    break;
+                case 'apply-libs':
+                    applyLibraries(i);
+                    break;
+                case 'refresh-cache':
+                    clearError();
+                    setStatus('Refreshing cache…');
+                    fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (res) { setStatus(res.Message || 'Done', res.Success === false); loadDiagnostics(); })
+                    .catch(function (e) { showError('Refresh failed: ' + e.message); setStatus('Refresh failed', true); });
+                    break;
+                case 'provision':
+                    clearError();
+                    fedFetch('/Plugins/Federation/ProvisionLibraries', { method: 'POST' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (res) { setStatus(res.message || 'Provisioned'); })
+                    .catch(function (e) { showError('Provision failed: ' + e.message); });
+                    break;
+                case 'test-all':
+                    clearError();
+                    setStatus('Testing servers…');
+                    fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (res) {
+                        var results = res.results || [];
+                        var online = results.filter(function (x) { return x.online; }).length;
+                        setStatus('Servers online: ' + online + '/' + results.length, online !== results.length);
+                    })
+                    .catch(function (e) { showError('Test failed: ' + e.message); });
+                    break;
+                case 'refresh-diag':
+                    loadDiagnostics();
+                    break;
+            }
+        });
+
+        var form = page.querySelector('#fedConfigForm');
+        if (form) {
+            form.addEventListener('submit', function (e) {
+                e.preventDefault();
+                saveConfiguration();
+            });
+        }
+    }
+
+    function initPage(page) {
+        pageEl = page;
+        attachHandlers(page);
+        loadConfiguration(false);
+    }
+
+    if (!window.__federationPageshowBound) {
+        window.__federationPageshowBound = true;
+        document.addEventListener('pageshow', function (e) {
+            if (e.target && e.target.id === 'federationConfigPage') {
+                initPage(e.target);
+            }
+        });
+    }
+
+    var initial = document.getElementById('federationConfigPage');
+    if (initial) {
+        initPage(initial);
+    }
+})();
+</script>

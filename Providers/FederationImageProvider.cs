@@ -19,9 +19,11 @@ namespace Jellyfin.Plugin.Federation.Providers
     /// </summary>
     public class FederationImageProvider : IRemoteImageProvider
     {
+        // Shared for the app lifetime; image responses are disposed by the caller.
+        private static readonly HttpClient SharedHttpClient = new HttpClient();
+
         private readonly ILogger<FederationImageProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;
-        private readonly HttpClient _httpClient;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationImageProvider"/> class.
@@ -32,7 +34,6 @@ namespace Jellyfin.Plugin.Federation.Providers
         {
             _logger = logger;
             _federationManager = federationManager;
-            _httpClient = new HttpClient();
         }
 
         /// <inheritdoc />
@@ -66,7 +67,7 @@ namespace Jellyfin.Plugin.Federation.Providers
             try
             {
                 var entry = _federationManager.Cache.GetEntry(item.Path);
-                var primary = entry?.PrimarySource;
+                var primary = entry?.GetPrimarySource();
                 if (primary == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
@@ -138,7 +139,7 @@ namespace Jellyfin.Plugin.Federation.Providers
         /// <inheritdoc />
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return _httpClient.GetAsync(url, cancellationToken);
+            return SharedHttpClient.GetAsync(url, cancellationToken);
         }
     }
 }

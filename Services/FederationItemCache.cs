@@ -7,12 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Plugin.Federation.Configuration;
-using MediaBrowser.Controller.Entities;
-using MediaBrowser.Controller.Entities.Movies;
-using MediaBrowser.Controller.Entities.TV;
-using MediaBrowser.Controller.Entities.Audio;
-using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
 
@@ -24,17 +18,13 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederationItemCache
     {
         private readonly ILogger<FederationItemCache> _logger;
-        private readonly ILibraryManager _libraryManager;
         private readonly ConcurrentDictionary<string, FederatedCacheEntry> _entries = new();
         private string _cacheFilePath = string.Empty;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
 
-        public FederationItemCache(
-            ILogger<FederationItemCache> logger,
-            ILibraryManager libraryManager)
+        public FederationItemCache(ILogger<FederationItemCache> logger)
         {
             _logger = logger;
-            _libraryManager = libraryManager;
         }
 
         /// <summary>
@@ -111,7 +101,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     existing.AddSource(serverId, remoteItemId, serverPriority);
                     existing.UpdateFromRemote(remoteItem, serverId, remoteItemId, serverPriority);
-                    existing.LastRefreshedUtc = DateTime.UtcNow;
                     return existing;
                 });
 
@@ -138,7 +127,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     existing.AddSource(serverId, remoteItemId, serverPriority);
                     existing.UpdateFromRemote(remoteItem, serverId, remoteItemId, serverPriority);
-                    existing.LastRefreshedUtc = DateTime.UtcNow;
                     return existing;
                 });
 
@@ -147,7 +135,51 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Removes all entries belonging to a mapping (used on resync).
+        /// Removes sources belonging to the given server within a mapping when the
+        /// remote item id was not seen during the latest successful sync of that
+        /// server. Entries left without any source are removed. Returns the number
+        /// of entries removed.
+        /// </summary>
+        public int PruneServerSources(string mappingName, string serverId, IReadOnlyCollection<Guid> seenRemoteItemIds)
+        {
+            var removed = 0;
+            foreach (var kvp in _entries)
+            {
+                var entry = kvp.Value;
+                if (!entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (IsRawKey(entry.Key))
+                {
+                    // Raw entries are keyed by server + remote item id.
+                    if (TryParsePath("federation://" + entry.Key, out _, out _, out _, out var rawServerId, out var rawRemoteItemId)
+                        && rawServerId == serverId
+                        && rawRemoteItemId.HasValue
+                        && !seenRemoteItemIds.Contains(rawRemoteItemId.Value))
+                    {
+                        if (_entries.TryRemove(kvp.Key, out _))
+                        {
+                            removed++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                entry.RemoveSourcesNotIn(serverId, seenRemoteItemIds);
+                if (entry.GetSourcesSnapshot().Length == 0 && _entries.TryRemove(kvp.Key, out _))
+                {
+                    removed++;
+                }
+            }
+
+            return removed;
+        }
+
+        /// <summary>
+        /// Removes all entries belonging to a mapping.
         /// </summary>
         public void ClearMapping(string mappingName)
         {
@@ -168,7 +200,7 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Persists the cache to disk.
+        /// Persists the cache to disk atomically (temp file + move).
         /// </summary>
         public Task SaveAsync(CancellationToken cancellationToken = default)
         {
@@ -188,11 +220,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 var payload = new CachePayload
                 {
                     LastRefreshUtc = _lastRefreshUtc,
-                    Entries = _entries.Values.ToList()
+                    Entries = _entries.Values.Select(e => e.Snapshot()).ToList()
                 };
 
                 var json = JsonSerializer.Serialize(payload, CacheJsonOptions);
-                File.WriteAllText(_cacheFilePath, json);
+                var tempPath = _cacheFilePath + ".tmp";
+                File.WriteAllText(tempPath, json);
+                File.Move(tempPath, _cacheFilePath, true);
                 _logger.LogDebug("[Federation] Cache saved to {Path} ({Count} entries)", _cacheFilePath, _entries.Count);
             }
             catch (Exception ex)
@@ -294,6 +328,9 @@ namespace Jellyfin.Plugin.Federation.Services
             return true;
         }
 
+        private static bool IsRawKey(string key)
+            => key.Contains("/raw/", StringComparison.OrdinalIgnoreCase);
+
         private static string? NormalizeKey(string federationPath)
         {
             if (!TryParsePath(federationPath, out var mapping, out var providerName, out var providerId, out var rawServerId, out var rawRemoteItemId))
@@ -377,15 +414,19 @@ namespace Jellyfin.Plugin.Federation.Services
         private class CachePayload
         {
             public DateTime LastRefreshUtc { get; set; }
+
             public List<FederatedCacheEntry> Entries { get; set; } = new();
         }
     }
 
     /// <summary>
     /// One entry in the federation cache. May represent multiple remote sources (deduped).
+    /// Mutations are guarded by an internal lock; readers should use the snapshot accessors.
     /// </summary>
     public class FederatedCacheEntry
     {
+        private readonly object _sync = new();
+
         /// <summary>
         /// Cache key (mapping/provider:id or mapping/raw/server/remoteId).
         /// </summary>
@@ -402,7 +443,8 @@ namespace Jellyfin.Plugin.Federation.Services
         public string ItemType { get; set; } = "Movie";
 
         /// <summary>
-        /// The list of remote sources that provide this item.
+        /// The list of remote sources that provide this item. Do not enumerate directly
+        /// from consumers; use <see cref="GetSourcesSnapshot"/> for thread-safe reads.
         /// </summary>
         public List<FederatedSource> Sources { get; set; } = new();
 
@@ -424,44 +466,74 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// The federation path for this entry (built from Key).
         /// </summary>
-        public string FederationPath
-        {
-            get
-            {
-                if (Key.Contains("/raw/", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "federation://" + Key;
-                }
+        public string FederationPath => "federation://" + Key;
 
-                return "federation://" + Key;
+        /// <summary>
+        /// Gets a thread-safe snapshot of the sources list.
+        /// </summary>
+        public FederatedSource[] GetSourcesSnapshot()
+        {
+            lock (_sync)
+            {
+                return Sources.ToArray();
             }
         }
 
         /// <summary>
-        /// Gets the primary source.
+        /// Gets the primary source, or null when the entry has no sources.
         /// </summary>
-        public FederatedSource? PrimarySource => Sources.Count > 0 ? Sources[Math.Min(PrimarySourceIndex, Sources.Count - 1)] : null;
+        public FederatedSource? GetPrimarySource()
+        {
+            lock (_sync)
+            {
+                return Sources.Count > 0 ? Sources[Math.Min(PrimarySourceIndex, Sources.Count - 1)] : null;
+            }
+        }
 
         /// <summary>
         /// Adds or updates a remote source.
         /// </summary>
         public void AddSource(string serverId, Guid remoteItemId, int serverPriority)
         {
-            var existing = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
-            if (existing != null)
+            lock (_sync)
             {
-                existing.Priority = serverPriority;
-                return;
+                var existing = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
+                if (existing != null)
+                {
+                    existing.Priority = serverPriority;
+                    return;
+                }
+
+                Sources.Add(new FederatedSource
+                {
+                    ServerId = serverId,
+                    RemoteItemId = remoteItemId,
+                    Priority = serverPriority
+                });
+
+                ReSortSources();
             }
+        }
 
-            Sources.Add(new FederatedSource
+        /// <summary>
+        /// Removes sources for the given server whose remote item id is not in
+        /// <paramref name="keepRemoteItemIds"/>. Returns the number removed.
+        /// </summary>
+        public int RemoveSourcesNotIn(string serverId, IReadOnlyCollection<Guid> keepRemoteItemIds)
+        {
+            lock (_sync)
             {
-                ServerId = serverId,
-                RemoteItemId = remoteItemId,
-                Priority = serverPriority
-            });
+                var before = Sources.Count;
+                Sources = Sources
+                    .Where(s => !(s.ServerId == serverId && !keepRemoteItemIds.Contains(s.RemoteItemId)))
+                    .ToList();
+                if (PrimarySourceIndex >= Sources.Count)
+                {
+                    PrimarySourceIndex = 0;
+                }
 
-            ReSortSources();
+                return before - Sources.Count;
+            }
         }
 
         /// <summary>
@@ -469,31 +541,65 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public void UpdateFromRemote(BaseItemDto remoteItem, string serverId, Guid remoteItemId, int serverPriority)
         {
-            var isPrimary = PrimarySource == null || Sources.Count == 1 ||
-                            Sources[PrimarySourceIndex].ServerId == serverId && Sources[PrimarySourceIndex].RemoteItemId == remoteItemId;
-
-            if (!isPrimary && !string.IsNullOrEmpty(Metadata.Name))
+            lock (_sync)
             {
-                return;
-            }
+                var isPrimary = Sources.Count <= 1
+                    || (Sources.Count > PrimarySourceIndex
+                        && Sources[PrimarySourceIndex].ServerId == serverId
+                        && Sources[PrimarySourceIndex].RemoteItemId == remoteItemId);
 
-            Metadata.Name = remoteItem.Name ?? Metadata.Name;
-            Metadata.Overview = remoteItem.Overview ?? Metadata.Overview;
-            Metadata.ProductionYear = remoteItem.ProductionYear ?? Metadata.ProductionYear;
-            Metadata.PremiereDate = remoteItem.PremiereDate ?? Metadata.PremiereDate;
-            Metadata.CommunityRating = remoteItem.CommunityRating ?? Metadata.CommunityRating;
-            Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
-            Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
-            Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
-            Metadata.IndexNumber = remoteItem.IndexNumber ?? Metadata.IndexNumber;
-            Metadata.ParentIndexNumber = remoteItem.ParentIndexNumber ?? Metadata.ParentIndexNumber;
-            Metadata.Album = remoteItem.Album ?? Metadata.Album;
-            Metadata.AlbumArtist = remoteItem.AlbumArtist ?? Metadata.AlbumArtist;
-            Metadata.Genres = remoteItem.Genres ?? Metadata.Genres;
-            Metadata.Tags = remoteItem.Tags ?? Metadata.Tags;
-            Metadata.Studios = remoteItem.Studios?.Select(s => s.Name ?? string.Empty).ToArray() ?? Metadata.Studios;
-            Metadata.Artists = remoteItem.Artists != null ? remoteItem.Artists.ToArray() : Metadata.Artists;
-            Metadata.ProviderIds = remoteItem.ProviderIds ?? Metadata.ProviderIds;
+                if (!isPrimary && !string.IsNullOrEmpty(Metadata.Name))
+                {
+                    return;
+                }
+
+                Metadata.Name = remoteItem.Name ?? Metadata.Name;
+                Metadata.Overview = remoteItem.Overview ?? Metadata.Overview;
+                Metadata.ProductionYear = remoteItem.ProductionYear ?? Metadata.ProductionYear;
+                Metadata.PremiereDate = remoteItem.PremiereDate ?? Metadata.PremiereDate;
+                Metadata.CommunityRating = remoteItem.CommunityRating ?? Metadata.CommunityRating;
+                Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
+                Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
+                Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
+                Metadata.IndexNumber = remoteItem.IndexNumber ?? Metadata.IndexNumber;
+                Metadata.ParentIndexNumber = remoteItem.ParentIndexNumber ?? Metadata.ParentIndexNumber;
+                Metadata.Album = remoteItem.Album ?? Metadata.Album;
+                Metadata.AlbumArtist = remoteItem.AlbumArtist ?? Metadata.AlbumArtist;
+                Metadata.Genres = remoteItem.Genres ?? Metadata.Genres;
+                Metadata.Tags = remoteItem.Tags ?? Metadata.Tags;
+                Metadata.Studios = remoteItem.Studios?.Select(s => s.Name ?? string.Empty).ToArray() ?? Metadata.Studios;
+                Metadata.Artists = remoteItem.Artists != null ? remoteItem.Artists.ToArray() : Metadata.Artists;
+                Metadata.ProviderIds = remoteItem.ProviderIds ?? Metadata.ProviderIds;
+                Metadata.People = remoteItem.People != null
+                    ? remoteItem.People.Select(p => new FederatedPerson
+                    {
+                        Name = p.Name ?? string.Empty,
+                        Role = p.Role,
+                        Type = p.Type.ToString()
+                    }).ToList()
+                    : Metadata.People;
+                LastRefreshedUtc = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// Creates a detached copy safe for serialization while the entry is mutated.
+        /// </summary>
+        public FederatedCacheEntry Snapshot()
+        {
+            lock (_sync)
+            {
+                return new FederatedCacheEntry
+                {
+                    Key = Key,
+                    MappingName = MappingName,
+                    ItemType = ItemType,
+                    Sources = Sources.ToList(),
+                    PrimarySourceIndex = PrimarySourceIndex,
+                    Metadata = Metadata,
+                    LastRefreshedUtc = LastRefreshedUtc
+                };
+            }
         }
 
         private void ReSortSources()
@@ -509,7 +615,9 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederatedSource
     {
         public string ServerId { get; set; } = string.Empty;
+
         public Guid RemoteItemId { get; set; }
+
         public int Priority { get; set; }
     }
 
@@ -519,22 +627,39 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederatedItemMetadata
     {
         public string Name { get; set; } = string.Empty;
+
         public string? Overview { get; set; }
+
         public int? ProductionYear { get; set; }
+
         public DateTime? PremiereDate { get; set; }
+
         public float? CommunityRating { get; set; }
+
         public string? OfficialRating { get; set; }
+
         public long? RunTimeTicks { get; set; }
+
         public string? SeriesName { get; set; }
+
         public int? IndexNumber { get; set; }
+
         public int? ParentIndexNumber { get; set; }
+
         public string? Album { get; set; }
+
         public string? AlbumArtist { get; set; }
+
         public string[]? Genres { get; set; }
+
         public string[]? Tags { get; set; }
+
         public string[]? Studios { get; set; }
+
         public string[]? Artists { get; set; }
+
         public Dictionary<string, string>? ProviderIds { get; set; }
+
         public List<FederatedPerson>? People { get; set; }
     }
 
@@ -544,7 +669,9 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederatedPerson
     {
         public string Name { get; set; } = string.Empty;
+
         public string? Role { get; set; }
+
         public string? Type { get; set; }
     }
 }

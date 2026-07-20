@@ -4,14 +4,14 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
-using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
     /// Refreshes the federation cache by walking each mapping and pulling items
-    /// from remote servers. Replaces the old <c>FederationSyncService</c> file writer.
+    /// from remote servers. A failed server never destroys cached data: stale
+    /// entries are only pruned for sources that synced successfully.
     /// </summary>
     public class FederationSyncService
     {
@@ -19,6 +19,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
+        private readonly FederationItemPersistenceService _persistence;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationSyncService"/> class.
@@ -27,23 +28,24 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationSyncService> logger,
             FederationLibraryManager federationManager,
             IRemoteServerClientFactory clientFactory,
-            FederationItemCache cache)
+            FederationItemCache cache,
+            FederationItemPersistenceService persistence)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _cache = cache;
+            _persistence = persistence;
         }
 
         /// <summary>
-        /// Refreshes all mappings from all configured remote servers. Never throws:
-        /// a failed server leaves the existing cache intact.
+        /// Refreshes all mappings from all configured remote servers.
+        /// Failed servers leave their existing cache entries intact.
         /// </summary>
         public async Task<SyncResult> SyncAllAsync(CancellationToken cancellationToken = default)
         {
             var operationId = Guid.NewGuid().ToString();
-            SyncProgressTracker.Start(operationId, 100);
-            SyncProgressTracker.Update(operationId, 0, "Starting refresh...");
+            SyncProgressTracker.Start(operationId);
 
             try
             {
@@ -61,21 +63,33 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 int totalItems = 0;
+                int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
                 {
                     var mapping = mappings[i];
                     cancellationToken.ThrowIfCancellationRequested();
-                    SyncProgressTracker.Update(operationId, totalItems, mappings.Count, $"Processing mapping {i + 1}/{mappings.Count}: {mapping.LocalLibraryName}");
-                    totalItems += await RefreshMappingAsync(mapping, config, cancellationToken).ConfigureAwait(false);
+                    SyncProgressTracker.Update(operationId, totalItems, $"Processing mapping {i + 1}/{mappings.Count}: {mapping.LocalLibraryName}");
+
+                    var result = await RefreshMappingAsync(mapping, config, cancellationToken).ConfigureAwait(false);
+                    totalItems += result.ItemCount;
+                    failedSources += result.FailedSources;
+
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
-                SyncProgressTracker.Complete(operationId, true, $"Refreshed {totalItems} items");
+
+                var success = failedSources == 0;
+                var message = success
+                    ? $"Refreshed {totalItems} items across {mappings.Count} mapping(s)"
+                    : $"Refreshed {totalItems} items across {mappings.Count} mapping(s); {failedSources} source(s) failed (cached data preserved)";
+                SyncProgressTracker.Complete(operationId, success, message);
                 return new SyncResult
                 {
-                    Success = true,
+                    Success = success,
                     ItemCount = totalItems,
-                    Message = $"Refreshed {totalItems} items across {mappings.Count} mapping(s)",
+                    FailedSources = failedSources,
+                    Message = message,
                     OperationId = operationId
                 };
             }
@@ -116,13 +130,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 int total = 0;
+                int failedSources = 0;
                 foreach (var mapping in mappings)
                 {
-                    total += await RefreshMappingAsync(mapping, config!, cancellationToken, onlyServerId: serverId).ConfigureAwait(false);
+                    var result = await RefreshMappingAsync(mapping, config!, cancellationToken, onlyServerId: serverId).ConfigureAwait(false);
+                    total += result.ItemCount;
+                    failedSources += result.FailedSources;
+
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
-                return new SyncResult { Success = true, ItemCount = total, Message = $"Refreshed {total} items from {server.Name}" };
+                var success = failedSources == 0;
+                return new SyncResult
+                {
+                    Success = success,
+                    ItemCount = total,
+                    FailedSources = failedSources,
+                    Message = success
+                        ? $"Refreshed {total} items from {server.Name}"
+                        : $"Refreshed {total} items from {server.Name}; {failedSources} source(s) failed (cached data preserved)"
+                };
             }
             catch (Exception ex)
             {
@@ -131,16 +159,16 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private async Task<int> RefreshMappingAsync(
+        private async Task<MappingSyncResult> RefreshMappingAsync(
             LibraryMapping mapping,
             PluginConfiguration config,
             CancellationToken cancellationToken,
             string? onlyServerId = null)
         {
             _logger.LogInformation("[Federation] Refreshing mapping {Name}", mapping.LocalLibraryName);
-            _cache.ClearMapping(mapping.LocalLibraryName);
 
             int total = 0;
+            int failedSources = 0;
             foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
             {
                 if (onlyServerId != null && source.ServerId != onlyServerId)
@@ -155,20 +183,39 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                SourceSyncResult result;
                 try
                 {
-                    total += await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+                    result = await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
+                    failedSources++;
+                    continue;
+                }
+
+                if (result.Failed)
+                {
+                    // Keep the existing cache for this server untouched.
+                    failedSources++;
+                    continue;
+                }
+
+                total += result.Count;
+
+                // The source synced successfully: drop its stale entries.
+                var pruned = _cache.PruneServerSources(mapping.LocalLibraryName, source.ServerId, result.SeenRemoteItemIds);
+                if (pruned > 0)
+                {
+                    _logger.LogInformation("[Federation] Pruned {Count} stale entries for {Server} in {Mapping}", pruned, server.Name, mapping.LocalLibraryName);
                 }
             }
 
-            return total;
+            return new MappingSyncResult(total, failedSources);
         }
 
-        private async Task<int> RefreshSourceAsync(
+        private async Task<SourceSyncResult> RefreshSourceAsync(
             LibraryMapping mapping,
             RemoteServer server,
             RemoteLibrarySource source,
@@ -178,13 +225,14 @@ namespace Jellyfin.Plugin.Federation.Services
             var client = _clientFactory.GetClient(server);
             if (client == null)
             {
-                return 0;
+                return SourceSyncResult.Failure();
             }
 
             int total = 0;
             int pageSize = 200;
             int startIndex = 0;
             int pageNumber = 1;
+            var seen = new HashSet<Guid>();
 
             while (true)
             {
@@ -197,7 +245,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     limit: pageSize,
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                if (page == null || page.Count == 0)
+                if (page == null)
+                {
+                    // Request failed: report failure so the caller preserves the cache.
+                    return SourceSyncResult.Failure();
+                }
+
+                if (page.Count == 0)
                 {
                     break;
                 }
@@ -207,6 +261,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     try
                     {
                         UpsertRemoteItem(mapping, remoteItem, server, config);
+                        seen.Add(remoteItem.Id);
                         total++;
                     }
                     catch (Exception ex)
@@ -230,7 +285,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
-            return total;
+            return new SourceSyncResult(total, false, seen);
         }
 
         private void UpsertRemoteItem(
@@ -286,6 +341,13 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             return new SyncResult { Success = false, Message = message, OperationId = operationId };
         }
+
+        private sealed record MappingSyncResult(int ItemCount, int FailedSources);
+
+        private sealed record SourceSyncResult(int Count, bool Failed, HashSet<Guid> SeenRemoteItemIds)
+        {
+            public static SourceSyncResult Failure() => new SourceSyncResult(0, true, new HashSet<Guid>());
+        }
     }
 
     /// <summary>
@@ -302,6 +364,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets or sets the number of items synced.
         /// </summary>
         public int ItemCount { get; set; }
+
+        /// <summary>
+        /// Gets or sets the number of sources that failed to sync (cached data preserved).
+        /// </summary>
+        public int FailedSources { get; set; }
 
         /// <summary>
         /// Gets or sets a message describing the result.

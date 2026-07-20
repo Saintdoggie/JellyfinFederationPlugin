@@ -1,9 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
@@ -11,7 +8,6 @@ using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Library;
-using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -21,11 +17,10 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <see cref="BaseItem"/> shells, and exposes remote server clients via the shared
     /// <see cref="IRemoteServerClientFactory"/>.
     /// </summary>
-    public class FederationLibraryManager : IDisposable
+    public class FederationLibraryManager
     {
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<FederationLibraryManager> _logger;
-        private readonly ILoggerFactory _loggerFactory;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
 
@@ -35,13 +30,11 @@ namespace Jellyfin.Plugin.Federation.Services
         public FederationLibraryManager(
             ILibraryManager libraryManager,
             ILogger<FederationLibraryManager> logger,
-            ILoggerFactory loggerFactory,
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache)
         {
             _libraryManager = libraryManager;
             _logger = logger;
-            _loggerFactory = loggerFactory;
             _clientFactory = clientFactory;
             _cache = cache;
         }
@@ -131,10 +124,11 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             // Federation tracking ids
-            if (entry.PrimarySource != null)
+            var primary = entry.GetPrimarySource();
+            if (primary != null)
             {
-                item.ProviderIds["FederationSource"] = entry.PrimarySource.ServerId;
-                item.ProviderIds["FederationRemoteId"] = entry.PrimarySource.RemoteItemId.ToString();
+                item.ProviderIds["FederationSource"] = primary.ServerId;
+                item.ProviderIds["FederationRemoteId"] = primary.RemoteItemId.ToString();
             }
 
             // Stable local id derived from cache key so the same virtual item survives refreshes.
@@ -187,7 +181,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Checks if an item is federated.
         /// </summary>
-        public bool IsFederatedItem(BaseItem item)
+        public bool IsFederatedItem(BaseItem? item)
         {
             return item?.Path != null && item.Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase);
         }
@@ -204,46 +198,24 @@ namespace Jellyfin.Plugin.Federation.Services
             out Guid? rawRemoteItemId)
             => FederationItemCache.TryParsePath(federationPath, out mappingName, out providerName, out providerId, out rawServerId, out rawRemoteItemId);
 
-        /// <summary>
-        /// Legacy 2-component parser kept for migration diagnostics only.
-        /// </summary>
-        public static bool TryParseLegacyFederationPath(string federationPath, out string serverId, out string itemId)
-        {
-            serverId = string.Empty;
-            itemId = string.Empty;
-            if (string.IsNullOrEmpty(federationPath) || !federationPath.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            var rest = federationPath.Substring("federation://".Length);
-            var parts = rest.Split('/', 2);
-            if (parts.Length != 2)
-            {
-                return false;
-            }
-
-            serverId = parts[0];
-            itemId = parts[1];
-            return true;
-        }
-
         private static BaseItem CreateItemShell(string itemType)
         {
             return itemType switch
             {
                 "Movie" => new Movie(),
                 "Series" => new Series(),
+                "Season" => new Season(),
                 "Episode" => new Episode(),
                 "Audio" => new Audio(),
+                "MusicAlbum" => new MusicAlbum(),
+                "MusicVideo" => new MusicVideo(),
+                "Video" => new Video(),
+                "Photo" => new Photo(),
+                "PhotoAlbum" => new PhotoAlbum(),
+                "Book" => new Book(),
+                "BoxSet" => new BoxSet(),
                 _ => new Movie()
             };
-        }
-
-        /// <inheritdoc />
-        public void Dispose()
-        {
-            // Cache and client factory are owned by DI.
         }
     }
 }

@@ -1,21 +1,22 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
-using MediaBrowser.Controller.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation
 {
     /// <summary>
-    /// Entry point for initializing federation services and auto-detecting the
-    /// local server URL. Runs once on plugin startup.
+    /// Hosted service that initializes federation services on server startup:
+    /// loads the persisted cache, defaults the local server URL, and
+    /// auto-provisions virtual libraries when enabled.
     /// </summary>
-    public class FederationEntryPoint
+    public class FederationEntryPoint : IHostedService
     {
         private readonly ILogger<FederationEntryPoint> _logger;
         private readonly FederationLibraryManager _federationManager;
-        private readonly IServerConfigurationManager _serverConfigManager;
         private readonly LibraryProvisioningService _provisioning;
 
         /// <summary>
@@ -24,19 +25,15 @@ namespace Jellyfin.Plugin.Federation
         public FederationEntryPoint(
             ILogger<FederationEntryPoint> logger,
             FederationLibraryManager federationManager,
-            IServerConfigurationManager serverConfigManager,
             LibraryProvisioningService provisioning)
         {
             _logger = logger;
             _federationManager = federationManager;
-            _serverConfigManager = serverConfigManager;
             _provisioning = provisioning;
         }
 
-        /// <summary>
-        /// Runs initialization tasks.
-        /// </summary>
-        public async Task RunAsync()
+        /// <inheritdoc />
+        public async Task StartAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Federation Plugin Entry Point started");
 
@@ -49,20 +46,14 @@ namespace Jellyfin.Plugin.Federation
                     return;
                 }
 
-                // Auto-detect local server URL if not overridden.
+                // Default the local server URL if not overridden. Jellyfin does not
+                // expose its bind address to plugins, so default to localhost; the
+                // user can correct it on the config page.
                 if (string.IsNullOrEmpty(config.ServerUrl))
                 {
-                    var detected = DetectLocalServerUrl();
-                    if (!string.IsNullOrEmpty(detected))
-                    {
-                        config.ServerUrl = detected;
-                        Plugin.Instance?.SaveConfiguration();
-                        _logger.LogInformation("[Federation] Auto-detected local server URL: {Url}", detected);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("[Federation] Could not auto-detect local server URL. Please set it in the config page.");
-                    }
+                    config.ServerUrl = "http://localhost:8096";
+                    Plugin.Instance?.SaveConfiguration();
+                    _logger.LogInformation("[Federation] Defaulted local server URL to {Url}", config.ServerUrl);
                 }
 
                 var cachePath = !string.IsNullOrEmpty(config.CachePath)
@@ -73,7 +64,7 @@ namespace Jellyfin.Plugin.Federation
 
                 if (config.AutoProvisionLibraries)
                 {
-                    await _provisioning.EnsureLibrariesAsync().ConfigureAwait(false);
+                    await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
@@ -84,19 +75,7 @@ namespace Jellyfin.Plugin.Federation
             }
         }
 
-        private string DetectLocalServerUrl()
-        {
-            try
-            {
-                // No reliable address field is exposed via ServerConfiguration in this ABI.
-                // Fall back to localhost on default port; user can correct via config page.
-                return "http://localhost:8096";
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Failed to auto-detect local server URL");
-                return string.Empty;
-            }
-        }
+        /// <inheritdoc />
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

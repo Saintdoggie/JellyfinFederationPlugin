@@ -5,7 +5,6 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation
@@ -35,7 +34,7 @@ namespace Jellyfin.Plugin.Federation
         public override string Name => "Jellyfin Federation";
 
         /// <inheritdoc />
-        public override Guid Id => Guid.Parse("12345678-1234-1234-1234-123456789abc");
+        public override Guid Id => Guid.Parse("495feadb-d27f-46c3-bb9b-0732ae8926fa");
 
         /// <inheritdoc />
         public override string Description => "Aggregate content from multiple Jellyfin servers into unified virtual libraries.";
@@ -56,31 +55,8 @@ namespace Jellyfin.Plugin.Federation
             yield return new PluginPageInfo
             {
                 Name = Name,
-                EmbeddedResourcePath = GetType().Namespace + ".Configuration.redirectPage.html"
+                EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.html"
             };
-        }
-
-        /// <summary>
-        /// Gets the configuration page URL.
-        /// </summary>
-        public string GetConfigurationPageUrl() => "/Plugins/Federation/ConfigPage";
-
-        /// <summary>
-        /// Registers federation services with the Jellyfin DI container.
-        /// </summary>
-        public static void RegisterServices(IServiceCollection serviceCollection)
-        {
-            serviceCollection.AddSingleton<Services.IRemoteServerClientFactory, Services.RemoteServerClientFactory>();
-            serviceCollection.AddSingleton<Services.FederationItemCache>();
-            serviceCollection.AddSingleton<Services.FederationLibraryManager>();
-            serviceCollection.AddSingleton<Services.FederationSyncService>();
-            serviceCollection.AddSingleton<Services.LibraryProvisioningService>();
-            serviceCollection.AddSingleton<Services.FederationStreamHandler>();
-            serviceCollection.AddSingleton<Resolvers.FederationItemResolver>();
-            serviceCollection.AddSingleton<Providers.FederationImageProvider>();
-            serviceCollection.AddSingleton<Providers.FederationMetadataProvider>();
-            serviceCollection.AddSingleton<Tasks.FederationRefreshTask>();
-            serviceCollection.AddSingleton<FederationEntryPoint>();
         }
     }
 }
