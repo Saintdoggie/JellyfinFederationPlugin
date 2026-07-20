@@ -46,16 +46,10 @@ namespace Jellyfin.Plugin.Federation
                     return;
                 }
 
-                // Default the local server URL if not overridden. Jellyfin does not
-                // expose its bind address to plugins, so default to localhost; the
-                // user can correct it on the config page.
-                if (string.IsNullOrEmpty(config.ServerUrl))
-                {
-                    config.ServerUrl = "http://localhost:8096";
-                    Plugin.Instance?.SaveConfiguration();
-                    _logger.LogInformation("[Federation] Defaulted local server URL to {Url}", config.ServerUrl);
-                }
-
+                // The local server URL is intentionally left blank when unconfigured:
+                // blank means "auto-detect from the incoming request" (see
+                // FederationMediaSourceProvider). It is only needed for Proxy
+                // streaming mode and can still be overridden on the config page.
                 var cachePath = !string.IsNullOrEmpty(config.CachePath)
                     ? config.CachePath
                     : Plugin.Instance?.GetDefaultCachePath() ?? Path.Combine(Path.GetTempPath(), "federation-cache.json");

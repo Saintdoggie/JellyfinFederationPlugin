@@ -4,6 +4,7 @@ using Jellyfin.Plugin.Federation.Services;
 using Jellyfin.Plugin.Federation.Tasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.Federation.Configuration
@@ -17,6 +18,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <inheritdoc />
         public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
         {
+            // Required by FederationMediaSourceProvider to auto-detect this
+            // server's public URL for Proxy streaming. AddHttpContextAccessor is
+            // idempotent if the host already registered it.
+            serviceCollection.AddHttpContextAccessor();
             serviceCollection.AddSingleton<IRemoteServerClientFactory, RemoteServerClientFactory>();
             serviceCollection.AddSingleton<FederationItemCache>();
             serviceCollection.AddSingleton<FederationLibraryManager>();

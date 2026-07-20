@@ -9,6 +9,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -24,16 +25,19 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private readonly ILogger<FederationMediaSourceProvider> _logger;
         private readonly FederationLibraryManager _federationManager;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceProvider"/> class.
         /// </summary>
         public FederationMediaSourceProvider(
             ILogger<FederationMediaSourceProvider> logger,
-            FederationLibraryManager federationManager)
+            FederationLibraryManager federationManager,
+            IHttpContextAccessor httpContextAccessor)
         {
             _logger = logger;
             _federationManager = federationManager;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         /// <inheritdoc />
@@ -116,11 +120,11 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
-                var localUrl = _federationManager.GetLocalServerUrl();
+                var localUrl = ResolveLocalServerUrl();
                 if (string.IsNullOrEmpty(localUrl))
                 {
                     _logger.LogWarning(
-                        "[Federation] Server {Server} is in Proxy mode but no local server URL is configured; skipping source",
+                        "[Federation] Server {Server} is in Proxy mode but no local server URL could be resolved; skipping source",
                         server.Name);
                     return null;
                 }
@@ -131,6 +135,39 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var client = _federationManager.GetClient(src.ServerId);
             return client?.BuildDirectStreamUrl(src.RemoteItemId.ToString());
+        }
+
+        /// <summary>
+        /// Resolves this server's public URL: an explicit override from config
+        /// when set, otherwise derived from the current incoming HTTP request
+        /// (PlaybackInfo is always an authenticated HTTP request), so it works
+        /// behind reverse proxies without manual configuration.
+        /// </summary>
+        private string ResolveLocalServerUrl()
+        {
+            var configured = _federationManager.GetLocalServerUrl();
+            if (!string.IsNullOrEmpty(configured))
+            {
+                return configured;
+            }
+
+            var context = _httpContextAccessor.HttpContext;
+            var request = context?.Request;
+            if (request == null)
+            {
+                return string.Empty;
+            }
+
+            var scheme = request.Scheme;
+            // Honour X-Forwarded-Proto when present (common behind reverse proxies).
+            var forwardedProto = request.Headers["X-Forwarded-Proto"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(forwardedProto)
+                && (forwardedProto == Uri.UriSchemeHttp || forwardedProto == Uri.UriSchemeHttps))
+            {
+                scheme = forwardedProto;
+            }
+
+            return $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
         }
     }
 }

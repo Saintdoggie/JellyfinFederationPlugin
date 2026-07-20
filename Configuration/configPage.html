@@ -2,607 +2,1253 @@
     <div data-role="content">
         <div class="content-primary">
             <style>
-                #federationConfigPage h1 { font-size: 1.6em; }
-                #federationConfigPage h2, #federationConfigPage h3 { margin-top: 0; }
-                #federationConfigPage label { display: block; margin: 10px 0 5px; opacity: 0.8; font-size: 0.9em; }
-                #federationConfigPage input[type="text"],
-                #federationConfigPage input[type="password"],
-                #federationConfigPage input[type="number"],
-                #federationConfigPage select { width: 100%; padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: inherit; border-radius: 4px; box-sizing: border-box; }
-                #federationConfigPage input[type="checkbox"] { width: auto; margin-right: 6px; }
-                #federationConfigPage button { padding: 10px 20px; margin: 10px 5px 10px 0; background: #00a4dc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-                #federationConfigPage button:hover { background: #0288bb; }
-                #federationConfigPage button.fed-remove { background: #c44; }
-                #federationConfigPage button.fed-remove:hover { background: #a22; }
-                #federationConfigPage button.fed-success { background: #52b54b; }
-                #federationConfigPage .fed-section { margin: 30px 0; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; }
-                #federationConfigPage .fed-subsection { background: rgba(255,255,255,0.05); margin: 15px 0; padding: 15px; border-radius: 8px; }
-                #federationConfigPage .fed-error { color: #f44; padding: 15px; background: rgba(255,68,68,0.1); border-radius: 6px; margin: 20px 0; }
-                #federationConfigPage .fed-status { padding: 10px; background: rgba(82,181,75,0.2); border-radius: 6px; margin: 20px 0; }
-                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; }
-                #federationConfigPage .fed-diagnostic div { padding: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; }
-                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
-                #federationConfigPage .fed-hint { font-size: 0.85em; opacity: 0.7; margin: 4px 0 0; }
-                #federationConfigPage .fed-liblist { max-height: 300px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 10px; }
-                #federationConfigPage .fed-selected { margin-top: 10px; padding: 10px; background: rgba(82,181,75,0.1); border-radius: 4px; }
-                #federationConfigPage .fed-muted { opacity: 0.6; }
-                #federationConfigPage code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+                /* Layout base mirroring jellyfin-web form styles; colors/borders come
+                   from the active theme via the emby-* classes. */
+                #federationConfigPage .fed-input,
+                #federationConfigPage .fed-select {
+                    display: block;
+                    margin: 0;
+                    padding: 0.4em 0.25em;
+                    font-size: 110%;
+                    font-family: inherit;
+                    font-weight: inherit;
+                    box-sizing: border-box;
+                    outline: none !important;
+                    width: 100%;
+                }
+                #federationConfigPage .fed-select { padding: 0.5em 1.9em 0.5em 0.5em; }
+                #federationConfigPage .fed-input-container { margin-bottom: 1.2em; }
+                #federationConfigPage .fed-label { display: block; opacity: 0.75; font-size: 0.9em; margin-bottom: 0.2em; }
+                #federationConfigPage .fed-check { accent-color: #00a4dc; width: 1.15em; height: 1.15em; vertical-align: -0.2em; margin-right: 0.4em; }
+                #federationConfigPage .fed-check-label { display: block; margin: 0.6em 0; cursor: pointer; }
+                #federationConfigPage .fed-hint { font-size: 0.85em; opacity: 0.65; margin: 0.3em 0 0; }
+                #federationConfigPage .fed-card {
+                    background: rgba(255,255,255,0.03);
+                    border: 1px solid rgba(255,255,255,0.07);
+                    border-radius: 0.6em;
+                    padding: 1.4em 1.6em;
+                    margin: 1.2em 0;
+                }
+                #federationConfigPage h2.fed-step { margin: 0 0 0.2em; font-size: 1.25em; }
+                #federationConfigPage .fed-step-desc { opacity: 0.7; font-size: 0.92em; margin: 0 0 1em; }
+                #federationConfigPage .fed-statusstrip {
+                    display: flex; flex-wrap: wrap; align-items: center; gap: 0.6em 1.4em;
+                    font-size: 0.95em;
+                }
+                #federationConfigPage .fed-statusstrip .fed-stat { display: flex; flex-direction: column; }
+                #federationConfigPage .fed-statusstrip .fed-stat strong { font-size: 1.15em; }
+                #federationConfigPage .fed-statusstrip .fed-stat span { opacity: 0.6; font-size: 0.8em; }
+                #federationConfigPage .fed-spacer { flex: 1; }
+                #federationConfigPage .fed-error {
+                    color: #ff6666; padding: 1em 1.2em; background: rgba(255,68,68,0.1);
+                    border: 1px solid rgba(255,68,68,0.35); border-radius: 0.4em; margin: 1em 0;
+                    white-space: pre-wrap;
+                }
+                #federationConfigPage .fed-inline {
+                    display: flex; flex-wrap: wrap; gap: 0 1.2em; align-items: flex-end;
+                }
+                #federationConfigPage .fed-inline .fed-input-container { flex: 1 1 16em; margin-bottom: 0.8em; }
+                #federationConfigPage .fed-inline .emby-button { margin-bottom: 0.8em; }
+                #federationConfigPage .fed-server {
+                    border: 1px solid rgba(255,255,255,0.09);
+                    border-radius: 0.5em;
+                    margin: 0.8em 0;
+                    padding: 0.9em 1.1em;
+                    background: rgba(255,255,255,0.02);
+                }
+                #federationConfigPage .fed-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.7em; }
+                #federationConfigPage .fed-server-url { opacity: 0.55; font-size: 0.88em; }
+                #federationConfigPage .fed-dot { width: 0.65em; height: 0.65em; border-radius: 50%; background: #888; flex-shrink: 0; }
+                #federationConfigPage .fed-dot-ok { background: #52b54b; }
+                #federationConfigPage .fed-dot-err { background: #e34f4f; }
+                #federationConfigPage .fed-srvstatus { margin-top: 0.6em; padding: 0.6em 0.8em; border-radius: 0.35em; font-size: 0.9em; }
+                #federationConfigPage .fed-srvstatus-ok { background: rgba(82,181,75,0.15); }
+                #federationConfigPage .fed-srvstatus-err { background: rgba(255,68,68,0.12); }
+                #federationConfigPage .fed-srvstatus-info { background: rgba(0,164,220,0.12); }
+                #federationConfigPage details.fed-details { margin-top: 0.7em; }
+                #federationConfigPage details.fed-details > summary {
+                    cursor: pointer; opacity: 0.75; font-size: 0.9em; padding: 0.3em 0; user-select: none;
+                }
+                #federationConfigPage details.fed-details > summary:hover { opacity: 1; }
+                #federationConfigPage .fed-details-body { padding-top: 0.8em; }
+                #federationConfigPage .fed-libgroup { margin: 0.9em 0; }
+                #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
+                #federationConfigPage .fed-librow {
+                    display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;
+                    padding: 0.45em 0.6em; border-radius: 0.35em; cursor: pointer;
+                }
+                #federationConfigPage .fed-librow:hover { background: rgba(255,255,255,0.05); }
+                #federationConfigPage .fed-libmeta { opacity: 0.55; font-size: 0.85em; }
+                #federationConfigPage .fed-libtype {
+                    max-width: 12em; font-size: 0.9em; padding: 0.2em 1.6em 0.2em 0.4em; width: auto;
+                }
+                #federationConfigPage .fed-picker-actions { margin: 0.4em 0 0.8em; font-size: 0.9em; }
+                #federationConfigPage .fed-picker-actions a { color: #00a4dc; cursor: pointer; margin-right: 1em; }
+                #federationConfigPage .fed-mapping {
+                    border: 1px solid rgba(255,255,255,0.09); border-radius: 0.5em;
+                    margin: 0.8em 0; padding: 0.9em 1.1em; background: rgba(255,255,255,0.02);
+                }
+                #federationConfigPage .fed-liblist {
+                    max-height: 18em; overflow-y: auto;
+                    border: 1px solid rgba(255,255,255,0.12); border-radius: 0.4em; padding: 0.7em;
+                    margin-top: 0.6em;
+                }
+                #federationConfigPage .fed-selected {
+                    margin-top: 0.7em; padding: 0.7em 0.9em;
+                    background: rgba(82,181,75,0.1); border-radius: 0.4em; font-size: 0.9em;
+                }
+                #federationConfigPage .fed-muted { opacity: 0.55; }
+                #federationConfigPage .fed-danger { color: #ff8080 !important; }
+                #federationConfigPage .fed-savebar { display: flex; align-items: center; gap: 1em; }
+                #federationConfigPage .fed-savebar .emby-button { margin: 0; }
+                #federationConfigPage .fed-savemsg { font-size: 0.95em; }
+                #federationConfigPage .fed-savemsg-ok { color: #7ed07e; }
+                #federationConfigPage .fed-savemsg-err { color: #ff8080; }
+                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: 0.8em; margin-top: 0.8em; }
+                #federationConfigPage .fed-diagnostic div { padding: 0.7em 0.9em; background: rgba(255,255,255,0.04); border-radius: 0.4em; }
+                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.8em; opacity: 0.65; margin-bottom: 0.25em; }
+                #federationConfigPage code { background: rgba(255,255,255,0.1); padding: 0.1em 0.4em; border-radius: 0.25em; font-size: 0.9em; }
             </style>
 
-            <h1>Jellyfin Federation</h1>
-            <div id="fedErrorContainer"></div>
-            <div id="fedStatusContainer" class="fed-status">Loading…</div>
+            <div class="sectionTitleContainer flex align-items-center">
+                <h2 class="sectionTitle">Federation</h2>
+            </div>
+            <p class="fed-step-desc" style="margin-top:-0.4em;">
+                Watch libraries from other Jellyfin servers as if they were your own. Connect a server, pick what to share, save — that's it.
+            </p>
 
-            <div class="fed-section">
-                <h2>Diagnostics</h2>
-                <div id="fedDiagnostics" class="fed-diagnostic">
-                    <div><strong>Loading…</strong></div>
-                </div>
-                <div>
-                    <button type="button" id="fedBtnRefreshCache" class="fed-success" data-fed-action="refresh-cache">Refresh Cache Now</button>
-                    <button type="button" id="fedBtnProvision" data-fed-action="provision">Provision Libraries</button>
-                    <button type="button" id="fedBtnTestAll" data-fed-action="test-all">Test All Servers</button>
-                    <button type="button" id="fedBtnRefreshDiag" data-fed-action="refresh-diag">Refresh Diagnostics</button>
-                </div>
+            <div id="fedErrorContainer"></div>
+
+            <div class="fed-card fed-statusstrip" id="fedStatusCard">
+                <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
+                <div class="fed-stat"><strong id="fedStatItems">–</strong><span>items federated</span></div>
+                <div class="fed-stat"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div>
+                <div class="fed-spacer"></div>
+                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
             </div>
 
             <form id="fedConfigForm">
-                <div class="fed-section">
-                    <h2>General</h2>
-                    <label for="fedTxtServerUrl">Local Server URL (required for Proxy streaming mode):</label>
-                    <input type="text" id="fedTxtServerUrl" placeholder="http://your-jellyfin:8096" />
-                    <p class="fed-hint" id="fedRequestUrlHint" style="display:none;"></p>
-                    <label for="fedTxtCachePath">Cache Path (blank = plugin data dir):</label>
-                    <input type="text" id="fedTxtCachePath" placeholder="Default" />
-                    <label><input type="checkbox" id="fedChkAutoProvision" /> Auto-provision libraries</label>
-                    <label><input type="checkbox" id="fedChkDedup" /> Enable deduplication by provider ID</label>
-                    <label for="fedTxtDedupIds">Dedup Provider IDs (comma-separated):</label>
-                    <input type="text" id="fedTxtDedupIds" placeholder="imdb,tmdb,tvdb" />
-                    <label for="fedTxtRefreshHours">Refresh interval (hours):</label>
-                    <input type="number" id="fedTxtRefreshHours" min="1" max="168" />
-                </div>
+                <div class="fed-card">
+                    <h2 class="fed-step">1 · Connect your servers</h2>
+                    <p class="fed-step-desc">Add each remote Jellyfin server with its address and an API key (Dashboard → API Keys on that server).</p>
 
-                <div class="fed-section">
-                    <h2>Remote Servers</h2>
                     <div id="fedServerList"></div>
-                    <button type="button" id="fedBtnAddServer" data-fed-action="add-server">Add Server</button>
+
+                    <div class="fed-inline" style="margin-top:0.8em;">
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedNewSrvUrl">Server address</label>
+                            <input type="text" id="fedNewSrvUrl" class="emby-input fed-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedNewSrvKey">API key</label>
+                            <input type="password" id="fedNewSrvKey" class="emby-input fed-input" placeholder="API key from the remote server" autocomplete="new-password" />
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="add-server">Add server</button>
+                    </div>
+                    <p class="fed-hint">New servers are tested automatically when added. Defaults work out of the box — streaming mode and other dials live under each server's "Connection details".</p>
                 </div>
 
-                <div class="fed-section">
-                    <h2>Library Mappings</h2>
-                    <div id="fedMappingList"></div>
-                    <button type="button" id="fedBtnAddMapping" data-fed-action="add-mapping">Add Mapping</button>
+                <div class="fed-card">
+                    <h2 class="fed-step">2 · Choose what to share</h2>
+                    <p class="fed-step-desc">
+                        Each library you check appears on this server as a virtual library.
+                        Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
+                    </p>
+
+                    <div id="fedLibraryPicker">
+                        <p class="fed-muted" id="fedPickerHint">Loading remote libraries…</p>
+                        <div id="fedPickerList"></div>
+                    </div>
+
+                    <details class="fed-details" id="fedCustomMappings">
+                        <summary>Custom virtual libraries (advanced)</summary>
+                        <div class="fed-details-body">
+                            <p class="fed-hint" style="margin-bottom:0.8em;">
+                                Only needed if you want to hand-pick sources, merge libraries with different names, or tweak media types yourself.
+                                These are never touched by the picker above.
+                            </p>
+                            <div id="fedMappingList"></div>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="add-mapping">Add custom library</button>
+                        </div>
+                    </details>
                 </div>
 
-                <div class="fed-section">
-                    <button type="submit" id="fedBtnSave">Save Configuration</button>
+                <div class="fed-card fed-savebar">
+                    <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save</span></button>
+                    <span class="fed-savemsg" id="fedSaveMsg"></span>
                 </div>
+
+                <details class="fed-card fed-details" id="fedAdvancedSettings">
+                    <summary>Advanced settings</summary>
+                    <div class="fed-details-body">
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedTxtServerUrl">This server's public URL (optional override)</label>
+                            <input type="text" id="fedTxtServerUrl" class="emby-input fed-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect. Only needed for Proxy streaming mode behind unusual reverse proxies.</p>
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
+                            <input type="text" id="fedTxtCachePath" class="emby-input fed-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
+                        <div class="fed-input-container" style="margin-top:1em;">
+                            <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
+                            <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedTxtRefreshHours">Refresh interval (hours)</label>
+                            <input type="number" id="fedTxtRefreshHours" class="emby-input fed-input" min="1" max="168" />
+                        </div>
+
+                        <h3 style="margin:1.4em 0 0.4em;font-size:1em;">Diagnostics</h3>
+                        <div id="fedDiagnostics" class="fed-diagnostic"></div>
+                        <div style="margin-top:0.8em;">
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="provision">Provision libraries</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-all">Test all servers</button>
+                        </div>
+                        <div id="fedAdvancedStatus" class="fed-srvstatus" style="display:none;"></div>
+                    </div>
+                </details>
             </form>
+
+            <script type="text/javascript">
+                (function () {
+                    'use strict';
+
+                    var apiBase = window.location.origin;
+                    var currentConfig = { RemoteServers: [], LibraryMappings: [] };
+                    var customMappings = [];
+                    var pickerLibs = [];
+                    var pickerLoaded = false;
+                    var pageEl = null;
+                    var loadWatchdog = null;
+
+                    var COLLECTION_TYPE_MAP = {
+                        movies: { mediaType: 'Movie', label: 'Movies' },
+                        tvshows: { mediaType: 'Series', label: 'TV Shows' },
+                        music: { mediaType: 'MusicAlbum', label: 'Music' },
+                        musicvideos: { mediaType: 'MusicVideo', label: 'Music Videos' },
+                        homevideos: { mediaType: 'Video', label: 'Home Videos' },
+                        photos: { mediaType: 'Photo', label: 'Photos' },
+                        books: { mediaType: 'Book', label: 'Books' },
+                        boxsets: { mediaType: 'BoxSet', label: 'Box Sets' }
+                    };
+                    var PICKER_TYPES = ['Movie', 'Series', 'MusicAlbum', 'MusicVideo', 'Video', 'Photo', 'Book', 'BoxSet'];
+                    var CUSTOM_TYPES = ['Movie', 'Series', 'Season', 'Episode', 'MusicAlbum', 'Audio', 'MusicVideo', 'Book', 'Photo', 'PhotoAlbum', 'Video', 'Playlist', 'BoxSet'];
+
+                    function getToken() {
+                        try {
+                            if (window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
+                                var t = window.ApiClient.accessToken();
+                                if (t) {
+                                    return t;
+                                }
+                            }
+                        } catch (e) { /* fall through to credentials store */ }
+
+                        try {
+                            var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+                            var servers = creds.Servers || [];
+                            var origin = window.location.origin.replace(/\/+$/, '');
+                            var i, s;
+                            for (i = 0; i < servers.length; i++) {
+                                s = servers[i];
+                                if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
+                                    return s.AccessToken;
+                                }
+                            }
+                            for (i = 0; i < servers.length; i++) {
+                                if (servers[i] && servers[i].AccessToken) {
+                                    return servers[i].AccessToken;
+                                }
+                            }
+                        } catch (e) { /* no token available */ }
+
+                        return null;
+                    }
+
+                    function fedFetch(path, options) {
+                        options = options || {};
+                        var headers = {};
+                        if (options.headers) {
+                            for (var k in options.headers) {
+                                if (Object.prototype.hasOwnProperty.call(options.headers, k)) {
+                                    headers[k] = options.headers[k];
+                                }
+                            }
+                        }
+
+                        var token = getToken();
+                        if (token) {
+                            headers['X-Emby-Token'] = token;
+                        }
+
+                        if (options.body && !headers['Content-Type']) {
+                            headers['Content-Type'] = 'application/json';
+                        }
+
+                        options.headers = headers;
+                        return fetch(apiBase + path, options).then(function (r) {
+                            if (r.status === 401 || r.status === 403) {
+                                throw new Error('Not authorized. Open this page from the Jellyfin dashboard while logged in as an administrator.');
+                            }
+
+                            return r;
+                        });
+                    }
+
+                    function q(selector) {
+                        return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
+                    }
+
+                    function qa(selector) {
+                        return (pageEl ? pageEl : document).querySelectorAll(selector);
+                    }
+
+                    function showError(msg) {
+                        var el = q('#fedErrorContainer');
+                        if (el) {
+                            el.innerHTML = '<div class="fed-error">' + escapeHtml(msg) + '</div>';
+                        }
+                    }
+
+                    function clearError() {
+                        var el = q('#fedErrorContainer');
+                        if (el) {
+                            el.innerHTML = '';
+                        }
+                    }
+
+                    function setSaveMsg(msg, isError) {
+                        var el = q('#fedSaveMsg');
+                        if (!el) {
+                            return;
+                        }
+
+                        el.textContent = msg;
+                        el.className = 'fed-savemsg ' + (isError ? 'fed-savemsg-err' : (msg ? 'fed-savemsg-ok' : ''));
+                    }
+
+                    function escapeHtml(s) {
+                        if (s === null || s === undefined) {
+                            return '';
+                        }
+
+                        var d = document.createElement('div');
+                        d.textContent = String(s);
+                        return d.innerHTML;
+                    }
+
+                    function startWatchdog() {
+                        stopWatchdog();
+                        loadWatchdog = setTimeout(function () {
+                            showError('This is taking unusually long. Things to check:\n'
+                                + '• Are you logged in to the Jellyfin dashboard as an administrator?\n'
+                                + '• Is the Jellyfin server reachable (check server logs for Federation errors)?\n'
+                                + '• If you use a reverse proxy with a strict Content-Security-Policy, it may be blocking this page\'s script.');
+                        }, 12000);
+                    }
+
+                    function stopWatchdog() {
+                        if (loadWatchdog) {
+                            clearTimeout(loadWatchdog);
+                            loadWatchdog = null;
+                        }
+                    }
+
+                    /* ---------------- Servers ---------------- */
+
+                    function renderServers() {
+                        var c = q('#fedServerList');
+                        if (!c) {
+                            return;
+                        }
+
+                        var s = currentConfig.RemoteServers || [];
+                        if (s.length === 0) {
+                            c.innerHTML = '<p class="fed-muted">No servers connected yet.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        s.forEach(function (server, i) {
+                            var title = server.Name || server.Url || ('Server ' + (i + 1));
+                            var keyPlaceholder = server.HasApiKey ? '••••••••  (saved — type to replace)' : 'API key';
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
+                            html += '<strong>' + escapeHtml(title) + '</strong>';
+                            if (server.Name && server.Url) {
+                                html += '<span class="fed-server-url">' + escapeHtml(server.Url) + '</span>';
+                            }
+
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-server" data-i="' + i + '">Test</button>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-server" data-i="' + i + '">Remove</button>';
+                            html += '</div>';
+                            html += '<div class="fed-srvstatus" id="fedSrvStatus' + i + '" style="display:none;"></div>';
+                            html += '<details class="fed-details"><summary>Connection details</summary><div class="fed-details-body">';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><label class="fed-label">Name</label>';
+                            html += '<input type="text" class="emby-input fed-input fedSrvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" /></div>';
+                            html += '<div class="fed-input-container"><label class="fed-label">Address</label>';
+                            html += '<input type="text" class="emby-input fed-input fedSrvUrl" data-i="' + i + '" value="' + escapeHtml(server.Url) + '" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>';
+                            html += '</div>';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><label class="fed-label">API key</label>';
+                            html += '<input type="password" class="emby-input fed-input fedSrvKey" data-i="' + i + '" value="" placeholder="' + keyPlaceholder + '" autocomplete="new-password" /></div>';
+                            html += '<div class="fed-input-container"><label class="fed-label">User ID (blank = first user)</label>';
+                            html += '<input type="text" class="emby-input fed-input fedSrvUser" id="fedSrvUser' + i + '" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>';
+                            html += '</div>';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><label class="fed-label">Streaming mode</label>';
+                            html += '<select class="emby-select fed-select fedSrvMode" data-i="' + i + '">';
+                            html += '<option value="0"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (recommended)</option>';
+                            html += '<option value="1"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key, slower)</option>';
+                            html += '</select></div>';
+                            html += '<div class="fed-input-container"><label class="fed-label">Priority (lower = preferred)</label>';
+                            html += '<input type="number" class="emby-input fed-input fedSrvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" /></div>';
+                            html += '</div>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Remote server requires api_key for images</label>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                            html += '</div></details>';
+                            html += '</div>';
+                        });
+                        c.innerHTML = html;
+                    }
+
+                    function collectServer(i) {
+                        var s = currentConfig.RemoteServers[i];
+                        var out = {
+                            Id: s.Id,
+                            Name: s.Name,
+                            Url: s.Url,
+                            ApiKey: '',
+                            UserId: s.UserId,
+                            Enabled: s.Enabled !== false,
+                            StreamingMode: s.StreamingMode || 0,
+                            Priority: s.Priority || 0,
+                            RequireApiKeyForImages: !!s.RequireApiKeyForImages
+                        };
+                        var n = q('.fedSrvName[data-i="' + i + '"]');
+                        var u = q('.fedSrvUrl[data-i="' + i + '"]');
+                        var k = q('.fedSrvKey[data-i="' + i + '"]');
+                        var ui = q('.fedSrvUser[data-i="' + i + '"]');
+                        var m = q('.fedSrvMode[data-i="' + i + '"]');
+                        var p = q('.fedSrvPri[data-i="' + i + '"]');
+                        var ik = q('.fedSrvImgKey[data-i="' + i + '"]');
+                        var e = q('.fedSrvEnabled[data-i="' + i + '"]');
+                        if (n) { out.Name = n.value.trim(); }
+                        if (u) { out.Url = u.value.trim(); }
+                        if (k && k.value) { out.ApiKey = k.value; }
+                        if (ui) { out.UserId = ui.value.trim(); }
+                        if (m) { out.StreamingMode = parseInt(m.value, 10) || 0; }
+                        if (p) { out.Priority = parseInt(p.value, 10) || 0; }
+                        if (ik) { out.RequireApiKeyForImages = ik.checked; }
+                        if (e) { out.Enabled = e.checked; }
+                        return out;
+                    }
+
+                    function setServerStatus(i, msg, kind) {
+                        var st = q('#fedSrvStatus' + i);
+                        if (!st) {
+                            return;
+                        }
+
+                        st.style.display = 'block';
+                        st.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                        st.innerHTML = msg;
+                    }
+
+                    function setServerDot(i, state) {
+                        var dot = q('#fedSrvDot' + i);
+                        if (dot) {
+                            dot.className = 'fed-dot' + (state === 'ok' ? ' fed-dot-ok' : (state === 'err' ? ' fed-dot-err' : ''));
+                        }
+                    }
+
+                    function saveServerDetails(i, silent) {
+                        var server = collectServer(i);
+                        if (!server.Url) {
+                            return Promise.resolve();
+                        }
+
+                        return fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(server.Id), {
+                            method: 'PUT',
+                            body: JSON.stringify(server)
+                        })
+                        .then(function (r) {
+                            if (!r.ok) {
+                                return r.text().then(function (t) { throw new Error(t || 'Failed to save server'); });
+                            }
+
+                            var s = currentConfig.RemoteServers[i];
+                            s.Name = server.Name;
+                            s.Url = server.Url;
+                            s.UserId = server.UserId;
+                            s.Enabled = server.Enabled;
+                            s.StreamingMode = server.StreamingMode;
+                            s.Priority = server.Priority;
+                            s.RequireApiKeyForImages = server.RequireApiKeyForImages;
+                            if (server.ApiKey) {
+                                s.HasApiKey = true;
+                            }
+                        })
+                        .catch(function (e) {
+                            if (!silent) {
+                                setServerStatus(i, 'Save failed: ' + escapeHtml(e.message), 'err');
+                            }
+                        });
+                    }
+
+                    function addServer() {
+                        clearError();
+                        var urlEl = q('#fedNewSrvUrl');
+                        var keyEl = q('#fedNewSrvKey');
+                        var url = urlEl ? urlEl.value.trim() : '';
+                        var key = keyEl ? keyEl.value.trim() : '';
+                        if (!url) {
+                            showError('Enter the server address first.');
+                            return;
+                        }
+
+                        if (!key) {
+                            showError('Enter an API key from the remote server (Dashboard → API Keys there).');
+                            return;
+                        }
+
+                        setSaveMsg('Adding server…');
+                        var newServer = {
+                            Name: '',
+                            Url: url,
+                            ApiKey: key,
+                            UserId: '',
+                            Enabled: true,
+                            StreamingMode: 0,
+                            Priority: 0,
+                            RequireApiKeyForImages: false
+                        };
+                        fedFetch('/Plugins/Federation/Servers', {
+                            method: 'POST',
+                            body: JSON.stringify(newServer)
+                        })
+                        .then(function (r) {
+                            return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t); });
+                        })
+                        .then(function (res) {
+                            var added = res.server;
+                            // Auto-test to fill in name + user id.
+                            return fedFetch('/Plugins/Federation/TestServer', {
+                                method: 'POST',
+                                body: JSON.stringify({ Id: added.Id, Url: url })
+                            })
+                            .then(function (r) { return r.json(); })
+                            .then(function (test) {
+                                if (test && test.success && test.serverInfo) {
+                                    var update = {
+                                        Name: test.serverInfo.name || '',
+                                        Url: url,
+                                        UserId: test.serverInfo.suggestedUserId || '',
+                                        Enabled: true,
+                                        StreamingMode: 0,
+                                        Priority: 0,
+                                        RequireApiKeyForImages: false
+                                    };
+                                    return fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(added.Id), {
+                                        method: 'PUT',
+                                        body: JSON.stringify(update)
+                                    }).then(function () {
+                                        setSaveMsg('Server connected: ' + (test.serverInfo.name || url));
+                                    });
+                                }
+
+                                setSaveMsg('Server added, but the connection test failed — check the address and API key under "Connection details".', true);
+                                return null;
+                            });
+                        })
+                        .then(function () {
+                            if (urlEl) { urlEl.value = ''; }
+                            if (keyEl) { keyEl.value = ''; }
+                            return loadConfiguration(true);
+                        })
+                        .then(function () {
+                            loadLibraryPicker();
+                        })
+                        .catch(function (e) {
+                            showError('Could not add server: ' + e.message);
+                            setSaveMsg('');
+                        });
+                    }
+
+                    function removeServer(i) {
+                        var s = currentConfig.RemoteServers[i];
+                        if (!s) {
+                            return;
+                        }
+
+                        if (!window.confirm('Remove "' + (s.Name || s.Url) + '"? Its libraries will stop being shared.')) {
+                            return;
+                        }
+
+                        clearError();
+                        fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(s.Id), { method: 'DELETE' })
+                        .then(function (r) {
+                            if (!r.ok) {
+                                return r.text().then(function (t) { throw new Error(t); });
+                            }
+
+                            return loadConfiguration(true);
+                        })
+                        .then(function () {
+                            loadLibraryPicker();
+                            setSaveMsg('Server removed.');
+                        })
+                        .catch(function (e) { showError('Remove failed: ' + e.message); });
+                    }
+
+                    function testServer(i) {
+                        var st = q('#fedSrvStatus' + i);
+                        setServerDot(i, 'unknown');
+                        setServerStatus(i, 'Testing…', 'info');
+                        var server = collectServer(i);
+                        fedFetch('/Plugins/Federation/TestServer', {
+                            method: 'POST',
+                            body: JSON.stringify(server)
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (res.success) {
+                                setServerDot(i, 'ok');
+                                setServerStatus(i, '<strong>Connected</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version), 'ok');
+                                if (res.serverInfo.suggestedUserId && !server.UserId) {
+                                    var ui = q('#fedSrvUser' + i);
+                                    if (ui) {
+                                        ui.value = res.serverInfo.suggestedUserId;
+                                    }
+
+                                    saveServerDetails(i, true);
+                                }
+                            } else {
+                                setServerDot(i, 'err');
+                                setServerStatus(i, 'Failed: ' + escapeHtml(res.message), 'err');
+                            }
+                        })
+                        .catch(function (e) {
+                            setServerDot(i, 'err');
+                            setServerStatus(i, 'Error: ' + escapeHtml(e.message), 'err');
+                        });
+                    }
+
+                    /* ---------------- Library picker ---------------- */
+
+                    function friendlyType(collectionType) {
+                        var info = COLLECTION_TYPE_MAP[String(collectionType || '').toLowerCase()];
+                        return info ? info.label : null;
+                    }
+
+                    function inferMediaType(collectionType) {
+                        var info = COLLECTION_TYPE_MAP[String(collectionType || '').toLowerCase()];
+                        return info ? info.mediaType : null;
+                    }
+
+                    function loadLibraryPicker() {
+                        var hint = q('#fedPickerHint');
+                        var list = q('#fedPickerList');
+                        if (!hint || !list) {
+                            return;
+                        }
+
+                        if (!currentConfig.RemoteServers || currentConfig.RemoteServers.length === 0) {
+                            pickerLoaded = false;
+                            pickerLibs = [];
+                            hint.textContent = 'Connect a server above and its libraries will appear here.';
+                            hint.style.display = 'block';
+                            list.innerHTML = '';
+                            return;
+                        }
+
+                        hint.textContent = 'Loading remote libraries…';
+                        hint.style.display = 'block';
+                        list.innerHTML = '';
+                        fedFetch('/Plugins/Federation/GetRemoteLibraries')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success || !res.servers || res.servers.length === 0) {
+                                pickerLoaded = false;
+                                hint.textContent = 'No servers available yet.';
+                                return;
+                            }
+
+                            pickerLibs = [];
+                            var errors = [];
+                            res.servers.forEach(function (srv) {
+                                if (srv.error) {
+                                    errors.push(srv.serverName + ': ' + srv.error);
+                                }
+
+                                (srv.libraries || []).forEach(function (lib) {
+                                    var selected = false;
+                                    var selectedType = null;
+                                    (currentConfig.LibraryMappings || []).forEach(function (m) {
+                                        if (!m.AutoManaged) {
+                                            return;
+                                        }
+
+                                        (m.RemoteLibrarySources || []).forEach(function (src) {
+                                            if (src.ServerId === srv.serverId && src.RemoteLibraryId === lib.id) {
+                                                selected = true;
+                                                selectedType = m.MediaType;
+                                            }
+                                        });
+                                    });
+
+                                    pickerLibs.push({
+                                        serverId: srv.serverId,
+                                        serverName: srv.serverName,
+                                        libraryId: lib.id,
+                                        libraryName: lib.name,
+                                        collectionType: lib.collectionType,
+                                        itemCount: lib.itemCount || 0,
+                                        mediaType: selectedType || inferMediaType(lib.collectionType) || 'Video',
+                                        knownType: !!inferMediaType(lib.collectionType),
+                                        selected: selected
+                                    });
+                                });
+                            });
+                            pickerLoaded = true;
+                            renderPicker(errors);
+                        })
+                        .catch(function (e) {
+                            pickerLoaded = false;
+                            hint.textContent = 'Could not load remote libraries: ' + e.message;
+                        });
+                    }
+
+                    function renderPicker(errors) {
+                        var hint = q('#fedPickerHint');
+                        var list = q('#fedPickerList');
+                        if (!hint || !list) {
+                            return;
+                        }
+
+                        if (pickerLibs.length === 0) {
+                            hint.textContent = 'No libraries found on the connected servers.';
+                            hint.style.display = 'block';
+                            list.innerHTML = '';
+                            return;
+                        }
+
+                        hint.style.display = 'none';
+                        var html = '';
+                        if (errors && errors.length) {
+                            html += '<div class="fed-error" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>';
+                        }
+
+                        html += '<div class="fed-picker-actions"><a data-fed-action="picker-all">Select all</a><a data-fed-action="picker-none">Clear</a></div>';
+
+                        var byServer = {};
+                        var order = [];
+                        pickerLibs.forEach(function (lib, idx) {
+                            if (!byServer[lib.serverId]) {
+                                byServer[lib.serverId] = { name: lib.serverName, items: [] };
+                                order.push(lib.serverId);
+                            }
+
+                            byServer[lib.serverId].items.push(idx);
+                        });
+
+                        order.forEach(function (sid) {
+                            var group = byServer[sid];
+                            html += '<div class="fed-libgroup"><strong>' + escapeHtml(group.name || 'Server') + '</strong>';
+                            group.items.forEach(function (idx) {
+                                var lib = pickerLibs[idx];
+                                var meta = [];
+                                var ft = friendlyType(lib.collectionType);
+                                if (ft) {
+                                    meta.push(ft);
+                                }
+
+                                meta.push(lib.itemCount + ' items');
+                                html += '<label class="fed-librow">';
+                                html += '<input type="checkbox" class="fed-check fedPickLib" data-idx="' + idx + '"' + (lib.selected ? ' checked' : '') + ' />';
+                                html += '<span>' + escapeHtml(lib.libraryName) + '</span>';
+                                html += '<span class="fed-libmeta">' + escapeHtml(meta.join(' · ')) + '</span>';
+                                if (!lib.knownType) {
+                                    html += '<select class="emby-select fed-select fed-libtype fedPickType" data-idx="' + idx + '">';
+                                    PICKER_TYPES.forEach(function (t) {
+                                        html += '<option value="' + t + '"' + (lib.mediaType === t ? ' selected' : '') + '>as: ' + t + '</option>';
+                                    });
+                                    html += '</select>';
+                                }
+
+                                html += '</label>';
+                            });
+                            html += '</div>';
+                        });
+
+                        list.innerHTML = html;
+                    }
+
+                    function buildAutoMappings() {
+                        var groups = {};
+                        var order = [];
+                        pickerLibs.forEach(function (lib) {
+                            if (!lib.selected) {
+                                return;
+                            }
+
+                            var key = lib.libraryName.trim().toLowerCase() + '|' + lib.mediaType;
+                            if (!groups[key]) {
+                                groups[key] = { name: lib.libraryName.trim(), mediaType: lib.mediaType, sources: [] };
+                                order.push(key);
+                            }
+
+                            groups[key].sources.push({
+                                ServerId: lib.serverId,
+                                ServerName: lib.serverName,
+                                RemoteLibraryId: lib.libraryId,
+                                RemoteLibraryName: lib.libraryName
+                            });
+                        });
+
+                        var used = {};
+                        customMappings.forEach(function (m) {
+                            used[(m.LocalLibraryName || '').toLowerCase()] = true;
+                        });
+
+                        return order.map(function (key) {
+                            var g = groups[key];
+                            var name = g.name;
+                            if (used[name.toLowerCase()]) {
+                                name = name + ' (' + g.mediaType + ')';
+                            }
+
+                            var candidate = name;
+                            var n = 2;
+                            while (used[candidate.toLowerCase()]) {
+                                candidate = name + ' ' + n;
+                                n++;
+                            }
+
+                            used[candidate.toLowerCase()] = true;
+                            var serverIds = [];
+                            g.sources.forEach(function (s) {
+                                if (serverIds.indexOf(s.ServerId) < 0) {
+                                    serverIds.push(s.ServerId);
+                                }
+                            });
+
+                            return {
+                                LocalLibraryName: candidate,
+                                MediaType: g.mediaType,
+                                RemoteServerIds: serverIds,
+                                RemoteLibrarySources: g.sources,
+                                Enabled: true,
+                                AutoProvision: true,
+                                AutoManaged: true
+                            };
+                        });
+                    }
+
+                    /* ---------------- Custom mappings (advanced) ---------------- */
+
+                    function renderMappings() {
+                        var c = q('#fedMappingList');
+                        if (!c) {
+                            return;
+                        }
+
+                        if (customMappings.length === 0) {
+                            c.innerHTML = '<p class="fed-muted">No custom libraries.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        customMappings.forEach(function (mp, i) {
+                            html += '<div class="fed-mapping">';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><label class="fed-label">Library name (shown in Jellyfin)</label>';
+                            html += '<input type="text" class="emby-input fed-input fedMapName" data-i="' + i + '" value="' + escapeHtml(mp.LocalLibraryName) + '" /></div>';
+                            html += '<div class="fed-input-container"><label class="fed-label">Media type</label>';
+                            html += '<select class="emby-select fed-select fedMapType" data-i="' + i + '">';
+                            CUSTOM_TYPES.forEach(function (t) {
+                                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
+                            });
+                            html += '</select></div>';
+                            html += '</div>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedMapAuto" data-i="' + i + '" ' + (mp.AutoProvision !== false ? 'checked' : '') + ' /> Auto-provision library</label>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedMapEnabled" data-i="' + i + '" ' + (mp.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                            html += '<div><button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="browse" data-i="' + i + '">Pick remote libraries</button></div>';
+                            html += '<div id="fedMapLibs' + i + '"></div>';
+                            if (mp.RemoteLibrarySources && mp.RemoteLibrarySources.length > 0) {
+                                html += '<div class="fed-selected">';
+                                html += '<strong>Sources (' + mp.RemoteLibrarySources.length + '):</strong><ul style="margin:0.3em 0;padding-left:1.4em;">';
+                                mp.RemoteLibrarySources.forEach(function (src) {
+                                    html += '<li>' + escapeHtml(src.ServerName) + ' → ' + escapeHtml(src.RemoteLibraryName) + '</li>';
+                                });
+                                html += '</ul></div>';
+                            }
+
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-mapping" data-i="' + i + '" style="margin-top:0.5em;">Remove</button>';
+                            html += '</div>';
+                        });
+                        c.innerHTML = html;
+                    }
+
+                    function collectMappings() {
+                        customMappings.forEach(function (mp, i) {
+                            var n = q('.fedMapName[data-i="' + i + '"]');
+                            var t = q('.fedMapType[data-i="' + i + '"]');
+                            var a = q('.fedMapAuto[data-i="' + i + '"]');
+                            var en = q('.fedMapEnabled[data-i="' + i + '"]');
+                            if (n) { mp.LocalLibraryName = n.value; }
+                            if (t) { mp.MediaType = t.value; }
+                            if (a) { mp.AutoProvision = a.checked; }
+                            if (en) { mp.Enabled = en.checked; }
+                        });
+                    }
+
+                    function browseLibraries(i) {
+                        var c = q('#fedMapLibs' + i);
+                        if (!c) {
+                            return;
+                        }
+
+                        c.innerHTML = '<p class="fed-muted">Loading…</p>';
+                        fedFetch('/Plugins/Federation/GetRemoteLibraries')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success || !res.servers) {
+                                c.innerHTML = '<p class="fed-muted">No servers available.</p>';
+                                return;
+                            }
+
+                            var mp = customMappings[i];
+                            if (!mp.RemoteLibrarySources) {
+                                mp.RemoteLibrarySources = [];
+                            }
+
+                            var html = '<div class="fed-liblist">';
+                            res.servers.forEach(function (srv) {
+                                html += '<strong>' + escapeHtml(srv.serverName) + '</strong>';
+                                if (srv.error) {
+                                    html += '<div style="color:#ff6666;">' + escapeHtml(srv.error) + '</div>';
+                                }
+
+                                (srv.libraries || []).forEach(function (lib) {
+                                    var checked = mp.RemoteLibrarySources.some(function (x) { return x.ServerId === srv.serverId && x.RemoteLibraryId === lib.id; });
+                                    html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + ' (' + escapeHtml(lib.collectionType) + ', ' + (lib.itemCount || 0) + ')</label>';
+                                });
+                            });
+                            html += '</div><button is="emby-button" type="button" class="raised emby-button" data-fed-action="apply-libs" data-i="' + i + '" style="margin-top:0.6em;">Apply</button>';
+                            c.innerHTML = html;
+                        })
+                        .catch(function (e) { c.innerHTML = '<p class="fed-muted">' + escapeHtml(e.message) + '</p>'; });
+                    }
+
+                    function applyLibraries(i) {
+                        var mp = customMappings[i];
+                        var selected = [];
+                        var boxes = qa('.fedChkLib[data-mi="' + i + '"]:checked');
+                        for (var n = 0; n < boxes.length; n++) {
+                            var cb = boxes[n];
+                            selected.push({
+                                ServerId: cb.getAttribute('data-sid'),
+                                ServerName: cb.getAttribute('data-sname'),
+                                RemoteLibraryId: cb.getAttribute('data-lid'),
+                                RemoteLibraryName: cb.getAttribute('data-lname')
+                            });
+                        }
+
+                        mp.RemoteLibrarySources = selected;
+                        renderMappings();
+                    }
+
+                    /* ---------------- Status / diagnostics ---------------- */
+
+                    function loadStatus() {
+                        fedFetch('/Plugins/Federation/Status')
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            var se = q('#fedStatServers');
+                            var ie = q('#fedStatItems');
+                            var re = q('#fedStatRefresh');
+                            if (se) { se.textContent = (d.activeServers || 0) + '/' + (d.totalServers || 0); }
+                            if (ie) { ie.textContent = (d.federatedItems || 0).toLocaleString(); }
+                            if (re) { re.textContent = d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never'; }
+                        })
+                        .catch(function () { /* status strip is best-effort */ });
+                    }
+
+                    function loadDiagnostics() {
+                        fedFetch('/Plugins/Federation/SystemInfo')
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            var el = q('#fedDiagnostics');
+                            if (el) {
+                                el.innerHTML =
+                                    '<div><strong>This server\'s URL</strong>' + escapeHtml(d.detectedUrl || ('auto (' + (d.requestUrl || 'unknown') + ')')) + '</div>' +
+                                    '<div><strong>Cache Path</strong>' + escapeHtml(d.cachePath || 'default') + '</div>' +
+                                    '<div><strong>Cache Entries</strong>' + (d.cacheEntries || 0) + '</div>' +
+                                    '<div><strong>Last Refresh</strong>' + (d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never') + '</div>' +
+                                    '<div><strong>Auto-Provision</strong>' + (d.autoProvisionLibraries ? 'Yes' : 'No') + '</div>' +
+                                    '<div><strong>Merge Duplicates</strong>' + (d.enableDedup ? 'On (' + (d.dedupProviderIds || []).join(', ') + ')' : 'Off') + '</div>' +
+                                    '<div><strong>Refresh Interval</strong>' + (d.refreshIntervalHours || 1) + 'h</div>';
+                            }
+                        })
+                        .catch(function () { /* diagnostics are best-effort */ });
+                    }
+
+                    function setAdvancedStatus(msg, kind) {
+                        var el = q('#fedAdvancedStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                        el.textContent = msg;
+                    }
+
+                    /* ---------------- Load / save ---------------- */
+
+                    function loadConfiguration(silent) {
+                        if (!silent) {
+                            clearError();
+                            startWatchdog();
+                        }
+
+                        return fedFetch('/Plugins/Federation/Configuration')
+                        .then(function (r) { return r.json(); })
+                        .then(function (c) {
+                            stopWatchdog();
+                            currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
+                            if (!currentConfig.RemoteServers) { currentConfig.RemoteServers = []; }
+                            if (!currentConfig.LibraryMappings) { currentConfig.LibraryMappings = []; }
+                            customMappings = currentConfig.LibraryMappings.filter(function (m) { return !m.AutoManaged; });
+
+                            q('#fedTxtServerUrl').value = currentConfig.ServerUrl || '';
+                            q('#fedTxtCachePath').value = currentConfig.CachePath || '';
+                            q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
+                            q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
+                            q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
+                            q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
+
+                            renderServers();
+                            renderMappings();
+                            loadStatus();
+                            loadDiagnostics();
+                        })
+                        .catch(function (e) {
+                            stopWatchdog();
+                            showError('Load failed: ' + e.message);
+                        });
+                    }
+
+                    function saveConfiguration() {
+                        clearError();
+                        setSaveMsg('Saving…');
+                        collectMappings();
+
+                        var autoMappings = pickerLoaded
+                            ? buildAutoMappings()
+                            : (currentConfig.LibraryMappings || []).filter(function (m) { return m.AutoManaged; });
+
+                        var config = {
+                            ServerUrl: q('#fedTxtServerUrl').value.trim(),
+                            CachePath: q('#fedTxtCachePath').value.trim(),
+                            EnableDedup: q('#fedChkDedup').checked,
+                            DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+                            AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
+                            RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
+                            RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
+                                return {
+                                    Id: s.Id,
+                                    Name: s.Name,
+                                    Url: s.Url,
+                                    ApiKey: '',
+                                    UserId: s.UserId,
+                                    Enabled: s.Enabled !== false,
+                                    StreamingMode: s.StreamingMode || 0,
+                                    Priority: s.Priority || 0,
+                                    RequireApiKeyForImages: !!s.RequireApiKeyForImages
+                                };
+                            }),
+                            LibraryMappings: customMappings.concat(autoMappings)
+                        };
+
+                        fedFetch('/Plugins/Federation/Configuration', {
+                            method: 'POST',
+                            body: JSON.stringify(config)
+                        })
+                        .then(function (r) {
+                            return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t); });
+                        })
+                        .then(function () {
+                            return loadConfiguration(true);
+                        })
+                        .then(function () {
+                            setSaveMsg('Saved. Virtual libraries will appear in Jellyfin shortly.');
+                        })
+                        .catch(function (e) {
+                            showError('Save failed: ' + e.message);
+                            setSaveMsg('Save failed', true);
+                        });
+                    }
+
+                    /* ---------------- Wiring ---------------- */
+
+                    function attachHandlers(page) {
+                        if (page.dataset.handlersAttached) {
+                            return;
+                        }
+
+                        page.dataset.handlersAttached = '1';
+
+                        page.addEventListener('click', function (e) {
+                            var t = e.target && e.target.closest ? e.target.closest('[data-fed-action]') : null;
+                            if (!t || !page.contains(t)) {
+                                return;
+                            }
+
+                            e.preventDefault();
+                            var i = parseInt(t.getAttribute('data-i') || '0', 10);
+                            switch (t.getAttribute('data-fed-action')) {
+                                case 'add-server':
+                                    addServer();
+                                    break;
+                                case 'remove-server':
+                                    removeServer(i);
+                                    break;
+                                case 'test-server':
+                                    testServer(i);
+                                    break;
+                                case 'picker-all':
+                                    pickerLibs.forEach(function (lib) { lib.selected = true; });
+                                    renderPicker();
+                                    break;
+                                case 'picker-none':
+                                    pickerLibs.forEach(function (lib) { lib.selected = false; });
+                                    renderPicker();
+                                    break;
+                                case 'add-mapping':
+                                    collectMappings();
+                                    customMappings.push({ LocalLibraryName: '', MediaType: 'Movie', RemoteServerIds: [], RemoteLibrarySources: [], Enabled: true, AutoProvision: true, AutoManaged: false });
+                                    renderMappings();
+                                    break;
+                                case 'remove-mapping':
+                                    collectMappings();
+                                    customMappings.splice(i, 1);
+                                    renderMappings();
+                                    break;
+                                case 'browse':
+                                    browseLibraries(i);
+                                    break;
+                                case 'apply-libs':
+                                    applyLibraries(i);
+                                    break;
+                                case 'refresh-cache':
+                                    clearError();
+                                    setSaveMsg('Refreshing cache…');
+                                    fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (res) {
+                                        setSaveMsg(res.Message || 'Refresh complete', res.Success === false);
+                                        loadStatus();
+                                        loadDiagnostics();
+                                    })
+                                    .catch(function (err) { showError('Refresh failed: ' + err.message); setSaveMsg('Refresh failed', true); });
+                                    break;
+                                case 'provision':
+                                    setAdvancedStatus('Provisioning…', 'info');
+                                    fedFetch('/Plugins/Federation/ProvisionLibraries', { method: 'POST' })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (res) { setAdvancedStatus(res.message || 'Libraries provisioned.', 'ok'); })
+                                    .catch(function (err) { setAdvancedStatus('Provision failed: ' + err.message, 'err'); });
+                                    break;
+                                case 'test-all':
+                                    setAdvancedStatus('Testing servers…', 'info');
+                                    fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (res) {
+                                        var results = res.results || [];
+                                        var online = results.filter(function (x) { return x.online; }).length;
+                                        setAdvancedStatus('Servers online: ' + online + '/' + results.length, online === results.length ? 'ok' : 'err');
+                                    })
+                                    .catch(function (err) { setAdvancedStatus('Test failed: ' + err.message, 'err'); });
+                                    break;
+                            }
+                        });
+
+                        page.addEventListener('change', function (e) {
+                            var t = e.target;
+                            if (!t || !t.classList) {
+                                return;
+                            }
+
+                            if (t.classList.contains('fedPickLib')) {
+                                var idx = parseInt(t.getAttribute('data-idx'), 10);
+                                if (pickerLibs[idx]) {
+                                    pickerLibs[idx].selected = t.checked;
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedPickType')) {
+                                var tidx = parseInt(t.getAttribute('data-idx'), 10);
+                                if (pickerLibs[tidx]) {
+                                    pickerLibs[tidx].mediaType = t.value;
+                                }
+
+                                return;
+                            }
+
+                            var serverClasses = ['fedSrvName', 'fedSrvUrl', 'fedSrvKey', 'fedSrvUser', 'fedSrvMode', 'fedSrvPri', 'fedSrvImgKey', 'fedSrvEnabled'];
+                            for (var n = 0; n < serverClasses.length; n++) {
+                                if (t.classList.contains(serverClasses[n])) {
+                                    var si = parseInt(t.getAttribute('data-i') || '0', 10);
+                                    saveServerDetails(si, true).then(function () {
+                                        loadStatus();
+                                    });
+                                    return;
+                                }
+                            }
+                        });
+
+                        var form = page.querySelector('#fedConfigForm');
+                        if (form) {
+                            form.addEventListener('submit', function (e) {
+                                e.preventDefault();
+                                saveConfiguration();
+                            });
+                        }
+                    }
+
+                    function initPage(page) {
+                        pageEl = page;
+                        attachHandlers(page);
+                        loadConfiguration(false).then(function () {
+                            loadLibraryPicker();
+                        });
+                    }
+
+                    if (!window.__federationPageshowBound) {
+                        window.__federationPageshowBound = true;
+                        document.addEventListener('pageshow', function (e) {
+                            if (e.target && e.target.id === 'federationConfigPage') {
+                                initPage(e.target);
+                            }
+                        });
+                    }
+
+                    var initial = document.getElementById('federationConfigPage');
+                    if (initial) {
+                        initPage(initial);
+                    }
+                })();
+            </script>
         </div>
     </div>
 </div>
-
-<script>
-(function () {
-    'use strict';
-
-    var apiBase = window.location.origin;
-    var currentConfig = { RemoteServers: [], LibraryMappings: [] };
-    var pageEl = null;
-
-    function getToken() {
-        try {
-            if (window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
-                var t = window.ApiClient.accessToken();
-                if (t) {
-                    return t;
-                }
-            }
-        } catch (e) { /* fall through to credentials store */ }
-
-        try {
-            var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
-            var servers = creds.Servers || [];
-            var origin = window.location.origin.replace(/\/+$/, '');
-            var i, s;
-            for (i = 0; i < servers.length; i++) {
-                s = servers[i];
-                if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
-                    return s.AccessToken;
-                }
-            }
-            for (i = 0; i < servers.length; i++) {
-                if (servers[i] && servers[i].AccessToken) {
-                    return servers[i].AccessToken;
-                }
-            }
-        } catch (e) { /* no token available */ }
-
-        return null;
-    }
-
-    function fedFetch(path, options) {
-        options = options || {};
-        var headers = {};
-        if (options.headers) {
-            for (var k in options.headers) {
-                if (Object.prototype.hasOwnProperty.call(options.headers, k)) {
-                    headers[k] = options.headers[k];
-                }
-            }
-        }
-
-        var token = getToken();
-        if (token) {
-            headers['X-Emby-Token'] = token;
-        }
-
-        if (options.body && !headers['Content-Type']) {
-            headers['Content-Type'] = 'application/json';
-        }
-
-        options.headers = headers;
-        return fetch(apiBase + path, options).then(function (r) {
-            if (r.status === 401 || r.status === 403) {
-                throw new Error('Not authorized. Open this page from the Jellyfin dashboard while logged in as an administrator.');
-            }
-
-            return r;
-        });
-    }
-
-    function q(selector) {
-        return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
-    }
-
-    function qa(selector) {
-        return (pageEl ? pageEl : document).querySelectorAll(selector);
-    }
-
-    function setStatus(msg, isError) {
-        var el = q('#fedStatusContainer');
-        if (!el) {
-            return;
-        }
-
-        el.textContent = msg;
-        el.style.background = isError ? 'rgba(255,68,68,0.2)' : 'rgba(82,181,75,0.2)';
-    }
-
-    function showError(msg) {
-        var el = q('#fedErrorContainer');
-        if (el) {
-            el.innerHTML = '<div class="fed-error">' + escapeHtml(msg) + '</div>';
-        }
-    }
-
-    function clearError() {
-        var el = q('#fedErrorContainer');
-        if (el) {
-            el.innerHTML = '';
-        }
-    }
-
-    function escapeHtml(s) {
-        if (s === null || s === undefined) {
-            return '';
-        }
-
-        var d = document.createElement('div');
-        d.textContent = String(s);
-        return d.innerHTML;
-    }
-
-    function generateGuid() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-            var r = Math.random() * 16 | 0;
-            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-        });
-    }
-
-    function renderServers() {
-        var c = q('#fedServerList');
-        if (!c) {
-            return;
-        }
-
-        var s = currentConfig.RemoteServers || [];
-        if (s.length === 0) {
-            c.innerHTML = '<p class="fed-muted">No servers configured.</p>';
-            return;
-        }
-
-        var html = '';
-        s.forEach(function (server, i) {
-            var keyPlaceholder = server.HasApiKey ? '•••• (saved — blank keeps current)' : 'API key';
-            html += '<div class="fed-subsection">';
-            html += '<h3>Server ' + (i + 1) + '</h3>';
-            html += '<label>Name:</label><input type="text" class="fedSrvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" />';
-            html += '<label>URL:</label><input type="text" class="fedSrvUrl" data-i="' + i + '" value="' + escapeHtml(server.Url) + '" placeholder="http://server:8096" />';
-            html += '<label>API Key:</label><input type="password" class="fedSrvKey" data-i="' + i + '" value="" placeholder="' + keyPlaceholder + '" autocomplete="new-password" />';
-            html += '<label>User ID (blank = first user):</label><input type="text" class="fedSrvUser" id="fedSrvUser' + i + '" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" />';
-            html += '<label>Streaming Mode:</label><select class="fedSrvMode" data-i="' + i + '">';
-            html += '<option value="Direct"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (remote URL with api_key)</option>';
-            html += '<option value="Proxy"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key)</option>';
-            html += '</select>';
-            html += '<label>Priority (lower = preferred source):</label><input type="number" class="fedSrvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" />';
-            html += '<label><input type="checkbox" class="fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Require api_key for image fetches</label>';
-            html += '<label><input type="checkbox" class="fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
-            html += '<div>';
-            html += '<button type="button" data-fed-action="test-server" data-i="' + i + '">Test</button>';
-            html += '<button type="button" class="fed-remove" data-fed-action="remove-server" data-i="' + i + '">Remove</button>';
-            html += '</div>';
-            html += '<div id="fedSrvStatus' + i + '" style="margin-top:10px;display:none;padding:8px;border-radius:4px;"></div>';
-            html += '</div>';
-        });
-        c.innerHTML = html;
-    }
-
-    function renderMappings() {
-        var c = q('#fedMappingList');
-        if (!c) {
-            return;
-        }
-
-        var m = currentConfig.LibraryMappings || [];
-        if (m.length === 0) {
-            c.innerHTML = '<p class="fed-muted">No mappings configured.</p>';
-            return;
-        }
-
-        var html = '';
-        m.forEach(function (mp, i) {
-            html += '<div class="fed-subsection">';
-            html += '<h3>Mapping ' + (i + 1) + '</h3>';
-            html += '<label>Library Name (shown in Jellyfin):</label>';
-            html += '<input type="text" class="fedMapName" data-i="' + i + '" value="' + escapeHtml(mp.LocalLibraryName) + '" />';
-            html += '<label>Media Type:</label><select class="fedMapType" data-i="' + i + '">';
-            ['Movie', 'Series', 'Season', 'Episode', 'MusicAlbum', 'Audio', 'MusicVideo', 'Book', 'Photo', 'PhotoAlbum', 'Video', 'Playlist', 'BoxSet'].forEach(function (t) {
-                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
-            });
-            html += '</select>';
-            html += '<label><input type="checkbox" class="fedMapAuto" data-i="' + i + '" ' + (mp.AutoProvision !== false ? 'checked' : '') + ' /> Auto-provision library</label>';
-            html += '<label><input type="checkbox" class="fedMapEnabled" data-i="' + i + '" ' + (mp.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
-            html += '<div><button type="button" data-fed-action="browse" data-i="' + i + '">Browse Remote Libraries</button></div>';
-            html += '<div id="fedMapLibs' + i + '" style="margin-top:10px;"></div>';
-            if (mp.RemoteLibrarySources && mp.RemoteLibrarySources.length > 0) {
-                html += '<div class="fed-selected">';
-                html += '<strong>Selected (' + mp.RemoteLibrarySources.length + '):</strong><ul style="margin:5px 0;padding-left:20px;">';
-                mp.RemoteLibrarySources.forEach(function (src) {
-                    html += '<li>' + escapeHtml(src.ServerName) + ' → ' + escapeHtml(src.RemoteLibraryName) + '</li>';
-                });
-                html += '</ul></div>';
-            }
-
-            html += '<button type="button" class="fed-remove" data-fed-action="remove-mapping" data-i="' + i + '" style="margin-top:10px;">Remove</button>';
-            html += '</div>';
-        });
-        c.innerHTML = html;
-    }
-
-    function collectFormData() {
-        (currentConfig.RemoteServers || []).forEach(function (s, i) {
-            var n = q('.fedSrvName[data-i="' + i + '"]');
-            var u = q('.fedSrvUrl[data-i="' + i + '"]');
-            var k = q('.fedSrvKey[data-i="' + i + '"]');
-            var ui = q('.fedSrvUser[data-i="' + i + '"]');
-            var m = q('.fedSrvMode[data-i="' + i + '"]');
-            var p = q('.fedSrvPri[data-i="' + i + '"]');
-            var ik = q('.fedSrvImgKey[data-i="' + i + '"]');
-            var e = q('.fedSrvEnabled[data-i="' + i + '"]');
-            if (n) { s.Name = n.value; }
-            if (u) { s.Url = u.value; }
-            if (k && k.value) { s.ApiKey = k.value; }
-            if (ui) { s.UserId = ui.value; }
-            if (m) { s.StreamingMode = m.value === 'Proxy' ? 1 : 0; }
-            if (p) { s.Priority = parseInt(p.value, 10) || 0; }
-            if (ik) { s.RequireApiKeyForImages = ik.checked; }
-            if (e) { s.Enabled = e.checked; }
-        });
-        (currentConfig.LibraryMappings || []).forEach(function (mp, i) {
-            var n = q('.fedMapName[data-i="' + i + '"]');
-            var t = q('.fedMapType[data-i="' + i + '"]');
-            var a = q('.fedMapAuto[data-i="' + i + '"]');
-            var en = q('.fedMapEnabled[data-i="' + i + '"]');
-            if (n) { mp.LocalLibraryName = n.value; }
-            if (t) { mp.MediaType = t.value; }
-            if (a) { mp.AutoProvision = a.checked; }
-            if (en) { mp.Enabled = en.checked; }
-        });
-
-        currentConfig.ServerUrl = q('#fedTxtServerUrl').value;
-        currentConfig.CachePath = q('#fedTxtCachePath').value;
-        currentConfig.AutoProvisionLibraries = q('#fedChkAutoProvision').checked;
-        currentConfig.EnableDedup = q('#fedChkDedup').checked;
-        currentConfig.DedupProviderIds = q('#fedTxtDedupIds').value
-            .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-        currentConfig.RefreshIntervalHours = parseInt(q('#fedTxtRefreshHours').value, 10) || 1;
-    }
-
-    function saveConfiguration() {
-        clearError();
-        setStatus('Saving…');
-        collectFormData();
-        fedFetch('/Plugins/Federation/Configuration', {
-            method: 'POST',
-            body: JSON.stringify(currentConfig)
-        })
-        .then(function (r) {
-            return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t); });
-        })
-        .then(function () {
-            // Reload so password fields clear and HasApiKey placeholders refresh.
-            return loadConfiguration(true).then(function () {
-                setStatus('Configuration saved!');
-            });
-        })
-        .catch(function (e) { showError('Save failed: ' + e.message); setStatus('Save failed', true); });
-    }
-
-    function testServer(i) {
-        collectFormData();
-        var s = currentConfig.RemoteServers[i];
-        var st = q('#fedSrvStatus' + i);
-        if (!st) {
-            return;
-        }
-
-        st.style.display = 'block';
-        st.style.background = 'rgba(0,164,220,0.2)';
-        st.textContent = 'Testing…';
-        fedFetch('/Plugins/Federation/TestServer', {
-            method: 'POST',
-            body: JSON.stringify(s)
-        })
-        .then(function (r) { return r.json(); })
-        .then(function (res) {
-            if (res.success) {
-                st.style.background = 'rgba(82,181,75,0.2)';
-                st.innerHTML = '<strong>OK</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version);
-                if (res.serverInfo.suggestedUserId && !s.UserId) {
-                    s.UserId = res.serverInfo.suggestedUserId;
-                    var ui = q('#fedSrvUser' + i);
-                    if (ui) {
-                        ui.value = s.UserId;
-                    }
-                }
-            } else {
-                st.style.background = 'rgba(255,68,68,0.2)';
-                st.textContent = 'Failed: ' + res.message;
-            }
-        })
-        .catch(function (e) {
-            st.style.background = 'rgba(255,68,68,0.2)';
-            st.textContent = 'Error: ' + e.message;
-        });
-    }
-
-    function browseLibraries(i) {
-        var c = q('#fedMapLibs' + i);
-        if (!c) {
-            return;
-        }
-
-        c.innerHTML = '<p>Loading…</p>';
-        fedFetch('/Plugins/Federation/GetRemoteLibraries')
-        .then(function (r) { return r.json(); })
-        .then(function (res) {
-            if (!res.success || !res.servers) {
-                c.innerHTML = '<p style="color:#f90;">No servers available.</p>';
-                return;
-            }
-
-            var mp = currentConfig.LibraryMappings[i];
-            if (!mp.RemoteLibrarySources) {
-                mp.RemoteLibrarySources = [];
-            }
-
-            var html = '<div class="fed-liblist">';
-            res.servers.forEach(function (srv) {
-                html += '<strong>' + escapeHtml(srv.serverName) + '</strong>';
-                if (srv.error) {
-                    html += '<div style="color:#f44;">' + escapeHtml(srv.error) + '</div>';
-                }
-
-                (srv.libraries || []).forEach(function (lib) {
-                    var checked = mp.RemoteLibrarySources.some(function (x) { return x.ServerId === srv.serverId && x.RemoteLibraryId === lib.id; });
-                    html += '<label><input type="checkbox" class="fedChkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + ' (' + escapeHtml(lib.collectionType) + ', ' + (lib.itemCount || 0) + ')</label>';
-                });
-            });
-            html += '</div><button type="button" data-fed-action="apply-libs" data-i="' + i + '" style="margin-top:10px;">Apply</button>';
-            c.innerHTML = html;
-        })
-        .catch(function (e) { c.innerHTML = '<p style="color:#f44;">' + escapeHtml(e.message) + '</p>'; });
-    }
-
-    function applyLibraries(i) {
-        var mp = currentConfig.LibraryMappings[i];
-        var selected = [];
-        var boxes = qa('.fedChkLib[data-mi="' + i + '"]:checked');
-        for (var n = 0; n < boxes.length; n++) {
-            var cb = boxes[n];
-            selected.push({
-                ServerId: cb.getAttribute('data-sid'),
-                ServerName: cb.getAttribute('data-sname'),
-                RemoteLibraryId: cb.getAttribute('data-lid'),
-                RemoteLibraryName: cb.getAttribute('data-lname')
-            });
-        }
-
-        mp.RemoteLibrarySources = selected;
-        renderMappings();
-    }
-
-    function loadDiagnostics() {
-        fedFetch('/Plugins/Federation/SystemInfo')
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-            var el = q('#fedDiagnostics');
-            if (el) {
-                el.innerHTML =
-                    '<div><strong>Local Server URL</strong>' + escapeHtml(d.detectedUrl || 'not set') + '</div>' +
-                    '<div><strong>Cache Path</strong>' + escapeHtml(d.cachePath || 'default') + '</div>' +
-                    '<div><strong>Cache Entries</strong>' + (d.cacheEntries || 0) + '</div>' +
-                    '<div><strong>Last Refresh</strong>' + (d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never') + '</div>' +
-                    '<div><strong>Auto-Provision</strong>' + (d.autoProvisionLibraries ? 'Yes' : 'No') + '</div>' +
-                    '<div><strong>Dedup</strong>' + (d.enableDedup ? 'On (' + (d.dedupProviderIds || []).join(',') + ')' : 'Off') + '</div>' +
-                    '<div><strong>Refresh Interval</strong>' + (d.refreshIntervalHours || 1) + 'h</div>';
-            }
-
-            var hint = q('#fedRequestUrlHint');
-            if (hint) {
-                if (d.requestUrl) {
-                    hint.innerHTML = 'This server answered the current request at <code>' + escapeHtml(d.requestUrl) + '</code>. For Proxy mode, set the URL above to the address your clients use to reach this server.';
-                    hint.style.display = 'block';
-                } else {
-                    hint.style.display = 'none';
-                }
-            }
-        })
-        .catch(function (e) {
-            var el = q('#fedDiagnostics');
-            if (el) {
-                el.innerHTML = '<div><strong>Error</strong>' + escapeHtml(e.message) + '</div>';
-            }
-        });
-    }
-
-    function loadConfiguration(silent) {
-        if (!silent) {
-            setStatus('Loading…');
-        }
-
-        clearError();
-        return fedFetch('/Plugins/Federation/Configuration')
-        .then(function (r) { return r.json(); })
-        .then(function (c) {
-            currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
-            if (!currentConfig.RemoteServers) { currentConfig.RemoteServers = []; }
-            if (!currentConfig.LibraryMappings) { currentConfig.LibraryMappings = []; }
-            q('#fedTxtServerUrl').value = currentConfig.ServerUrl || '';
-            q('#fedTxtCachePath').value = currentConfig.CachePath || '';
-            q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
-            q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
-            q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
-            q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
-            renderServers();
-            renderMappings();
-            loadDiagnostics();
-            if (!silent) {
-                setStatus('Ready');
-            }
-        })
-        .catch(function (e) {
-            showError('Load failed: ' + e.message);
-            setStatus('Load failed', true);
-        });
-    }
-
-    function attachHandlers(page) {
-        if (page.dataset.handlersAttached) {
-            return;
-        }
-
-        page.dataset.handlersAttached = '1';
-
-        page.addEventListener('click', function (e) {
-            var t = e.target && e.target.closest ? e.target.closest('[data-fed-action]') : null;
-            if (!t || !page.contains(t)) {
-                return;
-            }
-
-            e.preventDefault();
-            var i = parseInt(t.getAttribute('data-i') || '0', 10);
-            switch (t.getAttribute('data-fed-action')) {
-                case 'add-server':
-                    collectFormData();
-                    currentConfig.RemoteServers.push({ Id: generateGuid(), Name: '', Url: '', ApiKey: '', UserId: '', Enabled: true, StreamingMode: 0, Priority: 0, RequireApiKeyForImages: false });
-                    renderServers();
-                    break;
-                case 'remove-server':
-                    collectFormData();
-                    currentConfig.RemoteServers.splice(i, 1);
-                    renderServers();
-                    break;
-                case 'test-server':
-                    testServer(i);
-                    break;
-                case 'add-mapping':
-                    collectFormData();
-                    currentConfig.LibraryMappings.push({ LocalLibraryName: '', MediaType: 'Movie', RemoteServerIds: [], RemoteLibrarySources: [], Enabled: true, AutoProvision: true });
-                    renderMappings();
-                    break;
-                case 'remove-mapping':
-                    collectFormData();
-                    currentConfig.LibraryMappings.splice(i, 1);
-                    renderMappings();
-                    break;
-                case 'browse':
-                    browseLibraries(i);
-                    break;
-                case 'apply-libs':
-                    applyLibraries(i);
-                    break;
-                case 'refresh-cache':
-                    clearError();
-                    setStatus('Refreshing cache…');
-                    fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
-                    .then(function (r) { return r.json(); })
-                    .then(function (res) { setStatus(res.Message || 'Done', res.Success === false); loadDiagnostics(); })
-                    .catch(function (e) { showError('Refresh failed: ' + e.message); setStatus('Refresh failed', true); });
-                    break;
-                case 'provision':
-                    clearError();
-                    fedFetch('/Plugins/Federation/ProvisionLibraries', { method: 'POST' })
-                    .then(function (r) { return r.json(); })
-                    .then(function (res) { setStatus(res.message || 'Provisioned'); })
-                    .catch(function (e) { showError('Provision failed: ' + e.message); });
-                    break;
-                case 'test-all':
-                    clearError();
-                    setStatus('Testing servers…');
-                    fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
-                    .then(function (r) { return r.json(); })
-                    .then(function (res) {
-                        var results = res.results || [];
-                        var online = results.filter(function (x) { return x.online; }).length;
-                        setStatus('Servers online: ' + online + '/' + results.length, online !== results.length);
-                    })
-                    .catch(function (e) { showError('Test failed: ' + e.message); });
-                    break;
-                case 'refresh-diag':
-                    loadDiagnostics();
-                    break;
-            }
-        });
-
-        var form = page.querySelector('#fedConfigForm');
-        if (form) {
-            form.addEventListener('submit', function (e) {
-                e.preventDefault();
-                saveConfiguration();
-            });
-        }
-    }
-
-    function initPage(page) {
-        pageEl = page;
-        attachHandlers(page);
-        loadConfiguration(false);
-    }
-
-    if (!window.__federationPageshowBound) {
-        window.__federationPageshowBound = true;
-        document.addEventListener('pageshow', function (e) {
-            if (e.target && e.target.id === 'federationConfigPage') {
-                initPage(e.target);
-            }
-        });
-    }
-
-    var initial = document.getElementById('federationConfigPage');
-    if (initial) {
-        initPage(initial);
-    }
-})();
-</script>
