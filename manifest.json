@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.4",
+      	    "changelog": "Fix: virtual libraries now actually provision. Jellyfin's AddVirtualFolder requires real filesystem paths, so federation:// URIs were rejected. Now uses an empty shadow folder under the plugin data dir; same-name libraries merge into one. Removal only detaches the federation location from merged libraries.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.4/Jellyfin.Federation.zip",
+      	    "checksum": "b2765b32283436369b1a5e606846a4e4",
+      	    "timestamp": "2026-07-20T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.3",
       	    "changelog": "Config page rewrite: sidebar link, guided setup, working buttons, auto-detect public URL. Same-name libraries across servers merge into one. Advanced settings collapsed by default.",
       	    "targetAbi": "10.11.0.0",
