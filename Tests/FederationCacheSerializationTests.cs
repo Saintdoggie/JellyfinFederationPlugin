@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,13 +14,13 @@ public class FederationCacheSerializationTests
 {
     private static FederationItemCache CreateCache(string path)
     {
-        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance, null!);
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         cache.Initialize(path);
         return cache;
     }
 
     [Fact]
-    public void SaveAndLoad_RoundtripsEntries()
+    public async Task SaveAndLoad_RoundtripsEntries()
     {
         var path = Path.Combine(Path.GetTempPath(), "federation-cache-test-" + Guid.NewGuid() + ".json");
         try
@@ -27,7 +28,7 @@ public class FederationCacheSerializationTests
             var cache = CreateCache(path);
             cache.UpsertByProviderId("Movies", "imdb", "tt100", MakeItem("Test Movie", "tt100"), "srvA", Guid.NewGuid(), 0, "Movie");
             cache.UpsertRaw("TV", "srvB", Guid.NewGuid(), MakeItem("Test Show"), 0, "Series");
-            cache.SaveAsync().Wait();
+            await cache.SaveAsync();
 
             var cache2 = CreateCache(path);
             var all = cache2.GetAllEntries().ToList();
@@ -42,11 +43,11 @@ public class FederationCacheSerializationTests
     }
 
     [Fact]
-    public void SaveAsync_NoPath_DoesNotThrow()
+    public async Task SaveAsync_NoPath_DoesNotThrow()
     {
         var cache = CreateCache(string.Empty);
         cache.UpsertByProviderId("Movies", "imdb", "tt1", MakeItem("A", "tt1"), "s1", Guid.NewGuid(), 0, "Movie");
-        cache.SaveAsync().Wait();
+        await cache.SaveAsync();
     }
 
     private static BaseItemDto MakeItem(string name, string? imdb = null)

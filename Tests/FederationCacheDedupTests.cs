@@ -14,9 +14,7 @@ public class FederationCacheDedupTests
 {
     private static FederationItemCache CreateCache()
     {
-        return new FederationItemCache(
-            NullLogger<FederationItemCache>.Instance,
-            null!);
+        return new FederationItemCache(NullLogger<FederationItemCache>.Instance);
     }
 
     private static BaseItemDto MakeItem(string name, string? imdb = null, string? tmdb = null)
@@ -42,8 +40,8 @@ public class FederationCacheDedupTests
         var all = cache.GetAllEntries().ToList();
         Assert.Single(all);
         Assert.Equal(2, all[0].Sources.Count);
-        Assert.Equal("serverA", all[0].PrimarySource?.ServerId);
-        Assert.Equal(itemIdA, all[0].PrimarySource?.RemoteItemId);
+        Assert.Equal("serverA", all[0].GetPrimarySource()?.ServerId);
+        Assert.Equal(itemIdA, all[0].GetPrimarySource()?.RemoteItemId);
     }
 
     [Fact]
@@ -81,7 +79,7 @@ public class FederationCacheDedupTests
         cache.UpsertByProviderId("Movies", "imdb", "tt1", MakeItem("A", imdb: "tt1"), "lowPrioServer", idLow, 0, "Movie");
 
         var entry = cache.GetAllEntries().Single();
-        Assert.Equal("lowPrioServer", entry.PrimarySource?.ServerId);
-        Assert.Equal(idLow, entry.PrimarySource?.RemoteItemId);
+        Assert.Equal("lowPrioServer", entry.GetPrimarySource()?.ServerId);
+        Assert.Equal(idLow, entry.GetPrimarySource()?.RemoteItemId);
     }
 }

@@ -9,14 +9,20 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
-    /// Builds redirect / proxy responses for federated playback. Used by the
-    /// <c>Redirect</c> and <c>Stream</c> controller endpoints.
+    /// Proxies federated playback through this server (Proxy mode). The remote
+    /// api_key is only used between this server and the remote server, so it is
+    /// never exposed to clients. Preserves Range requests.
     /// </summary>
     public class FederationStreamHandler
     {
+        // Shared for the app lifetime: streaming responses can run for hours.
+        private static readonly HttpClient ProxyHttpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromHours(3)
+        };
+
         private readonly ILogger<FederationStreamHandler> _logger;
         private readonly FederationLibraryManager _federationManager;
-        private readonly HttpClient _proxyHttpClient;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
@@ -27,16 +33,13 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             _logger = logger;
             _federationManager = federationManager;
-            _proxyHttpClient = new HttpClient
-            {
-                Timeout = TimeSpan.FromHours(3)
-            };
         }
 
         /// <summary>
-        /// Builds a direct stream URL for a remote server + item, with optional range header.
+        /// Builds the server-side direct stream URL used when proxying (contains the
+        /// remote api_key; never sent to clients or written to logs).
         /// </summary>
-        public string BuildDirectStreamUrl(string serverId, string remoteItemId, string? rangeHeader = null)
+        public string BuildDirectStreamUrl(string serverId, string remoteItemId)
         {
             var server = _federationManager.GetServer(serverId);
             if (server == null)
@@ -44,45 +47,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException($"Server not found: {serverId}");
             }
 
-            var url = $"{server.Url.TrimEnd('/')}/Videos/{remoteItemId}/stream?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
-            if (!string.IsNullOrEmpty(rangeHeader))
-            {
-                url += $"&Range={Uri.EscapeDataString(rangeHeader)}";
-            }
-
-            return url;
-        }
-
-        /// <summary>
-        /// Returns a 302 redirect to the remote server (Direct mode).
-        /// </summary>
-        public Task HandleRedirectAsync(
-            string serverId,
-            string remoteItemId,
-            HttpResponse response,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                var server = _federationManager.GetServer(serverId);
-                if (server == null)
-                {
-                    response.StatusCode = StatusCodes.Status404NotFound;
-                    return Task.CompletedTask;
-                }
-
-                var range = response.HttpContext.Request.Headers["Range"].FirstOrDefault();
-                var url = BuildDirectStreamUrl(serverId, remoteItemId, range);
-                _logger.LogInformation("[Federation] Redirecting to {Url}", url);
-                response.Redirect(url, permanent: false);
-                return Task.CompletedTask;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Federation] Error during redirect");
-                response.StatusCode = StatusCodes.Status500InternalServerError;
-                return Task.CompletedTask;
-            }
+            return $"{server.Url.TrimEnd('/')}/Videos/{remoteItemId}/stream?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
         }
 
         /// <summary>
@@ -105,8 +70,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var range = request.Headers["Range"].FirstOrDefault();
-                var url = BuildDirectStreamUrl(serverId, remoteItemId, range);
-                _logger.LogInformation("[Federation] Proxying {Url}", url);
+                var url = BuildDirectStreamUrl(serverId, remoteItemId);
+                _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
                 using var remoteReq = new HttpRequestMessage(HttpMethod.Get, url);
                 if (!string.IsNullOrEmpty(range))
@@ -114,7 +79,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     remoteReq.Headers.TryAddWithoutValidation("Range", range);
                 }
 
-                using var remoteResp = await _proxyHttpClient.SendAsync(
+                using var remoteResp = await ProxyHttpClient.SendAsync(
                     remoteReq,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken).ConfigureAwait(false);

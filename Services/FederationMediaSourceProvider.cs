@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
@@ -15,6 +16,9 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Provides multiple media sources for federated content: one per remote source
     /// so the user can pick which server to play from in the Jellyfin UI.
+    /// Honors each server's <see cref="StreamingMode"/>: Direct sources embed the
+    /// remote api_key (documented tradeoff); Proxy sources route through this
+    /// server so the remote key never reaches clients.
     /// </summary>
     public class FederationMediaSourceProvider : IMediaSourceProvider
     {
@@ -42,48 +46,40 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                if (!FederationLibraryManager.TryParseFederationPath(
-                        item.Path,
-                        out var mapping,
-                        out _,
-                        out _,
-                        out _,
-                        out _))
-                {
-                    return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
-                }
-
                 var entry = _federationManager.Cache.GetEntry(item.Path);
                 if (entry == null)
                 {
                     return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
                 }
 
+                var entrySources = entry.GetSourcesSnapshot();
+                var primaryIndex = Math.Min(entry.PrimarySourceIndex, entrySources.Length - 1);
+
                 var sources = new List<MediaSourceInfo>();
-                for (int i = 0; i < entry.Sources.Count; i++)
+                for (int i = 0; i < entrySources.Length; i++)
                 {
-                    var src = entry.Sources[i];
+                    var src = entrySources[i];
                     var server = _federationManager.GetServer(src.ServerId);
                     if (server == null)
                     {
                         continue;
                     }
 
-                    var client = _federationManager.GetClient(src.ServerId);
-                    if (client == null)
+                    var path = BuildPlaybackPath(server, src);
+                    if (path == null)
                     {
                         continue;
                     }
 
-                    var sourceName = entry.Sources.Count > 1
-                        ? $"{server.Name}{(i == entry.PrimarySourceIndex ? " (primary)" : string.Empty)}"
+                    var sourceName = entrySources.Length > 1
+                        ? $"{server.Name}{(i == primaryIndex ? " (primary)" : string.Empty)}"
                         : server.Name;
 
                     sources.Add(new MediaSourceInfo
                     {
                         Id = $"{src.ServerId}:{src.RemoteItemId}",
                         Name = sourceName,
-                        Path = client.BuildDirectStreamUrl(src.RemoteItemId.ToString()),
+                        Path = path,
                         Protocol = MediaProtocol.Http,
                         IsRemote = true,
                         SupportsDirectPlay = true,
@@ -92,7 +88,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         RequiresOpening = false,
                         RequiresClosing = false,
                         RunTimeTicks = entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,
-                        Type = i == entry.PrimarySourceIndex ? MediaSourceType.Default : MediaSourceType.Grouping
+                        Type = i == primaryIndex ? MediaSourceType.Default : MediaSourceType.Grouping
                     });
                 }
 
@@ -113,7 +109,28 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public Task<ILiveStream> OpenMediaSource(string openToken, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException("Live stream opening is not supported for federated content");
+            return Task.FromException<ILiveStream>(new NotSupportedException("Live stream opening is not supported for federated content"));
+        }
+
+        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src)
+        {
+            if (server.StreamingMode == StreamingMode.Proxy)
+            {
+                var localUrl = _federationManager.GetLocalServerUrl();
+                if (string.IsNullOrEmpty(localUrl))
+                {
+                    _logger.LogWarning(
+                        "[Federation] Server {Server} is in Proxy mode but no local server URL is configured; skipping source",
+                        server.Name);
+                    return null;
+                }
+
+                // The remote api_key stays server-side; clients only see this server.
+                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId}";
+            }
+
+            var client = _federationManager.GetClient(src.ServerId);
+            return client?.BuildDirectStreamUrl(src.RemoteItemId.ToString());
         }
     }
 }

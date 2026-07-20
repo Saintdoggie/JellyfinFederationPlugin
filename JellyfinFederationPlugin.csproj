@@ -5,6 +5,7 @@
     <AssemblyName>Jellyfin.Plugin.Federation</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Nullable>enable</Nullable>
     <Version>1.0.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
@@ -12,7 +13,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
-    <EmbeddedResource Include="Configuration\redirectPage.html" />
   </ItemGroup>
 
   <ItemGroup>

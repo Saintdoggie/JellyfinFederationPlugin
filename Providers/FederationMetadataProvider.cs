@@ -23,9 +23,10 @@ namespace Jellyfin.Plugin.Federation.Providers
         IRemoteMetadataProvider<Episode, EpisodeInfo>,
         IRemoteMetadataProvider<Audio, SongInfo>
     {
+        private static readonly HttpClient SharedHttpClient = new HttpClient();
+
         private readonly ILogger<FederationMetadataProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;
-        private readonly HttpClient _httpClient;
 
         public FederationMetadataProvider(
             ILogger<FederationMetadataProvider> logger,
@@ -33,7 +34,6 @@ namespace Jellyfin.Plugin.Federation.Providers
         {
             _logger = logger;
             _federationManager = federationManager;
-            _httpClient = new HttpClient();
         }
 
         public string Name => "Federation";
@@ -65,7 +65,7 @@ namespace Jellyfin.Plugin.Federation.Providers
             => (MetadataResult<Audio>)await GetMetadataCommon<Audio>(info.Path, cancellationToken).ConfigureAwait(false);
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
-            => _httpClient.GetAsync(url, cancellationToken);
+            => SharedHttpClient.GetAsync(url, cancellationToken);
 
         private async Task<object> GetMetadataCommon<T>(string? path, CancellationToken cancellationToken) where T : BaseItem, new()
         {
@@ -76,7 +76,7 @@ namespace Jellyfin.Plugin.Federation.Providers
             }
 
             var entry = _federationManager.Cache.GetEntry(path);
-            var primary = entry?.PrimarySource;
+            var primary = entry?.GetPrimarySource();
             if (entry == null || primary == null)
             {
                 return result;

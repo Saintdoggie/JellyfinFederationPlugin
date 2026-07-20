@@ -5,8 +5,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
-using MediaBrowser.Controller.Configuration;
-using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -15,6 +13,9 @@ namespace Jellyfin.Plugin.Federation.Api
 {
     /// <summary>
     /// API controller for federation plugin: servers, mappings, refresh, streaming, diagnostics.
+    /// All data and mutating endpoints require an elevated (admin) session. The only
+    /// anonymous endpoints are the static config page markup and the bounded stream
+    /// proxy (clients fetch media source URLs without Jellyfin auth headers).
     /// </summary>
     [ApiController]
     [Route("Plugins/Federation")]
@@ -25,8 +26,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationLibraryManager _federationManager;
         private readonly LibraryProvisioningService _provisioning;
         private readonly FederationStreamHandler _streamHandler;
-        private readonly IServerConfigurationManager _serverConfigManager;
         private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly FederationItemCache _cache;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -34,20 +35,23 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationLibraryManager federationManager,
             LibraryProvisioningService provisioning,
             FederationStreamHandler streamHandler,
-            IServerConfigurationManager serverConfigManager,
-            IRemoteServerClientFactory clientFactory)
+            IRemoteServerClientFactory clientFactory,
+            FederationItemCache cache)
         {
             _logger = logger;
             _syncService = syncService;
             _federationManager = federationManager;
             _provisioning = provisioning;
             _streamHandler = streamHandler;
-            _serverConfigManager = serverConfigManager;
             _clientFactory = clientFactory;
+            _cache = cache;
         }
 
         #region Configuration
 
+        /// <summary>
+        /// Serves the static configuration page markup (contains no secrets).
+        /// </summary>
         [HttpGet("Config")]
         [AllowAnonymous]
         [Produces("text/html")]
@@ -74,16 +78,20 @@ namespace Jellyfin.Plugin.Federation.Api
             }
         }
 
+        /// <summary>
+        /// Returns the plugin configuration with API keys stripped (HasApiKey flags instead).
+        /// </summary>
         [HttpGet("Configuration")]
-        [AllowAnonymous]
-        public ActionResult<PluginConfiguration> GetConfiguration()
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult<object> GetConfiguration()
         {
-            return Ok(Plugin.Instance?.Configuration ?? new PluginConfiguration());
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            return Ok(Sanitize(config));
         }
 
         [HttpPost("Configuration")]
         [Authorize(Policy = "RequiresElevation")]
-        public IActionResult UpdateConfiguration([FromBody] PluginConfiguration config)
+        public async Task<IActionResult> UpdateConfiguration([FromBody] PluginConfiguration config, CancellationToken cancellationToken)
         {
             if (config == null)
             {
@@ -92,9 +100,36 @@ namespace Jellyfin.Plugin.Federation.Api
 
             try
             {
+                // Preserve existing API keys: the GET endpoint never serializes them,
+                // so an empty key in the POST body means "unchanged".
+                var existing = Plugin.Instance?.Configuration;
+                foreach (var server in config.RemoteServers ?? new List<RemoteServer>())
+                {
+                    if (string.IsNullOrEmpty(server.ApiKey))
+                    {
+                        var old = existing?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+                        if (old != null)
+                        {
+                            server.ApiKey = old.ApiKey;
+                        }
+                    }
+                }
+
+                var errors = ConfigValidator.Validate(config);
+                if (errors.Count > 0)
+                {
+                    return BadRequest(new { error = "Invalid configuration", details = errors });
+                }
+
                 _logger.LogInformation("[Federation] Updating configuration with {ServerCount} servers", config.RemoteServers?.Count ?? 0);
                 Plugin.Instance?.UpdateConfiguration(config);
                 _clientFactory.InvalidateAll();
+
+                if (config.AutoProvisionLibraries)
+                {
+                    await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
+                }
+
                 return Ok(new { success = true, message = "Configuration updated successfully" });
             }
             catch (Exception ex)
@@ -109,17 +144,15 @@ namespace Jellyfin.Plugin.Federation.Api
         #region System Info
 
         [HttpGet("SystemInfo")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetSystemInfo()
         {
             var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-            var detectedUrl = string.IsNullOrEmpty(config.ServerUrl)
-                ? DetectLocalServerUrl()
-                : config.ServerUrl;
 
             return Ok(new
             {
-                detectedUrl,
+                detectedUrl = config.ServerUrl,
+                requestUrl = $"{Request.Scheme}://{Request.Host}",
                 cachePath = !string.IsNullOrEmpty(config.CachePath)
                     ? config.CachePath
                     : Plugin.Instance?.GetDefaultCachePath(),
@@ -132,23 +165,38 @@ namespace Jellyfin.Plugin.Federation.Api
             });
         }
 
-        private string DetectLocalServerUrl()
-        {
-            // No reliable address field is exposed via ServerConfiguration in this ABI.
-            return "http://localhost:8096";
-        }
-
         #endregion
 
         #region Server Management
 
         [HttpPost("TestServer")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> TestServer([FromBody] RemoteServer server, CancellationToken cancellationToken)
         {
-            if (server == null || string.IsNullOrWhiteSpace(server.Url) || string.IsNullOrWhiteSpace(server.ApiKey))
+            if (server == null || string.IsNullOrWhiteSpace(server.Url))
             {
-                return BadRequest(new { success = false, message = "Server URL and API key are required" });
+                return BadRequest(new { success = false, message = "Server URL is required" });
+            }
+
+            // The config page never holds saved API keys; when testing an existing
+            // server with a blank key, fall back to the stored one.
+            if (string.IsNullOrEmpty(server.ApiKey) && !string.IsNullOrEmpty(server.Id))
+            {
+                var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+                if (configured != null)
+                {
+                    server.ApiKey = configured.ApiKey;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(server.ApiKey))
+            {
+                return BadRequest(new { success = false, message = "API key is required" });
+            }
+
+            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            {
+                return BadRequest(new { success = false, message = "Server URL must be an absolute http(s) URL" });
             }
 
             try
@@ -192,10 +240,16 @@ namespace Jellyfin.Plugin.Federation.Api
             }
         }
 
+        /// <summary>
+        /// Returns configured servers with API keys stripped (HasApiKey flags instead).
+        /// </summary>
         [HttpGet("Servers")]
-        [AllowAnonymous]
-        public ActionResult<List<RemoteServer>> GetServers()
-            => Ok(Plugin.Instance?.Configuration.RemoteServers ?? new List<RemoteServer>());
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult<IEnumerable<object>> GetServers()
+        {
+            var servers = Plugin.Instance?.Configuration?.RemoteServers ?? new List<RemoteServer>();
+            return Ok(servers.Select(SanitizeServer));
+        }
 
         [HttpPost("Servers")]
         [Authorize(Policy = "RequiresElevation")]
@@ -204,6 +258,11 @@ namespace Jellyfin.Plugin.Federation.Api
             if (server == null)
             {
                 return BadRequest(new { error = "Server configuration is required" });
+            }
+
+            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            {
+                return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
             }
 
             var config = Plugin.Instance?.Configuration;
@@ -217,7 +276,7 @@ namespace Jellyfin.Plugin.Federation.Api
             config.RemoteServers.Add(server);
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.InvalidateAll();
-            return Ok(new { success = true, server });
+            return Ok(new { success = true, server = SanitizeServer(server) });
         }
 
         [HttpPut("Servers/{id}")]
@@ -231,9 +290,18 @@ namespace Jellyfin.Plugin.Federation.Api
                 return NotFound(new { error = "Server not found" });
             }
 
+            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            {
+                return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
+            }
+
             existing.Name = server.Name;
             existing.Url = server.Url;
-            existing.ApiKey = server.ApiKey;
+            if (!string.IsNullOrEmpty(server.ApiKey))
+            {
+                existing.ApiKey = server.ApiKey;
+            }
+
             existing.UserId = server.UserId;
             existing.Enabled = server.Enabled;
             existing.StreamingMode = server.StreamingMode;
@@ -257,6 +325,16 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             config!.RemoteServers!.Remove(server);
+
+            // Drop this server's library sources and cached entries so no stale
+            // items keep pointing at a deleted server.
+            var seen = new HashSet<Guid>();
+            foreach (var mapping in config.LibraryMappings ?? new List<LibraryMapping>())
+            {
+                mapping.RemoteLibrarySources?.RemoveAll(s => s.ServerId == id);
+                _cache.PruneServerSources(mapping.LocalLibraryName, id, seen);
+            }
+
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(id);
             return Ok(new { success = true });
@@ -267,7 +345,7 @@ namespace Jellyfin.Plugin.Federation.Api
         #region Remote Library Browsing
 
         [HttpGet("GetRemoteLibraries")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> GetRemoteLibraries(CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
@@ -316,38 +394,10 @@ namespace Jellyfin.Plugin.Federation.Api
         #region Streaming
 
         /// <summary>
-        /// 302 redirect to the remote server (Direct mode). Default.
-        /// </summary>
-        [HttpGet("Redirect")]
-        [AllowAnonymous]
-        public Task<IActionResult> RedirectStream([FromQuery] string serverId, [FromQuery] string itemId, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
-                if (server == null)
-                {
-                    return Task.FromResult<IActionResult>(NotFound($"Server not found: {serverId}"));
-                }
-
-                if (server.StreamingMode == StreamingMode.Proxy)
-                {
-                    _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken);
-                    return Task.FromResult<IActionResult>(new EmptyResult());
-                }
-
-                _streamHandler.HandleRedirectAsync(serverId, itemId, Response, cancellationToken);
-                return Task.FromResult<IActionResult>(new EmptyResult());
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Federation] Error during redirect");
-                return Task.FromResult<IActionResult>(StatusCode(500, "Error redirecting stream"));
-            }
-        }
-
-        /// <summary>
-        /// Proxy stream endpoint (Proxy mode). Streams the body through this server.
+        /// Proxy stream endpoint (Proxy mode). Streams the body through this server so
+        /// the remote api_key never reaches clients. Anonymous because media players
+        /// fetch media source URLs without Jellyfin auth headers; bounded to
+        /// configured servers and explicit item ids only.
         /// </summary>
         [HttpGet("Stream")]
         [AllowAnonymous]
@@ -357,6 +407,11 @@ namespace Jellyfin.Plugin.Federation.Api
             if (server == null)
             {
                 return NotFound($"Server not found: {serverId}");
+            }
+
+            if (!Guid.TryParse(itemId, out _))
+            {
+                return BadRequest("Invalid item id");
             }
 
             await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken).ConfigureAwait(false);
@@ -372,20 +427,20 @@ namespace Jellyfin.Plugin.Federation.Api
         public async Task<IActionResult> TriggerRefresh(CancellationToken cancellationToken)
         {
             var result = await _syncService.SyncAllAsync(cancellationToken).ConfigureAwait(false);
-            return Ok(new { result.Success, result.Message, result.ItemCount, result.OperationId });
+            return Ok(new { result.Success, result.Message, result.ItemCount, result.FailedSources, result.OperationId });
         }
 
         [HttpPost("RefreshServer")]
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> RefreshServer([FromBody] RefreshServerRequest request, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrEmpty(request?.serverId))
+            if (string.IsNullOrEmpty(request?.ServerId))
             {
                 return BadRequest(new { success = false, message = "serverId is required" });
             }
 
-            var result = await _syncService.SyncServerAsync(request.serverId, cancellationToken).ConfigureAwait(false);
-            return Ok(new { result.Success, result.Message, result.ItemCount });
+            var result = await _syncService.SyncServerAsync(request.ServerId, cancellationToken).ConfigureAwait(false);
+            return Ok(new { result.Success, result.Message, result.ItemCount, result.FailedSources });
         }
 
         [HttpPost("ProvisionLibraries")]
@@ -401,16 +456,16 @@ namespace Jellyfin.Plugin.Federation.Api
         #region Mappings
 
         [HttpGet("Mappings")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public ActionResult<List<LibraryMapping>> GetMappings()
-            => Ok(Plugin.Instance?.Configuration.LibraryMappings ?? new List<LibraryMapping>());
+            => Ok(Plugin.Instance?.Configuration?.LibraryMappings ?? new List<LibraryMapping>());
 
         #endregion
 
         #region Status / Progress
 
         [HttpGet("Status")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetStatus()
         {
             var config = Plugin.Instance?.Configuration;
@@ -431,7 +486,7 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         [HttpGet("Progress/{operationId}")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetProgress(string operationId)
         {
             var progress = SyncProgressTracker.Get(operationId);
@@ -443,18 +498,16 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new
             {
                 operationId = progress.OperationId,
-                totalItems = progress.TotalItems,
                 processedItems = progress.ProcessedItems,
-                percentage = progress.Percentage,
                 status = progress.Status,
                 isComplete = progress.IsComplete,
                 success = progress.Success,
-                elapsedSeconds = progress.ElapsedTime?.TotalSeconds
+                elapsedSeconds = progress.ElapsedTime.TotalSeconds
             });
         }
 
         [HttpPost("TestAllServers")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> TestAllServers(CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
@@ -489,10 +542,41 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         #endregion
+
+        private static object Sanitize(PluginConfiguration config)
+        {
+            return new
+            {
+                config.ServerUrl,
+                config.CachePath,
+                config.EnableDedup,
+                config.DedupProviderIds,
+                config.AutoProvisionLibraries,
+                config.RefreshIntervalHours,
+                RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(SanitizeServer).ToList(),
+                config.LibraryMappings
+            };
+        }
+
+        private static object SanitizeServer(RemoteServer s)
+        {
+            return new
+            {
+                s.Id,
+                s.Name,
+                s.Url,
+                s.Enabled,
+                s.UserId,
+                StreamingMode = (int)s.StreamingMode,
+                s.Priority,
+                s.RequireApiKeyForImages,
+                HasApiKey = !string.IsNullOrEmpty(s.ApiKey)
+            };
+        }
     }
 
     public class RefreshServerRequest
     {
-        public string? serverId { get; set; }
+        public string? ServerId { get; set; }
     }
 }

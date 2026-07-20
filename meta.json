@@ -1,5 +1,5 @@
 {
-  "guid": "12345678-1234-1234-1234-123456789abc",
+  "guid": "495feadb-d27f-46c3-bb9b-0732ae8926fa",
   "name": "Jellyfin Federation",
   "description": "Aggregate content from multiple Jellyfin servers into unified virtual libraries",
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",

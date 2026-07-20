@@ -54,8 +54,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Gets items from the remote server, including ProviderIds and People.
+        /// Returns null when the request fails (callers must treat null as
+        /// "sync failed" and preserve any existing cached data).
         /// </summary>
-        public async Task<List<BaseItemDto>> GetItemsAsync(
+        public async Task<List<BaseItemDto>?> GetItemsAsync(
             string? userId = null,
             string? mediaType = null,
             string? parentId = null,
@@ -69,7 +71,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
                     _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
-                    return new List<BaseItemDto>();
+                    return null;
                 }
 
                 var queryParams = new List<string>
@@ -118,7 +120,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!root.TryGetProperty("Items", out var itemsElement))
                 {
                     _logger.LogWarning("[Federation] No Items property in response from {ServerName}", _server.Name);
-                    return new List<BaseItemDto>();
+                    return null;
                 }
 
                 var items = new List<BaseItemDto>();
@@ -140,7 +142,7 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting items from remote server {ServerName}", _server.Name);
-                return new List<BaseItemDto>();
+                return null;
             }
         }
 
@@ -373,7 +375,14 @@ namespace Jellyfin.Plugin.Federation.Services
             if (itemElement.TryGetProperty("Id", out var idProp))
             {
                 var idStr = idProp.GetString();
-                item.Id = Guid.TryParse(idStr, out var guid) ? guid : Guid.NewGuid();
+                if (!Guid.TryParse(idStr, out var guid))
+                {
+                    // A random fallback id would produce unstable cache keys and
+                    // duplicate entries on every refresh; reject the item instead.
+                    throw new FormatException($"Remote item has an unparseable Id: '{idStr}'");
+                }
+
+                item.Id = guid;
             }
 
             if (itemElement.TryGetProperty("Name", out var nameProp))
