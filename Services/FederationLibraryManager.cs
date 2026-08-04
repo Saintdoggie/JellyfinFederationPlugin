@@ -59,34 +59,19 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Resolves a federation:// path to a virtual <see cref="BaseItem"/>, looking up the
-        /// cache live. Returns null when the path is not a federation path or no cache entry
-        /// exists yet.
-        /// </summary>
-        public BaseItem? ResolvePath(string path)
-        {
-            if (string.IsNullOrEmpty(path) || !path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-
-            var entry = _cache.GetEntry(path);
-            if (entry == null)
-            {
-                return null;
-            }
-
-            return MaterializeItem(entry);
-        }
-
-        /// <summary>
         /// Materializes a cache entry into a Jellyfin <see cref="BaseItem"/> shell.
         /// </summary>
         public BaseItem MaterializeItem(FederatedCacheEntry entry)
         {
             var item = CreateItemShell(entry.ItemType);
             item.Name = entry.Metadata.Name ?? "Unknown";
-            item.Path = entry.FederationPath;
+
+            // Deliberately left null: Jellyfin only treats an item as truly
+            // "Virtual" (always available, never checked against disk) when Path
+            // is empty. A synthetic federation:// URI made Jellyfin compute these
+            // as missing/offline instead, which hid them from browsing and from
+            // this plugin's own "does this already exist" checks. FederationKey
+            // (below) is the identity used everywhere instead of Path.
             item.Overview = entry.Metadata.Overview;
             item.ProductionYear = entry.Metadata.ProductionYear;
             item.PremiereDate = entry.Metadata.PremiereDate;
@@ -123,7 +108,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            // Federation tracking ids
+            // Federation identity: FederationKey is used everywhere instead of Path
+            // (see IsFederatedItem, FederationMediaSourceProvider, image/metadata
+            // providers, and FederationItemPersistenceService's dedup check).
+            item.ProviderIds["FederationKey"] = entry.Key;
+
             var primary = entry.GetPrimarySource();
             if (primary != null)
             {
@@ -181,22 +170,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Checks if an item is federated.
         /// </summary>
-        public bool IsFederatedItem(BaseItem? item)
-        {
-            return item?.Path != null && item.Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase);
-        }
+        public bool IsFederatedItem(BaseItem? item) => GetFederationKey(item) != null;
 
         /// <summary>
-        /// Parses a federation path into components (delegates to <see cref="FederationItemCache.TryParsePath"/>).
+        /// Gets the <c>FederationKey</c> provider id stamped on a materialized federation
+        /// item (see <see cref="MaterializeItem"/>), or null if the item isn't federated.
         /// </summary>
-        public static bool TryParseFederationPath(
-            string federationPath,
-            out string mappingName,
-            out string? providerName,
-            out string? providerId,
-            out string? rawServerId,
-            out Guid? rawRemoteItemId)
-            => FederationItemCache.TryParsePath(federationPath, out mappingName, out providerName, out providerId, out rawServerId, out rawRemoteItemId);
+        public static string? GetFederationKey(BaseItem? item)
+        {
+            if (item?.ProviderIds != null && item.ProviderIds.TryGetValue("FederationKey", out var key) && !string.IsNullOrEmpty(key))
+            {
+                return key;
+            }
+
+            return null;
+        }
 
         private static BaseItem CreateItemShell(string itemType)
         {

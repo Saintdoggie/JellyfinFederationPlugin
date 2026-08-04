@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.4.0",
-  "changelog": "Fix: virtual libraries now actually provision. Jellyfin's AddVirtualFolder requires real filesystem paths, so federation:// URIs were rejected. Now uses an empty shadow folder under the plugin data dir; same-name libraries merge into one. Removal only detaches the federation location from merged libraries.",
+  "version": "0.0.5.0",
+  "changelog": "Fix: federated items never showed up. Materialized items had Path set to a federation:// URI Jellyfin doesn't recognize, so it treated them as missing/offline everywhere - hidden from browsing and from the plugin's own dedup check, which silently recreated a full duplicate set every hour. Items are now identified by a FederationKey provider id instead, with Path left null (true Virtual item). Upgrading auto-cleans any legacy federation:// duplicates on the next sync, no manual steps needed. Also triggers a background sync 5s after server start so items appear without waiting for the first scheduled task.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-07-20T00:00:00Z",
+  "timestamp": "2026-08-03T00:00:00Z",
   "imageUrl": "thumb.png"
 }

@@ -66,7 +66,8 @@ namespace Jellyfin.Plugin.Federation.Providers
 
             try
             {
-                var entry = _federationManager.Cache.GetEntry(item.Path);
+                var key = Services.FederationLibraryManager.GetFederationKey(item);
+                var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
                 var primary = entry?.GetPrimarySource();
                 if (primary == null)
                 {
@@ -131,7 +132,7 @@ namespace Jellyfin.Plugin.Federation.Providers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Error getting images for {Path}", item.Path);
+                _logger.LogError(ex, "[Federation] Error getting images for {Name}", item.Name);
                 return Enumerable.Empty<RemoteImageInfo>();
             }
         }
