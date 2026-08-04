@@ -10,14 +10,16 @@ namespace Jellyfin.Plugin.Federation
 {
     /// <summary>
     /// Hosted service that initializes federation services on server startup:
-    /// loads the persisted cache, defaults the local server URL, and
-    /// auto-provisions virtual libraries when enabled.
+    /// loads the persisted cache, defaults the local server URL, auto-provisions
+    /// virtual libraries when enabled, and kicks off a background sync so items
+    /// appear without waiting for the first scheduled task run.
     /// </summary>
     public class FederationEntryPoint : IHostedService
     {
         private readonly ILogger<FederationEntryPoint> _logger;
         private readonly FederationLibraryManager _federationManager;
         private readonly LibraryProvisioningService _provisioning;
+        private readonly FederationSyncService _syncService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -25,11 +27,13 @@ namespace Jellyfin.Plugin.Federation
         public FederationEntryPoint(
             ILogger<FederationEntryPoint> logger,
             FederationLibraryManager federationManager,
-            LibraryProvisioningService provisioning)
+            LibraryProvisioningService provisioning,
+            FederationSyncService syncService)
         {
             _logger = logger;
             _federationManager = federationManager;
             _provisioning = provisioning;
+            _syncService = syncService;
         }
 
         /// <inheritdoc />
@@ -62,6 +66,33 @@ namespace Jellyfin.Plugin.Federation
                 }
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
+
+                // Kick off a background sync so federation items appear without
+                // waiting for the first scheduled task run. Fire-and-forget so
+                // server startup is not blocked by remote server round-trips.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Brief delay to let Jellyfin finish its own startup sequence
+                        // before we start hitting remote servers.
+                        await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                        _logger.LogInformation("[Federation] Starting background startup sync");
+                        var result = await _syncService.SyncAllAsync(CancellationToken.None).ConfigureAwait(false);
+                        if (result.Success)
+                        {
+                            _logger.LogInformation("[Federation] Startup sync complete: {Message}", result.Message);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("[Federation] Startup sync completed with issues: {Message}", result.Message);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "[Federation] Background startup sync failed");
+                    }
+                });
             }
             catch (Exception ex)
             {

@@ -50,7 +50,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var entry = _federationManager.Cache.GetEntry(item.Path);
+                var key = FederationLibraryManager.GetFederationKey(item);
+                var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
                 if (entry == null)
                 {
                     return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
@@ -98,14 +99,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (sources.Count == 0)
                 {
-                    _logger.LogWarning("[Federation] No live sources for {Path}", item.Path);
+                    _logger.LogWarning("[Federation] No live sources for {Name}", item.Name);
                 }
 
                 return Task.FromResult<IEnumerable<MediaSourceInfo>>(sources);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Error getting media sources for {Path}", item.Path);
+                _logger.LogError(ex, "[Federation] Error getting media sources for {Name}", item.Name);
                 return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
             }
         }

@@ -47,12 +47,14 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Gets the cache entry for a federation path, or null if not present.
+        /// Gets the cache entry directly by its key (mapping/provider:id or
+        /// mapping/raw/server/remoteId, without the <c>federation://</c> prefix).
+        /// Used to look entries back up from a <c>FederationKey</c> provider id
+        /// stamped on a materialized <see cref="MediaBrowser.Controller.Entities.BaseItem"/>.
         /// </summary>
-        public FederatedCacheEntry? GetEntry(string federationPath)
+        public FederatedCacheEntry? GetEntryByKey(string key)
         {
-            var key = NormalizeKey(federationPath);
-            if (key == null)
+            if (string.IsNullOrEmpty(key))
             {
                 return null;
             }
@@ -330,26 +332,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static bool IsRawKey(string key)
             => key.Contains("/raw/", StringComparison.OrdinalIgnoreCase);
-
-        private static string? NormalizeKey(string federationPath)
-        {
-            if (!TryParsePath(federationPath, out var mapping, out var providerName, out var providerId, out var rawServerId, out var rawRemoteItemId))
-            {
-                return null;
-            }
-
-            if (providerName != null && providerId != null)
-            {
-                return BuildProviderKey(mapping, providerName, providerId);
-            }
-
-            if (rawServerId != null && rawRemoteItemId.HasValue)
-            {
-                return BuildRawKey(mapping, rawServerId, rawRemoteItemId.Value);
-            }
-
-            return null;
-        }
 
         private FederatedCacheEntry CreateEntry(
             string key,

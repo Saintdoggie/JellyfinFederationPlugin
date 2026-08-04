@@ -1,5 +1,4 @@
 using Jellyfin.Plugin.Federation.Providers;
-using Jellyfin.Plugin.Federation.Resolvers;
 using Jellyfin.Plugin.Federation.Services;
 using Jellyfin.Plugin.Federation.Tasks;
 using MediaBrowser.Controller;
@@ -29,7 +28,6 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
-            serviceCollection.AddSingleton<FederationItemResolver>();
             serviceCollection.AddSingleton<FederationImageProvider>();
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();

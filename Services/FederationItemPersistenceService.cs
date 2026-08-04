@@ -54,19 +54,48 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var desired = _federationManager.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
-                var desiredPaths = new HashSet<string>(desired.Select(e => e.FederationPath), StringComparer.OrdinalIgnoreCase);
+                var desiredKeys = new HashSet<string>(desired.Select(e => e.Key), StringComparer.OrdinalIgnoreCase);
 
-                var existing = libraryFolder.GetRecursiveChildren()
+                var allChildren = libraryFolder.GetRecursiveChildren().ToList();
+
+                // Self-healing migration: earlier plugin versions stamped a
+                // "federation://" URI on item.Path. Jellyfin treated that as an
+                // unrecognized/missing path and hid the items everywhere -
+                // including from this exact dedup check - so every hourly sync
+                // recreated a full duplicate set forever. Nothing this version
+                // creates will ever match this pattern again, so sweep any
+                // leftovers unconditionally; this becomes a no-op after the
+                // first run on each upgraded server.
+                var legacy = allChildren
                     .Where(i => i.Path != null && i.Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                var existingPaths = new HashSet<string>(existing.Select(i => i.Path!), StringComparer.OrdinalIgnoreCase);
+                foreach (var stale in legacy)
+                {
+                    _libraryManager.DeleteItem(stale, new DeleteOptions { DeleteFileLocation = false });
+                }
+
+                if (legacy.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "[Federation] Removed {Count} legacy federation:// item(s) from {Name} (identity scheme migration)",
+                        legacy.Count,
+                        mapping.LocalLibraryName);
+                }
+
+                var existing = allChildren
+                    .Except(legacy)
+                    .Select(i => new { Item = i, Key = FederationLibraryManager.GetFederationKey(i) })
+                    .Where(x => x.Key != null)
+                    .ToList();
+                var existingKeys = new HashSet<string>(existing.Select(x => x.Key!), StringComparer.OrdinalIgnoreCase);
 
                 var toCreate = desired
-                    .Where(e => !existingPaths.Contains(e.FederationPath))
+                    .Where(e => !existingKeys.Contains(e.Key))
                     .Select(e => _federationManager.MaterializeItem(e))
                     .ToList();
                 var toDelete = existing
-                    .Where(i => !desiredPaths.Contains(i.Path!))
+                    .Where(x => !desiredKeys.Contains(x.Key!))
+                    .Select(x => x.Item)
                     .ToList();
 
                 foreach (var stale in toDelete)

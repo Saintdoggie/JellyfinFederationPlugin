@@ -53,29 +53,29 @@ namespace Jellyfin.Plugin.Federation.Providers
             => Task.FromResult(Enumerable.Empty<RemoteSearchResult>());
 
         public async Task<MetadataResult<Movie>> GetMetadata(MovieInfo info, CancellationToken cancellationToken)
-            => (MetadataResult<Movie>)await GetMetadataCommon<Movie>(info.Path, cancellationToken).ConfigureAwait(false);
+            => (MetadataResult<Movie>)await GetMetadataCommon<Movie>(info.ProviderIds, cancellationToken).ConfigureAwait(false);
 
         public async Task<MetadataResult<Series>> GetMetadata(SeriesInfo info, CancellationToken cancellationToken)
-            => (MetadataResult<Series>)await GetMetadataCommon<Series>(info.Path, cancellationToken).ConfigureAwait(false);
+            => (MetadataResult<Series>)await GetMetadataCommon<Series>(info.ProviderIds, cancellationToken).ConfigureAwait(false);
 
         public async Task<MetadataResult<Episode>> GetMetadata(EpisodeInfo info, CancellationToken cancellationToken)
-            => (MetadataResult<Episode>)await GetMetadataCommon<Episode>(info.Path, cancellationToken).ConfigureAwait(false);
+            => (MetadataResult<Episode>)await GetMetadataCommon<Episode>(info.ProviderIds, cancellationToken).ConfigureAwait(false);
 
         public async Task<MetadataResult<Audio>> GetMetadata(SongInfo info, CancellationToken cancellationToken)
-            => (MetadataResult<Audio>)await GetMetadataCommon<Audio>(info.Path, cancellationToken).ConfigureAwait(false);
+            => (MetadataResult<Audio>)await GetMetadataCommon<Audio>(info.ProviderIds, cancellationToken).ConfigureAwait(false);
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
             => SharedHttpClient.GetAsync(url, cancellationToken);
 
-        private async Task<object> GetMetadataCommon<T>(string? path, CancellationToken cancellationToken) where T : BaseItem, new()
+        private async Task<object> GetMetadataCommon<T>(Dictionary<string, string>? providerIds, CancellationToken cancellationToken) where T : BaseItem, new()
         {
             var result = new MetadataResult<T> { HasMetadata = false };
-            if (string.IsNullOrEmpty(path) || !path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
+            if (providerIds == null || !providerIds.TryGetValue("FederationKey", out var key) || string.IsNullOrEmpty(key))
             {
                 return result;
             }
 
-            var entry = _federationManager.Cache.GetEntry(path);
+            var entry = _federationManager.Cache.GetEntryByKey(key);
             var primary = entry?.GetPrimarySource();
             if (entry == null || primary == null)
             {
@@ -149,7 +149,7 @@ namespace Jellyfin.Plugin.Federation.Providers
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Federation] Failed to fetch metadata for {Path}", path);
+                _logger.LogWarning(ex, "[Federation] Failed to fetch metadata for {Key}", key);
                 return result;
             }
         }
