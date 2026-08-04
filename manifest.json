@@ -1,12 +1,20 @@
 [
   {
-      "guid": "030ec9fc-ad29-49a8-8e0d-c3220e5c3ed0",
+      "guid": "495feadb-d27f-46c3-bb9b-0732ae8926fa",
       "name": "Jellyfin Federation",
       "overview": "Allows jellyfin servers to federate with each other",
       "description": "This Jellyfin plugin allows multiple Jellyfin servers to federate, sharing media libraries in real-time without syncing or copying files. Media can be streamed from one server to another with live transcoding if necessary.",
       "owner": "Angablade",
       "category": "General",
       "versions": [
+      	{
+      	    "version": "0.0.6",
+      	    "changelog": "Fix: federated items were saved to the database as orphans, so they never appeared in any library. ILibraryManager.CreateItems does not parent the items it saves - its parent argument only feeds the ItemAdded event - and the plugin never set ParentId itself. The rows therefore matched neither the direct-children query (ParentId) nor the recursive one (AncestorIds, which Jellyfin derives from the ParentId chain at save time), leaving them invisible in the UI and invisible to the plugin's own existence check, which is why every sync re-reported the entire library as newly created. Items are now parented to their provisioned library folder. Item ids are derived deterministically from the cache key, so existing orphaned rows are adopted in place on the next sync - no manual cleanup or database reset needed. Also aligns the repository manifest guid with the plugin's actual id.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.6/Jellyfin.Federation.zip",
+      	    "checksum": "d61ae5f30db57d6a137ecd2bcc6cc5ba",
+      	    "timestamp": "2026-08-04T00:00:00Z"
+      	},
       	{
       	    "version": "0.0.5",
       	    "changelog": "Fix: federated items never showed up. Materialized items had Path set to a federation:// URI Jellyfin doesn't recognize, so it treated them as missing/offline everywhere - hidden from browsing and from the plugin's own dedup check, which silently recreated a full duplicate set every hour. Items are now identified by a FederationKey provider id instead, with Path left null (true Virtual item). Upgrading auto-cleans any legacy federation:// duplicates on the next sync, no manual steps needed. Also triggers a background sync 5s after server start so items appear without waiting for the first scheduled task.",

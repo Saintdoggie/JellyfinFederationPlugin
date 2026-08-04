@@ -91,7 +91,23 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var toCreate = desired
                     .Where(e => !existingKeys.Contains(e.Key))
-                    .Select(e => _federationManager.MaterializeItem(e))
+                    .Select(e =>
+                    {
+                        var item = _federationManager.MaterializeItem(e);
+
+                        // ILibraryManager.CreateItems does not parent what it saves:
+                        // its "parent" argument only feeds the ItemAdded event and
+                        // invalidates the folder's cached children. Without an explicit
+                        // ParentId the rows land in the database as orphans, matching
+                        // neither the direct-children query (ParentId) nor the recursive
+                        // one (AncestorIds, which the repository derives from the
+                        // ParentId chain at save time). That made federated items
+                        // invisible in the library *and* invisible to the existence
+                        // check above - so every sync reported the full set as "created"
+                        // and nothing ever showed up.
+                        item.ParentId = libraryFolder.Id;
+                        return item;
+                    })
                     .ToList();
                 var toDelete = existing
                     .Where(x => !desiredKeys.Contains(x.Key!))
