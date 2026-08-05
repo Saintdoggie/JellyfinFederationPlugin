@@ -58,6 +58,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var allChildren = libraryFolder.GetRecursiveChildren().ToList();
 
+                _logger.LogInformation(
+                    "[Federation] Debug {Name}: libraryFolder.Id={FolderId}, allChildren={ChildCount}, directChildren(ParentId match)={DirectCount}, withFederationKey={KeyCount}",
+                    mapping.LocalLibraryName,
+                    libraryFolder.Id,
+                    allChildren.Count,
+                    allChildren.Count(i => i.ParentId == libraryFolder.Id),
+                    allChildren.Count(i => FederationLibraryManager.GetFederationKey(i) != null));
+
                 // Self-healing migration: earlier plugin versions stamped a
                 // "federation://" URI on item.Path. Jellyfin treated that as an
                 // unrecognized/missing path and hid the items everywhere -
