@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.7",
+      	    "changelog": "Debug logging for the missing-movies issue.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.7/Jellyfin.Federation.zip",
+      	    "checksum": "da594abf0070ad4c1fcc5f62a7fc33ef",
+      	    "timestamp": "2026-08-05T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.6",
       	    "changelog": "Fix: federated items were saved to the database as orphans, so they never appeared in any library. ILibraryManager.CreateItems does not parent the items it saves - its parent argument only feeds the ItemAdded event - and the plugin never set ParentId itself. The rows therefore matched neither the direct-children query (ParentId) nor the recursive one (AncestorIds, which Jellyfin derives from the ParentId chain at save time), leaving them invisible in the UI and invisible to the plugin's own existence check, which is why every sync re-reported the entire library as newly created. Items are now parented to their provisioned library folder. Item ids are derived deterministically from the cache key, so existing orphaned rows are adopted in place on the next sync - no manual cleanup or database reset needed. Also aligns the repository manifest guid with the plugin's actual id.",
       	    "targetAbi": "10.11.0.0",
