@@ -129,7 +129,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (toCreate.Count > 0)
                 {
+                    var sample = toCreate[0];
+                    _logger.LogInformation(
+                        "[Federation] Debug {Name}: about to create {Count}, sample item.Id={ItemId} item.ParentId={ItemParentId} (should equal folder.Id={FolderId})",
+                        mapping.LocalLibraryName,
+                        toCreate.Count,
+                        sample.Id,
+                        sample.ParentId,
+                        libraryFolder.Id);
+
                     _libraryManager.CreateItems(toCreate, libraryFolder, cancellationToken);
+
+                    var lookedUp = _libraryManager.GetItemById(sample.Id);
+                    libraryFolder.Children = null;
+                    var freshCount = libraryFolder.GetRecursiveChildren().Count;
+                    _logger.LogInformation(
+                        "[Federation] Debug {Name}: after create, GetItemById(sample)={Found} (ParentId={FoundParentId}), freshChildrenCount={FreshCount}",
+                        mapping.LocalLibraryName,
+                        lookedUp != null,
+                        lookedUp?.ParentId,
+                        freshCount);
                 }
 
                 _logger.LogInformation(
