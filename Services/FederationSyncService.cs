@@ -228,18 +228,58 @@ namespace Jellyfin.Plugin.Federation.Services
                 return SourceSyncResult.Failure();
             }
 
+            var seen = new HashSet<Guid>();
+            var mediaTypesToFetch = new List<string> { mapping.MediaType };
+
+            // The /Items API only returns the item type it's asked for. A "Series"
+            // mapping otherwise syncs nothing but empty show shells - Episodes are
+            // a distinct item type that has to be requested explicitly. Fetched
+            // recursively under the same library in a second pass, same as the
+            // series themselves; the series pass runs first so episodes can look
+            // their series back up by remote id (see UpsertEpisodeSeason).
+            if (string.Equals(mapping.MediaType, "Series", StringComparison.OrdinalIgnoreCase))
+            {
+                mediaTypesToFetch.Add("Episode");
+            }
+
+            int total = 0;
+            foreach (var mediaType in mediaTypesToFetch)
+            {
+                var count = await FetchAndUpsertPagesAsync(mapping, server, source, config, client, mediaType, seen, cancellationToken).ConfigureAwait(false);
+                if (count == null)
+                {
+                    // Request failed: report failure so the caller preserves the cache.
+                    return SourceSyncResult.Failure();
+                }
+
+                total += count.Value;
+            }
+
+            _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
+            return new SourceSyncResult(total, false, seen);
+        }
+
+        private async Task<int?> FetchAndUpsertPagesAsync(
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            RemoteServerClient client,
+            string mediaType,
+            HashSet<Guid> seen,
+            CancellationToken cancellationToken)
+        {
             int total = 0;
             int pageSize = 200;
             int startIndex = 0;
             int pageNumber = 1;
-            var seen = new HashSet<Guid>();
 
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var page = await client.GetItemsAsync(
                     userId: server.UserId,
-                    mediaType: mapping.MediaType,
+                    mediaType: mediaType,
                     parentId: source.RemoteLibraryId,
                     startIndex: startIndex,
                     limit: pageSize,
@@ -247,8 +287,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (page == null)
                 {
-                    // Request failed: report failure so the caller preserves the cache.
-                    return SourceSyncResult.Failure();
+                    return null;
                 }
 
                 if (page.Count == 0)
@@ -260,6 +299,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     try
                     {
+                        // A remote server running this same plugin stamps a
+                        // FederationKey provider id on every item it federated in
+                        // from somewhere else. Re-importing those would boomerang
+                        // content back to servers that already have it (or already
+                        // gave it away) as a second, episode-less "federation-like"
+                        // copy sitting next to the real one - and in a topology
+                        // where two servers federate from each other, would loop
+                        // forever. Only pull in content the remote server actually
+                        // owns.
+                        if (remoteItem.ProviderIds != null && remoteItem.ProviderIds.ContainsKey("FederationKey"))
+                        {
+                            continue;
+                        }
+
                         UpsertRemoteItem(mapping, remoteItem, server, config);
                         seen.Add(remoteItem.Id);
                         total++;
@@ -284,8 +337,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
-            return new SourceSyncResult(total, false, seen);
+            return total;
         }
 
         private void UpsertRemoteItem(
@@ -295,12 +347,20 @@ namespace Jellyfin.Plugin.Federation.Services
             PluginConfiguration config)
         {
             var itemType = remoteItem.Type.ToString();
+            var isEpisode = string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase);
+            var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server) : null;
+
             var providerIds = remoteItem.ProviderIds;
             var dedupKeys = config.EnableDedup ? (config.DedupProviderIds ?? new List<string>()) : new List<string>();
 
             string? matchedProvider = null;
             string? matchedId = null;
-            if (providerIds != null && dedupKeys.Count > 0)
+
+            // Episodes never dedup by provider id across servers: series-level
+            // dedup already prevents duplicate shows, and matching episodes by
+            // provider id independently could nest an episode under the wrong
+            // server's season if two shows shared a provider id scheme.
+            if (!isEpisode && providerIds != null && dedupKeys.Count > 0)
             {
                 foreach (var key in dedupKeys)
                 {
@@ -323,7 +383,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     serverId: server.Id,
                     remoteItemId: remoteItem.Id,
                     serverPriority: server.Priority,
-                    itemType: itemType);
+                    itemType: itemType,
+                    parentKey: parentKey);
             }
             else
             {
@@ -333,8 +394,49 @@ namespace Jellyfin.Plugin.Federation.Services
                     remoteItemId: remoteItem.Id,
                     remoteItem: remoteItem,
                     serverPriority: server.Priority,
-                    itemType: itemType);
+                    itemType: itemType,
+                    parentKey: parentKey);
             }
+        }
+
+        /// <summary>
+        /// Ensures a Season cache entry exists for the episode's (Series, Season
+        /// number) pair, synthesized from fields on the episode itself since the
+        /// remote API is never asked for Seasons directly. Returns the season's
+        /// local cache key to use as the episode's ParentKey, or null if the
+        /// episode's series hasn't been synced (so the episode should be skipped
+        /// rather than orphaned).
+        /// </summary>
+        private string? UpsertEpisodeSeason(LibraryMapping mapping, MediaBrowser.Model.Dto.BaseItemDto remoteItem, RemoteServer server)
+        {
+            if (!remoteItem.SeriesId.HasValue || !remoteItem.SeasonId.HasValue)
+            {
+                return null;
+            }
+
+            var seriesKey = _cache.TryGetLocalKeyForRemoteItem(server.Id, remoteItem.SeriesId.Value);
+            if (seriesKey == null)
+            {
+                return null;
+            }
+
+            var seasonDto = new MediaBrowser.Model.Dto.BaseItemDto
+            {
+                Id = remoteItem.SeasonId.Value,
+                Name = !string.IsNullOrEmpty(remoteItem.SeasonName) ? remoteItem.SeasonName : $"Season {remoteItem.ParentIndexNumber ?? 0}",
+                IndexNumber = remoteItem.ParentIndexNumber
+            };
+
+            var seasonEntry = _cache.UpsertRaw(
+                mappingName: mapping.LocalLibraryName,
+                serverId: server.Id,
+                remoteItemId: remoteItem.SeasonId.Value,
+                remoteItem: seasonDto,
+                serverPriority: server.Priority,
+                itemType: "Season",
+                parentKey: seriesKey);
+
+            return seasonEntry.Key;
         }
 
         private static SyncResult Failed(string message, string? operationId = null)

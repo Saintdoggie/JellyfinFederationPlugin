@@ -54,7 +54,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var desired = _federationManager.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
-                var desiredKeys = new HashSet<string>(desired.Select(e => e.Key), StringComparer.OrdinalIgnoreCase);
 
                 // A Library (CollectionFolder) does not query its own children by
                 // ParentId. Its Children/GetRecursiveChildren is overridden to union
@@ -114,17 +113,71 @@ namespace Jellyfin.Plugin.Federation.Services
                     .ToList();
                 var existingKeys = new HashSet<string>(existing.Select(x => x.Key!), StringComparer.OrdinalIgnoreCase);
 
-                var toCreate = desired
-                    .Where(e => !existingKeys.Contains(e.Key))
-                    .Select(e =>
+                // Content the user already owns locally (not federated in) - checked
+                // by the same provider ids used to dedup across remote servers, so a
+                // show that exists both on disk here and on a federated partner
+                // doesn't get a second, episode-less shell created next to the real
+                // one.
+                var config = Plugin.Instance?.Configuration;
+                var dedupKeys = (config?.EnableDedup ?? true)
+                    ? (config?.DedupProviderIds ?? new List<string>())
+                    : new List<string>();
+                var localProviderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (dedupKeys.Count > 0)
+                {
+                    foreach (var child in allChildren)
                     {
-                        var item = _federationManager.MaterializeItem(e);
-                        item.ParentId = itemParent.Id;
-                        return item;
-                    })
-                    .ToList();
+                        if (FederationLibraryManager.GetFederationKey(child) != null || child.ProviderIds == null)
+                        {
+                            continue;
+                        }
+
+                        foreach (var key in dedupKeys)
+                        {
+                            if (child.ProviderIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
+                            {
+                                localProviderIds.Add($"{key}:{val}");
+                            }
+                        }
+                    }
+                }
+
+                // Seasons/Episodes nest under a Series entry via ParentKey instead of
+                // itemParent directly (see IsEntryValid). An entry is only safe to
+                // create if it, and everything above it in the ParentKey chain, is
+                // either already persisted or still in the cache and not itself a
+                // local-dedup match - otherwise it would get a ParentId pointing at
+                // an item that will never exist (parent skipped/removed).
+                var toCreate = new List<BaseItem>();
+                foreach (var e in desired)
+                {
+                    if (existingKeys.Contains(e.Key) || HasLocalMatch(e, dedupKeys, localProviderIds))
+                    {
+                        continue;
+                    }
+
+                    FederatedCacheEntry? parentEntry = null;
+                    if (e.ParentKey != null)
+                    {
+                        parentEntry = _federationManager.Cache.GetEntryByKey(e.ParentKey);
+                        if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds))
+                        {
+                            continue;
+                        }
+                    }
+
+                    var item = _federationManager.MaterializeItem(e);
+                    item.ParentId = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
+                    toCreate.Add(item);
+                }
+
+                // Retroactively remove federated items that duplicate content the
+                // user already owns locally (added by earlier plugin versions before
+                // this dedup check existed, or left behind by a config change), and
+                // cascade that removal down to their Seasons/Episodes so nothing is
+                // left pointing at a deleted parent.
                 var toDelete = existing
-                    .Where(x => !desiredKeys.Contains(x.Key!))
+                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds))
                     .Select(x => x.Item)
                     .ToList();
 
@@ -158,6 +211,60 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// True if the entry, and everything above it in the ParentKey chain, is
+        /// still present in the cache and none of them duplicates content the user
+        /// already owns locally. An entry with a missing/invalid ancestor is not
+        /// safe to create (its ParentId would point at an item that will never
+        /// exist) and not safe to leave persisted (its parent is about to be, or
+        /// already was, removed).
+        /// </summary>
+        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
+        {
+            var depth = 0;
+            while (entry != null)
+            {
+                if (depth++ > 16)
+                {
+                    return false;
+                }
+
+                if (HasLocalMatch(entry, dedupKeys, localProviderIds))
+                {
+                    return false;
+                }
+
+                if (entry.ParentKey == null)
+                {
+                    return true;
+                }
+
+                entry = _federationManager.Cache.GetEntryByKey(entry.ParentKey);
+            }
+
+            return false;
+        }
+
+        private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
+        {
+            if (entry == null || dedupKeys.Count == 0 || localProviderIds.Count == 0 || entry.Metadata.ProviderIds == null)
+            {
+                return false;
+            }
+
+            foreach (var key in dedupKeys)
+            {
+                if (entry.Metadata.ProviderIds.TryGetValue(key, out var val)
+                    && !string.IsNullOrEmpty(val)
+                    && localProviderIds.Contains($"{key}:{val}"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
