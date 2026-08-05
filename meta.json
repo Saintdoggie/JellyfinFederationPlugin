@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.7",
-  "changelog": "Debug logging for the missing-movies issue.",
+  "version": "0.0.8",
+  "changelog": "More debug logging for the missing-movies issue.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-05T00:00:00Z",
   "imageUrl": "thumb.png"
