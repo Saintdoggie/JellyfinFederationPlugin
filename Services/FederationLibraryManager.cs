@@ -87,6 +87,29 @@ namespace Jellyfin.Plugin.Federation.Services
                 ep.SeriesName = entry.Metadata.SeriesName;
                 ep.IndexNumber = entry.Metadata.IndexNumber;
                 ep.ParentIndexNumber = entry.Metadata.ParentIndexNumber;
+
+                // ParentId (set by the caller) is the raw hierarchy link; clients
+                // separately use SeriesId/SeasonId for navigation (season grouping,
+                // "up next"), so both need to point at the same local deterministic ids.
+                var seasonEntry = entry.ParentKey != null ? _cache.GetEntryByKey(entry.ParentKey) : null;
+                if (seasonEntry != null)
+                {
+                    ep.SeasonId = ComputeItemId(seasonEntry);
+                    var seriesEntry = seasonEntry.ParentKey != null ? _cache.GetEntryByKey(seasonEntry.ParentKey) : null;
+                    if (seriesEntry != null)
+                    {
+                        ep.SeriesId = ComputeItemId(seriesEntry);
+                    }
+                }
+            }
+
+            if (item is Season season)
+            {
+                var seriesEntry = entry.ParentKey != null ? _cache.GetEntryByKey(entry.ParentKey) : null;
+                if (seriesEntry != null)
+                {
+                    season.SeriesId = ComputeItemId(seriesEntry);
+                }
             }
 
             if (item is Audio audio)
@@ -127,6 +150,18 @@ namespace Jellyfin.Plugin.Federation.Services
             item.IsVirtualItem = true;
 
             return item;
+        }
+
+        /// <summary>
+        /// Computes the deterministic local item id for a cache entry without fully
+        /// materializing it. Used to resolve parent ids for nested items (Season
+        /// under Series, Episode under Season) - since ids are pure deterministic
+        /// hashes of the entry's federation path and CLR type, a child's parent id
+        /// is computable even before the parent itself has been persisted.
+        /// </summary>
+        public Guid ComputeItemId(FederatedCacheEntry entry)
+        {
+            return _libraryManager.GetNewItemId(entry.FederationPath, GetClrType(entry.ItemType));
         }
 
         /// <summary>
@@ -188,21 +223,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static BaseItem CreateItemShell(string itemType)
         {
+            return (BaseItem)Activator.CreateInstance(GetClrType(itemType))!;
+        }
+
+        private static Type GetClrType(string itemType)
+        {
             return itemType switch
             {
-                "Movie" => new Movie(),
-                "Series" => new Series(),
-                "Season" => new Season(),
-                "Episode" => new Episode(),
-                "Audio" => new Audio(),
-                "MusicAlbum" => new MusicAlbum(),
-                "MusicVideo" => new MusicVideo(),
-                "Video" => new Video(),
-                "Photo" => new Photo(),
-                "PhotoAlbum" => new PhotoAlbum(),
-                "Book" => new Book(),
-                "BoxSet" => new BoxSet(),
-                _ => new Movie()
+                "Movie" => typeof(Movie),
+                "Series" => typeof(Series),
+                "Season" => typeof(Season),
+                "Episode" => typeof(Episode),
+                "Audio" => typeof(Audio),
+                "MusicAlbum" => typeof(MusicAlbum),
+                "MusicVideo" => typeof(MusicVideo),
+                "Video" => typeof(Video),
+                "Photo" => typeof(Photo),
+                "PhotoAlbum" => typeof(PhotoAlbum),
+                "Book" => typeof(Book),
+                "BoxSet" => typeof(BoxSet),
+                _ => typeof(Movie)
             };
         }
     }

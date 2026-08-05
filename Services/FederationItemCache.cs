@@ -19,6 +19,7 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private readonly ILogger<FederationItemCache> _logger;
         private readonly ConcurrentDictionary<string, FederatedCacheEntry> _entries = new();
+        private readonly ConcurrentDictionary<(string ServerId, Guid RemoteItemId), string> _remoteIndex = new();
         private string _cacheFilePath = string.Empty;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
 
@@ -64,6 +65,20 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Looks up the local cache key of the entry a remote item was synced into,
+        /// by the same (server, remote item id) pair it was upserted under. Used to
+        /// link an Episode/Season back to its Series entry: an episode only carries
+        /// its remote SeriesId/SeasonId (ids on the *remote* server), which can't be
+        /// turned into a local cache key without this index, since the parent entry
+        /// may be keyed by provider id (dedup) or by raw server+id.
+        /// </summary>
+        public string? TryGetLocalKeyForRemoteItem(string serverId, Guid remoteItemId)
+        {
+            _remoteIndex.TryGetValue((serverId, remoteItemId), out var key);
+            return key;
+        }
+
+        /// <summary>
         /// Gets all entries for a mapping (by mapping name).
         /// </summary>
         public IEnumerable<FederatedCacheEntry> GetEntriesForMapping(string mappingName)
@@ -93,7 +108,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string serverId,
             Guid remoteItemId,
             int serverPriority,
-            string itemType)
+            string itemType,
+            string? parentKey = null)
         {
             var key = BuildProviderKey(mappingName, providerName, providerId);
             var entry = _entries.AddOrUpdate(
@@ -106,6 +122,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return existing;
                 });
 
+            entry.ParentKey = parentKey;
+            _remoteIndex[(serverId, remoteItemId)] = key;
             _lastRefreshUtc = DateTime.UtcNow;
             return entry;
         }
@@ -119,7 +137,8 @@ namespace Jellyfin.Plugin.Federation.Services
             Guid remoteItemId,
             BaseItemDto remoteItem,
             int serverPriority,
-            string itemType)
+            string itemType,
+            string? parentKey = null)
         {
             var key = BuildRawKey(mappingName, serverId, remoteItemId);
             var entry = _entries.AddOrUpdate(
@@ -132,6 +151,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return existing;
                 });
 
+            entry.ParentKey = parentKey;
+            _remoteIndex[(serverId, remoteItemId)] = key;
             _lastRefreshUtc = DateTime.UtcNow;
             return entry;
         }
@@ -451,6 +472,12 @@ namespace Jellyfin.Plugin.Federation.Services
         public string FederationPath => "federation://" + Key;
 
         /// <summary>
+        /// Cache key of the entry this one nests under (Season under Series, Episode
+        /// under Season). Null for top-level entries (Movie, Series).
+        /// </summary>
+        public string? ParentKey { get; set; }
+
+        /// <summary>
         /// Gets a thread-safe snapshot of the sources list.
         /// </summary>
         public FederatedSource[] GetSourcesSnapshot()
@@ -579,7 +606,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     Sources = Sources.ToList(),
                     PrimarySourceIndex = PrimarySourceIndex,
                     Metadata = Metadata,
-                    LastRefreshedUtc = LastRefreshedUtc
+                    LastRefreshedUtc = LastRefreshedUtc,
+                    ParentKey = ParentKey
                 };
             }
         }

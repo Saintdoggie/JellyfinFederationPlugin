@@ -461,6 +461,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.SeriesName = seriesNameProp.GetString();
             }
 
+            if (itemElement.TryGetProperty("SeriesId", out var seriesIdProp) && seriesIdProp.ValueKind != JsonValueKind.Null
+                && Guid.TryParse(seriesIdProp.GetString(), out var seriesGuid))
+            {
+                item.SeriesId = seriesGuid;
+            }
+
+            if (itemElement.TryGetProperty("SeasonId", out var seasonIdProp) && seasonIdProp.ValueKind != JsonValueKind.Null
+                && Guid.TryParse(seasonIdProp.GetString(), out var seasonGuid))
+            {
+                item.SeasonId = seasonGuid;
+            }
+
+            if (itemElement.TryGetProperty("SeasonName", out var seasonNameProp) && seasonNameProp.ValueKind != JsonValueKind.Null)
+            {
+                item.SeasonName = seasonNameProp.GetString();
+            }
+
             if (itemElement.TryGetProperty("ParentIndexNumber", out var parentIndexProp) && parentIndexProp.TryGetInt32(out var parentIndex))
             {
                 item.ParentIndexNumber = parentIndex;
