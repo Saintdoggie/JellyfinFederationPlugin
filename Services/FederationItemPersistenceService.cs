@@ -56,14 +56,31 @@ namespace Jellyfin.Plugin.Federation.Services
                 var desired = _federationManager.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
                 var desiredKeys = new HashSet<string>(desired.Select(e => e.Key), StringComparer.OrdinalIgnoreCase);
 
+                // A Library (CollectionFolder) does not query its own children by
+                // ParentId. Its Children/GetRecursiveChildren is overridden to union
+                // the children of its *physical folders* - one real Folder row per
+                // registered media path/location - found via PhysicalFolderIds. The
+                // recursive browsing API filters the same way: by a TopParentId column
+                // that must match one of those physical folder ids, not the library's
+                // own id. Parenting an item directly to the library itself (as earlier
+                // versions of this fix did) makes it invisible to both: it never shows
+                // up in GetRecursiveChildren, and its own TopParentId (computed by
+                // walking up to the nearest "top parent", which is the library itself)
+                // never matches PhysicalFolderIds. Items must be parented to one of the
+                // library's existing physical folders instead - any of them works,
+                // since PhysicalFolderIds is a set and membership in any one counts.
+                var itemParent = (libraryFolder as CollectionFolder)?.GetPhysicalFolders().FirstOrDefault() as Folder
+                    ?? libraryFolder;
+
                 var allChildren = libraryFolder.GetRecursiveChildren().ToList();
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: libraryFolder.Id={FolderId}, allChildren={ChildCount}, directChildren(ParentId match)={DirectCount}, withFederationKey={KeyCount}",
+                    "[Federation] Debug {Name}: libraryFolder.Id={FolderId}, itemParent.Id={ParentId} (physical={IsPhysical}), allChildren={ChildCount}, withFederationKey={KeyCount}",
                     mapping.LocalLibraryName,
                     libraryFolder.Id,
+                    itemParent.Id,
+                    !ReferenceEquals(itemParent, libraryFolder),
                     allChildren.Count,
-                    allChildren.Count(i => i.ParentId == libraryFolder.Id),
                     allChildren.Count(i => FederationLibraryManager.GetFederationKey(i) != null));
 
                 // Self-healing migration: earlier plugin versions stamped a
@@ -102,18 +119,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     .Select(e =>
                     {
                         var item = _federationManager.MaterializeItem(e);
-
-                        // ILibraryManager.CreateItems does not parent what it saves:
-                        // its "parent" argument only feeds the ItemAdded event and
-                        // invalidates the folder's cached children. Without an explicit
-                        // ParentId the rows land in the database as orphans, matching
-                        // neither the direct-children query (ParentId) nor the recursive
-                        // one (AncestorIds, which the repository derives from the
-                        // ParentId chain at save time). That made federated items
-                        // invisible in the library *and* invisible to the existence
-                        // check above - so every sync reported the full set as "created"
-                        // and nothing ever showed up.
-                        item.ParentId = libraryFolder.Id;
+                        item.ParentId = itemParent.Id;
                         return item;
                     })
                     .ToList();
@@ -129,25 +135,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (toCreate.Count > 0)
                 {
-                    var sample = toCreate[0];
-                    _logger.LogInformation(
-                        "[Federation] Debug {Name}: about to create {Count}, sample item.Id={ItemId} item.ParentId={ItemParentId} (should equal folder.Id={FolderId})",
-                        mapping.LocalLibraryName,
-                        toCreate.Count,
-                        sample.Id,
-                        sample.ParentId,
-                        libraryFolder.Id);
+                    _libraryManager.CreateItems(toCreate, itemParent, cancellationToken);
 
-                    _libraryManager.CreateItems(toCreate, libraryFolder, cancellationToken);
-
-                    var lookedUp = _libraryManager.GetItemById(sample.Id);
-                    libraryFolder.Children = null;
-                    var freshCount = libraryFolder.GetRecursiveChildren().Count;
+                    itemParent.Children = null;
+                    var freshCount = libraryFolder.GetRecursiveChildren().Count(i => FederationLibraryManager.GetFederationKey(i) != null);
                     _logger.LogInformation(
-                        "[Federation] Debug {Name}: after create, GetItemById(sample)={Found} (ParentId={FoundParentId}), freshChildrenCount={FreshCount}",
+                        "[Federation] Debug {Name}: after create, federated items now visible via GetRecursiveChildren={FreshCount}",
                         mapping.LocalLibraryName,
-                        lookedUp != null,
-                        lookedUp?.ParentId,
                         freshCount);
                 }
 
