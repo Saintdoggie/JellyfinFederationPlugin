@@ -21,6 +21,14 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationItemCache _cache;
         private readonly FederationItemPersistenceService _persistence;
 
+        // Guards SyncAllAsync/SyncServerAsync against running concurrently with each
+        // other (e.g. the 5s-after-startup sync overlapping the hourly scheduled
+        // task). Overlapping runs raced to delete-then-recreate the same items during
+        // the tiered-creation migration, hit SQLite "database table is locked" errors,
+        // and left the library in a half-migrated state - not just wasted work, but
+        // destructive when a sync deletes items before recreating them.
+        private readonly SemaphoreSlim _syncLock = new(1, 1);
+
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationSyncService"/> class.
         /// </summary>
@@ -44,6 +52,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<SyncResult> SyncAllAsync(CancellationToken cancellationToken = default)
         {
+            if (!await _syncLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogInformation("[Federation] Sync already in progress; skipping this trigger");
+                return new SyncResult { Success = true, Message = "A sync is already in progress; skipped", ItemCount = 0 };
+            }
+
             var operationId = Guid.NewGuid().ToString();
             SyncProgressTracker.Start(operationId);
 
@@ -68,7 +82,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // every mapping in this sync, then the flag is saved so it never runs
                 // again. Note this deletes and recreates affected items with the same
                 // deterministic id - any local watch progress on them is not preserved.
-                var needsNestedMigration = !config.MigratedTieredCreationV1;
+                var needsNestedMigration = !config.MigratedTieredCreationV2;
 
                 int totalItems = 0;
                 int failedSources = 0;
@@ -87,7 +101,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (needsNestedMigration)
                 {
-                    config.MigratedTieredCreationV1 = true;
+                    config.MigratedTieredCreationV2 = true;
                     Plugin.Instance?.SaveConfiguration();
                     _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
                 }
@@ -119,6 +133,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 SyncProgressTracker.Complete(operationId, false, ex.Message);
                 return Failed(ex.Message, operationId);
             }
+            finally
+            {
+                _syncLock.Release();
+            }
         }
 
         /// <summary>
@@ -126,6 +144,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<SyncResult> SyncServerAsync(string serverId, CancellationToken cancellationToken = default)
         {
+            if (!await _syncLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogInformation("[Federation] Sync already in progress; skipping this trigger");
+                return new SyncResult { Success = true, Message = "A sync is already in progress; skipped", ItemCount = 0 };
+            }
+
             try
             {
                 var config = Plugin.Instance?.Configuration;
@@ -148,7 +172,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // global flag is only ever set by SyncAllAsync, since this only covers
                 // mappings tied to one server - setting it here could skip mappings on
                 // other servers that haven't had a full sync yet.
-                var needsNestedMigration = !config!.MigratedTieredCreationV1;
+                var needsNestedMigration = !config!.MigratedTieredCreationV2;
 
                 int total = 0;
                 int failedSources = 0;
@@ -177,6 +201,10 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Error syncing server {ServerId}", serverId);
                 return Failed(ex.Message);
+            }
+            finally
+            {
+                _syncLock.Release();
             }
         }
 

@@ -60,8 +60,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// even though it still exists. False by default so every upgrading install
         /// runs the migration exactly once; a fresh install has nothing to migrate,
         /// so it's a harmless no-op there.
+        /// V2: the 0.0.14 migration (V1) could run concurrently with itself (startup
+        /// sync racing the scheduled task) since nothing serialized syncs yet, which
+        /// hit SQLite lock errors mid delete-recreate and could leave a mapping's
+        /// nested items half-migrated while still marking V1 complete. 0.0.15 adds
+        /// sync serialization and reruns once more under V2 to clean up from that.
         /// </summary>
-        public bool MigratedTieredCreationV1 { get; set; }
+        public bool MigratedTieredCreationV2 { get; set; }
     }
 
     /// <summary>
