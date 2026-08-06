@@ -43,8 +43,17 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public Task<IEnumerable<MediaSourceInfo>> GetMediaSources(BaseItem item, CancellationToken cancellationToken)
         {
-            if (item == null || !_federationManager.IsFederatedItem(item))
+            if (item == null)
             {
+                return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
+            }
+
+            if (!_federationManager.IsFederatedItem(item))
+            {
+                _logger.LogInformation(
+                    "[Federation] Debug GetMediaSources: {Name} ({Type}) has no FederationKey - not treated as federated",
+                    item.Name,
+                    item.GetType().Name);
                 return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
             }
 
@@ -54,11 +63,24 @@ namespace Jellyfin.Plugin.Federation.Services
                 var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
                 if (entry == null)
                 {
+                    _logger.LogWarning(
+                        "[Federation] Debug GetMediaSources: {Name} ({Type}) has FederationKey={Key} but no matching cache entry",
+                        item.Name,
+                        item.GetType().Name,
+                        key);
                     return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
                 }
 
                 var entrySources = entry.GetSourcesSnapshot();
                 var primaryIndex = Math.Min(entry.PrimarySourceIndex, entrySources.Length - 1);
+
+                _logger.LogInformation(
+                    "[Federation] Debug GetMediaSources: {Name} ({Type}) key={Key}, sources={SourceCount} [{Sources}]",
+                    item.Name,
+                    item.GetType().Name,
+                    key,
+                    entrySources.Length,
+                    string.Join(" | ", entrySources.Select(s => $"{s.ServerId}:{s.RemoteItemId}")));
 
                 var sources = new List<MediaSourceInfo>();
                 for (int i = 0; i < entrySources.Length; i++)
@@ -67,12 +89,23 @@ namespace Jellyfin.Plugin.Federation.Services
                     var server = _federationManager.GetServer(src.ServerId);
                     if (server == null)
                     {
+                        _logger.LogWarning(
+                            "[Federation] Debug GetMediaSources: {Name} source #{Index} references unknown server {ServerId} - skipping",
+                            item.Name,
+                            i,
+                            src.ServerId);
                         continue;
                     }
 
                     var path = BuildPlaybackPath(server, src);
                     if (path == null)
                     {
+                        _logger.LogWarning(
+                            "[Federation] Debug GetMediaSources: {Name} source #{Index} on server {ServerName} ({StreamingMode}) produced a null playback path - skipping",
+                            item.Name,
+                            i,
+                            server.Name,
+                            server.StreamingMode);
                         continue;
                     }
 
