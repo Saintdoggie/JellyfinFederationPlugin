@@ -125,7 +125,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 // any unrelated config save.
                 if (existing != null)
                 {
-                    config.MigratedTieredCreationV3 = existing.MigratedTieredCreationV3;
+                    config.MigratedTieredCreationV4 = existing.MigratedTieredCreationV4;
                 }
 
                 var errors = ConfigValidator.Validate(config);

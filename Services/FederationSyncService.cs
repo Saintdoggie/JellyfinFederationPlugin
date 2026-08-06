@@ -85,7 +85,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // never runs again. Note this deletes and recreates affected items
                 // with the same deterministic id - any local watch progress on them
                 // is not preserved.
-                var needsNestedMigration = !config.MigratedTieredCreationV3;
+                var needsNestedMigration = !config.MigratedTieredCreationV4;
 
                 int totalItems = 0;
                 int failedSources = 0;
@@ -104,7 +104,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (needsNestedMigration)
                 {
-                    config.MigratedTieredCreationV3 = true;
+                    config.MigratedTieredCreationV4 = true;
                     Plugin.Instance?.SaveConfiguration();
                     _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
                 }
@@ -175,7 +175,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // global flag is only ever set by SyncAllAsync, since this only covers
                 // mappings tied to one server - setting it here could skip mappings on
                 // other servers that haven't had a full sync yet.
-                var needsNestedMigration = !config!.MigratedTieredCreationV3;
+                var needsNestedMigration = !config!.MigratedTieredCreationV4;
 
                 int total = 0;
                 int failedSources = 0;
