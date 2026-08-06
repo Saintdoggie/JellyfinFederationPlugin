@@ -115,6 +115,19 @@ namespace Jellyfin.Plugin.Federation.Api
                     }
                 }
 
+                // Preserve server-internal state the config page's UI has no field
+                // for and never sends: the config page builds its POST body from an
+                // explicit field list (see saveConfiguration() in configPage.html),
+                // so anything added to PluginConfiguration since then silently reset
+                // to its C# default on every save - including mid-migration, which
+                // made the tiered-creation migration re-trigger (deleting and
+                // recreating every federated item again) on the very next sync after
+                // any unrelated config save.
+                if (existing != null)
+                {
+                    config.MigratedTieredCreationV3 = existing.MigratedTieredCreationV3;
+                }
+
                 var errors = ConfigValidator.Validate(config);
                 if (errors.Count > 0)
                 {

@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.17",
+      	    "changelog": "Fix: saving config (from any page load) silently reset the migration-complete flag, since the config page's save payload doesn't include newer fields - causing the whole episode migration to destructively rerun on every config save.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.17/Jellyfin.Federation.zip",
+      	    "checksum": "320b54c4725b837f844fad9a1a942e9b",
+      	    "timestamp": "2026-08-06T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.16",
       	    "changelog": "Actual fix for invisible episodes: Jellyfin's show/season pages find children by a SeriesPresentationUniqueKey match, not by parent/ancestor id. Federated episodes never had it set. One-time migration backfills it.",
       	    "targetAbi": "10.11.0.0",
