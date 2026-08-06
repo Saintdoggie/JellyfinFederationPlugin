@@ -98,7 +98,23 @@ namespace Jellyfin.Plugin.Federation.Services
                     var seriesEntry = seasonEntry.ParentKey != null ? _cache.GetEntryByKey(seasonEntry.ParentKey) : null;
                     if (seriesEntry != null)
                     {
-                        ep.SeriesId = ComputeItemId(seriesEntry);
+                        var seriesId = ComputeItemId(seriesEntry);
+                        ep.SeriesId = seriesId;
+
+                        // The actual mechanism Jellyfin's Shows/{id}/Seasons and
+                        // Shows/{id}/Episodes endpoints use to find children: Series.
+                        // GetSeasons/GetEpisodes filter by SeriesPresentationUniqueKey
+                        // matching the series' own GetPresentationUniqueKey() - a
+                        // string field, entirely separate from ParentId/AncestorIds/
+                        // SeriesId. It's normally computed and stored by Jellyfin's own
+                        // library-scan pipeline; CreateItems doesn't touch it, so it
+                        // was silently null on every federated episode and season,
+                        // which is why they were undiscoverable from the show/season
+                        // pages even after 0.0.13's ancestry-ordering fix. The series'
+                        // own default (see BaseItem.CreatePresentationUniqueKey) is
+                        // just its id in "N" format, matched below for the series item
+                        // itself.
+                        ep.SeriesPresentationUniqueKey = seriesId.ToString("N");
                     }
                 }
             }
@@ -108,7 +124,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 var seriesEntry = entry.ParentKey != null ? _cache.GetEntryByKey(entry.ParentKey) : null;
                 if (seriesEntry != null)
                 {
-                    season.SeriesId = ComputeItemId(seriesEntry);
+                    var seriesId = ComputeItemId(seriesEntry);
+                    season.SeriesId = seriesId;
+                    season.SeriesPresentationUniqueKey = seriesId.ToString("N");
                 }
             }
 
@@ -145,6 +163,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // Stable local id derived from cache key so the same virtual item survives refreshes.
             item.Id = _libraryManager.GetNewItemId(entry.FederationPath, item.GetType());
+
+            // Explicit rather than relying on BaseItem's lazy default (Id.ToString("N"))
+            // - Series.CreatePresentationUniqueKey() can diverge from that default when
+            // a library has "EnableAutomaticSeriesGrouping" on. Pinning it here keeps it
+            // exactly equal to what Episode/Season.SeriesPresentationUniqueKey above are
+            // computed against, regardless of that setting.
+            item.PresentationUniqueKey = item.Id.ToString("N");
+
             item.DateCreated = entry.LastRefreshedUtc == default ? DateTime.UtcNow : entry.LastRefreshedUtc;
             item.DateModified = item.DateCreated;
             item.IsVirtualItem = true;

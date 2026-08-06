@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.15",
-  "changelog": "Fix: startup sync and the scheduled sync could run at the same time and corrupt each other mid-migration (SQLite lock errors). Syncs are now serialized, and the migration runs once more cleanly.",
+  "version": "0.0.16",
+  "changelog": "Actual fix for invisible episodes: Jellyfin's show/season pages find children by a SeriesPresentationUniqueKey match, not by parent/ancestor id. Federated episodes never had it set. One-time migration backfills it.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-06T00:00:00Z",
   "imageUrl": "thumb.png"

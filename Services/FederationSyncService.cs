@@ -76,13 +76,16 @@ namespace Jellyfin.Plugin.Federation.Services
                     return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
                 }
 
-                // One-time migration: items created before 0.0.13 may have been saved
-                // in a single flat batch with incomplete ancestry (see
-                // FederationItemPersistenceService.ReconcileMappingAsync). Runs across
-                // every mapping in this sync, then the flag is saved so it never runs
-                // again. Note this deletes and recreates affected items with the same
-                // deterministic id - any local watch progress on them is not preserved.
-                var needsNestedMigration = !config.MigratedTieredCreationV2;
+                // One-time migration: items created before 0.0.16 never had
+                // SeriesPresentationUniqueKey set (see FederationLibraryManager.
+                // MaterializeItem), which is what the Shows/{id}/Seasons and
+                // Shows/{id}/Episodes endpoints actually filter by - so they existed
+                // in the database but were undiscoverable from the show page. Runs
+                // across every mapping in this sync, then the flag is saved so it
+                // never runs again. Note this deletes and recreates affected items
+                // with the same deterministic id - any local watch progress on them
+                // is not preserved.
+                var needsNestedMigration = !config.MigratedTieredCreationV3;
 
                 int totalItems = 0;
                 int failedSources = 0;
@@ -101,7 +104,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (needsNestedMigration)
                 {
-                    config.MigratedTieredCreationV2 = true;
+                    config.MigratedTieredCreationV3 = true;
                     Plugin.Instance?.SaveConfiguration();
                     _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
                 }
@@ -172,7 +175,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // global flag is only ever set by SyncAllAsync, since this only covers
                 // mappings tied to one server - setting it here could skip mappings on
                 // other servers that haven't had a full sync yet.
-                var needsNestedMigration = !config!.MigratedTieredCreationV2;
+                var needsNestedMigration = !config!.MigratedTieredCreationV3;
 
                 int total = 0;
                 int failedSources = 0;

@@ -114,6 +114,17 @@ public class FederationEpisodeHierarchyTests
         Assert.Equal(seasonItem.Id, episodeItem.SeasonId);
         Assert.Equal(manager.ComputeItemId(seriesEntry), seriesItem.Id);
         Assert.Equal(manager.ComputeItemId(seasonEntry), seasonItem.Id);
+
+        // The actual mechanism Jellyfin's Shows/{id}/Seasons and Shows/{id}/Episodes
+        // endpoints use to find children: Series.GetSeasons/GetEpisodes filter by
+        // SeriesPresentationUniqueKey matching the series' own
+        // GetPresentationUniqueKey() - not ParentId, not AncestorIds, not SeriesId.
+        // Without this matching, a season/episode is a normal row that's simply
+        // never found by the show/season browsing pages, regardless of how correct
+        // its hierarchy ids are.
+        Assert.Equal(seriesItem.PresentationUniqueKey, seasonItem.SeriesPresentationUniqueKey);
+        Assert.Equal(seriesItem.PresentationUniqueKey, episodeItem.SeriesPresentationUniqueKey);
+        Assert.False(string.IsNullOrEmpty(seriesItem.PresentationUniqueKey));
     }
 
     private static Guid DeterministicGuid(string input)
