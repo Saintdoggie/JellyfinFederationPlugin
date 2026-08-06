@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.16",
+      	    "changelog": "Actual fix for invisible episodes: Jellyfin's show/season pages find children by a SeriesPresentationUniqueKey match, not by parent/ancestor id. Federated episodes never had it set. One-time migration backfills it.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.16/Jellyfin.Federation.zip",
+      	    "checksum": "79870851831155d048facab1834d1578",
+      	    "timestamp": "2026-08-06T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.15",
       	    "changelog": "Fix: startup sync and the scheduled sync could run at the same time and corrupt each other mid-migration (SQLite lock errors). Syncs are now serialized, and the migration runs once more cleanly.",
       	    "targetAbi": "10.11.0.0",

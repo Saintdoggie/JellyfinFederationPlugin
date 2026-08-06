@@ -65,8 +65,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// hit SQLite lock errors mid delete-recreate and could leave a mapping's
         /// nested items half-migrated while still marking V1 complete. 0.0.15 adds
         /// sync serialization and reruns once more under V2 to clean up from that.
+        /// V3: the actual mechanism Jellyfin's Shows/{id}/Seasons and
+        /// Shows/{id}/Episodes endpoints use is SeriesPresentationUniqueKey matching
+        /// (see FederationLibraryManager.MaterializeItem), not ancestry ordering -
+        /// V1/V2 fixed a real but different problem and never touched this field, so
+        /// every federated season/episode was still undiscoverable from the show
+        /// page. 0.0.16 sets it and reruns once more under V3 to backfill it onto
+        /// whatever V1/V2 already created.
         /// </summary>
-        public bool MigratedTieredCreationV2 { get; set; }
+        public bool MigratedTieredCreationV3 { get; set; }
     }
 
     /// <summary>
