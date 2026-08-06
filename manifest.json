@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.15",
+      	    "changelog": "Fix: startup sync and the scheduled sync could run at the same time and corrupt each other mid-migration (SQLite lock errors). Syncs are now serialized, and the migration runs once more cleanly.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.15/Jellyfin.Federation.zip",
+      	    "checksum": "5d1a5961bc9e84e3d727da19421ddbd5",
+      	    "timestamp": "2026-08-06T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.14",
       	    "changelog": "One-time migration: recreates existing seasons/episodes so 0.0.13's ordering fix actually applies to them (not just newly-synced ones).",
       	    "targetAbi": "10.11.0.0",
