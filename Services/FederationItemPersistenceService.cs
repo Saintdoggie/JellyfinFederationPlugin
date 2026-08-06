@@ -71,6 +71,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 var itemParent = (libraryFolder as CollectionFolder)?.GetPhysicalFolders().FirstOrDefault() as Folder
                     ?? libraryFolder;
 
+                if (ReferenceEquals(itemParent, libraryFolder))
+                {
+                    // No physical folder found - anything created here would repeat
+                    // the pre-0.0.9 invisible-items bug (see the comment above).
+                    // Usually means the library was never fully provisioned with a
+                    // media path yet.
+                    _logger.LogWarning(
+                        "[Federation] Library {Name} has no physical folder yet; items would not be visible if created. Check that it was provisioned correctly.",
+                        mapping.LocalLibraryName);
+                }
+
                 var allChildren = libraryFolder.GetRecursiveChildren().ToList();
 
                 _logger.LogInformation(
@@ -81,6 +92,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     !ReferenceEquals(itemParent, libraryFolder),
                     allChildren.Count,
                     allChildren.Count(i => FederationLibraryManager.GetFederationKey(i) != null));
+
+                _logger.LogInformation(
+                    "[Federation] Debug {Name}: desired={DesiredCount} (Series={Series}, Season={Season}, Episode={Episode}, Movie={Movie}, Other={Other}), withParentKey={WithParentKey}",
+                    mapping.LocalLibraryName,
+                    desired.Count,
+                    desired.Count(e => e.ItemType == "Series"),
+                    desired.Count(e => e.ItemType == "Season"),
+                    desired.Count(e => e.ItemType == "Episode"),
+                    desired.Count(e => e.ItemType == "Movie"),
+                    desired.Count(e => e.ItemType != "Series" && e.ItemType != "Season" && e.ItemType != "Episode" && e.ItemType != "Movie"),
+                    desired.Count(e => e.ParentKey != null));
 
                 // Self-healing migration: earlier plugin versions stamped a
                 // "federation://" URI on item.Path. Jellyfin treated that as an
@@ -142,6 +164,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                _logger.LogInformation(
+                    "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}",
+                    mapping.LocalLibraryName,
+                    localProviderIds.Count);
+
                 // Seasons/Episodes nest under a Series entry via ParentKey instead of
                 // itemParent directly (see IsEntryValid). An entry is only safe to
                 // create if it, and everything above it in the ParentKey chain, is
@@ -149,10 +176,28 @@ namespace Jellyfin.Plugin.Federation.Services
                 // local-dedup match - otherwise it would get a ParentId pointing at
                 // an item that will never exist (parent skipped/removed).
                 var toCreate = new List<BaseItem>();
+                var skipExisting = 0;
+                var skipLocalMatch = 0;
+                var skipOrphan = 0;
+                var skipOrphanNoParentEntry = 0;
+                var localMatchSamples = new List<string>();
+                var orphanSamples = new List<string>();
                 foreach (var e in desired)
                 {
-                    if (existingKeys.Contains(e.Key) || HasLocalMatch(e, dedupKeys, localProviderIds))
+                    if (existingKeys.Contains(e.Key))
                     {
+                        skipExisting++;
+                        continue;
+                    }
+
+                    if (HasLocalMatch(e, dedupKeys, localProviderIds))
+                    {
+                        skipLocalMatch++;
+                        if (localMatchSamples.Count < 5)
+                        {
+                            localMatchSamples.Add($"{e.ItemType}:{e.Metadata.Name}");
+                        }
+
                         continue;
                     }
 
@@ -162,6 +207,17 @@ namespace Jellyfin.Plugin.Federation.Services
                         parentEntry = _federationManager.Cache.GetEntryByKey(e.ParentKey);
                         if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds))
                         {
+                            skipOrphan++;
+                            if (parentEntry == null)
+                            {
+                                skipOrphanNoParentEntry++;
+                            }
+
+                            if (orphanSamples.Count < 5)
+                            {
+                                orphanSamples.Add($"{e.ItemType}:{e.Metadata.Name} (parentKey={e.ParentKey}, parentFound={parentEntry != null})");
+                            }
+
                             continue;
                         }
                     }
@@ -170,6 +226,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     item.ParentId = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
                     toCreate.Add(item);
                 }
+
+                _logger.LogInformation(
+                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate}",
+                    mapping.LocalLibraryName,
+                    skipExisting,
+                    skipLocalMatch,
+                    string.Join(" | ", localMatchSamples),
+                    skipOrphan,
+                    skipOrphanNoParentEntry,
+                    string.Join(" | ", orphanSamples),
+                    toCreate.Count);
 
                 // Retroactively remove federated items that duplicate content the
                 // user already owns locally (added by earlier plugin versions before
@@ -180,6 +247,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds))
                     .Select(x => x.Item)
                     .ToList();
+
+                _logger.LogInformation(
+                    "[Federation] Debug {Name}: existing(federated)={ExistingCount}, toDelete={ToDeleteCount}",
+                    mapping.LocalLibraryName,
+                    existing.Count,
+                    toDelete.Count);
 
                 foreach (var stale in toDelete)
                 {

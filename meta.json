@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.10",
-  "changelog": "TV episodes now sync and play. Fixed duplicate/mismatched-watched-state shows and content looping back in from federated servers.",
+  "version": "0.0.11",
+  "changelog": "Debug logging for the no-seasons/can't-play issue.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-05T00:00:00Z",
+  "timestamp": "2026-08-06T00:00:00Z",
   "imageUrl": "thumb.png"
 }
