@@ -50,6 +50,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Gets or sets the virtual library mappings.
         /// </summary>
         public List<LibraryMapping> LibraryMappings { get; set; } = new List<LibraryMapping>();
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the one-time migration that
+        /// force-recreates existing Season/Episode items in dependency order has run.
+        /// Items created before 0.0.13 were saved in a single flat batch, which could
+        /// leave an episode or season with incomplete ancestry (it was saved before
+        /// its parent was actually persisted) - invisible to ancestor-based browsing
+        /// even though it still exists. False by default so every upgrading install
+        /// runs the migration exactly once; a fresh install has nothing to migrate,
+        /// so it's a harmless no-op there.
+        /// </summary>
+        public bool MigratedTieredCreationV1 { get; set; }
     }
 
     /// <summary>

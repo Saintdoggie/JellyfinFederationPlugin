@@ -39,7 +39,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Creates/removes persisted virtual items so the mapping's library folder
         /// mirrors the cache. Never throws; failures are logged.
         /// </summary>
-        public Task ReconcileMappingAsync(LibraryMapping mapping, CancellationToken cancellationToken = default)
+        /// <param name="mapping">The mapping to reconcile.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <param name="forceRecreateNested">
+        /// One-time migration flag (see <see cref="Configuration.PluginConfiguration.MigratedTieredCreationV1"/>):
+        /// when true, every existing Season/Episode item is deleted and recreated
+        /// fresh in proper parent-before-child order, since anything created before
+        /// 0.0.13 may have been saved in a single flat batch with incomplete ancestry.
+        /// </param>
+        public Task ReconcileMappingAsync(LibraryMapping mapping, CancellationToken cancellationToken = default, bool forceRecreateNested = false)
         {
             try
             {
@@ -134,6 +142,33 @@ namespace Jellyfin.Plugin.Federation.Services
                     .Where(x => x.Key != null)
                     .ToList();
                 var existingKeys = new HashSet<string>(existing.Select(x => x.Key!), StringComparer.OrdinalIgnoreCase);
+
+                // One-time migration (see MigratedTieredCreationV1): drop existing
+                // Season/Episode items from existingKeys so the toCreate loop below
+                // treats them as new and rebuilds them in proper tier order. Movies
+                // and Series are untouched - their parent (the library's physical
+                // folder) was always already persisted, so they were never affected.
+                var forcedRecreateKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (forceRecreateNested)
+                {
+                    foreach (var x in existing)
+                    {
+                        if (x.Item is MediaBrowser.Controller.Entities.TV.Episode or MediaBrowser.Controller.Entities.TV.Season)
+                        {
+                            forcedRecreateKeys.Add(x.Key!);
+                        }
+                    }
+
+                    existingKeys.ExceptWith(forcedRecreateKeys);
+
+                    if (forcedRecreateKeys.Count > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] One-time migration: recreating {Count} existing Season/Episode item(s) in {Name} to fix ancestry",
+                            forcedRecreateKeys.Count,
+                            mapping.LocalLibraryName);
+                    }
+                }
 
                 // Content the user already owns locally (not federated in) - checked
                 // by the same provider ids used to dedup across remote servers, so a
@@ -253,7 +288,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 // cascade that removal down to their Seasons/Episodes so nothing is
                 // left pointing at a deleted parent.
                 var toDelete = existing
-                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds))
+                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds)
+                        || forcedRecreateKeys.Contains(x.Key!))
                     .Select(x => x.Item)
                     .ToList();
 
