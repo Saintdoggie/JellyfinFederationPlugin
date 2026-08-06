@@ -62,6 +62,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
                 }
 
+                // One-time migration: items created before 0.0.13 may have been saved
+                // in a single flat batch with incomplete ancestry (see
+                // FederationItemPersistenceService.ReconcileMappingAsync). Runs across
+                // every mapping in this sync, then the flag is saved so it never runs
+                // again. Note this deletes and recreates affected items with the same
+                // deterministic id - any local watch progress on them is not preserved.
+                var needsNestedMigration = !config.MigratedTieredCreationV1;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -74,7 +82,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     totalItems += result.ItemCount;
                     failedSources += result.FailedSources;
 
-                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken, forceRecreateNested: needsNestedMigration).ConfigureAwait(false);
+                }
+
+                if (needsNestedMigration)
+                {
+                    config.MigratedTieredCreationV1 = true;
+                    Plugin.Instance?.SaveConfiguration();
+                    _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
@@ -129,6 +144,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     return Failed("No mappings use this server");
                 }
 
+                // Same one-time migration as SyncAllAsync (see there for details). The
+                // global flag is only ever set by SyncAllAsync, since this only covers
+                // mappings tied to one server - setting it here could skip mappings on
+                // other servers that haven't had a full sync yet.
+                var needsNestedMigration = !config!.MigratedTieredCreationV1;
+
                 int total = 0;
                 int failedSources = 0;
                 foreach (var mapping in mappings)
@@ -137,7 +158,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     total += result.ItemCount;
                     failedSources += result.FailedSources;
 
-                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken, forceRecreateNested: needsNestedMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
