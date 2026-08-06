@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.18",
-  "changelog": "The 0.0.16 fix only recreated Season/Episode items, not the Series itself - a Series never got its own PresentationUniqueKey set, so the match could still fail depending on a library setting. Series are now included in the migration too.",
+  "version": "0.0.19",
+  "changelog": "Debug logging for the 'unable to find a valid media source' playback error (seasons/episodes are now visible, so this is the next thing to fix). No database changes in this release.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-06T00:00:00Z",
   "imageUrl": "thumb.png"
