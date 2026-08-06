@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.12",
-  "changelog": "Fix: seasons were deleted right after being created, so episodes never persisted (no seasons, nothing playable).",
+  "version": "0.0.13",
+  "changelog": "Create shows/seasons/episodes in order (parent before child) so ancestry resolves correctly for browsing.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-06T00:00:00Z",
   "imageUrl": "thumb.png"

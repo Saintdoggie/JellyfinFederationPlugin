@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.13",
+      	    "changelog": "Create shows/seasons/episodes in order (parent before child) so ancestry resolves correctly for browsing.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.13/Jellyfin.Federation.zip",
+      	    "checksum": "f6b7bd1c485f2c6a260d310fc15b1955",
+      	    "timestamp": "2026-08-06T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.12",
       	    "changelog": "Fix: seasons were deleted right after being created, so episodes never persisted (no seasons, nothing playable).",
       	    "targetAbi": "10.11.0.0",
