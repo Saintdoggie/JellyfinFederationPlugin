@@ -313,7 +313,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             continue;
                         }
 
-                        UpsertRemoteItem(mapping, remoteItem, server, config);
+                        UpsertRemoteItem(mapping, remoteItem, server, config, seen);
                         seen.Add(remoteItem.Id);
                         total++;
                     }
@@ -344,11 +344,12 @@ namespace Jellyfin.Plugin.Federation.Services
             LibraryMapping mapping,
             MediaBrowser.Model.Dto.BaseItemDto remoteItem,
             RemoteServer server,
-            PluginConfiguration config)
+            PluginConfiguration config,
+            HashSet<Guid> seen)
         {
             var itemType = remoteItem.Type.ToString();
             var isEpisode = string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase);
-            var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server) : null;
+            var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server, seen) : null;
 
             var providerIds = remoteItem.ProviderIds;
             var dedupKeys = config.EnableDedup ? (config.DedupProviderIds ?? new List<string>()) : new List<string>();
@@ -407,7 +408,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// episode's series hasn't been synced (so the episode should be skipped
         /// rather than orphaned).
         /// </summary>
-        private string? UpsertEpisodeSeason(LibraryMapping mapping, MediaBrowser.Model.Dto.BaseItemDto remoteItem, RemoteServer server)
+        private string? UpsertEpisodeSeason(LibraryMapping mapping, MediaBrowser.Model.Dto.BaseItemDto remoteItem, RemoteServer server, HashSet<Guid> seen)
         {
             if (!remoteItem.SeriesId.HasValue || !remoteItem.SeasonId.HasValue)
             {
@@ -435,6 +436,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 serverPriority: server.Priority,
                 itemType: "Season",
                 parentKey: seriesKey);
+
+            // The season is synthesized from fields on episodes, not returned as
+            // its own item from GetItemsAsync, so nothing else ever marks its
+            // remote id as seen this sync. Without this, PruneServerSources treats
+            // every season as stale and deletes it in the same pass it was just
+            // created in - which is exactly what was happening (a whole "Pruned N
+            // stale entries" is really N synthesized seasons getting immediately
+            // deleted, orphaning every episode's ParentKey).
+            seen.Add(remoteItem.SeasonId.Value);
 
             return seasonEntry.Key;
         }
