@@ -175,7 +175,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // either already persisted or still in the cache and not itself a
                 // local-dedup match - otherwise it would get a ParentId pointing at
                 // an item that will never exist (parent skipped/removed).
-                var toCreate = new List<BaseItem>();
+                var toCreate = new List<(BaseItem Item, int Depth)>();
                 var skipExisting = 0;
                 var skipLocalMatch = 0;
                 var skipOrphan = 0;
@@ -202,6 +202,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     FederatedCacheEntry? parentEntry = null;
+                    var depth = 0;
                     if (e.ParentKey != null)
                     {
                         parentEntry = _federationManager.Cache.GetEntryByKey(e.ParentKey);
@@ -220,15 +221,22 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             continue;
                         }
+
+                        var walk = parentEntry;
+                        while (walk != null)
+                        {
+                            depth++;
+                            walk = walk.ParentKey != null ? _federationManager.Cache.GetEntryByKey(walk.ParentKey) : null;
+                        }
                     }
 
                     var item = _federationManager.MaterializeItem(e);
                     item.ParentId = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
-                    toCreate.Add(item);
+                    toCreate.Add((item, depth));
                 }
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate}",
+                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate} (byDepth={ByDepth})",
                     mapping.LocalLibraryName,
                     skipExisting,
                     skipLocalMatch,
@@ -236,7 +244,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     skipOrphan,
                     skipOrphanNoParentEntry,
                     string.Join(" | ", orphanSamples),
-                    toCreate.Count);
+                    toCreate.Count,
+                    string.Join(", ", toCreate.GroupBy(x => x.Depth).OrderBy(g => g.Key).Select(g => $"{g.Key}:{g.Count()}")));
 
                 // Retroactively remove federated items that duplicate content the
                 // user already owns locally (added by earlier plugin versions before
@@ -261,7 +270,23 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (toCreate.Count > 0)
                 {
-                    _libraryManager.CreateItems(toCreate, itemParent, cancellationToken);
+                    // Created tier-by-tier (Series/Movies, then Seasons, then Episodes)
+                    // rather than in one flat batch. ParentId itself doesn't need this -
+                    // ids are deterministic hashes, computable before the parent is
+                    // persisted - but Jellyfin derives each item's AncestorIds (a
+                    // separate, indexed column the show-navigation endpoints query
+                    // against, distinct from the raw ParentId walk GetRecursiveChildren
+                    // below uses) from its parent's own AncestorIds *at save time*. If a
+                    // child is saved in the same batch before its parent has actually
+                    // been persisted, Jellyfin has nothing to derive from and the child's
+                    // ancestry ends up incomplete - invisible to ancestor-based queries
+                    // even though it's still a normal row reachable by ParentId. This bit
+                    // the plugin once before (see the 0.0.6 changelog); nothing here
+                    // proves it's the same failure again, but it's the same shape.
+                    foreach (var tier in toCreate.GroupBy(x => x.Depth).OrderBy(g => g.Key))
+                    {
+                        _libraryManager.CreateItems(tier.Select(x => x.Item).ToList(), itemParent, cancellationToken);
+                    }
 
                     itemParent.Children = null;
                     var freshCount = libraryFolder.GetRecursiveChildren().Count(i => FederationLibraryManager.GetFederationKey(i) != null);
