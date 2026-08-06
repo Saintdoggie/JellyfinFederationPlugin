@@ -72,8 +72,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// every federated season/episode was still undiscoverable from the show
         /// page. 0.0.16 sets it and reruns once more under V3 to backfill it onto
         /// whatever V1/V2 already created.
+        /// V4: V3 only recreated Season/Episode items, not Series - a Series created
+        /// before 0.0.16 never had its own PresentationUniqueKey explicitly set
+        /// either, and its lazy fallback computation only matches what's stamped on
+        /// its children when the library's EnableAutomaticSeriesGrouping option is
+        /// off (unverifiable from the plugin). 0.0.17 recreates Series too under V4
+        /// so the match no longer depends on that setting.
         /// </summary>
-        public bool MigratedTieredCreationV3 { get; set; }
+        public bool MigratedTieredCreationV4 { get; set; }
     }
 
     /// <summary>

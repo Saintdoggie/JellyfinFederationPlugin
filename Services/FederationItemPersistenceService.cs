@@ -42,10 +42,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="mapping">The mapping to reconcile.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <param name="forceRecreateNested">
-        /// One-time migration flag (see <see cref="Configuration.PluginConfiguration.MigratedTieredCreationV1"/>):
-        /// when true, every existing Season/Episode item is deleted and recreated
-        /// fresh in proper parent-before-child order, since anything created before
-        /// 0.0.13 may have been saved in a single flat batch with incomplete ancestry.
+        /// One-time migration flag (see <see cref="Configuration.PluginConfiguration.MigratedTieredCreationV3"/>):
+        /// when true, every existing Series/Season/Episode item is deleted and
+        /// recreated fresh, since anything created before the fix that stamps
+        /// PresentationUniqueKey/SeriesPresentationUniqueKey won't have it set,
+        /// making it undiscoverable from the show/season browsing pages.
         /// </param>
         public Task ReconcileMappingAsync(LibraryMapping mapping, CancellationToken cancellationToken = default, bool forceRecreateNested = false)
         {
@@ -143,17 +144,25 @@ namespace Jellyfin.Plugin.Federation.Services
                     .ToList();
                 var existingKeys = new HashSet<string>(existing.Select(x => x.Key!), StringComparer.OrdinalIgnoreCase);
 
-                // One-time migration (see MigratedTieredCreationV1): drop existing
-                // Season/Episode items from existingKeys so the toCreate loop below
-                // treats them as new and rebuilds them in proper tier order. Movies
-                // and Series are untouched - their parent (the library's physical
-                // folder) was always already persisted, so they were never affected.
+                // One-time migration: drop existing Series/Season/Episode items from
+                // existingKeys so the toCreate loop below treats them as new and
+                // rebuilds them fresh (in proper tier order). Series are included
+                // here (not just Season/Episode) because a Series created before
+                // 0.0.16 never had PresentationUniqueKey explicitly set - Jellyfin's
+                // fallback computation for that (CreatePresentationUniqueKey) only
+                // matches the value now stamped on its Season/Episode children when
+                // the library's "EnableAutomaticSeriesGrouping" option is off, which
+                // this plugin has no way to verify, so the series needs the same
+                // explicit stamp. Movies are untouched - they don't participate in
+                // this Series-matching mechanism at all.
                 var forcedRecreateKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (forceRecreateNested)
                 {
                     foreach (var x in existing)
                     {
-                        if (x.Item is MediaBrowser.Controller.Entities.TV.Episode or MediaBrowser.Controller.Entities.TV.Season)
+                        if (x.Item is MediaBrowser.Controller.Entities.TV.Episode
+                            or MediaBrowser.Controller.Entities.TV.Season
+                            or MediaBrowser.Controller.Entities.TV.Series)
                         {
                             forcedRecreateKeys.Add(x.Key!);
                         }
@@ -164,7 +173,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (forcedRecreateKeys.Count > 0)
                     {
                         _logger.LogInformation(
-                            "[Federation] One-time migration: recreating {Count} existing Season/Episode item(s) in {Name} to fix ancestry",
+                            "[Federation] One-time migration: recreating {Count} existing Series/Season/Episode item(s) in {Name} to set PresentationUniqueKey",
                             forcedRecreateKeys.Count,
                             mapping.LocalLibraryName);
                     }

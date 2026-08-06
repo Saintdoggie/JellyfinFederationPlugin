@@ -8,6 +8,14 @@
       "category": "General",
       "versions": [
       	{
+      	    "version": "0.0.18",
+      	    "changelog": "The 0.0.16 fix only recreated Season/Episode items, not the Series itself - a Series never got its own PresentationUniqueKey set, so the match could still fail depending on a library setting. Series are now included in the migration too.",
+      	    "targetAbi": "10.11.0.0",
+      	    "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.18/Jellyfin.Federation.zip",
+      	    "checksum": "613db18f1f543d669cacc365fee0b37d",
+      	    "timestamp": "2026-08-06T00:00:00Z"
+      	},
+      	{
       	    "version": "0.0.17",
       	    "changelog": "Fix: saving config (from any page load) silently reset the migration-complete flag, since the config page's save payload doesn't include newer fields - causing the whole episode migration to destructively rerun on every config save.",
       	    "targetAbi": "10.11.0.0",
