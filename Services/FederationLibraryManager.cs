@@ -121,6 +121,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (item is Season season)
             {
+                // Jellyfin's SeriesMetadataService backfills any season a series'
+                // episodes reference but that doesn't exist yet, and it matches
+                // purely on this field:
+                //   seasons.FirstOrDefault(i => i.IndexNumber == seasonNumber)
+                // Leaving it null made every federated season invisible to that
+                // check, so Jellyfin created a second, empty season next to each
+                // real one. Those duplicates render the series' own poster because
+                // they have no images of their own.
+                season.IndexNumber = entry.Metadata.IndexNumber;
+                season.SeriesName = entry.Metadata.SeriesName;
+
                 var seriesEntry = entry.ParentKey != null ? _cache.GetEntryByKey(entry.ParentKey) : null;
                 if (seriesEntry != null)
                 {
@@ -173,7 +184,20 @@ namespace Jellyfin.Plugin.Federation.Services
 
             item.DateCreated = entry.LastRefreshedUtc == default ? DateTime.UtcNow : entry.LastRefreshedUtc;
             item.DateModified = item.DateCreated;
-            item.IsVirtualItem = true;
+
+            // Deliberately false. Jellyfin reads IsVirtualItem as "missing episode",
+            // not "has no local file": Series.GetEpisodes and SetSeasonQueryOptions
+            // both set query.IsMissing = false unless the user turns on
+            // DisplayMissingEpisodes, and BaseItemRepository collapses that to a flat
+            //   .Where(e => e.IsVirtualItem == isVirtualItem.Value)
+            // so every federated season and episode was filtered out of the
+            // Shows/{id}/Seasons and Shows/{id}/Episodes endpoints the show page
+            // depends on. Federated items are remote, not missing.
+            //
+            // This does not expose them to library-scan deletion: Folder.
+            // ValidateChildren only removes children where item.IsFileProtocol is
+            // true, and that is driven by Path (still null here), not by this flag.
+            item.IsVirtualItem = false;
 
             return item;
         }

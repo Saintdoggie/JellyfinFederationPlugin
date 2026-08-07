@@ -127,6 +127,57 @@ public class FederationEpisodeHierarchyTests
         Assert.False(string.IsNullOrEmpty(seriesItem.PresentationUniqueKey));
     }
 
+    [Fact]
+    public void MaterializedItems_AreNotVirtual_AndSeasonsCarryTheirIndexNumber()
+    {
+        var cache = CreateCache();
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>()))
+            .Returns((string path, Type type) => DeterministicGuid(path + "|" + type.FullName));
+
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+
+        var seriesRemoteId = Guid.NewGuid();
+        var seriesEntry = cache.UpsertRaw("TV", "serverA", seriesRemoteId, MakeSeries(seriesRemoteId, "Show"), 0, "Series");
+
+        var seasonRemoteId = Guid.NewGuid();
+        var seasonDto = new BaseItemDto { Id = seasonRemoteId, Name = "Season 2", IndexNumber = 2 };
+        var seasonEntry = cache.UpsertRaw("TV", "serverA", seasonRemoteId, seasonDto, 0, "Season", parentKey: seriesEntry.Key);
+
+        var episodeRemoteId = Guid.NewGuid();
+        var episodeEntry = cache.UpsertRaw(
+            "TV",
+            "serverA",
+            episodeRemoteId,
+            new BaseItemDto
+            {
+                Id = episodeRemoteId,
+                Name = "Pilot",
+                Type = Jellyfin.Data.Enums.BaseItemKind.Episode,
+                ParentIndexNumber = 2,
+                IndexNumber = 1
+            },
+            0,
+            "Episode",
+            parentKey: seasonEntry.Key);
+
+        var seriesItem = manager.MaterializeItem(seriesEntry);
+        var seasonItem = Assert.IsType<Season>(manager.MaterializeItem(seasonEntry));
+        var episodeItem = Assert.IsType<Episode>(manager.MaterializeItem(episodeEntry));
+
+        // Jellyfin reads IsVirtualItem as "missing episode" and Series.GetEpisodes /
+        // SetSeasonQueryOptions filter it out (query.IsMissing = false) for any user
+        // without DisplayMissingEpisodes turned on - which is the default.
+        Assert.False(seriesItem.IsVirtualItem);
+        Assert.False(seasonItem.IsVirtualItem);
+        Assert.False(episodeItem.IsVirtualItem);
+
+        // SeriesMetadataService creates a duplicate season for any index its episodes
+        // reference that no existing season matches on IndexNumber.
+        Assert.Equal(2, seasonItem.IndexNumber);
+    }
+
     private static Guid DeterministicGuid(string input)
     {
         var hash = MD5.HashData(Encoding.UTF8.GetBytes(input));

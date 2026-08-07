@@ -48,7 +48,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// PresentationUniqueKey/SeriesPresentationUniqueKey won't have it set,
         /// making it undiscoverable from the show/season browsing pages.
         /// </param>
-        public Task ReconcileMappingAsync(LibraryMapping mapping, CancellationToken cancellationToken = default, bool forceRecreateNested = false)
+        /// <param name="sweepSyntheticSeasons">
+        /// One-time migration flag (see <see cref="Configuration.PluginConfiguration.MigratedSeasonIndexV5"/>):
+        /// when true, Season items that sit under a federated Series but carry no
+        /// FederationKey are deleted. Those are duplicates Jellyfin's
+        /// SeriesMetadataService created while federated seasons had no IndexNumber
+        /// for it to match against.
+        /// </param>
+        public Task ReconcileMappingAsync(
+            LibraryMapping mapping,
+            CancellationToken cancellationToken = default,
+            bool forceRecreateNested = false,
+            bool sweepSyntheticSeasons = false)
         {
             try
             {
@@ -339,6 +350,49 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Debug {Name}: after create, federated items now visible via GetRecursiveChildren={FreshCount}",
                         mapping.LocalLibraryName,
                         freshCount);
+                }
+
+                // Runs after creation so the federated seasons above are back in
+                // place and have re-adopted their episodes; anything still parented
+                // to a duplicate at this point is unexpected, so those are left alone
+                // and logged rather than deleted with their children.
+                if (sweepSyntheticSeasons)
+                {
+                    itemParent.Children = null;
+                    var current = libraryFolder.GetRecursiveChildren().ToList();
+                    var federatedSeriesIds = new HashSet<Guid>(current
+                        .Where(i => i is MediaBrowser.Controller.Entities.TV.Series
+                            && FederationLibraryManager.GetFederationKey(i) != null)
+                        .Select(i => i.Id));
+
+                    var duplicates = current
+                        .OfType<MediaBrowser.Controller.Entities.TV.Season>()
+                        .Where(s => FederationLibraryManager.GetFederationKey(s) == null
+                            && (federatedSeriesIds.Contains(s.ParentId) || federatedSeriesIds.Contains(s.SeriesId)))
+                        .ToList();
+
+                    var removed = 0;
+                    var skipped = 0;
+                    foreach (var dupe in duplicates)
+                    {
+                        if (dupe.GetRecursiveChildren().Count > 0)
+                        {
+                            skipped++;
+                            continue;
+                        }
+
+                        _libraryManager.DeleteItem(dupe, new DeleteOptions { DeleteFileLocation = false });
+                        removed++;
+                    }
+
+                    if (duplicates.Count > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] One-time migration: removed {Removed} duplicate season(s) auto-created by Jellyfin under federated series in {Name} ({Skipped} skipped for still having children)",
+                            removed,
+                            mapping.LocalLibraryName,
+                            skipped);
+                    }
                 }
 
                 _logger.LogInformation(

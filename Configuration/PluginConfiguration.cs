@@ -80,6 +80,19 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// so the match no longer depends on that setting.
         /// </summary>
         public bool MigratedTieredCreationV4 { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the season-index/visibility
+        /// migration has run.
+        /// V5: items created before 0.0.20 were stamped IsVirtualItem = true, which
+        /// Jellyfin treats as "missing episode" and filters out of the show page
+        /// unless the user enables DisplayMissingEpisodes; their Season items also
+        /// had no IndexNumber, so SeriesMetadataService created a duplicate empty
+        /// season beside each real one. Recreating them picks up both fixes, and the
+        /// duplicates Jellyfin already created are swept in the same pass (they carry
+        /// no FederationKey, so ordinary reconciliation never touches them).
+        /// </summary>
+        public bool MigratedSeasonIndexV5 { get; set; }
     }
 
     /// <summary>

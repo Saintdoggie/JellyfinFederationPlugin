@@ -87,6 +87,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // is not preserved.
                 var needsNestedMigration = !config.MigratedTieredCreationV4;
 
+                // V5 rebuilds items so they pick up IsVirtualItem = false and
+                // Season.IndexNumber, and sweeps the duplicate seasons Jellyfin
+                // created while those seasons had no index (see MigratedSeasonIndexV5).
+                var needsSeasonIndexMigration = !config.MigratedSeasonIndexV5;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -99,12 +104,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     totalItems += result.ItemCount;
                     failedSources += result.FailedSources;
 
-                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken, forceRecreateNested: needsNestedMigration).ConfigureAwait(false);
+                    await _persistence.ReconcileMappingAsync(
+                        mapping,
+                        cancellationToken,
+                        forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
+                        sweepSyntheticSeasons: needsSeasonIndexMigration).ConfigureAwait(false);
                 }
 
-                if (needsNestedMigration)
+                if (needsNestedMigration || needsSeasonIndexMigration)
                 {
                     config.MigratedTieredCreationV4 = true;
+                    config.MigratedSeasonIndexV5 = true;
                     Plugin.Instance?.SaveConfiguration();
                     _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
                 }
@@ -176,6 +186,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // mappings tied to one server - setting it here could skip mappings on
                 // other servers that haven't had a full sync yet.
                 var needsNestedMigration = !config!.MigratedTieredCreationV4;
+                var needsSeasonIndexMigration = !config!.MigratedSeasonIndexV5;
 
                 int total = 0;
                 int failedSources = 0;
@@ -185,7 +196,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     total += result.ItemCount;
                     failedSources += result.FailedSources;
 
-                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken, forceRecreateNested: needsNestedMigration).ConfigureAwait(false);
+                    await _persistence.ReconcileMappingAsync(
+                        mapping,
+                        cancellationToken,
+                        forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
+                        sweepSyntheticSeasons: needsSeasonIndexMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
