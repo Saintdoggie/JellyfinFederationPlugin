@@ -126,6 +126,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 if (existing != null)
                 {
                     config.MigratedTieredCreationV4 = existing.MigratedTieredCreationV4;
+                    config.MigratedSeasonIndexV5 = existing.MigratedSeasonIndexV5;
                 }
 
                 var errors = ConfigValidator.Validate(config);
