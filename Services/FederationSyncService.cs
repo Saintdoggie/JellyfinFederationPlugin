@@ -92,6 +92,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // created while those seasons had no index (see MigratedSeasonIndexV5).
                 var needsSeasonIndexMigration = !config.MigratedSeasonIndexV5;
 
+                // V6 rebuilds every federated item under the remapped CLR types
+                // (FederatedEpisode, FederatedMovie, ...) that report LocationType =
+                // Remote, so the web client stops painting them "Missing" (it keys that
+                // off Type == Episode && LocationType == Virtual). Because ids derive
+                // from the CLR type, a one-time recreate is required.
+                var needsRemoteLocationMigration = !config.MigratedRemoteLocationV6;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -108,15 +115,26 @@ namespace Jellyfin.Plugin.Federation.Services
                         mapping,
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
-                        sweepSyntheticSeasons: needsSeasonIndexMigration).ConfigureAwait(false);
+                        sweepSyntheticSeasons: needsSeasonIndexMigration,
+                        forceRecreateAll: needsRemoteLocationMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
                 {
                     config.MigratedTieredCreationV4 = true;
                     config.MigratedSeasonIndexV5 = true;
-                    Plugin.Instance?.SaveConfiguration();
                     _logger.LogInformation("[Federation] One-time tiered-creation migration complete");
+                }
+
+                if (needsRemoteLocationMigration)
+                {
+                    config.MigratedRemoteLocationV6 = true;
+                    _logger.LogInformation("[Federation] One-time remote-location (LocationType=Remote) migration complete");
+                }
+
+                if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration)
+                {
+                    Plugin.Instance?.SaveConfiguration();
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
@@ -181,12 +199,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     return Failed("No mappings use this server");
                 }
 
-                // Same one-time migration as SyncAllAsync (see there for details). The
-                // global flag is only ever set by SyncAllAsync, since this only covers
-                // mappings tied to one server - setting it here could skip mappings on
+                // Same one-time migrations as SyncAllAsync (see there for details). The
+                // global flags are only ever set by SyncAllAsync, since this only covers
+                // mappings tied to one server - setting them here could skip mappings on
                 // other servers that haven't had a full sync yet.
                 var needsNestedMigration = !config!.MigratedTieredCreationV4;
                 var needsSeasonIndexMigration = !config!.MigratedSeasonIndexV5;
+                var needsRemoteLocationMigration = !config!.MigratedRemoteLocationV6;
 
                 int total = 0;
                 int failedSources = 0;
@@ -200,7 +219,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         mapping,
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
-                        sweepSyntheticSeasons: needsSeasonIndexMigration).ConfigureAwait(false);
+                        sweepSyntheticSeasons: needsSeasonIndexMigration,
+                        forceRecreateAll: needsRemoteLocationMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);

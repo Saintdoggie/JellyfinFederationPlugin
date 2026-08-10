@@ -3,10 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
+using Jellyfin.Plugin.Federation.Entities;
 using MediaBrowser.Controller.Entities;
-using MediaBrowser.Controller.Entities.Movies;
-using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
 
@@ -280,19 +280,19 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             return itemType switch
             {
-                "Movie" => typeof(Movie),
-                "Series" => typeof(Series),
-                "Season" => typeof(Season),
-                "Episode" => typeof(Episode),
-                "Audio" => typeof(Audio),
-                "MusicAlbum" => typeof(MusicAlbum),
-                "MusicVideo" => typeof(MusicVideo),
-                "Video" => typeof(Video),
-                "Photo" => typeof(Photo),
-                "PhotoAlbum" => typeof(PhotoAlbum),
-                "Book" => typeof(Book),
-                "BoxSet" => typeof(BoxSet),
-                _ => typeof(Movie)
+                "Movie" => typeof(FederatedMovie),
+                "Series" => typeof(FederatedSeries),
+                "Season" => typeof(FederatedSeason),
+                "Episode" => typeof(FederatedEpisode),
+                "Audio" => typeof(FederatedAudio),
+                "MusicAlbum" => typeof(FederatedMusicAlbum),
+                "MusicVideo" => typeof(FederatedMusicVideo),
+                "Video" => typeof(FederatedVideo),
+                "Photo" => typeof(FederatedPhoto),
+                "PhotoAlbum" => typeof(FederatedPhotoAlbum),
+                "Book" => typeof(FederatedBook),
+                "BoxSet" => typeof(FederatedBoxSet),
+                _ => typeof(FederatedMovie)
             };
         }
     }
