@@ -127,6 +127,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     config.MigratedTieredCreationV4 = existing.MigratedTieredCreationV4;
                     config.MigratedSeasonIndexV5 = existing.MigratedSeasonIndexV5;
+                    config.MigratedRemoteLocationV6 = existing.MigratedRemoteLocationV6;
                 }
 
                 var errors = ConfigValidator.Validate(config);

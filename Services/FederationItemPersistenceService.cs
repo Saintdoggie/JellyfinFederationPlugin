@@ -55,11 +55,20 @@ namespace Jellyfin.Plugin.Federation.Services
         /// SeriesMetadataService created while federated seasons had no IndexNumber
         /// for it to match against.
         /// </param>
+        /// <param name="forceRecreateAll">
+        /// One-time migration flag (see <see cref="Configuration.PluginConfiguration.MigratedRemoteLocationV6"/>):
+        /// when true, every existing federated item is deleted and recreated, because its
+        /// CLR type changed (Episode -&gt; FederatedEpisode, Movie -&gt; FederatedMovie, ...)
+        /// and item ids are derived from the CLR type. Movies/Audio/... are included here that
+        /// <paramref name="forceRecreateNested"/> deliberately leaves out (they have no
+        /// Series-matching mechanism).
+        /// </param>
         public Task ReconcileMappingAsync(
             LibraryMapping mapping,
             CancellationToken cancellationToken = default,
             bool forceRecreateNested = false,
-            bool sweepSyntheticSeasons = false)
+            bool sweepSyntheticSeasons = false,
+            bool forceRecreateAll = false)
         {
             try
             {
@@ -167,7 +176,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 // explicit stamp. Movies are untouched - they don't participate in
                 // this Series-matching mechanism at all.
                 var forcedRecreateKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (forceRecreateNested)
+                if (forceRecreateAll)
+                {
+                    // V6: every federated item's CLR type changed (Episode -> FederatedEpisode,
+                    // Movie -> FederatedMovie, ...), and ids derive from the CLR type, so they
+                    // all need rebuilding under the new types.
+                    foreach (var x in existing)
+                    {
+                        forcedRecreateKeys.Add(x.Key!);
+                    }
+
+                    existingKeys.ExceptWith(forcedRecreateKeys);
+
+                    if (forcedRecreateKeys.Count > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] One-time migration: recreating all {Count} existing federated item(s) in {Name} under remapped (Remote LocationType) types",
+                            forcedRecreateKeys.Count,
+                            mapping.LocalLibraryName);
+                    }
+                }
+                else if (forceRecreateNested)
                 {
                     foreach (var x in existing)
                     {

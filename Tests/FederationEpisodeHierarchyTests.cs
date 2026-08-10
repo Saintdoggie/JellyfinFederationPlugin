@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using Jellyfin.Plugin.Federation.Entities;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -106,8 +110,8 @@ public class FederationEpisodeHierarchyTests
         var episodeEntry = cache.UpsertRaw("TV", "serverA", episodeRemoteId, episodeDto, 0, "Episode", parentKey: seasonEntry.Key);
 
         var seriesItem = manager.MaterializeItem(seriesEntry);
-        var seasonItem = Assert.IsType<Season>(manager.MaterializeItem(seasonEntry));
-        var episodeItem = Assert.IsType<Episode>(manager.MaterializeItem(episodeEntry));
+        var seasonItem = Assert.IsType<FederatedSeason>(manager.MaterializeItem(seasonEntry));
+        var episodeItem = Assert.IsType<FederatedEpisode>(manager.MaterializeItem(episodeEntry));
 
         Assert.Equal(seriesItem.Id, seasonItem.SeriesId);
         Assert.Equal(seriesItem.Id, episodeItem.SeriesId);
@@ -163,8 +167,8 @@ public class FederationEpisodeHierarchyTests
             parentKey: seasonEntry.Key);
 
         var seriesItem = manager.MaterializeItem(seriesEntry);
-        var seasonItem = Assert.IsType<Season>(manager.MaterializeItem(seasonEntry));
-        var episodeItem = Assert.IsType<Episode>(manager.MaterializeItem(episodeEntry));
+        var seasonItem = Assert.IsType<FederatedSeason>(manager.MaterializeItem(seasonEntry));
+        var episodeItem = Assert.IsType<FederatedEpisode>(manager.MaterializeItem(episodeEntry));
 
         // Jellyfin reads IsVirtualItem as "missing episode" and Series.GetEpisodes /
         // SetSeasonQueryOptions filter it out (query.IsMissing = false) for any user
@@ -173,9 +177,48 @@ public class FederationEpisodeHierarchyTests
         Assert.False(seasonItem.IsVirtualItem);
         Assert.False(episodeItem.IsVirtualItem);
 
+        // The web client paints a "Missing" badge on any episode with
+        // Type == Episode && LocationType == Virtual. Path is left null for federated
+        // items, whose base types would resolve LocationType to Virtual - the remote
+        // subclass override is what keeps them from being marked missing. Movies/the
+        // other remote types carry the same override.
+        Assert.Equal(LocationType.Remote, seriesItem.LocationType);
+        Assert.Equal(LocationType.Remote, seasonItem.LocationType);
+        Assert.Equal(LocationType.Remote, episodeItem.LocationType);
+
         // SeriesMetadataService creates a duplicate season for any index its episodes
         // reference that no existing season matches on IndexNumber.
         Assert.Equal(2, seasonItem.IndexNumber);
+    }
+
+    [Fact]
+    public void Movie_MaterializesAsFederatedMovie_WithRemoteLocationType()
+    {
+        var cache = CreateCache();
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>()))
+            .Returns((string path, Type type) => DeterministicGuid(path + "|" + type.FullName));
+
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+
+        var movieRemoteId = Guid.NewGuid();
+        cache.UpsertRaw(
+            "Movies",
+            "serverA",
+            movieRemoteId,
+            new BaseItemDto { Id = movieRemoteId, Name = "Gran Turismo", Type = Jellyfin.Data.Enums.BaseItemKind.Movie },
+            0,
+            "Movie");
+
+        var entry = cache.GetEntriesForMapping("Movies").FirstOrDefault();
+        Assert.NotNull(entry);
+
+        var movie = Assert.IsType<FederatedMovie>(manager.MaterializeItem(entry!));
+        Assert.Equal(LocationType.Remote, movie.LocationType);
+
+        // The override applies to every remapped type (episode/season/series/movie/...).
+        Assert.Equal(LocationType.Remote, Assert.IsType<FederatedSeries>(new FederatedSeries()).LocationType);
     }
 
     private static Guid DeterministicGuid(string input)

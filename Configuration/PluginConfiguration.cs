@@ -93,6 +93,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// no FederationKey, so ordinary reconciliation never touches them).
         /// </summary>
         public bool MigratedSeasonIndexV5 { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the remote-location migration has run.
+        /// V6: federated items were materialized as their base Jellyfin CLR types
+        /// (Episode, Season, Series, Movie, Audio...) with Path left null, which makes
+        /// BaseItem.LocationType resolve to LocationType.Virtual - and the Jellyfin web
+        /// client renders a "Missing" badge on any Episode with
+        /// Type == Episode && LocationType == Virtual, regardless of IsVirtualItem.
+        /// Federated items are remote (pathless by design), not missing. 0.0.22 creates
+        /// them under dedicated subclasses (FederatedEpisode, FederatedMovie, ...) that
+        /// override LocationType to Remote. Because item ids are derived from the CLR
+        /// type, every existing federated item's id changes, so this migration deletes
+        /// and recreates them all under the new types once. Local watch/playback progress
+        /// on federated items is reset (same tradeoff as prior migrations).
+        /// </summary>
+        public bool MigratedRemoteLocationV6 { get; set; }
     }
 
     /// <summary>
