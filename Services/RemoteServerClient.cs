@@ -191,20 +191,54 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 var userIdToUse = userId ?? _server.UserId;
+                bool fallbackToFirstUser = false;
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
-                    _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
+                    // PlaybackInfo is a per-user endpoint. When no user is stored on
+                    // the server config, fall back to the remote's first user so we can
+                    // still read stream details instead of failing playback outright.
+                    _logger.LogWarning(
+                        "[Federation] No UserId configured for remote server {ServerName}; resolving playback user automatically for item {ItemId}",
+                        _server.Name,
+                        itemId);
+
+                    var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
+                    userIdToUse = users?.FirstOrDefault()?.Id;
+                    fallbackToFirstUser = userIdToUse != null;
+                }
+
+                if (string.IsNullOrEmpty(userIdToUse))
+                {
+                    _logger.LogWarning(
+                        "[Federation] Could not resolve any user on remote server {ServerName}, so stream info for item {ItemId} cannot be read and playback will fail",
+                        _server.Name,
+                        itemId);
                     return null;
                 }
 
+                if (fallbackToFirstUser)
+                {
+                    _logger.LogInformation(
+                        "[Federation] Resolved playback user {UserId} on server {ServerName} for item {ItemId} (no configured UserId)",
+                        userIdToUse,
+                        _server.Name,
+                        itemId);
+                }
+
                 var url = $"/Items/{itemId}/PlaybackInfo?UserId={userIdToUse}";
-                _logger.LogDebug("Getting playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
+                _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName} as user {UserId}", itemId, _server.Name, userIdToUse);
 
                 var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                return JsonSerializer.Deserialize<PlaybackInfoResponse>(content, JsonOpts);
+                var playbackInfo = JsonSerializer.Deserialize<PlaybackInfoResponse>(content, JsonOpts);
+                _logger.LogInformation(
+                    "[Federation] Playback info for item {ItemId} on {ServerName}: {SourceCount} source(s)",
+                    itemId,
+                    _server.Name,
+                    playbackInfo?.MediaSources?.Count ?? 0);
+                return playbackInfo;
             }
             catch (Exception ex)
             {

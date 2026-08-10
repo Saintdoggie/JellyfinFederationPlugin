@@ -197,14 +197,14 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             // PlaybackInfo is a per-user endpoint, and an API key alone does not
-            // identify one. Called out separately because it is a configuration gap
-            // with an obvious fix, not a transient remote failure.
+            // identify one. GetPlaybackInfoAsync falls back to the remote's first
+            // user when no UserId is configured, so an empty UserId is not fatal:
+            // we still try, and log whether a user was resolved.
             if (string.IsNullOrEmpty(server.UserId))
             {
-                _logger.LogWarning(
-                    "[Federation] Server {ServerName} has no UserId configured, so its stream details cannot be read and playback will fail. Set a remote user for this server in the plugin settings.",
+                _logger.LogInformation(
+                    "[Federation] Server {ServerName} has no UserId configured; relying on automatic playback-user resolution in GetPlaybackInfoAsync",
                     server.Name);
-                return null;
             }
 
             var info = await client.GetPlaybackInfoAsync(

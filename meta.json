@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.20",
-  "changelog": "Federated seasons and episodes are visible without enabling 'Display missing episodes' (they were stamped IsVirtualItem, which Jellyfin reads as 'missing'). Seasons now carry their IndexNumber, so Jellyfin stops creating a duplicate empty season beside each real one; the duplicates it already created are removed on first sync. Media sources now carry the remote's real container and stream info, without which no client could validate playback. Rebuilds federated Series/Season/Episode items once on upgrade.",
+  "version": "0.0.21",
+  "changelog": "Fix playback for federated items lacking a configured remote UserId: PlaybackInfo now falls back to the remote's first user automatically (previously it returned null, so media sources carried no Container/MediaStreams and every client reported 'Unable to find a valid media source to play'). Adds logs to confirm stream info is resolved.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-06T00:00:00Z",
+  "timestamp": "2026-08-09T00:00:00Z",
   "imageUrl": "thumb.png"
 }
