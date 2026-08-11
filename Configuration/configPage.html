@@ -212,6 +212,13 @@
                         </div>
                         <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                         <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
+                        <p class="fed-hint" style="margin:-0.6em 0 0.8em;">
+                            When on: your friends can see who your other friends are, and this server automatically sends friend requests
+                            to friends of your friends it discovers that way (they still have to accept). Off by default - this is a bigger
+                            trust decision than a single direct friendship. Either way, a server only ever shares its own library, never
+                            content that was itself federated into it from somewhere else.
+                        </p>
                         <div class="fed-input-container" style="margin-top:1em;">
                             <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
                             <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
@@ -1182,6 +1189,7 @@
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
+                            q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
 
@@ -1211,6 +1219,7 @@
                             EnableDedup: q('#fedChkDedup').checked,
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
+                            AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {

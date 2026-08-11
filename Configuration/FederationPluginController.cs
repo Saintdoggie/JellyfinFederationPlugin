@@ -489,6 +489,28 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Server-to-server: a friend asking (using the API key we gave them) who our
+        /// other friends are, for friends-of-friends discovery. Gated on
+        /// AllowFriendsOfFriends rather than AllowAnonymous - only an existing friend
+        /// (or this server's own admin) holds a key that passes RequiresElevation here.
+        /// </summary>
+        [HttpGet("Friends/List")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetFriendsList()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            if (!config.AllowFriendsOfFriends)
+            {
+                return Ok(new { allowsIntroductions = false, friends = Array.Empty<object>() });
+            }
+
+            var friends = (config.RemoteServers ?? new List<RemoteServer>())
+                .Where(s => s.Enabled)
+                .Select(s => new { name = s.Name, url = s.Url });
+            return Ok(new { allowsIntroductions = true, friends });
+        }
+
+        /// <summary>
         /// Server-to-server, anonymous: lets a server we sent a request to confirm
         /// that request genuinely originated from us, by checking it exists in our
         /// own outgoing list. Reveals only existence, keyed by an unguessable
@@ -687,6 +709,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.EnableDedup,
                 config.DedupProviderIds,
                 config.AutoProvisionLibraries,
+                config.AllowFriendsOfFriends,
                 config.RefreshIntervalHours,
                 RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(SanitizeServer).ToList(),
                 config.LibraryMappings

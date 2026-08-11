@@ -168,6 +168,86 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Friends-of-friends discovery: asks each current friend who their other
+        /// friends are, and automatically sends a friend request to anyone new. A
+        /// no-op unless <see cref="PluginConfiguration.AllowFriendsOfFriends"/> is on.
+        /// Consent is never skipped by this: a friend only reveals their friends list
+        /// if they've opted in themselves, and an auto-sent request still needs the
+        /// discovered server's own admin to accept it, same as a manually sent one.
+        /// Content stays scoped the same way regardless of how a friendship started -
+        /// see the FederationKey check in FederationSyncService, which already
+        /// refuses to pull in anything a source server only has because it was
+        /// federated into *them* from somewhere else.
+        /// </summary>
+        public async Task<int> DiscoverFriendsOfFriendsAsync(CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            if (!config.AllowFriendsOfFriends)
+            {
+                return 0;
+            }
+
+            var localUrl = ResolveLocalUrl();
+            var sent = 0;
+
+            foreach (var friend in config.RemoteServers.Where(s => s.Enabled).ToList())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var client = _clientFactory.GetClient(friend);
+                List<FriendListEntry>? friendsOfFriend;
+                try
+                {
+                    friendsOfFriend = await client.GetFriendsListAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Friends-of-friends lookup failed for {Server} (non-fatal)", friend.Name);
+                    continue;
+                }
+
+                if (friendsOfFriend == null)
+                {
+                    continue;
+                }
+
+                foreach (var fof in friendsOfFriend)
+                {
+                    if (string.IsNullOrEmpty(fof.Url) || !ConfigValidator.IsValidServerUrl(fof.Url))
+                    {
+                        continue;
+                    }
+
+                    var candidateUrl = fof.Url.TrimEnd('/');
+                    if (!string.IsNullOrEmpty(localUrl) && string.Equals(candidateUrl, localUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                    {
+                        // That's us - friend.Name is friends with us already, no need
+                        // to introduce us to ourselves.
+                        continue;
+                    }
+
+                    if (AlreadyKnown(config, candidateUrl))
+                    {
+                        continue;
+                    }
+
+                    var (success, message) = await SendFriendRequestAsync(candidateUrl, cancellationToken).ConfigureAwait(false);
+                    if (success)
+                    {
+                        sent++;
+                        _logger.LogInformation("[Federation] Discovered {Url} through friend {Friend} and sent a friend request", candidateUrl, friend.Name);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("[Federation] Discovered {Url} through friend {Friend} but could not send a request: {Message}", candidateUrl, friend.Name, message);
+                    }
+                }
+            }
+
+            return sent;
+        }
+
+        /// <summary>
         /// Handles an inbound friend request. Anonymous by design - the sender has no
         /// key for us yet, since issuing one is the whole point of this handshake.
         /// </summary>

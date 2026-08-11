@@ -31,6 +31,7 @@ public class FederationFriendServiceTests : IDisposable
     private readonly RealPluginInstance _plugin;
     private readonly List<AuthenticationInfo> _apiKeys = new();
     private readonly Mock<IAuthenticationManager> _authManager;
+    private readonly Mock<IRemoteServerClientFactory> _clientFactory;
     private readonly FederationFriendService _service;
 
     public FederationFriendServiceTests()
@@ -57,9 +58,9 @@ public class FederationFriendServiceTests : IDisposable
         appHost.SetupGet(h => h.FriendlyName).Returns("This Server");
 
         var libraryManager = new Mock<ILibraryManager>();
-        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        _clientFactory = new Mock<IRemoteServerClientFactory>();
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
-        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, _clientFactory.Object, cache);
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
 
@@ -69,7 +70,7 @@ public class FederationFriendServiceTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            clientFactory.Object);
+            _clientFactory.Object);
     }
 
     public void Dispose()
@@ -78,9 +79,24 @@ public class FederationFriendServiceTests : IDisposable
         _plugin.Dispose();
     }
 
-    private static void UseFakeHttp(Func<HttpRequestMessage, HttpResponseMessage> responder)
+    /// <summary>
+    /// Routes every HTTP call the same responder: FederationFriendService's own
+    /// direct calls (Send/Accept/Reject/Verify - via the static HttpClientOverride
+    /// seam) as well as calls made through a RemoteServerClient (e.g.
+    /// GetFriendsListAsync, which uses its own constructor-injected HttpClient, not
+    /// the override). Both need the same fake so a friends-of-friends discovery test
+    /// can fake both the "ask my friend for their friends" call and the "send a
+    /// request to the friend-of-friend" call in one place.
+    /// </summary>
+    private void UseFakeHttp(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
+        _clientFactory
+            .Setup(f => f.GetClient(It.IsAny<RemoteServer>()))
+            .Returns<RemoteServer>(s => new RemoteServerClient(
+                s,
+                NullLogger.Instance,
+                new HttpClient(new FakeHandler(responder)) { BaseAddress = new Uri(s.Url) }));
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, object body)
@@ -94,6 +110,93 @@ public class FederationFriendServiceTests : IDisposable
 
         Assert.False(string.IsNullOrEmpty(first));
         Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_Disabled_DoesNothing()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        var calls = 0;
+        UseFakeHttp(_ => { calls++; return new HttpResponseMessage(HttpStatusCode.OK); });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(0, sent);
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_DiscoversNewFriend_AndSendsRequest()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url == "http://friend-b.example/Plugins/Federation/Friends/List")
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
+            }
+
+            if (url == "http://friend-c.example/Plugins/Federation/Friends/Request")
+            {
+                return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+            }
+
+            throw new InvalidOperationException("Unexpected request to " + url);
+        });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(1, sent);
+        Assert.Contains(_plugin.Configuration.OutgoingFriendRequests, r => r.RemoteServerUrl == "http://friend-c.example");
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_AlreadyAFriend_DoesNotResend()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "c", Url = "http://friend-c.example", Name = "C", Enabled = true });
+
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url == "http://friend-b.example/Plugins/Federation/Friends/List")
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
+            }
+
+            throw new InvalidOperationException("Should not have requested " + url + " - already a friend");
+        });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(0, sent);
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_SkipsItself()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.ServerUrl = "http://local.test:8096";
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url == "http://friend-b.example/Plugins/Federation/Friends/List")
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "Me", url = "http://local.test:8096" } } });
+            }
+
+            throw new InvalidOperationException("Should not have requested " + url + " - that's us");
+        });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(0, sent);
     }
 
     [Fact]

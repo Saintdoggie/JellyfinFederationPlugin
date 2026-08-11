@@ -30,11 +30,17 @@ not a changelog.
   server *by name* instead of needing their address up front. Would need
   somewhere to host that directory (opt-in registry of "servers running
   Federation") - out of scope for this repo alone until that's decided.
-- **Not done:** friends-of-friends federation (second degree). Important
-  constraint when this is built: a server must only offer its **own** local
-  library to those second-degree friends, never content that was itself
-  federated *into* it from somewhere else - no relaying/re-sharing
-  third-party content without that party's consent.
+- **Done (0.0.25):** friends-of-friends federation (second degree), gated
+  behind a new opt-in `AllowFriendsOfFriends` setting (off by default - both
+  revealing your friend list and reaching out to strangers on your friends'
+  behalf are bigger trust decisions than one direct friendship). When on,
+  each sync cycle asks your friends who their other friends are and
+  auto-sends requests to anyone new - still needs that server's own admin to
+  accept, same as a manual request. The "never relay content federated into
+  you from somewhere else" constraint turned out to already be handled: 
+  `FederationSyncService` already skips any remote item carrying a
+  `FederationKey` provider id (content that server only has because *it*
+  federated it in), regardless of degree - see `FetchAndUpsertPagesAsync`.
 
 ## Send-only / receive-only per friend
 

@@ -412,6 +412,33 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Gets this server's friends-of-friends list, if it has that feature enabled.
+        /// Returns null (not an empty list) when the remote is unreachable, doesn't
+        /// run Federation, or has the feature disabled - callers should treat that as
+        /// "nothing to discover here," not as an error worth surfacing.
+        /// </summary>
+        public async Task<List<FriendListEntry>?> GetFriendsListAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Friends/List", cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var result = JsonSerializer.Deserialize<FriendsListResponse>(content, JsonOpts);
+                return result?.AllowsIntroductions == true ? result.Friends : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not get friends-of-friends list from {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Builds a direct stream URL for a remote item (with embedded api_key).
         /// </summary>
         public string BuildDirectStreamUrl(string itemId)
@@ -704,6 +731,30 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets or sets error code.
         /// </summary>
         public string? ErrorCode { get; set; }
+    }
+
+    /// <summary>
+    /// Response to a <c>GET /Plugins/Federation/Friends/List</c> request.
+    /// </summary>
+    public class FriendsListResponse
+    {
+        /// <summary>Gets or sets a value indicating whether the responding server allows friends-of-friends discovery.</summary>
+        public bool AllowsIntroductions { get; set; }
+
+        /// <summary>Gets or sets the responding server's own friends.</summary>
+        public List<FriendListEntry> Friends { get; set; } = new();
+    }
+
+    /// <summary>
+    /// One entry in a <see cref="FriendsListResponse"/>.
+    /// </summary>
+    public class FriendListEntry
+    {
+        /// <summary>Gets or sets the friend's display name.</summary>
+        public string? Name { get; set; }
+
+        /// <summary>Gets or sets the friend's server address.</summary>
+        public string? Url { get; set; }
     }
 
     /// <summary>
