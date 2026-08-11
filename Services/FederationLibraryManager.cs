@@ -80,7 +80,27 @@ namespace Jellyfin.Plugin.Federation.Services
             item.RunTimeTicks = entry.Metadata.RunTimeTicks;
             item.Studios = entry.Metadata.Studios ?? Array.Empty<string>();
             item.Genres = entry.Metadata.Genres ?? Array.Empty<string>();
-            item.Tags = entry.Metadata.Tags ?? Array.Empty<string>();
+
+            // Source-server tag: Jellyfin renders Tags as small labeled chips on the
+            // item detail page, which is the closest thing to a "which server is this
+            // from" badge available without a jellyfin-web client-side plugin. Kept as
+            // its own tag (not folded into remote Tags) so it survives even if the
+            // remote item has no tags of its own, and reads the same on every client.
+            // Cosmetic only, so a config-access failure here must not break
+            // materialization of the item itself.
+            string? sourceServerName = null;
+            try
+            {
+                sourceServerName = entry.GetPrimarySource() is { } primarySource
+                    ? GetServer(primarySource.ServerId)?.Name
+                    : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not resolve source server name for tag on {Key}", entry.Key);
+            }
+
+            item.Tags = AppendServerTag(entry.Metadata.Tags, sourceServerName);
 
             if (item is Episode ep)
             {
@@ -251,6 +271,24 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return string.Empty;
         }
+
+        /// <summary>
+        /// Appends a "🌐 ServerName" tag identifying the source server, replacing any
+        /// previous server tag of the same shape so re-materializing after a primary
+        /// source change doesn't leave stale server tags behind.
+        /// </summary>
+        public static string[] AppendServerTag(string[]? tags, string? serverName)
+        {
+            var kept = (tags ?? Array.Empty<string>()).Where(t => !t.StartsWith(ServerTagPrefix, StringComparison.Ordinal));
+            if (string.IsNullOrEmpty(serverName))
+            {
+                return kept.ToArray();
+            }
+
+            return kept.Append(ServerTagPrefix + serverName).ToArray();
+        }
+
+        private const string ServerTagPrefix = "🌐 ";
 
         /// <summary>
         /// Checks if an item is federated.

@@ -147,7 +147,16 @@ namespace Jellyfin.Plugin.Federation.Services
                         Name = sourceName,
                         Path = path,
                         Protocol = MediaProtocol.Http,
-                        IsRemote = true,
+
+                        // Only true in Direct mode, where Path is a URL on a genuinely
+                        // different host. In Proxy mode Path points back at this same
+                        // server's own /Plugins/Federation/Stream endpoint, so from the
+                        // client's perspective it is local. Getting this wrong matters:
+                        // jellyfin-web's supportsDirectPlay() refuses IsRemote sources
+                        // outright on clients that lack the RemoteVideo app feature
+                        // (several smart-TV webviews), which would needlessly block
+                        // Proxy-mode playback that this server is perfectly able to serve.
+                        IsRemote = server.StreamingMode == StreamingMode.Direct,
                         Container = remote?.Container,
                         Size = remote?.Size,
                         Bitrate = remote?.Bitrate,
@@ -161,6 +170,13 @@ namespace Jellyfin.Plugin.Federation.Services
                         // per federated stream, but with it false any incompatible
                         // container is simply unplayable.
                         SupportsTranscoding = true,
+
+                        // Lets the transcoder/StreamBuilder ffprobe the source itself
+                        // when the remote didn't hand back Container/MediaStreams (remote
+                        // unreachable, no accessible user, etc.) - the fallback path for
+                        // exactly the case the comment above FetchRemoteSourceAsync warns
+                        // about, instead of leaving playback with nothing to go on.
+                        SupportsProbing = true,
                         RequiresOpening = false,
                         RequiresClosing = false,
                         RunTimeTicks = remote?.RunTimeTicks ?? entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,

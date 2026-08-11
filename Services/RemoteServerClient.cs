@@ -195,16 +195,42 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
                     // PlaybackInfo is a per-user endpoint. When no user is stored on
-                    // the server config, fall back to the remote's first user so we can
-                    // still read stream details instead of failing playback outright.
+                    // the server config, fall back to a remote user so we can still read
+                    // stream details instead of failing playback outright. Prefer an
+                    // administrator: a non-admin user can be restricted to specific
+                    // libraries/folders (UserPolicy.EnabledFolders) or have
+                    // EnableMediaPlayback turned off entirely, and either one makes
+                    // PlaybackInfo come back empty for an otherwise-visible item -
+                    // "shows up but can't stream". An arbitrary first user risks hitting
+                    // exactly that; an admin has no such restriction by default.
                     _logger.LogWarning(
                         "[Federation] No UserId configured for remote server {ServerName}; resolving playback user automatically for item {ItemId}",
                         _server.Name,
                         itemId);
 
                     var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
-                    userIdToUse = users?.FirstOrDefault()?.Id;
+                    var chosen = users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault();
+                    userIdToUse = chosen?.Id;
                     fallbackToFirstUser = userIdToUse != null;
+
+                    if (chosen != null && !chosen.IsAdministrator)
+                    {
+                        _logger.LogWarning(
+                            "[Federation] No administrator account found on server {ServerName}; falling back to non-admin user {UserName} ({UserId}), which may be restricted from playing some items",
+                            _server.Name,
+                            chosen.Name,
+                            chosen.Id);
+                    }
+
+                    if (chosen != null && chosen.Policy != null && !chosen.Policy.EnableMediaPlayback)
+                    {
+                        _logger.LogWarning(
+                            "[Federation] User {UserName} ({UserId}) on server {ServerName} has media playback disabled in their policy; PlaybackInfo for item {ItemId} will likely come back empty",
+                            chosen.Name,
+                            chosen.Id,
+                            _server.Name,
+                            itemId);
+                    }
                 }
 
                 if (string.IsNullOrEmpty(userIdToUse))
@@ -238,6 +264,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     itemId,
                     _server.Name,
                     playbackInfo?.MediaSources?.Count ?? 0);
+
+                if ((playbackInfo?.MediaSources?.Count ?? 0) == 0)
+                {
+                    // The remote accepted the request but had nothing to offer this
+                    // user for this item - usually a permissions problem (wrong
+                    // library access, media playback disabled) rather than a network
+                    // or plugin failure. ErrorCode, when present, says why.
+                    _logger.LogWarning(
+                        "[Federation] Server {ServerName} returned zero media sources for item {ItemId} as user {UserId}; ErrorCode={ErrorCode}",
+                        _server.Name,
+                        itemId,
+                        userIdToUse,
+                        playbackInfo?.ErrorCode ?? "(none)");
+                }
+
                 return playbackInfo;
             }
             catch (Exception ex)
@@ -304,7 +345,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         return null;
                     }
 
-                    userIdToUse = users[0].Id;
+                    // Prefer an administrator: a restricted user's Views may omit
+                    // libraries they don't have access to, silently shrinking what
+                    // gets federated. See GetPlaybackInfoAsync for the same reasoning.
+                    userIdToUse = (users.FirstOrDefault(u => u.IsAdministrator) ?? users[0]).Id;
                 }
 
                 var url = $"/Users/{userIdToUse}/Views";
@@ -712,5 +756,33 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets or sets whether the user has configured password.
         /// </summary>
         public bool HasConfiguredPassword { get; set; }
+
+        /// <summary>
+        /// Gets or sets the user's access policy (library/playback restrictions).
+        /// </summary>
+        public UserPolicyDto? Policy { get; set; }
+
+        /// <summary>
+        /// Gets whether this user is an administrator on the remote server.
+        /// </summary>
+        public bool IsAdministrator => Policy?.IsAdministrator ?? false;
+    }
+
+    /// <summary>
+    /// The subset of a remote user's policy federation cares about.
+    /// </summary>
+    public class UserPolicyDto
+    {
+        /// <summary>
+        /// Gets or sets whether the user is an administrator.
+        /// </summary>
+        public bool IsAdministrator { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether the user is allowed to play media at all. A user can
+        /// have full browse access (so items sync fine) yet have this set to false,
+        /// which fails only at playback time - "shows up but can't stream".
+        /// </summary>
+        public bool EnableMediaPlayback { get; set; } = true;
     }
 }

@@ -96,6 +96,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return result;
                 }
 
+                var server = _federationManager.GetServer(primary.ServerId);
                 var item = new T
                 {
                     Name = remoteItem.Name ?? string.Empty,
@@ -107,7 +108,12 @@ namespace Jellyfin.Plugin.Federation.Providers
                     RunTimeTicks = remoteItem.RunTimeTicks,
                     Genres = remoteItem.Genres ?? Array.Empty<string>(),
                     Studios = remoteItem.Studios?.Select(s => s.Name ?? string.Empty).ToArray() ?? Array.Empty<string>(),
-                    Tags = remoteItem.Tags ?? Array.Empty<string>(),
+
+                    // Preserves the "🌐 ServerName" source badge (see
+                    // FederationLibraryManager.MaterializeItem) across a manual metadata
+                    // refresh, which otherwise replaces Tags outright with the remote's
+                    // own tags and silently drops it.
+                    Tags = Services.FederationLibraryManager.AppendServerTag(remoteItem.Tags, server?.Name),
                     ProviderIds = remoteItem.ProviderIds != null
                         ? new Dictionary<string, string>(remoteItem.ProviderIds, StringComparer.OrdinalIgnoreCase)
                         : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

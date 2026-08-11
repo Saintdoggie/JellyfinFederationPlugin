@@ -64,6 +64,43 @@ public class RemoteServerClientPlaybackTests
         Assert.Equal("11111111-1111-1111-1111-111111111111", handler.PlaybackUserId);
     }
 
+    /// <summary>
+    /// A restricted (non-admin) user can browse/sync an item fine yet be blocked from
+    /// PlaybackInfo for it (no library access, EnableMediaPlayback off) - "shows up but
+    /// can't stream". Auto-resolution should prefer an administrator over whichever user
+    /// happens to sort first, since admins aren't subject to those restrictions.
+    /// </summary>
+    [Fact]
+    public async Task GetPlaybackInfoAsync_MissingUserId_PrefersAdministratorOverFirstUser()
+    {
+        var usersJson = "[" +
+                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"restricted-kid-profile\",\"Policy\":{\"IsAdministrator\":false}}," +
+                        "{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}" +
+                        "]";
+        var playbackJson = "{\"PlaySessionId\":\"abc\",\"MediaSources\":[" +
+                           "{\"Id\":\"src1\",\"Path\":\"http://remote/video\",\"Container\":\"mkv\"}]}";
+
+        var handler = new FakeHttpMessageHandler(usersJson, playbackJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer
+        {
+            Id = "serverA",
+            Name = "Remote",
+            Url = "http://fake.local",
+            ApiKey = "key",
+            UserId = string.Empty,
+            Enabled = true
+        };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
+
+        // The second user in the list is the admin; picking it over the first user
+        // is the whole point of the fix.
+        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.PlaybackUserId);
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _usersJson;
