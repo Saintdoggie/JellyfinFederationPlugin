@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.22",
-  "changelog": "Federated episodes no longer show 'Missing' in the UI. They were materialized as their base Jellyfin CLR types with Path null, so LocationType resolved to Virtual - and the web client paints a 'Missing' badge on any episode with Type == Episode && LocationType == Virtual. Federated items are now created under dedicated subclasses (FederatedEpisode, FederatedMovie, ...) that report LocationType = Remote. One-time rebuild of existing federated items (watch/playback progress on them is reset once).",
+  "version": "0.0.23",
+  "changelog": "Playback fixes: an auto-resolved remote user (when no UserId is configured) now prefers an administrator instead of an arbitrary first user - a restricted account can browse/sync fine but be blocked from PlaybackInfo entirely (wrong library access, playback disabled), which looked like 'shows up but can't stream'. Proxy-mode sources no longer claim IsRemote, which some clients use to refuse playback of anything not on the same origin as the server they're talking to. Sources also enable probing so playback still has something to work with when the remote's own Container/MediaStreams can't be read. Federated items now carry a '🌐 ServerName' tag showing which server they came from.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-09T00:00:00Z",
+  "timestamp": "2026-08-11T00:00:00Z",
   "imageUrl": "thumb.png"
 }

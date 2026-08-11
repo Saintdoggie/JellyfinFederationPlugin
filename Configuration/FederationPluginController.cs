@@ -231,8 +231,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 string? userId = server.UserId;
                 if (string.IsNullOrEmpty(userId))
                 {
+                    // Prefer an administrator: a non-admin account can be restricted to
+                    // specific libraries or have playback disabled entirely, which lets
+                    // items sync/browse fine but breaks playback later. Suggesting an
+                    // admin by default avoids steering users into that trap.
                     var users = await client.GetUsersAsync(cancellationToken).ConfigureAwait(false);
-                    userId = users?.FirstOrDefault()?.Id;
+                    userId = (users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault())?.Id;
                 }
 
                 return Ok(new
