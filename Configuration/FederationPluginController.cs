@@ -131,6 +131,14 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.MigratedTieredCreationV4 = existing.MigratedTieredCreationV4;
                     config.MigratedSeasonIndexV5 = existing.MigratedSeasonIndexV5;
                     config.MigratedRemoteLocationV6 = existing.MigratedRemoteLocationV6;
+                    config.MigratedRemotePathV7 = existing.MigratedRemotePathV7;
+
+                    // Friend state and this server's identity are likewise server-internal
+                    // and have no field on the config page, so a save would otherwise wipe
+                    // pending friend requests and re-roll this server's federation id.
+                    config.LocalFederationId = existing.LocalFederationId;
+                    config.IncomingFriendRequests = existing.IncomingFriendRequests;
+                    config.OutgoingFriendRequests = existing.OutgoingFriendRequests;
                 }
 
                 var errors = ConfigValidator.Validate(config);
@@ -558,7 +566,11 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpGet("Stream")]
         [AllowAnonymous]
-        public async Task<IActionResult> Stream([FromQuery] string serverId, [FromQuery] string itemId, CancellationToken cancellationToken)
+        public async Task<IActionResult> Stream(
+            [FromQuery] string serverId,
+            [FromQuery] string itemId,
+            CancellationToken cancellationToken,
+            [FromQuery] bool audio = false)
         {
             var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
             if (server == null)
@@ -571,7 +583,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
-            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken).ConfigureAwait(false);
+            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio).ConfigureAwait(false);
             return new EmptyResult();
         }
 

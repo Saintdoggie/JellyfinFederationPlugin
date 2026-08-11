@@ -39,7 +39,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Builds the server-side direct stream URL used when proxying (contains the
         /// remote api_key; never sent to clients or written to logs).
         /// </summary>
-        public string BuildDirectStreamUrl(string serverId, string remoteItemId)
+        /// <param name="serverId">The remote server to stream from.</param>
+        /// <param name="remoteItemId">The item id on that server.</param>
+        /// <param name="isAudio">
+        /// True to use the remote's audio streaming endpoint. Songs do not stream
+        /// reliably from /Videos, so the caller passes through which one it wants.
+        /// </param>
+        public string BuildDirectStreamUrl(string serverId, string remoteItemId, bool isAudio = false)
         {
             var server = _federationManager.GetServer(serverId);
             if (server == null)
@@ -47,7 +53,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException($"Server not found: {serverId}");
             }
 
-            return $"{server.Url.TrimEnd('/')}/Videos/{remoteItemId}/stream?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
+            var endpoint = isAudio ? "Audio" : "Videos";
+            return $"{server.Url.TrimEnd('/')}/{endpoint}/{remoteItemId}/stream?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
         }
 
         /// <summary>
@@ -58,7 +65,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string remoteItemId,
             HttpRequest request,
             HttpResponse response,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool isAudio = false)
         {
             try
             {
@@ -70,7 +78,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var range = request.Headers["Range"].FirstOrDefault();
-                var url = BuildDirectStreamUrl(serverId, remoteItemId);
+                var url = BuildDirectStreamUrl(serverId, remoteItemId, isAudio);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
                 using var remoteReq = new HttpRequestMessage(HttpMethod.Get, url);

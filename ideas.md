@@ -1,8 +1,26 @@
 # Roadmap / TODO
 
 Future feature ideas for the federation plugin, captured so they don't get lost
-between sessions. Nothing here is implemented yet - this is a planning list,
-not a changelog.
+between sessions. This is a planning list, not a changelog - items marked
+**Done** note where the work landed.
+
+## Known follow-ups on streaming (0.0.26)
+
+- `item.Path` is stamped once at sync time with the source server's address and
+  api_key. Reconciliation only creates and deletes items, never updates them,
+  so if a server's address or key changes the stored path goes stale until the
+  next forced rebuild. The media source provider papers over this at playback
+  time (it compares the stored path against a freshly built one and serves the
+  fresh source when they differ), but the stored path itself stays wrong. A
+  proper fix would fingerprint each server's url+key and force a rebuild of
+  just that server's items when it changes.
+- First playback of a federated item runs an ffprobe against the remote URL to
+  discover codecs, so it is slower than subsequent plays. Could be avoided by
+  pulling MediaStreams from the remote at sync time and persisting them via
+  `IItemRepository.SaveMediaStreams`.
+- The "which server is this from" indicator is a Jellyfin tag chip on the item
+  detail page. A real badge overlaid on the poster in grid views needs a
+  client-side jellyfin-web plugin, which is out of scope for a server plugin.
 
 ## Dedup management
 

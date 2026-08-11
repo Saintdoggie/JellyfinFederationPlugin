@@ -569,6 +569,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.CommunityRating = remoteItem.CommunityRating ?? Metadata.CommunityRating;
                 Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
                 Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
+                Metadata.Container = remoteItem.Container ?? Metadata.Container;
                 Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
                 Metadata.IndexNumber = remoteItem.IndexNumber ?? Metadata.IndexNumber;
                 Metadata.ParentIndexNumber = remoteItem.ParentIndexNumber ?? Metadata.ParentIndexNumber;
@@ -649,6 +650,13 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? OfficialRating { get; set; }
 
         public long? RunTimeTicks { get; set; }
+
+        /// <summary>
+        /// Gets or sets the media container reported by the remote (e.g. "mkv").
+        /// Stamped onto the materialized item so Jellyfin can certify direct play
+        /// without first probing the remote URL.
+        /// </summary>
+        public string? Container { get; set; }
 
         public string? SeriesName { get; set; }
 

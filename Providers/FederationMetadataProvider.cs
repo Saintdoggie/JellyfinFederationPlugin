@@ -119,6 +119,18 @@ namespace Jellyfin.Plugin.Federation.Providers
                         : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 };
 
+                // Federation identity must survive a metadata refresh. Playback now
+                // triggers one automatically (MediaSourceManager probes remote content
+                // when an item has no video stream yet), and the remote's own
+                // ProviderIds carry no FederationKey - so without re-stamping it here, a
+                // refresh that replaces rather than merges provider ids would strip the
+                // one id everything else keys off: this provider, the image provider,
+                // IsFederatedItem, and reconciliation's "is this already federated"
+                // check, which would then treat the item as unmanaged.
+                item.ProviderIds["FederationKey"] = key;
+                item.ProviderIds["FederationSource"] = primary.ServerId;
+                item.ProviderIds["FederationRemoteId"] = primary.RemoteItemId.ToString();
+
                 if (item is Episode ep)
                 {
                     ep.SeriesName = remoteItem.SeriesName;
