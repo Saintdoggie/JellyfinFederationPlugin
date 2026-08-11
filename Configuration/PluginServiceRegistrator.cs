@@ -31,6 +31,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationImageProvider>();
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
+
+            // Scoped, not singleton: it depends on IAuthenticationManager, which
+            // Jellyfin registers scoped (see CoreAppHost). A singleton service may not
+            // consume a scoped one - the DI container throws building the provider.
+            serviceCollection.AddScoped<FederationFriendService>();
             serviceCollection.AddSingleton<FederationRefreshTask>();
             serviceCollection.AddHostedService<FederationEntryPoint>();
         }

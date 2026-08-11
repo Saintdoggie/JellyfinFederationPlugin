@@ -19,17 +19,22 @@ not a changelog.
 
 ## Friend system (replaces manual API key exchange)
 
-- A directory/lookup service: servers that opt in register themselves as
-  "running the federation plugin," so an admin can look up a friend's server
-  by name instead of asking them to paste an API key over chat/email.
-- Friend requests: look a server up, send a request; the other admin accepts
-  it, and the key exchange happens automatically behind that handshake -
-  meant to be meaningfully more secure than manually sharing raw API keys.
-- Friends-of-friends federation: automatically extend federation to a
-  friend's friends (second degree). Important constraint: a server must only
-  offer its **own** local library to those second-degree friends, never
-  content that was itself federated *into* it from somewhere else - no
-  relaying/re-sharing third-party content without that party's consent.
+- **Done (0.0.24):** connect-by-URL friend requests. Enter a friend's server
+  address in the new "Friends" section, send a request; their admin sees it
+  pending on their own config page and can accept or reject. On accept, each
+  side mints a fresh Jellyfin API key for the other automatically and adds
+  them as a connected server - no manual key copy-paste. See
+  `FederationFriendService` and the `Friends/*` endpoints on
+  `FederationController`.
+- **Not done:** a directory/lookup service so an admin can find a friend's
+  server *by name* instead of needing their address up front. Would need
+  somewhere to host that directory (opt-in registry of "servers running
+  Federation") - out of scope for this repo alone until that's decided.
+- **Not done:** friends-of-friends federation (second degree). Important
+  constraint when this is built: a server must only offer its **own** local
+  library to those second-degree friends, never content that was itself
+  federated *into* it from somewhere else - no relaying/re-sharing
+  third-party content without that party's consent.
 
 ## Send-only / receive-only per friend
 
