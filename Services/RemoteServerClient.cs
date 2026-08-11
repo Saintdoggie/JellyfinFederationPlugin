@@ -543,6 +543,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.RunTimeTicks = runtime;
             }
 
+            // Needed so the materialized item can advertise its container without a
+            // probe round-trip; already present in the same response, since the sync
+            // query asks for the MediaSources field.
+            if (itemElement.TryGetProperty("Container", out var containerProp) && containerProp.ValueKind == JsonValueKind.String)
+            {
+                item.Container = containerProp.GetString();
+            }
+
             if (itemElement.TryGetProperty("Genres", out var genresProp) && genresProp.ValueKind == JsonValueKind.Array)
             {
                 item.Genres = genresProp.EnumerateArray()

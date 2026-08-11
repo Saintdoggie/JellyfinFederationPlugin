@@ -145,6 +145,24 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// on federated items is reset (same tradeoff as prior migrations).
         /// </summary>
         public bool MigratedRemoteLocationV6 { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the remote-path migration has run.
+        /// V7: federated items were created with Path left null, which made
+        /// BaseItem.GetVersionInfo emit a MediaSourceType.Placeholder static media
+        /// source - no path, container or streams - and additionally suppressed the
+        /// EnableRemoteContentProbe pass in MediaSourceManager.GetPlaybackMediaSources
+        /// (it is skipped when the first source is a placeholder). Clients therefore
+        /// had no usable source and reported "Unable to find a valid media source to
+        /// play". 0.0.26 stamps the remote stream URL on item.Path (plus
+        /// IsShortcut/ShortcutPath, the same mechanism .strm files use), so the static
+        /// source is a real Http source. Existing items are only ever created or
+        /// deleted by reconciliation, never updated in place, so they need one forced
+        /// rebuild to pick the path up. Item ids are unchanged by this (they derive
+        /// from the federation path and CLR type, neither of which changes), but local
+        /// watch progress on federated items is reset, as with prior rebuilds.
+        /// </summary>
+        public bool MigratedRemotePathV7 { get; set; }
     }
 
     /// <summary>

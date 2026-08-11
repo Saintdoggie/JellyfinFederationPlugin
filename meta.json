@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.25",
-  "changelog": "Add opt-in friends-of-friends federation: with the new 'Allow friends-of-friends' setting on, this server asks its friends who their other friends are and automatically sends friend requests to anyone new it discovers (still needs their admin to accept). Off by default. Content stays scoped to what a server actually owns either way - it never re-shares content that was itself federated into it from someone else.",
+  "version": "0.0.26",
+  "changelog": "Fixes federated media not playing. Federated items were created with no Path, so the media source Jellyfin builds for them came out as a Placeholder - unplayable by definition, and it also suppressed the remote-content probe that would have discovered the codecs, because that probe is skipped whenever the first source is a placeholder. Items now carry the remote stream URL on Path (plus IsShortcut/ShortcutPath, the same mechanism .strm files use), so Jellyfin builds a real HTTP source, probes it for codec info, and plays it through its normal direct-play/transcode paths. Existing federated items are rebuilt once to pick this up (watch progress on them is reset). Audio now streams from the audio endpoint rather than the video one.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-11T00:00:00Z",
   "imageUrl": "thumb.png"

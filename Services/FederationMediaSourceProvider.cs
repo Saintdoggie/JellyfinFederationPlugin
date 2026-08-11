@@ -84,9 +84,44 @@ namespace Jellyfin.Plugin.Federation.Services
                     entrySources.Length,
                     string.Join(" | ", entrySources.Select(s => $"{s.ServerId}:{s.RemoteItemId}")));
 
+                // When the item carries its own stream URL on Path, Jellyfin already
+                // builds a full static media source from it (the primary one), so
+                // emitting the primary again here would show the same file twice in the
+                // client's version picker. Additional servers hosting the same content
+                // are still worth offering as alternates.
+                //
+                // Compared against a freshly built URL rather than just checking that
+                // Path is non-empty: item.Path is stamped once at sync time and
+                // reconciliation only ever creates or deletes items, never updates them,
+                // so a server whose address or api_key has since changed (re-friending
+                // mints a new key, for instance) leaves every item pointing at a URL
+                // that no longer works. When that happens the freshly built URL differs,
+                // and emitting the primary here puts a working source back in front of
+                // the client instead of leaving only the stale one.
+                var primarySource = primaryIndex >= 0 && primaryIndex < entrySources.Length
+                    ? entrySources[primaryIndex]
+                    : null;
+                var currentPrimaryUrl = primarySource == null
+                    ? null
+                    : _federationManager.BuildPlaybackUrl(entry.ItemType, primarySource);
+                var staticSourceCoversPrimary = !string.IsNullOrEmpty(item.Path)
+                    && string.Equals(item.Path, currentPrimaryUrl, StringComparison.Ordinal);
+
+                if (!string.IsNullOrEmpty(item.Path) && !staticSourceCoversPrimary)
+                {
+                    _logger.LogWarning(
+                        "[Federation] {Name} has a stored stream path that no longer matches its server's current address/key; serving a freshly built source instead (a sync will refresh the stored one)",
+                        item.Name);
+                }
+
                 var sources = new List<MediaSourceInfo>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
+                    if (staticSourceCoversPrimary && i == primaryIndex)
+                    {
+                        continue;
+                    }
+
                     var src = entrySources[i];
                     var server = _federationManager.GetServer(src.ServerId);
                     if (server == null || !server.Enabled)
@@ -104,7 +139,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var path = BuildPlaybackPath(server, src);
+                    var path = BuildPlaybackPath(server, src, entry.ItemType);
                     if (path == null)
                     {
                         _logger.LogWarning(
@@ -184,8 +219,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     });
                 }
 
-                if (sources.Count == 0)
+                if (sources.Count == 0 && !staticSourceCoversPrimary)
                 {
+                    // Only a problem when the item's own path isn't already serving the
+                    // primary source. When it is, returning nothing here is the normal
+                    // single-server case, not a failure.
                     _logger.LogWarning("[Federation] No live sources for {Name}", item.Name);
                 }
 
@@ -267,7 +305,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return Task.FromException<ILiveStream>(new NotSupportedException("Live stream opening is not supported for federated content"));
         }
 
-        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src)
+        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
@@ -281,11 +319,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 // The remote api_key stays server-side; clients only see this server.
-                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId}";
+                var audioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
+                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
             }
 
-            var client = _federationManager.GetClient(src.ServerId);
-            return client?.BuildDirectStreamUrl(src.RemoteItemId.ToString());
+            // Same URL shape the item's own Path uses, so an alternate source behaves
+            // identically to the primary one.
+            return _federationManager.BuildPlaybackUrl(itemType, src);
         }
 
         /// <summary>

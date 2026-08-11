@@ -66,12 +66,52 @@ namespace Jellyfin.Plugin.Federation.Services
             var item = CreateItemShell(entry.ItemType);
             item.Name = entry.Metadata.Name ?? "Unknown";
 
-            // Deliberately left null: Jellyfin only treats an item as truly
-            // "Virtual" (always available, never checked against disk) when Path
-            // is empty. A synthetic federation:// URI made Jellyfin compute these
-            // as missing/offline instead, which hid them from browsing and from
-            // this plugin's own "does this already exist" checks. FederationKey
-            // (below) is the identity used everywhere instead of Path.
+            // The remote stream URL, set as this item's own Path. This is what makes
+            // federated media actually playable, and it is why an earlier attempt at a
+            // synthetic "federation://" path was wrong rather than the idea of a path
+            // being wrong:
+            //
+            // Jellyfin builds every item's *static* media source in
+            // BaseItem.GetVersionInfo from item.Path. With Path null it produces a
+            // source with Type = MediaSourceType.Placeholder and no path, container or
+            // streams - literally Jellyfin's marker for "there is no media here". Worse,
+            // MediaSourceManager.GetPlaybackMediaSources guards its
+            // EnableRemoteContentProbe branch on `mediaSources[0].Type != Placeholder`,
+            // so a placeholder also *suppresses* the probe that would have discovered
+            // the codecs. Clients then get an unplayable source and report
+            // "Unable to find a valid media source to play" - which is precisely the
+            // reported symptom. A "federation://" path failed differently: Jellyfin
+            // parsed it as a local file path that does not exist.
+            //
+            // An http(s) URL is a protocol Jellyfin natively understands
+            // (MediaProtocol.Http), so the static source comes out as a real, probeable
+            // Http source. IsShortcut/ShortcutPath below is the same mechanism .strm
+            // files use, and LocationType resolves to Remote from the URL alone.
+            var (streamUrl, isDirectMode) = ResolvePlaybackUrl(entry);
+            if (streamUrl != null)
+            {
+                item.Path = streamUrl;
+
+                // Only for Direct mode, where the URL really is on another host: this is
+                // what makes GetVersionInfo stamp IsRemote on the media source. In Proxy
+                // mode the URL points back at this very server, so claiming IsRemote
+                // would make clients lacking the "remote video" capability refuse a
+                // stream this server is perfectly able to serve.
+                if (isDirectMode)
+                {
+                    item.IsShortcut = true;
+                    item.ShortcutPath = streamUrl;
+                }
+            }
+
+            // Lets Jellyfin certify direct play without waiting on a probe. When the
+            // remote did not report one, the container is discovered by the
+            // EnableRemoteContentProbe pass described above instead.
+            if (!string.IsNullOrEmpty(entry.Metadata.Container))
+            {
+                item.Container = entry.Metadata.Container;
+            }
+
             item.Overview = entry.Metadata.Overview;
             item.ProductionYear = entry.Metadata.ProductionYear;
             item.PremiereDate = entry.Metadata.PremiereDate;
@@ -257,6 +297,89 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             return Plugin.Instance?.Configuration?.RemoteServers?.Find(s => s.Id == serverId);
         }
+
+        /// <summary>
+        /// Resolves the stream URL for an entry's primary source, or null when the
+        /// entry isn't streamable media (a Series/Season folder), has no source, or
+        /// the URL can't be built. Never throws - a failure here must degrade to a
+        /// pathless item rather than break materialization entirely, since
+        /// <see cref="FederationMediaSourceProvider"/> can still supply a source at
+        /// playback time (it has an HTTP request context to resolve a proxy URL from,
+        /// which a background sync does not).
+        /// </summary>
+        private (string? Url, bool IsDirectMode) ResolvePlaybackUrl(FederatedCacheEntry entry)
+        {
+            if (!IsStreamableType(entry.ItemType))
+            {
+                return (null, false);
+            }
+
+            try
+            {
+                var primary = entry.GetPrimarySource();
+                if (primary == null)
+                {
+                    return (null, false);
+                }
+
+                var url = BuildPlaybackUrl(entry.ItemType, primary);
+                var isDirect = GetServer(primary.ServerId)?.StreamingMode == StreamingMode.Direct;
+                return (url, url != null && isDirect);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not build a playback URL for {Key}; item will rely on the media source provider instead", entry.Key);
+                return (null, false);
+            }
+        }
+
+        /// <summary>
+        /// Builds the URL a federated item's media actually streams from, or null
+        /// when it can't be built (server gone/disabled, or Proxy mode with no
+        /// configured public URL - sync runs on a background task with no incoming
+        /// HTTP request to infer one from).
+        /// </summary>
+        /// <param name="itemType">Cache entry item type, e.g. "Movie" or "Audio".</param>
+        /// <param name="src">The remote source to stream from.</param>
+        public string? BuildPlaybackUrl(string itemType, FederatedSource src)
+        {
+            var server = GetServer(src.ServerId);
+            if (server == null || !server.Enabled)
+            {
+                return null;
+            }
+
+            if (server.StreamingMode == StreamingMode.Proxy)
+            {
+                var localUrl = GetLocalServerUrl();
+                if (string.IsNullOrEmpty(localUrl))
+                {
+                    return null;
+                }
+
+                // The remote api_key stays server-side; clients only ever see this server.
+                var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
+                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+            }
+
+            // Audio streams from a different endpoint than video; asking /Videos for a
+            // song does not reliably work.
+            var endpoint = IsAudioType(itemType) ? "Audio" : "Videos";
+            return $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream"
+                + $"?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
+        }
+
+        /// <summary>
+        /// Item types whose media is streamed directly. Container types (Series,
+        /// Season, BoxSet, PhotoAlbum) are folders and must never get a stream path.
+        /// Photo/Book are not streamed through the media pipeline either.
+        /// </summary>
+        public static bool IsStreamableType(string itemType)
+        {
+            return itemType is "Movie" or "Episode" or "Video" or "MusicVideo" or "Audio";
+        }
+
+        private static bool IsAudioType(string itemType) => itemType is "Audio";
 
         /// <summary>
         /// Gets the configured local server URL (auto-detected or overridden).

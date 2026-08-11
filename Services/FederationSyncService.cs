@@ -103,6 +103,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 // from the CLR type, a one-time recreate is required.
                 var needsRemoteLocationMigration = !config.MigratedRemoteLocationV6;
 
+                // V7 rebuilds every federated item so it picks up the remote stream URL
+                // on item.Path. Without a path the static media source Jellyfin builds
+                // is a placeholder, which is both unplayable itself and suppresses the
+                // remote-content probe that would have filled in the codecs (see
+                // MigratedRemotePathV7). Reconciliation only creates and deletes items,
+                // never updates them in place, so a rebuild is the only way to apply it.
+                var needsRemotePathMigration = !config.MigratedRemotePathV7;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -120,7 +128,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -136,7 +144,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogInformation("[Federation] One-time remote-location (LocationType=Remote) migration complete");
                 }
 
-                if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration)
+                if (needsRemotePathMigration)
+                {
+                    config.MigratedRemotePathV7 = true;
+                    _logger.LogInformation("[Federation] One-time remote-path (streamable item.Path) migration complete");
+                }
+
+                if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration || needsRemotePathMigration)
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
@@ -212,6 +226,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var needsNestedMigration = !config!.MigratedTieredCreationV4;
                 var needsSeasonIndexMigration = !config!.MigratedSeasonIndexV5;
                 var needsRemoteLocationMigration = !config!.MigratedRemoteLocationV6;
+                var needsRemotePathMigration = !config!.MigratedRemotePathV7;
 
                 int total = 0;
                 int failedSources = 0;
@@ -226,7 +241,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
