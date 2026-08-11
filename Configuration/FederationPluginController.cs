@@ -28,6 +28,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationStreamHandler _streamHandler;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
+        private readonly FederationFriendService _friends;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -36,7 +37,8 @@ namespace Jellyfin.Plugin.Federation.Api
             LibraryProvisioningService provisioning,
             FederationStreamHandler streamHandler,
             IRemoteServerClientFactory clientFactory,
-            FederationItemCache cache)
+            FederationItemCache cache,
+            FederationFriendService friends)
         {
             _logger = logger;
             _syncService = syncService;
@@ -45,6 +47,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _streamHandler = streamHandler;
             _clientFactory = clientFactory;
             _cache = cache;
+            _friends = friends;
         }
 
         #region Configuration
@@ -410,6 +413,119 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        #region Friends
+
+        /// <summary>
+        /// Admin-triggered: send a friend request to a server running Federation.
+        /// </summary>
+        [HttpPost("Friends/Send")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> SendFriendRequest([FromBody] SendFriendRequestBody body, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.SendFriendRequestAsync(body?.Url ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: list this server's pending incoming and outgoing friend requests.
+        /// </summary>
+        [HttpGet("Friends")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetFriendRequests()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            return Ok(new
+            {
+                incoming = config.IncomingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, r.Verified }),
+                outgoing = config.OutgoingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc })
+            });
+        }
+
+        /// <summary>
+        /// Admin-triggered: accept an incoming friend request.
+        /// </summary>
+        [HttpPost("Friends/{id}/Accept")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> AcceptFriendRequest(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.AcceptFriendRequestAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: reject an incoming friend request.
+        /// </summary>
+        [HttpPost("Friends/{id}/Reject")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> RejectFriendRequest(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.RejectFriendRequestAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: cancel a friend request this server sent before the other
+        /// side responded.
+        /// </summary>
+        [HttpDelete("Friends/Outgoing/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> CancelFriendRequest(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.CancelOutgoingFriendRequestAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: receives a friend request from another
+        /// Federation install. Anonymous is required - the sender has no API key for
+        /// us yet, since issuing one is the point of accepting.
+        /// </summary>
+        [HttpPost("Friends/Request")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReceiveFriendRequest([FromBody] FriendRequestPayload payload, CancellationToken cancellationToken)
+        {
+            var result = await _friends.ReceiveFriendRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+            return result.Success ? Ok(result) : BadRequest(result);
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: lets a server we sent a request to confirm
+        /// that request genuinely originated from us, by checking it exists in our
+        /// own outgoing list. Reveals only existence, keyed by an unguessable
+        /// request id known solely to the two servers involved.
+        /// </summary>
+        [HttpGet("Friends/Outgoing/{id}")]
+        [AllowAnonymous]
+        public IActionResult VerifyOutgoingRequest(string id)
+        {
+            return _friends.HasOutgoingRequest(id) ? Ok() : NotFound();
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: the other server has accepted our earlier
+        /// friend request and is handing us a key to use pulling from them.
+        /// </summary>
+        [HttpPost("Friends/Accept")]
+        [AllowAnonymous]
+        public IActionResult ReceiveFriendAccept([FromBody] FriendRequestPayload payload)
+        {
+            _friends.HandleAcceptCallback(payload);
+            return Ok();
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: the other server declined our earlier friend request.
+        /// </summary>
+        [HttpPost("Friends/Reject")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReceiveFriendReject([FromBody] FriendRejectPayload payload)
+        {
+            await _friends.HandleRejectCallbackAsync(payload?.RequestId ?? string.Empty).ConfigureAwait(false);
+            return Ok();
+        }
+
+        #endregion
+
         #region Streaming
 
         /// <summary>
@@ -597,5 +713,10 @@ namespace Jellyfin.Plugin.Federation.Api
     public class RefreshServerRequest
     {
         public string? ServerId { get; set; }
+    }
+
+    public class SendFriendRequestBody
+    {
+        public string? Url { get; set; }
     }
 }

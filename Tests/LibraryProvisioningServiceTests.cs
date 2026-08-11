@@ -15,6 +15,7 @@ using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
 
+[Collection("PluginInstance")]
 public class LibraryProvisioningServiceTests : IDisposable
 {
     private readonly string _tempRoot;
