@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -20,6 +21,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
         private readonly FederationItemPersistenceService _persistence;
+        private readonly IServiceProvider _serviceProvider;
 
         // Guards SyncAllAsync/SyncServerAsync against running concurrently with each
         // other (e.g. the 5s-after-startup sync overlapping the hourly scheduled
@@ -37,13 +39,15 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationLibraryManager federationManager,
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache,
-            FederationItemPersistenceService persistence)
+            FederationItemPersistenceService persistence,
+            IServiceProvider serviceProvider)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _cache = cache;
             _persistence = persistence;
+            _serviceProvider = serviceProvider;
         }
 
         /// <summary>
@@ -136,6 +140,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
+
+                await DiscoverFriendsOfFriendsAsync(cancellationToken).ConfigureAwait(false);
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
 
@@ -243,6 +249,34 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 _syncLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Runs friends-of-friends discovery as part of the normal sync cycle (a
+        /// no-op unless AllowFriendsOfFriends is on - see
+        /// FederationFriendService.DiscoverFriendsOfFriendsAsync). Best-effort: a
+        /// failure here must never fail the sync that items actually depend on.
+        /// FederationFriendService is DI-scoped (it needs IAuthenticationManager,
+        /// which Jellyfin registers scoped), but this service is a singleton, so a
+        /// short-lived scope is created here rather than injecting it directly -
+        /// the standard pattern for a singleton that needs a scoped dependency.
+        /// </summary>
+        private async Task DiscoverFriendsOfFriendsAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var friends = scope.ServiceProvider.GetRequiredService<FederationFriendService>();
+                var discovered = await friends.DiscoverFriendsOfFriendsAsync(cancellationToken).ConfigureAwait(false);
+                if (discovered > 0)
+                {
+                    _logger.LogInformation("[Federation] Friends-of-friends discovery sent {Count} new friend request(s)", discovered);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Friends-of-friends discovery failed (non-fatal)");
             }
         }
 

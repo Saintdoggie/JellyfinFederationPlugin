@@ -42,6 +42,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public int RefreshIntervalHours { get; set; } = 1;
 
         /// <summary>
+        /// Gets or sets a value indicating whether this server participates in
+        /// friends-of-friends discovery. Two independent things gate on this single
+        /// flag, deliberately kept as one opt-in rather than two: (1) this server will
+        /// tell its own friends who its other friends are when asked (see
+        /// <c>Friends/List</c>), and (2) this server will ask each of its own friends
+        /// for *their* friends list and automatically send friend requests to anyone
+        /// new it discovers that way. Off by default - exposing your friend list, and
+        /// reaching out to strangers on your friends' behalf, are both bigger trust
+        /// decisions than a single direct friendship. Consent is still preserved on
+        /// the discovered side either way: an auto-sent request still needs their
+        /// admin to accept it, same as a manually sent one.
+        /// </summary>
+        public bool AllowFriendsOfFriends { get; set; } = false;
+
+        /// <summary>
         /// Gets or sets the list of remote Jellyfin servers.
         /// </summary>
         public List<RemoteServer> RemoteServers { get; set; } = new List<RemoteServer>();
