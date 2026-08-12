@@ -12,7 +12,7 @@
         "changelog": "Fixes reconciliation still failing after upgrading to 0.0.27. Servers that had run 0.0.22-0.0.24 still had federated items stored in the database under the plugin subclasses removed in 0.0.27 (FederatedMovie, FederatedSeries, ...); Jellyfin can no longer resolve those rows back to a type and throws 'Cannot deserialize unknown type', which aborted the entire folder listing - not just the bad row - so every reconciliation of an affected library failed. Reconciliation now detects this, finds and deletes the unrecoverable rows directly by id (without needing to deserialize them), and retries. Also fixes the 0.0.27 catalog listing itself: its checksum did not match the uploaded release asset, so installing/updating via the plugin catalog failed with a checksum mismatch.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.28/Jellyfin.Federation.zip",
-        "checksum": "90e80542f57e9019adbe54b6fba41bcc",
+        "checksum": "78376b0e2a01dd10891f97aa93efaed0",
         "timestamp": "2026-08-12T00:00:00Z"
       },
       {
