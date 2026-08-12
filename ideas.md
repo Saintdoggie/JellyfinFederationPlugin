@@ -78,6 +78,22 @@ cost is that the *static* (cached) media source no longer marks itself
 (Tizen/webOS/Orsay/OperaTV/EdgeUWP) that gate on that flag specifically -
 a fair trade for playback actually working for everyone else.
 
+**0.0.30 alone did not fix any server that had already run 0.0.26-0.0.29.**
+Missed this the first time despite having just re-learned the lesson for
+V4-V8: reconciliation only ever creates and deletes items, it never
+updates one in place. 0.0.30's code change only stops *new* items from
+getting `IsShortcut=true` - every item already persisted from an earlier
+version keeps it forever, and keeps crashing on every playback attempt
+exactly as before. Confirmed directly in a user log taken *after*
+upgrading to 0.0.30: the same `FetchShortcutInfo` `DirectoryNotFoundException`
+for "Barbie", "Bambi", "Cars 3", all pre-existing items. 0.0.31 adds the
+missing migration (`MigratedRemoveShortcutV9`, `forceRecreateAll`) to
+rebuild everything once more. General lesson, stated plainly this time:
+**any fix that changes a property persisted on `BaseItem` needs a
+forced-recreation migration in the same release, not just new-item code** -
+check this reflexively before shipping, the same way `MigratedStockTypesV8`
+should have been the template to copy, not just precedent to admire.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and

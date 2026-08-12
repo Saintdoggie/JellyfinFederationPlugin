@@ -114,6 +114,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 // federated item. See MigratedStockTypesV8.
                 var needsStockTypeMigration = !config.MigratedStockTypesV8;
 
+                // V9 rebuilds every federated item once more so the IsShortcut/
+                // ShortcutPath persisted on it by 0.0.26-0.0.29 gets cleared. Those
+                // properties make Jellyfin's ProbeProvider try to read item.Path as a
+                // local .strm file - which it isn't - throwing on every metadata
+                // refresh (not just once) until the item is recreated. See
+                // MigratedRemoveShortcutV9.
+                var needsRemoveShortcutMigration = !config.MigratedRemoveShortcutV9;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -131,7 +139,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -159,8 +167,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogInformation("[Federation] One-time stock-CLR-type migration complete");
                 }
 
+                if (needsRemoveShortcutMigration)
+                {
+                    config.MigratedRemoveShortcutV9 = true;
+                    _logger.LogInformation("[Federation] One-time IsShortcut-removal migration complete");
+                }
+
                 if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration
-                    || needsRemotePathMigration || needsStockTypeMigration)
+                    || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration)
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
@@ -236,6 +250,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var needsRemoteLocationMigration = !config!.MigratedRemoteLocationV6;
                 var needsRemotePathMigration = !config!.MigratedRemotePathV7;
                 var needsStockTypeMigration = !config!.MigratedStockTypesV8;
+                var needsRemoveShortcutMigration = !config!.MigratedRemoveShortcutV9;
 
                 int total = 0;
                 int failedSources = 0;
@@ -250,7 +265,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
