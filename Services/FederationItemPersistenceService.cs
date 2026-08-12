@@ -132,13 +132,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] {Name}: hit unrecoverable legacy item(s) while listing children; purging and retrying",
                         mapping.LocalLibraryName);
 
-                    var physicalFolders = (libraryFolder as CollectionFolder)?.GetPhysicalFolders().OfType<Folder>().ToList();
-                    if (physicalFolders == null || physicalFolders.Count == 0)
-                    {
-                        physicalFolders = new List<Folder> { libraryFolder };
-                    }
-
-                    var purgedCount = PurgeUndeserializableDescendants(physicalFolders);
+                    var purgedCount = PurgeUndeserializableDescendants(GetPhysicalFolders(libraryFolder));
                     _logger.LogWarning(
                         "[Federation] {Name}: purged {Count} unrecoverable legacy item(s) left over from an earlier plugin version",
                         mapping.LocalLibraryName,
@@ -472,6 +466,73 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Sweeps every provisioned mapping's library folder for unrecoverable legacy
+        /// items and deletes them, up front - before <see cref="ReconcileMappingAsync"/>
+        /// or anything else touches them. <see cref="ReconcileMappingAsync"/> only
+        /// discovers these reactively, by catching the deserialization failure that
+        /// happens when it lists a library that has one; that leaves a window (this
+        /// plugin's background startup sync waits several seconds before its first run)
+        /// during which any other Jellyfin code path that enumerates the same folder
+        /// first - the web UI browsing it, a native library scan, another plugin -
+        /// would hit the same crash outside this plugin's control. Called synchronously
+        /// from <see cref="FederationEntryPoint.StartAsync"/>, before that delay, so the
+        /// purge has already happened by the time anything else gets a chance to run.
+        /// </summary>
+        /// <param name="mappings">The configured library mappings to sweep.</param>
+        public void PurgeUndeserializableItemsAtStartup(IEnumerable<LibraryMapping> mappings)
+        {
+            Folder root;
+            try
+            {
+                root = _libraryManager.GetUserRootFolder();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Startup purge sweep: could not resolve the root folder");
+                return;
+            }
+
+            foreach (var mapping in mappings)
+            {
+                try
+                {
+                    var libraryFolder = root.Children.OfType<Folder>()
+                        .FirstOrDefault(f => string.Equals(f.Name, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+                    if (libraryFolder == null)
+                    {
+                        continue;
+                    }
+
+                    var purgedCount = PurgeUndeserializableDescendants(GetPhysicalFolders(libraryFolder));
+                    if (purgedCount > 0)
+                    {
+                        _logger.LogWarning(
+                            "[Federation] Startup sweep: purged {Count} unrecoverable legacy item(s) from {Name} left over from an earlier plugin version",
+                            purgedCount,
+                            mapping.LocalLibraryName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Startup purge sweep failed for {Name}", mapping.LocalLibraryName);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resolves the real, physical Folder rows backing a library
+        /// (<see cref="Configuration.LibraryMapping.LocalLibraryName"/>'s CollectionFolder
+        /// is a virtual union of these - see the comment in
+        /// <see cref="ReconcileMappingAsync"/>). Falls back to the library folder itself
+        /// if it has none yet (not fully provisioned).
+        /// </summary>
+        private static List<Folder> GetPhysicalFolders(Folder libraryFolder)
+        {
+            var physicalFolders = (libraryFolder as CollectionFolder)?.GetPhysicalFolders().OfType<Folder>().ToList();
+            return physicalFolders is { Count: > 0 } ? physicalFolders : new List<Folder> { libraryFolder };
         }
 
         /// <summary>

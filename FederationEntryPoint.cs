@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,6 +22,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly FederationLibraryManager _federationManager;
         private readonly LibraryProvisioningService _provisioning;
         private readonly FederationSyncService _syncService;
+        private readonly FederationItemPersistenceService _persistence;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -28,12 +31,14 @@ namespace Jellyfin.Plugin.Federation
             ILogger<FederationEntryPoint> logger,
             FederationLibraryManager federationManager,
             LibraryProvisioningService provisioning,
-            FederationSyncService syncService)
+            FederationSyncService syncService,
+            FederationItemPersistenceService persistence)
         {
             _logger = logger;
             _federationManager = federationManager;
             _provisioning = provisioning;
             _syncService = syncService;
+            _persistence = persistence;
         }
 
         /// <inheritdoc />
@@ -64,6 +69,14 @@ namespace Jellyfin.Plugin.Federation
                 {
                     await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
                 }
+
+                // Runs synchronously, before the delayed background sync below, so any
+                // items left over from an earlier plugin version under CLR types that
+                // no longer exist are gone before anything else - a native library
+                // scan, the web UI, another plugin - gets a chance to enumerate the
+                // same folder and hit the same crash outside this plugin's control.
+                // See the comment on PurgeUndeserializableItemsAtStartup.
+                _persistence.PurgeUndeserializableItemsAtStartup(config.LibraryMappings ?? new List<LibraryMapping>());
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
 
