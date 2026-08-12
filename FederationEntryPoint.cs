@@ -23,6 +23,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly LibraryProvisioningService _provisioning;
         private readonly FederationSyncService _syncService;
         private readonly FederationItemPersistenceService _persistence;
+        private readonly WebClientInjector _webClientInjector;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -32,13 +33,15 @@ namespace Jellyfin.Plugin.Federation
             FederationLibraryManager federationManager,
             LibraryProvisioningService provisioning,
             FederationSyncService syncService,
-            FederationItemPersistenceService persistence)
+            FederationItemPersistenceService persistence,
+            WebClientInjector webClientInjector)
         {
             _logger = logger;
             _federationManager = federationManager;
             _provisioning = provisioning;
             _syncService = syncService;
             _persistence = persistence;
+            _webClientInjector = webClientInjector;
         }
 
         /// <inheritdoc />
@@ -77,6 +80,8 @@ namespace Jellyfin.Plugin.Federation
                 // same folder and hit the same crash outside this plugin's control.
                 // See the comment on PurgeUndeserializableItemsAtStartup.
                 _persistence.PurgeUndeserializableItemsAtStartup(config.LibraryMappings ?? new List<LibraryMapping>());
+
+                _webClientInjector.EnsureBadgeScriptInjected();
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
 

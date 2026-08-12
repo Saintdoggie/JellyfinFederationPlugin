@@ -252,30 +252,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 // by the same provider ids used to dedup across remote servers, so a
                 // show that exists both on disk here and on a federated partner
                 // doesn't get a second, episode-less shell created next to the real
-                // one.
+                // one. Checked server-wide (not just this mapping's own library
+                // folder) - a duplicate is just as real when the local copy lives in
+                // a separate, non-federated library as when it shares this one.
                 var config = Plugin.Instance?.Configuration;
                 var dedupKeys = (config?.EnableDedup ?? true)
                     ? (config?.DedupProviderIds ?? new List<string>())
                     : new List<string>();
-                var localProviderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (dedupKeys.Count > 0)
-                {
-                    foreach (var child in allChildren)
-                    {
-                        if (FederationLibraryManager.GetFederationKey(child) != null || child.ProviderIds == null)
-                        {
-                            continue;
-                        }
-
-                        foreach (var key in dedupKeys)
-                        {
-                            if (child.ProviderIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
-                            {
-                                localProviderIds.Add($"{key}:{val}");
-                            }
-                        }
-                    }
-                }
+                var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
 
                 _logger.LogInformation(
                     "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}",
@@ -606,6 +590,50 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Collects provider ids (e.g. <c>imdb:tt1517268</c>) from every non-federated
+        /// item on the whole server, not just this mapping's own library folder - a
+        /// user's local copy of a movie is just as real a duplicate if it lives in a
+        /// separate, ordinary library as if it happens to share the federated one.
+        /// </summary>
+        private HashSet<string> CollectServerWideLocalProviderIds(List<string> dedupKeys)
+        {
+            var localProviderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (dedupKeys.Count == 0)
+            {
+                return localProviderIds;
+            }
+
+            IReadOnlyList<BaseItem> allItems;
+            try
+            {
+                allItems = _libraryManager.GetItemList(new InternalItemsQuery { Recursive = true });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not enumerate the server for local-dedup matching; dedup against locally-owned content will be skipped this cycle");
+                return localProviderIds;
+            }
+
+            foreach (var item in allItems)
+            {
+                if (FederationLibraryManager.GetFederationKey(item) != null || item.ProviderIds == null)
+                {
+                    continue;
+                }
+
+                foreach (var key in dedupKeys)
+                {
+                    if (item.ProviderIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
+                    {
+                        localProviderIds.Add($"{key}:{val}");
+                    }
+                }
+            }
+
+            return localProviderIds;
         }
 
         private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
