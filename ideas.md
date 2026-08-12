@@ -23,6 +23,21 @@ throws `ArgumentException`, and the call sits underneath both
 API response and every folder enumeration that touches the item. Federated items
 must always be instantiated as Jellyfin's own types.
 
+Removing the subclasses in 0.0.27 wasn't the end of it: any server that had
+already run 0.0.22-0.0.24 still had rows in its database stored under those
+now-deleted type names. `BaseItemRepository.DeserializeBaseItem` throws
+`InvalidOperationException("Cannot deserialize unknown type.")` on those, and
+same as above, that aborts the whole folder listing rather than just skipping
+the bad row - so reconciliation kept failing even on a clean 0.0.27 install.
+0.0.28 self-heals this: `FederationItemPersistenceService` catches that
+specific failure, uses `IItemRepository.GetItemIdsList` (id-only, no
+deserialization) to enumerate everything under the library's physical
+folders, probes each id individually with `RetrieveItem` to isolate which
+ones are unrecoverable, and deletes those directly by id via
+`IItemRepository.DeleteItem` before retrying. General lesson: a plugin that
+ever changes an item's CLR type needs a cleanup path for the *old* rows, not
+just code that stops writing new ones that way.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and
