@@ -199,6 +199,79 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void WanBitrateCap_Unset_StreamsRawSourceUnchanged()
+    {
+        AddServer();
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
+
+        Assert.Contains("Static=true", item.Path);
+        Assert.DoesNotContain("VideoBitrate", item.Path);
+        Assert.Equal("mkv", item.Container);
+    }
+
+    [Fact]
+    public void WanBitrateCap_Set_RequestsATranscodedStreamFromTheRemoteInstead_OfTheRawFile()
+    {
+        var server = AddServer();
+        server.WanMaxBitrateMbps = 12;
+        server.WanMaxHeight = 1080;
+
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId, container: "mkv"));
+
+        Assert.Equal(
+            $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
+                + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080",
+            item.Path);
+
+        // The URL now serves a server-side transcode, not the original mkv/HEVC file -
+        // stamping the source's real container would certify direct play against bytes
+        // that are not actually what gets served.
+        Assert.Equal("mp4", item.Container);
+    }
+
+    [Fact]
+    public void WanBitrateCap_Set_ButHeightUnset_OmitsTheHeightParamRatherThanCappingResolution()
+    {
+        var server = AddServer();
+        server.WanMaxBitrateMbps = 12;
+        server.WanMaxHeight = 0;
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.DoesNotContain("MaxHeight", item.Path);
+    }
+
+    [Fact]
+    public void WanBitrateCap_DoesNotApplyToAudio()
+    {
+        var server = AddServer();
+        server.WanMaxBitrateMbps = 12;
+
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Audio", remoteId));
+
+        Assert.Contains("Static=true", item.Path);
+        Assert.DoesNotContain("VideoBitrate", item.Path);
+    }
+
+    [Fact]
+    public void WanBitrateCap_DoesNotApplyInProxyMode()
+    {
+        var server = AddServer(StreamingMode.Proxy);
+        server.WanMaxBitrateMbps = 12;
+        _plugin.Configuration.ServerUrl = "https://my-server.example";
+
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+
+        // Proxy mode already routes through this server; the WAN cap only concerns
+        // Direct mode's own remote-to-remote fetch.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
+        Assert.DoesNotContain("VideoBitrate", item.Path);
+    }
+
+    [Fact]
     public void DisabledServer_ProducesNoPath()
     {
         var server = AddServer();
