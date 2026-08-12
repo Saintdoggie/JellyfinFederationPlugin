@@ -108,10 +108,11 @@ public class FederationStreamPathTests : IDisposable
             $"http://friend.example:8096/Videos/{remoteId:N}/stream?api_key=secret-key&Static=true",
             item.Path);
 
-        // IsShortcut/ShortcutPath is the same mechanism .strm files use; it is what
-        // makes GetVersionInfo mark the resulting media source IsRemote.
-        Assert.True(item.IsShortcut);
-        Assert.Equal(item.Path, item.ShortcutPath);
+        // IsShortcut is deliberately never set: ProbeProvider.FetchShortcutInfo
+        // unconditionally does File.ReadAllLines(item.Path), expecting Path to be a
+        // real local .strm file rather than the URL itself, which throws on every
+        // metadata refresh (see the comment in FederationLibraryManager.MaterializeItem).
+        Assert.False(item.IsShortcut);
     }
 
     [Fact]

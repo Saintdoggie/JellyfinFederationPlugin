@@ -48,6 +48,36 @@ synchronously from `FederationEntryPoint.StartAsync`
 (`PurgeUndeserializableItemsAtStartup`), before that delay, so it has
 already happened by the time anything else gets a chance to run.
 
+## IsShortcut is not "mark this source as remote" (0.0.26 -> 0.0.30)
+
+0.0.26 set `item.IsShortcut = true` / `item.ShortcutPath = <stream URL>` on
+Direct-mode items, on the belief that this was "the same mechanism .strm
+files use" and the way to get `MediaSourceInfo.IsRemote = true`. It isn't.
+`ProbeProvider.FetchShortcutInfo` unconditionally runs
+`File.ReadAllLines(item.Path)` whenever `IsShortcut` is true, with no
+protocol check - it expects `Path` to be a real *local* `.strm` file whose
+*contents* are the target URL, and stores that content into `ShortcutPath`
+itself once read. We set `Path` to the URL directly, so that read throws
+`DirectoryNotFoundException` on every metadata refresh. Because the failure
+happens inside `RunCustomProvider`, `MediaStreams` never get saved, so
+`MediaSourceManager.GetPlaybackMediaSources`'s probe guard keeps re-firing
+on every subsequent playback too - not just the first. Users saw this as an
+endless "loading" spinner, playback that silently gave up, or (once a
+client had a stale HLS session on hand) hls.js `bufferAppendError` from a
+transcode the server had already torn down and restarted.
+
+Checked `BaseItem.GetVersionInfo` before removing it: the *only* thing
+`IsShortcut` contributes there is `MediaSourceInfo.IsRemote = true` - `Path`
+and `Protocol` are already correctly derived from `item.Path`/`PathProtocol`
+alone, `IsShortcut` or not. `FederationMediaSourceProvider`'s own dynamic,
+per-request media source already sets `IsRemote` independently (based on
+`StreamingMode`) and never touches `IsShortcut`, so it was never affected by
+this bug. 0.0.30 removes `IsShortcut`/`ShortcutPath` entirely; the only
+cost is that the *static* (cached) media source no longer marks itself
+`IsRemote`, which matters only to a handful of legacy TV webviews
+(Tizen/webOS/Orsay/OperaTV/EdgeUWP) that gate on that flag specifically -
+a fair trade for playback actually working for everyone else.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and
