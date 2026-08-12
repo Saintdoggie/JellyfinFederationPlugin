@@ -85,23 +85,28 @@ namespace Jellyfin.Plugin.Federation.Services
             //
             // An http(s) URL is a protocol Jellyfin natively understands
             // (MediaProtocol.Http), so the static source comes out as a real, probeable
-            // Http source. IsShortcut/ShortcutPath below is the same mechanism .strm
-            // files use, and LocationType resolves to Remote from the URL alone.
-            var (streamUrl, isDirectMode) = ResolvePlaybackUrl(entry);
+            // Http source, and LocationType resolves to Remote from the URL alone -
+            // BaseItem.GetVersionInfo derives both MediaSourceInfo.Protocol and
+            // LocationType from item.Path/PathProtocol regardless of IsShortcut.
+            //
+            // IsShortcut/ShortcutPath (the .strm mechanism) was tried here to also get
+            // MediaSourceInfo.IsRemote = true, but it does not work the way that name
+            // suggests: ProbeProvider.FetchShortcutInfo unconditionally does
+            // File.ReadAllLines(item.Path), expecting Path to be a real *local* .strm
+            // file whose *contents* are the target URL - not the URL itself. Since our
+            // Path already *is* the URL, that read throws DirectoryNotFoundException on
+            // every metadata refresh, which - because the failure prevents MediaStreams
+            // from ever being saved - fires on every single playback attempt, not just
+            // the first. Clients see this as a stuck "loading" spinner and often retry,
+            // which kills the in-flight ffmpeg transcode and restarts it from scratch.
+            // The only thing IsRemote actually gates client-side is a handful of legacy
+            // TV platforms (Tizen/webOS/Orsay/OperaTV/EdgeUWP) refusing to direct-play a
+            // remote source; leaving it unset costs correctness only for those, in
+            // exchange for playback actually working everywhere else.
+            var streamUrl = ResolvePlaybackUrl(entry);
             if (streamUrl != null)
             {
                 item.Path = streamUrl;
-
-                // Only for Direct mode, where the URL really is on another host: this is
-                // what makes GetVersionInfo stamp IsRemote on the media source. In Proxy
-                // mode the URL points back at this very server, so claiming IsRemote
-                // would make clients lacking the "remote video" capability refuse a
-                // stream this server is perfectly able to serve.
-                if (isDirectMode)
-                {
-                    item.IsShortcut = true;
-                    item.ShortcutPath = streamUrl;
-                }
             }
 
             // Lets Jellyfin certify direct play without waiting on a probe. When the
@@ -307,29 +312,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// playback time (it has an HTTP request context to resolve a proxy URL from,
         /// which a background sync does not).
         /// </summary>
-        private (string? Url, bool IsDirectMode) ResolvePlaybackUrl(FederatedCacheEntry entry)
+        private string? ResolvePlaybackUrl(FederatedCacheEntry entry)
         {
             if (!IsStreamableType(entry.ItemType))
             {
-                return (null, false);
+                return null;
             }
 
             try
             {
                 var primary = entry.GetPrimarySource();
-                if (primary == null)
-                {
-                    return (null, false);
-                }
-
-                var url = BuildPlaybackUrl(entry.ItemType, primary);
-                var isDirect = GetServer(primary.ServerId)?.StreamingMode == StreamingMode.Direct;
-                return (url, url != null && isDirect);
+                return primary == null ? null : BuildPlaybackUrl(entry.ItemType, primary);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Could not build a playback URL for {Key}; item will rely on the media source provider instead", entry.Key);
-                return (null, false);
+                return null;
             }
         }
 

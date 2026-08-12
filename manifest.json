@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.30",
+        "changelog": "Fixes federated movies/episodes getting stuck loading (or silently failing to play at all) on every playback attempt, not just the first. 0.0.26 set IsShortcut/ShortcutPath on federated items to mark their media source IsRemote, believing it was the same mechanism .strm files use - it is not. Jellyfin's ProbeProvider.FetchShortcutInfo unconditionally does File.ReadAllLines(item.Path), expecting Path to point at a real local .strm file whose contents are the target URL; since our Path already *is* that URL, the read throws DirectoryNotFoundException on every metadata refresh. Because that failure prevents MediaStreams from ever being saved, the refresh (and the failure) re-fires on every subsequent playback attempt, and clients observe this as an endless loading spinner, an HLS player left holding a torn-down transcode session (bufferAppendError), or a request that silently gives up. IsShortcut/ShortcutPath are no longer set; Path alone (an http(s) URL) already gives correct LocationType/Protocol without it, and the dynamic per-request media source (FederationMediaSourceProvider) already sets IsRemote independently and is unaffected by this bug.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.30/Jellyfin.Federation.zip",
+        "checksum": "cdd3cae0ea1e99eba33713fbea85a750",
+        "timestamp": "2026-08-12T00:00:00Z"
+      },
+      {
         "version": "0.0.29",
         "changelog": "0.0.28 fixed the 'Cannot deserialize unknown type' reconciliation crash reactively - only once this plugin's own background sync happened to hit it. That left a window, several seconds wide, where any other Jellyfin code path enumerating the same folder first (the web UI, a native library scan, another plugin) could still hit the same crash outside this plugin's control. The purge now runs eagerly at plugin startup, synchronously, before that window opens - so legacy items left over from 0.0.22-0.0.24 are gone before anything else gets a chance to touch them.",
         "targetAbi": "10.11.0.0",
