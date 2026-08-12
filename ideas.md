@@ -94,6 +94,23 @@ forced-recreation migration in the same release, not just new-item code** -
 check this reflexively before shipping, the same way `MigratedStockTypesV8`
 should have been the template to copy, not just precedent to admire.
 
+## Client-side badge via index.html injection (0.0.32)
+
+Jellyfin has no server-side templating for jellyfin-web - it serves
+`index.html` as a static file from `IApplicationPaths.WebPath` - so there is
+no supported hook for a server plugin to add client-side UI. `WebClientInjector`
+uses the same technique other community plugins use instead: at server
+startup, read `index.html`, and if a marker comment isn't already present,
+insert a `<script defer src="/Plugins/Federation/ClientScript">` tag before
+`</body>` and write the file back. Idempotent (checks the marker first) and
+safe to run on every boot; a jellyfin-web upgrade that replaces `index.html`
+just clears the marker, so the very next startup re-injects it automatically.
+The script itself (`Web/federation-badge.js`) polls `/Plugins/Federation/
+FederatedIds` for the set of federated item ids, then uses a `MutationObserver`
+plus a short interval poll (jellyfin-web is a pushState SPA that doesn't
+reliably fire DOM mutations on route changes) to badge matching `[data-id]`
+cards and the detail-page title with a small inline SVG icon.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and

@@ -158,6 +158,58 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        #region Web client badge
+
+        /// <summary>
+        /// Serves the client-side script that draws a small icon next to federated
+        /// items' titles in jellyfin-web, injected into index.html by
+        /// <see cref="Services.WebClientInjector"/>. Static asset containing no
+        /// secrets, so anonymous like the config page above.
+        /// </summary>
+        [HttpGet("ClientScript")]
+        [AllowAnonymous]
+        [Produces("application/javascript")]
+        public IActionResult GetClientScript()
+        {
+            try
+            {
+                var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+                var resourceName = "Jellyfin.Plugin.Federation.Web.federation-badge.js";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream == null)
+                {
+                    return NotFound("Client script resource not found");
+                }
+
+                using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
+                var js = reader.ReadToEnd();
+                return Content(js, "application/javascript; charset=utf-8");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error serving client script");
+                return StatusCode(500, $"Error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Returns the local item ids (format "N") of every currently federated
+        /// item, for <see cref="GetClientScript"/> to badge in the UI. Ids only, no
+        /// other item data, so anonymous is fine here too.
+        /// </summary>
+        [HttpGet("FederatedIds")]
+        [AllowAnonymous]
+        [Produces("application/json")]
+        public ActionResult<IEnumerable<string>> GetFederatedIds()
+        {
+            var ids = _federationManager.GetAllEntries()
+                .Select(e => _federationManager.ComputeItemId(e).ToString("N"))
+                .Distinct();
+            return Ok(ids);
+        }
+
+        #endregion
+
         #region System Info
 
         [HttpGet("SystemInfo")]
