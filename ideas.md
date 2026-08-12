@@ -4,6 +4,25 @@ Future feature ideas for the federation plugin, captured so they don't get lost
 between sessions. This is a planning list, not a changelog - items marked
 **Done** note where the work landed.
 
+## Withdrawn, preserved on `archive/friend-system`
+
+The friend-request system and friends-of-friends discovery (0.0.24 / 0.0.25) were
+pulled out in 0.0.27 to get the core back to a working state. Nothing is lost -
+the full implementation, its tests, and its config-page UI are on the
+`archive/friend-system` branch and can be brought back once streaming and
+sharing are solid. What is still open from that work: a directory/lookup service
+so friends can be found by name instead of by address.
+
+## Never subclass Jellyfin's entity types
+
+Learned the hard way in 0.0.22 -> 0.0.27. `BaseItem.GetBaseItemKind()` resolves
+an item's kind with `Enum.Parse<BaseItemKind>(GetType().Name)` - it parses the
+CLR *class name*. Any subclass whose name is not already a value of that enum
+throws `ArgumentException`, and the call sits underneath both
+`DtoService.AttachBasicFields` and `Folder.GetCachedChildren`, so it breaks every
+API response and every folder enumeration that touches the item. Federated items
+must always be instantiated as Jellyfin's own types.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and

@@ -127,26 +127,6 @@
                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
             </div>
 
-            <div class="fed-card">
-                <h2 class="fed-step">Friends</h2>
-                <p class="fed-step-desc">
-                    Connect to another server running Federation without copying an API key by hand. Enter their address,
-                    send a request, and once they accept, both servers add each other automatically.
-                </p>
-
-                <div class="fed-inline">
-                    <div class="fed-input-container">
-                        <label class="fed-label" for="fedFriendUrl">Friend's server address</label>
-                        <input type="text" id="fedFriendUrl" class="emby-input fed-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                    </div>
-                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
-                </div>
-                <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
-
-                <div id="fedFriendIncoming"></div>
-                <div id="fedFriendOutgoing"></div>
-            </div>
-
             <form id="fedConfigForm">
                 <div class="fed-card">
                     <h2 class="fed-step">1 · Connect your servers</h2>
@@ -212,13 +192,6 @@
                         </div>
                         <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                         <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
-                        <p class="fed-hint" style="margin:-0.6em 0 0.8em;">
-                            When on: your friends can see who your other friends are, and this server automatically sends friend requests
-                            to friends of your friends it discovers that way (they still have to accept). Off by default - this is a bigger
-                            trust decision than a single direct friendship. Either way, a server only ever shares its own library, never
-                            content that was itself federated into it from somewhere else.
-                        </p>
                         <div class="fed-input-container" style="margin-top:1em;">
                             <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
                             <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
@@ -667,136 +640,6 @@
                         });
                     }
 
-                    /* ---------------- Friends ---------------- */
-
-                    function setFriendStatus(msg, kind) {
-                        var el = q('#fedFriendStatus');
-                        if (!el) {
-                            return;
-                        }
-
-                        if (!msg) {
-                            el.style.display = 'none';
-                            return;
-                        }
-
-                        el.style.display = 'block';
-                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
-                        el.textContent = msg;
-                    }
-
-                    function renderFriendRequests(data) {
-                        var incoming = q('#fedFriendIncoming');
-                        var outgoing = q('#fedFriendOutgoing');
-                        if (!incoming || !outgoing) {
-                            return;
-                        }
-
-                        var inList = (data && data.incoming) || [];
-                        var outList = (data && data.outgoing) || [];
-
-                        if (inList.length === 0) {
-                            incoming.innerHTML = '';
-                        } else {
-                            var ih = '<h3 style="margin:1.2em 0 0.4em;font-size:1em;">Requests waiting on you</h3>';
-                            inList.forEach(function (r) {
-                                ih += '<div class="fed-server">';
-                                ih += '<div class="fed-server-head">';
-                                ih += '<span class="fed-dot' + (r.Verified ? ' fed-dot-ok' : '') + '"></span>';
-                                ih += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
-                                ih += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + (r.Verified ? ' · verified' : ' · unverified') + '</span>';
-                                ih += '<span class="fed-spacer"></span>';
-                                ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
-                                ih += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-friend" data-id="' + escapeHtml(r.Id) + '">Reject</button>';
-                                ih += '</div></div>';
-                            });
-                            incoming.innerHTML = ih;
-                        }
-
-                        if (outList.length === 0) {
-                            outgoing.innerHTML = '';
-                        } else {
-                            var oh = '<h3 style="margin:1.2em 0 0.4em;font-size:1em;">Sent, waiting on them</h3>';
-                            outList.forEach(function (r) {
-                                oh += '<div class="fed-server">';
-                                oh += '<div class="fed-server-head">';
-                                oh += '<span class="fed-dot"></span>';
-                                oh += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
-                                oh += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + '</span>';
-                                oh += '<span class="fed-spacer"></span>';
-                                oh += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="cancel-friend" data-id="' + escapeHtml(r.Id) + '">Cancel</button>';
-                                oh += '</div></div>';
-                            });
-                            outgoing.innerHTML = oh;
-                        }
-                    }
-
-                    function loadFriendRequests() {
-                        fedFetch('/Plugins/Federation/Friends')
-                        .then(function (r) { return r.json(); })
-                        .then(renderFriendRequests)
-                        .catch(function () { /* best-effort */ });
-                    }
-
-                    function sendFriendRequest() {
-                        var urlEl = q('#fedFriendUrl');
-                        var url = urlEl ? urlEl.value.trim() : '';
-                        if (!url) {
-                            setFriendStatus('Enter a server address first.', 'err');
-                            return;
-                        }
-
-                        setFriendStatus('Sending…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/Send', {
-                            method: 'POST',
-                            body: JSON.stringify({ Url: url })
-                        })
-                        .then(function (r) { return r.json(); })
-                        .then(function (res) {
-                            setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            if (res.success && urlEl) {
-                                urlEl.value = '';
-                            }
-
-                            loadFriendRequests();
-                        })
-                        .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
-                    }
-
-                    function acceptFriendRequest(id) {
-                        setFriendStatus('Confirming with your friend\'s server…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (res) {
-                            setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            loadFriendRequests();
-                            if (res.success) {
-                                return loadConfiguration(true).then(function () { loadLibraryPicker(); });
-                            }
-                        })
-                        .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
-                    }
-
-                    function rejectFriendRequest(id) {
-                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Reject', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (res) {
-                            setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            loadFriendRequests();
-                        })
-                        .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
-                    }
-
-                    function cancelFriendRequest(id) {
-                        fedFetch('/Plugins/Federation/Friends/Outgoing/' + encodeURIComponent(id), { method: 'DELETE' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (res) {
-                            setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            loadFriendRequests();
-                        })
-                        .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
-                    }
-
                     /* ---------------- Library picker ---------------- */
 
                     function friendlyType(collectionType) {
@@ -1189,7 +1032,6 @@
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
-                            q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
 
@@ -1219,7 +1061,6 @@
                             EnableDedup: q('#fedChkDedup').checked,
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
-                            AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {
@@ -1273,20 +1114,7 @@
 
                             e.preventDefault();
                             var i = parseInt(t.getAttribute('data-i') || '0', 10);
-                            var friendId = t.getAttribute('data-id');
                             switch (t.getAttribute('data-fed-action')) {
-                                case 'send-friend-request':
-                                    sendFriendRequest();
-                                    break;
-                                case 'accept-friend':
-                                    acceptFriendRequest(friendId);
-                                    break;
-                                case 'reject-friend':
-                                    rejectFriendRequest(friendId);
-                                    break;
-                                case 'cancel-friend':
-                                    cancelFriendRequest(friendId);
-                                    break;
                                 case 'add-server':
                                     addServer();
                                     break;
@@ -1401,7 +1229,6 @@
                     function initPage(page) {
                         pageEl = page;
                         attachHandlers(page);
-                        loadFriendRequests();
                         loadConfiguration(false).then(function () {
                             loadLibraryPicker();
                         });

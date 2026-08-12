@@ -40,6 +40,15 @@ public class FederationStreamPathTests : IDisposable
         _plugin = new RealPluginInstance();
         _cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
 
+        // BaseItem.LocationType calls the static BaseItem.FileSystem, which only the
+        // real server populates. Mirrors Jellyfin's own IsPathFile: anything carrying a
+        // non-file:// URI scheme is not a file.
+        var fileSystem = new Mock<MediaBrowser.Model.IO.IFileSystem>();
+        fileSystem.Setup(f => f.IsPathFile(It.IsAny<string>()))
+            .Returns((string p) => !(p.Contains("://", StringComparison.OrdinalIgnoreCase)
+                && !p.StartsWith("file://", StringComparison.OrdinalIgnoreCase)));
+        MediaBrowser.Controller.Entities.BaseItem.FileSystem = fileSystem.Object;
+
         var lm = new Mock<ILibraryManager>();
         lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>()))
             .Returns((string path, Type type) => new Guid(MD5.HashData(Encoding.UTF8.GetBytes(path + "|" + type.FullName))));
@@ -106,7 +115,7 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_WithPath_ResolvesLocationTypeRemote_WithoutRelyingOnTheSubclassOverride()
+    public void Movie_WithPath_ResolvesLocationTypeRemote()
     {
         AddServer();
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));

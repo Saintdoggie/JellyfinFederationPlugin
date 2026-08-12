@@ -4,7 +4,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -21,7 +20,6 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
         private readonly FederationItemPersistenceService _persistence;
-        private readonly IServiceProvider _serviceProvider;
 
         // Guards SyncAllAsync/SyncServerAsync against running concurrently with each
         // other (e.g. the 5s-after-startup sync overlapping the hourly scheduled
@@ -39,15 +37,13 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationLibraryManager federationManager,
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache,
-            FederationItemPersistenceService persistence,
-            IServiceProvider serviceProvider)
+            FederationItemPersistenceService persistence)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _cache = cache;
             _persistence = persistence;
-            _serviceProvider = serviceProvider;
         }
 
         /// <summary>
@@ -111,6 +107,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // never updates them in place, so a rebuild is the only way to apply it.
                 var needsRemotePathMigration = !config.MigratedRemotePathV7;
 
+                // V8 rebuilds every federated item back under Jellyfin's own CLR types.
+                // The plugin subclasses V6 introduced made BaseItem.GetBaseItemKind()
+                // throw (it parses the class name into the BaseItemKind enum), which
+                // took down every API response and folder enumeration touching a
+                // federated item. See MigratedStockTypesV8.
+                var needsStockTypeMigration = !config.MigratedStockTypesV8;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -128,7 +131,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -150,12 +153,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogInformation("[Federation] One-time remote-path (streamable item.Path) migration complete");
                 }
 
-                if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration || needsRemotePathMigration)
+                if (needsStockTypeMigration)
+                {
+                    config.MigratedStockTypesV8 = true;
+                    _logger.LogInformation("[Federation] One-time stock-CLR-type migration complete");
+                }
+
+                if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration
+                    || needsRemotePathMigration || needsStockTypeMigration)
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
-
-                await DiscoverFriendsOfFriendsAsync(cancellationToken).ConfigureAwait(false);
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
 
@@ -227,6 +235,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var needsSeasonIndexMigration = !config!.MigratedSeasonIndexV5;
                 var needsRemoteLocationMigration = !config!.MigratedRemoteLocationV6;
                 var needsRemotePathMigration = !config!.MigratedRemotePathV7;
+                var needsStockTypeMigration = !config!.MigratedStockTypesV8;
 
                 int total = 0;
                 int failedSources = 0;
@@ -241,7 +250,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
@@ -264,34 +273,6 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 _syncLock.Release();
-            }
-        }
-
-        /// <summary>
-        /// Runs friends-of-friends discovery as part of the normal sync cycle (a
-        /// no-op unless AllowFriendsOfFriends is on - see
-        /// FederationFriendService.DiscoverFriendsOfFriendsAsync). Best-effort: a
-        /// failure here must never fail the sync that items actually depend on.
-        /// FederationFriendService is DI-scoped (it needs IAuthenticationManager,
-        /// which Jellyfin registers scoped), but this service is a singleton, so a
-        /// short-lived scope is created here rather than injecting it directly -
-        /// the standard pattern for a singleton that needs a scoped dependency.
-        /// </summary>
-        private async Task DiscoverFriendsOfFriendsAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                using var scope = _serviceProvider.CreateScope();
-                var friends = scope.ServiceProvider.GetRequiredService<FederationFriendService>();
-                var discovered = await friends.DiscoverFriendsOfFriendsAsync(cancellationToken).ConfigureAwait(false);
-                if (discovered > 0)
-                {
-                    _logger.LogInformation("[Federation] Friends-of-friends discovery sent {Count} new friend request(s)", discovered);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Friends-of-friends discovery failed (non-fatal)");
             }
         }
 
