@@ -380,6 +380,8 @@ namespace Jellyfin.Plugin.Federation.Api
             existing.StreamingMode = server.StreamingMode;
             existing.Priority = server.Priority;
             existing.RequireApiKeyForImages = server.RequireApiKeyForImages;
+            existing.WanMaxBitrateMbps = server.WanMaxBitrateMbps;
+            existing.WanMaxHeight = server.WanMaxHeight;
 
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(existing.Id);
@@ -647,6 +649,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 StreamingMode = (int)s.StreamingMode,
                 s.Priority,
                 s.RequireApiKeyForImages,
+                s.WanMaxBitrateMbps,
+                s.WanMaxHeight,
                 HasApiKey = !string.IsNullOrEmpty(s.ApiKey)
             };
         }

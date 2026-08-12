@@ -112,7 +112,25 @@ namespace Jellyfin.Plugin.Federation.Services
             // Lets Jellyfin certify direct play without waiting on a probe. When the
             // remote did not report one, the container is discovered by the
             // EnableRemoteContentProbe pass described above instead.
-            if (!string.IsNullOrEmpty(entry.Metadata.Container))
+            //
+            // Skipped when WanMaxBitrateMbps is active for the primary source: Path
+            // then points at a server-side transcode (see BuildPlaybackUrl), always
+            // mp4/h264/aac, not whatever the original source's container/codecs were -
+            // stamping the source's real container here would certify direct play
+            // against bytes that are not actually what gets served.
+            var primaryForContainer = entry.GetPrimarySource();
+            var primaryServerForContainer = primaryForContainer != null ? GetServer(primaryForContainer.ServerId) : null;
+            var isWanTranscoded = primaryServerForContainer != null
+                && primaryServerForContainer.StreamingMode == StreamingMode.Direct
+                && primaryServerForContainer.WanMaxBitrateMbps > 0
+                && IsStreamableType(entry.ItemType)
+                && !IsAudioType(entry.ItemType);
+
+            if (isWanTranscoded)
+            {
+                item.Container = "mp4";
+            }
+            else if (!string.IsNullOrEmpty(entry.Metadata.Container))
             {
                 item.Container = entry.Metadata.Container;
             }
@@ -363,8 +381,24 @@ namespace Jellyfin.Plugin.Federation.Services
             // Audio streams from a different endpoint than video; asking /Videos for a
             // song does not reliably work.
             var endpoint = IsAudioType(itemType) ? "Audio" : "Videos";
-            return $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream"
-                + $"?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
+            var baseUrl = $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream";
+            var apiKeyParam = $"api_key={Uri.EscapeDataString(server.ApiKey)}";
+
+            // WanMaxBitrateMbps doesn't apply to audio (already a fraction of any
+            // sensible cap) or when unset - the original behavior, pulling the raw
+            // source file unmodified.
+            if (IsAudioType(itemType) || server.WanMaxBitrateMbps <= 0)
+            {
+                return $"{baseUrl}?{apiKeyParam}&Static=true";
+            }
+
+            // See WanMaxBitrateMbps's doc comment: have the remote transcode down to a
+            // WAN-friendly bitrate before this server ever pulls a byte, instead of
+            // pulling the raw (potentially 25+ Mbps for a 4K HDR release) source file
+            // across the internet only to immediately re-encode it.
+            var videoBitrateBps = server.WanMaxBitrateMbps * 1_000_000L;
+            var heightParam = server.WanMaxHeight > 0 ? $"&MaxHeight={server.WanMaxHeight}" : string.Empty;
+            return $"{baseUrl}.mp4?{apiKeyParam}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
         }
 
         /// <summary>

@@ -237,6 +237,38 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// query parameter for unauthenticated image fetches.
         /// </summary>
         public bool RequireApiKeyForImages { get; set; } = false;
+
+        /// <summary>
+        /// Gets or sets the bitrate cap (in Mbps) applied to Direct-mode streams from
+        /// this server, or 0 to disable and stream the raw source file as-is (the
+        /// original, and still default, behavior).
+        ///
+        /// Direct mode's own request to the remote (see
+        /// <see cref="Services.FederationLibraryManager.BuildPlaybackUrl"/>) fetches the
+        /// raw file unmodified (<c>Static=true</c>) - fine when both servers are on the
+        /// same network, but when they are two independent servers connected only over
+        /// the internet, this receiving server has to sustain the *source's own*
+        /// bitrate (which can be 25+ Mbps for a 4K HDR release) pulling from the
+        /// remote's upload connection before it can even start its own transcode. If
+        /// that upload can't keep up - a very common asymmetric-home-internet
+        /// situation, unrelated to either server's CPU/GPU - playback stutters exactly
+        /// as if buffering, no matter how fast either machine is.
+        ///
+        /// Setting this makes the remote server itself transcode down to this bitrate
+        /// before the receiving server ever pulls a byte over the WAN link, at the
+        /// cost of a second, real transcode pass (now on both ends) instead of one.
+        /// </summary>
+        public int WanMaxBitrateMbps { get; set; } = 0;
+
+        /// <summary>
+        /// Gets or sets the max output height (e.g. 1080) applied alongside
+        /// <see cref="WanMaxBitrateMbps"/>, or 0 for no resolution cap. Only takes
+        /// effect when <see cref="WanMaxBitrateMbps"/> is set - downscaling
+        /// resolution alongside a bitrate cap gives noticeably better quality per bit
+        /// than keeping the source's full 4K resolution squeezed into the same
+        /// bitrate.
+        /// </summary>
+        public int WanMaxHeight { get; set; } = 1080;
     }
 
 
