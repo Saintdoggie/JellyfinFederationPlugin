@@ -146,6 +146,27 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// from the CLR type, so all existing items are rebuilt once.
         /// </summary>
         public bool MigratedStockTypesV8 { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the IsShortcut-removal migration has
+        /// run.
+        /// V9: 0.0.26 set IsShortcut/ShortcutPath on Direct-mode items believing it was
+        /// the same mechanism .strm files use. It is not:
+        /// ProbeProvider.FetchShortcutInfo unconditionally does
+        /// File.ReadAllLines(item.Path), expecting Path to be a real local .strm file
+        /// rather than the URL it actually is, so it throws
+        /// DirectoryNotFoundException on every metadata refresh - which, because the
+        /// failure prevents MediaStreams from ever being saved, means every playback
+        /// attempt re-triggers it, not just the first. 0.0.30 stops setting
+        /// IsShortcut/ShortcutPath on newly created items, but reconciliation only
+        /// creates and deletes items, never updates them in place (same as V4-V8), so
+        /// every item already persisted under 0.0.26-0.0.29 keeps IsShortcut=true
+        /// forever without this migration. Item ids are unchanged (neither the
+        /// federation path nor the CLR type changed), but existing federated items are
+        /// rebuilt once so the stale flag is cleared, and local watch progress on them
+        /// is reset, as with prior rebuilds.
+        /// </summary>
+        public bool MigratedRemoveShortcutV9 { get; set; }
     }
 
     /// <summary>
