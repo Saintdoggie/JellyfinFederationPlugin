@@ -16,13 +16,18 @@
   // stroke-based so it renders correctly via currentColor without needing
   // to embed and verify an external icon library's exact path data.
   var ICON_SVG =
-    '<svg class="federation-badge-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<svg viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
     '<circle cx="12" cy="5" r="2.5"></circle>' +
     '<circle cx="5" cy="19" r="2.5"></circle>' +
     '<circle cx="19" cy="19" r="2.5"></circle>' +
     '<path d="M12 7.5 L5 16.5 M12 7.5 L19 16.5"></path>' +
     '</svg>';
+
+  // Small icon inline with text, used only on the detail page (a fixed,
+  // always-visible spot, unlike a gallery card that may be scrolled past in
+  // a fraction of a second with its text never even shown).
+  var INLINE_ICON_HTML = '<span class="federation-badge-icon">' + ICON_SVG + '</span>';
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) {
@@ -31,8 +36,18 @@
 
     var style = document.createElement('style');
     style.id = STYLE_ID;
-    style.textContent =
-      '.federation-badge-icon{display:inline-block;vertical-align:-2px;margin-right:.35em;opacity:.75;flex-shrink:0;}';
+    style.textContent = [
+      '.federation-badge-icon{display:inline-block;width:14px;height:14px;vertical-align:-2px;margin-right:.35em;opacity:.85;flex-shrink:0;}',
+      '.federation-badge-icon svg{width:100%;height:100%;}',
+      // Corner overlay for gallery/grid cards - stays visible while
+      // scrolling regardless of whether the card shows its title text at
+      // all. Top-left, since Jellyfin's own played-checkmark and
+      // unwatched-count badges live top-right/bottom-right.
+      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;',
+      'background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;color:#fff;',
+      'z-index:3;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.5);}',
+      '.federation-badge-corner svg{width:13px;height:13px;}'
+    ].join('');
     document.head.appendChild(style);
   }
 
@@ -68,14 +83,21 @@
       return;
     }
 
-    var title = el.querySelector('bdi');
-    if (!title) {
-      // Card shell rendered before its title text; try again next scan.
-      return;
-    }
+    if (!el.querySelector('.federation-badge-corner')) {
+      // Absolutely positioned relative to the card itself rather than a
+      // specific inner image wrapper - jellyfin-web card markup varies by
+      // layout, but the poster is consistently the first thing in the
+      // card, so a top-left corner badge on the outer element lands on the
+      // poster either way, without depending on internal class names.
+      if (window.getComputedStyle(el).position === 'static') {
+        el.style.position = 'relative';
+      }
 
-    if (!title.querySelector('.federation-badge-icon')) {
-      title.insertAdjacentHTML('afterbegin', ICON_SVG);
+      var badge = document.createElement('div');
+      badge.className = 'federation-badge-corner';
+      badge.title = 'Streamed from another server';
+      badge.innerHTML = ICON_SVG;
+      el.appendChild(badge);
     }
 
     el.setAttribute('data-federation-badge', '1');
@@ -96,7 +118,7 @@
     for (var i = 0; i < selectors.length; i++) {
       var title = document.querySelector(selectors[i]);
       if (title && !title.querySelector('.federation-badge-icon')) {
-        title.insertAdjacentHTML('afterbegin', ICON_SVG);
+        title.insertAdjacentHTML('afterbegin', INLINE_ICON_HTML);
         return;
       }
     }
