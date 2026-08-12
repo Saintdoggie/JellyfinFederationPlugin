@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Persistence;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -111,7 +112,41 @@ namespace Jellyfin.Plugin.Federation.Services
                         mapping.LocalLibraryName);
                 }
 
-                var allChildren = libraryFolder.GetRecursiveChildren().ToList();
+                List<BaseItem> allChildren;
+                try
+                {
+                    allChildren = libraryFolder.GetRecursiveChildren().ToList();
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("deserialize", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Self-healing: 0.0.22-0.0.24 persisted items under plugin subclasses
+                    // (FederatedMovie, FederatedSeries, ...) that no longer exist as of
+                    // 0.0.27 (see MigratedStockTypesV8). Jellyfin's item repository can't
+                    // resolve those rows' stored CLR type name back to a Type and throws -
+                    // and that throw aborts the *entire* enumeration, not just the bad row,
+                    // so every reconciliation of an affected library fails before it can
+                    // even see what needs deleting. Purge them directly (bypassing
+                    // deserialization) and retry once.
+                    _logger.LogWarning(
+                        ex,
+                        "[Federation] {Name}: hit unrecoverable legacy item(s) while listing children; purging and retrying",
+                        mapping.LocalLibraryName);
+
+                    var physicalFolders = (libraryFolder as CollectionFolder)?.GetPhysicalFolders().OfType<Folder>().ToList();
+                    if (physicalFolders == null || physicalFolders.Count == 0)
+                    {
+                        physicalFolders = new List<Folder> { libraryFolder };
+                    }
+
+                    var purgedCount = PurgeUndeserializableDescendants(physicalFolders);
+                    _logger.LogWarning(
+                        "[Federation] {Name}: purged {Count} unrecoverable legacy item(s) left over from an earlier plugin version",
+                        mapping.LocalLibraryName,
+                        purgedCount);
+
+                    itemParent.Children = null;
+                    allChildren = libraryFolder.GetRecursiveChildren().ToList();
+                }
 
                 _logger.LogInformation(
                     "[Federation] Debug {Name}: libraryFolder.Id={FolderId}, itemParent.Id={ParentId} (physical={IsPhysical}), allChildren={ChildCount}, withFederationKey={KeyCount}",
@@ -437,6 +472,45 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Finds and deletes every descendant of <paramref name="physicalFolders"/> that
+        /// Jellyfin's item repository can no longer deserialize (rows whose stored CLR
+        /// type name no longer resolves to a type - see the migration comment at the
+        /// call site). <see cref="IItemRepository.GetItemIdsList"/> only selects the Id
+        /// column, so unlike <see cref="Folder.GetRecursiveChildren()"/> it cannot choke
+        /// on a bad row; each id is then probed individually with
+        /// <see cref="IItemRepository.RetrieveItem"/> so one bad row can't hide the rest,
+        /// and the bad ones are deleted directly by id (also deserialization-free).
+        /// </summary>
+        private int PurgeUndeserializableDescendants(List<Folder> physicalFolders)
+        {
+            var allIds = BaseItem.ItemRepository.GetItemIdsList(new InternalItemsQuery
+            {
+                AncestorIds = physicalFolders.Select(f => f.Id).ToArray(),
+                Recursive = true
+            });
+
+            var badIds = new List<Guid>();
+            foreach (var id in allIds)
+            {
+                try
+                {
+                    BaseItem.ItemRepository.RetrieveItem(id);
+                }
+                catch (InvalidOperationException)
+                {
+                    badIds.Add(id);
+                }
+            }
+
+            if (badIds.Count > 0)
+            {
+                BaseItem.ItemRepository.DeleteItem(badIds);
+            }
+
+            return badIds.Count;
         }
 
         /// <summary>

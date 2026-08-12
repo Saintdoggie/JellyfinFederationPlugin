@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.27",
-  "changelog": "Fixes federated content not appearing at all. 0.0.22 created federated items under plugin subclasses (FederatedMovie, FederatedSeries, ...) so they could override LocationType. Jellyfin resolves an item's kind by parsing the CLR class name into its BaseItemKind enum, so those names threw - and that call sits under both DTO serialization and folder enumeration, meaning every API response containing a federated item returned a 500 and library reconciliation aborted. Items are now created as Jellyfin's own types again; the override is unnecessary because items carry a real remote URL on Path, which already resolves as Remote. Also carries the 0.0.26 streaming fix (items get the remote stream URL on Path so Jellyfin builds a real, probeable HTTP media source instead of an unplayable placeholder). Existing federated items are rebuilt once; watch progress on them is reset. The friend-request and friends-of-friends features are withdrawn for now and preserved on the archive/friend-system branch.",
+  "version": "0.0.28",
+  "changelog": "Fixes reconciliation still failing after upgrading to 0.0.27. Servers that had run 0.0.22-0.0.24 still had federated items stored in the database under the plugin subclasses removed in 0.0.27 (FederatedMovie, FederatedSeries, ...); Jellyfin can no longer resolve those rows back to a type and throws 'Cannot deserialize unknown type', which aborted the entire folder listing - not just the bad row - so every reconciliation of an affected library failed. Reconciliation now detects this, finds and deletes the unrecoverable rows directly by id (without needing to deserialize them), and retries. Also fixes the 0.0.27 catalog listing itself: its checksum did not match the uploaded release asset, so installing/updating via the plugin catalog failed with a checksum mismatch.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-11T00:00:00Z",
+  "timestamp": "2026-08-12T00:00:00Z",
   "imageUrl": "thumb.png"
 }
