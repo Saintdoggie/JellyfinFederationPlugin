@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.27",
+        "changelog": "Fixes federated content not appearing at all. 0.0.22 created federated items under plugin subclasses (FederatedMovie, FederatedSeries, ...) so they could override LocationType. Jellyfin resolves an item's kind by parsing the CLR class name into its BaseItemKind enum, so those names threw - and that call sits under both DTO serialization and folder enumeration, meaning every API response containing a federated item returned a 500 and library reconciliation aborted. Items are now created as Jellyfin's own types again; the override is unnecessary because items carry a real remote URL on Path, which already resolves as Remote. Also carries the 0.0.26 streaming fix (items get the remote stream URL on Path so Jellyfin builds a real, probeable HTTP media source instead of an unplayable placeholder). Existing federated items are rebuilt once; watch progress on them is reset. The friend-request and friends-of-friends features are withdrawn for now and preserved on the archive/friend-system branch.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.27/Jellyfin.Federation.zip",
+        "checksum": "073726759257423eb3f05229c149163f",
+        "timestamp": "2026-08-12T00:00:00Z"
+      },
+      {
         "version": "0.0.25",
         "changelog": "Add opt-in friends-of-friends federation: with the new Allow friends-of-friends setting on, this server asks its friends who their other friends are and automatically sends friend requests to anyone new it discovers (still needs their admin to accept). Off by default. Content stays scoped to what a server actually owns either way - it never re-shares content that was itself federated into it from someone else.",
         "targetAbi": "10.11.0.0",

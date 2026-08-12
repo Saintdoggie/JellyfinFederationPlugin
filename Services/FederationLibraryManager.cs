@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
-using Jellyfin.Plugin.Federation.Entities;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
@@ -437,23 +437,40 @@ namespace Jellyfin.Plugin.Federation.Services
             return (BaseItem)Activator.CreateInstance(GetClrType(itemType))!;
         }
 
+        /// <summary>
+        /// Maps a cache entry's item type to the Jellyfin CLR type to instantiate.
+        ///
+        /// These must be Jellyfin's own stock types, never plugin subclasses of them.
+        /// BaseItem.GetBaseItemKind() resolves an item's kind with
+        /// <c>Enum.Parse&lt;BaseItemKind&gt;(GetType().Name)</c> - it parses the CLR
+        /// *class name* - so a subclass named anything not already in that enum throws
+        /// ArgumentException. That call sits under DtoService.AttachBasicFields and
+        /// under Folder.GetCachedChildren, so a subclass takes down every API response
+        /// containing one of these items and every attempt to enumerate a folder that
+        /// holds one. 0.0.22 introduced FederatedMovie/FederatedSeries/... to override
+        /// LocationType, and that is exactly what happened.
+        ///
+        /// The override is no longer needed: materialized items carry the remote stream
+        /// URL on Path, and BaseItem.LocationType already resolves a non-file path to
+        /// Remote on its own.
+        /// </summary>
         private static Type GetClrType(string itemType)
         {
             return itemType switch
             {
-                "Movie" => typeof(FederatedMovie),
-                "Series" => typeof(FederatedSeries),
-                "Season" => typeof(FederatedSeason),
-                "Episode" => typeof(FederatedEpisode),
-                "Audio" => typeof(FederatedAudio),
-                "MusicAlbum" => typeof(FederatedMusicAlbum),
-                "MusicVideo" => typeof(FederatedMusicVideo),
-                "Video" => typeof(FederatedVideo),
-                "Photo" => typeof(FederatedPhoto),
-                "PhotoAlbum" => typeof(FederatedPhotoAlbum),
-                "Book" => typeof(FederatedBook),
-                "BoxSet" => typeof(FederatedBoxSet),
-                _ => typeof(FederatedMovie)
+                "Movie" => typeof(Movie),
+                "Series" => typeof(Series),
+                "Season" => typeof(Season),
+                "Episode" => typeof(Episode),
+                "Audio" => typeof(Audio),
+                "MusicAlbum" => typeof(MusicAlbum),
+                "MusicVideo" => typeof(MusicVideo),
+                "Video" => typeof(Video),
+                "Photo" => typeof(Photo),
+                "PhotoAlbum" => typeof(PhotoAlbum),
+                "Book" => typeof(Book),
+                "BoxSet" => typeof(BoxSet),
+                _ => typeof(Movie)
             };
         }
     }
