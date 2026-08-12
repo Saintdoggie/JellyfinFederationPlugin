@@ -38,6 +38,16 @@ ones are unrecoverable, and deletes those directly by id via
 ever changes an item's CLR type needs a cleanup path for the *old* rows, not
 just code that stops writing new ones that way.
 
+0.0.28's purge was still reactive - it only ran once this plugin's own
+reconciliation happened to hit the crash, several seconds into server
+startup (the background sync's own startup delay). Anything else that
+enumerated the same folder first - a native library scan, the web UI,
+another plugin - could still hit the same crash outside this plugin's
+control in that window. 0.0.29 runs the same purge eagerly and
+synchronously from `FederationEntryPoint.StartAsync`
+(`PurgeUndeserializableItemsAtStartup`), before that delay, so it has
+already happened by the time anything else gets a chance to run.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and
