@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.35",
+        "changelog": "Tunes the adaptive WAN bitrate cap added in 0.0.32-0.0.34, per feedback that streaming still wasn't fast/high-bitrate enough: (1) the minimum bitrate the auto-cap will ever request is raised from 4 to 10 Mbps - a connection measuring below that still gets 10 Mbps requested rather than something proportionally lower. (2) The safety margin applied to measured bandwidth is raised from 75% to 85% of what a connection actually measures, so less real, usable bandwidth is left unused. (3) The bandwidth measurement itself now samples 5MB instead of 2MB, reducing how much TCP slow-start (the connection ramping up over its first several round-trips) skews a short sample toward reading lower than the connection's real sustained throughput - most noticeable on faster links. No forced item recreation; existing watch progress and ids are untouched.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.35/Jellyfin.Federation.zip",
+        "checksum": "9f97d507854ef871582101a17b868c0c",
+        "timestamp": "2026-08-13T00:00:00Z"
+      },
+      {
         "version": "0.0.34",
         "changelog": "Continues 0.0.33's WAN-cap staleness fixes and delete-server cleanup with a redesigned config page. Remote user selection is now a dropdown of the remote server's real accounts (name, admin badge) instead of a blind-pasted GUID, fetched on Test/on demand/once per session for already-connected servers, with a manual-entry fallback if a remote can't be reached. Fixed a real bug in the process: per-field autosave silently swallowed errors, so a failed save gave zero feedback - failures now always surface, successes get a brief 'Saved' confirmation. Per-server connection details now default to open instead of hiding Enabled/User/API key behind a collapsed section, with only the genuinely advanced dials (WAN bitrate cap, image API key) moved into a nested, still-collapsed 'Streaming tuning' section. Also fixed a latent gap where adding a new server didn't send its WAN-cap fields at all (harmless today since they'd just take their defaults, but the same missing-field pattern this plugin has been bitten by before).",
         "targetAbi": "10.11.0.0",
