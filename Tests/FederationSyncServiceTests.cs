@@ -42,7 +42,11 @@ public class FederationSyncServiceTests
             BaseAddress = new Uri("http://fake.local")
         };
 
-        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "key", UserId = "user1", Enabled = true };
+        // WanCapMode explicitly Off (rather than the Auto default): Auto would have
+        // the sync's WAN-bandwidth refresh attempt a real DNS lookup against
+        // "fake.local", which is exactly the kind of real-network dependency a unit
+        // test should not have. This test is about sync mechanics, not WAN capping.
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "key", UserId = "user1", Enabled = true, WanCapMode = WanCapMode.Off };
         var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
         var clientFactory = new Mock<IRemoteServerClientFactory>();
@@ -53,9 +57,10 @@ public class FederationSyncServiceTests
         var lm = new Mock<ILibraryManager>();
         lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
 
-        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor);
         var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager);
-        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence);
+        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, bandwidthMonitor);
 
         var mapping = new LibraryMapping
         {

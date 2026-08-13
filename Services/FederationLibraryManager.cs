@@ -23,6 +23,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationLibraryManager> _logger;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
+        private readonly WanBandwidthMonitor _bandwidthMonitor;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationLibraryManager"/> class.
@@ -31,12 +32,14 @@ namespace Jellyfin.Plugin.Federation.Services
             ILibraryManager libraryManager,
             ILogger<FederationLibraryManager> logger,
             IRemoteServerClientFactory clientFactory,
-            FederationItemCache cache)
+            FederationItemCache cache,
+            WanBandwidthMonitor bandwidthMonitor)
         {
             _libraryManager = libraryManager;
             _logger = logger;
             _clientFactory = clientFactory;
             _cache = cache;
+            _bandwidthMonitor = bandwidthMonitor;
         }
 
         /// <summary>
@@ -113,16 +116,18 @@ namespace Jellyfin.Plugin.Federation.Services
             // remote did not report one, the container is discovered by the
             // EnableRemoteContentProbe pass described above instead.
             //
-            // Skipped when WanMaxBitrateMbps is active for the primary source: Path
-            // then points at a server-side transcode (see BuildPlaybackUrl), always
-            // mp4/h264/aac, not whatever the original source's container/codecs were -
-            // stamping the source's real container here would certify direct play
-            // against bytes that are not actually what gets served.
+            // Skipped when a WAN cap is currently in effect for the primary source
+            // (see WanBandwidthMonitor - "direct play whenever possible" means this is
+            // usually not the case): Path then points at a server-side transcode (see
+            // BuildPlaybackUrl), always mp4/h264/aac, not whatever the original
+            // source's container/codecs were - stamping the source's real container
+            // here would certify direct play against bytes that are not actually what
+            // gets served.
             var primaryForContainer = entry.GetPrimarySource();
             var primaryServerForContainer = primaryForContainer != null ? GetServer(primaryForContainer.ServerId) : null;
             var isWanTranscoded = primaryServerForContainer != null
                 && primaryServerForContainer.StreamingMode == StreamingMode.Direct
-                && primaryServerForContainer.WanMaxBitrateMbps > 0
+                && _bandwidthMonitor.GetEffectiveCapMbps(primaryServerForContainer) != null
                 && IsStreamableType(entry.ItemType)
                 && !IsAudioType(entry.ItemType);
 
@@ -384,19 +389,23 @@ namespace Jellyfin.Plugin.Federation.Services
             var baseUrl = $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream";
             var apiKeyParam = $"api_key={Uri.EscapeDataString(server.ApiKey)}";
 
-            // WanMaxBitrateMbps doesn't apply to audio (already a fraction of any
-            // sensible cap) or when unset - the original behavior, pulling the raw
-            // source file unmodified.
-            if (IsAudioType(itemType) || server.WanMaxBitrateMbps <= 0)
+            // A cap never applies to audio (already a fraction of any sensible video
+            // cap). For video, WanBandwidthMonitor decides: direct play (the original,
+            // and still default, behavior) whenever it can - same network, unknown, or
+            // a WAN link that measured generously fast - and only a real number once
+            // it has positively confirmed both that the link is WAN-only *and* what it
+            // can actually sustain.
+            var capMbps = IsAudioType(itemType) ? null : _bandwidthMonitor.GetEffectiveCapMbps(server);
+            if (capMbps == null)
             {
                 return $"{baseUrl}?{apiKeyParam}&Static=true";
             }
 
-            // See WanMaxBitrateMbps's doc comment: have the remote transcode down to a
-            // WAN-friendly bitrate before this server ever pulls a byte, instead of
-            // pulling the raw (potentially 25+ Mbps for a 4K HDR release) source file
-            // across the internet only to immediately re-encode it.
-            var videoBitrateBps = server.WanMaxBitrateMbps * 1_000_000L;
+            // Have the remote transcode down to the largest bitrate this link can
+            // sustain before this server ever pulls a byte, instead of pulling the raw
+            // (potentially 25+ Mbps for a 4K HDR release) source file across the
+            // internet only to immediately re-encode it.
+            var videoBitrateBps = capMbps.Value * 1_000_000L;
             var heightParam = server.WanMaxHeight > 0 ? $"&MaxHeight={server.WanMaxHeight}" : string.Empty;
             return $"{baseUrl}.mp4?{apiKeyParam}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
         }

@@ -88,7 +88,7 @@ public class FederationEpisodeHierarchyTests
             .Returns((string path, Type type) => DeterministicGuid(path + "|" + type.FullName));
 
         var clientFactory = new Mock<IRemoteServerClientFactory>();
-        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object));
 
         var seriesRemoteId = Guid.NewGuid();
         var seriesEntry = cache.UpsertRaw("TV", "serverA", seriesRemoteId, MakeSeries(seriesRemoteId, "Show"), 0, "Series");
@@ -141,7 +141,7 @@ public class FederationEpisodeHierarchyTests
             .Returns((string path, Type type) => DeterministicGuid(path + "|" + type.FullName));
 
         var clientFactory = new Mock<IRemoteServerClientFactory>();
-        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object));
 
         var seriesRemoteId = Guid.NewGuid();
         var seriesEntry = cache.UpsertRaw("TV", "serverA", seriesRemoteId, MakeSeries(seriesRemoteId, "Show"), 0, "Series");
@@ -204,7 +204,7 @@ public class FederationEpisodeHierarchyTests
             .Returns((string path, Type type) => DeterministicGuid(path + "|" + type.FullName));
 
         var clientFactory = new Mock<IRemoteServerClientFactory>();
-        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache);
+        var manager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object));
 
         var movieRemoteId = Guid.NewGuid();
         cache.UpsertRaw(

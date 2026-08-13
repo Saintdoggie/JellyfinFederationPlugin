@@ -464,6 +464,43 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>
+        /// Measures approximate download throughput from this remote server by timing
+        /// a fetch against its own <c>/Playback/BitrateTest</c> endpoint - the same
+        /// mechanism jellyfin-web itself uses client-side to auto-pick a streaming
+        /// quality before playback starts. Used by <see cref="WanBandwidthMonitor"/>
+        /// to size a WAN bitrate cap from a real measurement instead of a guessed
+        /// fixed number. Returns null on any failure; callers must keep using their
+        /// last known-good measurement rather than treat null as "no bandwidth".
+        /// </summary>
+        public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default)
+        {
+            // 2MB: large enough that connection setup/TLS handshake overhead doesn't
+            // dominate the measurement, small enough to run in a second or two even on
+            // a fairly slow link.
+            const int sampleBytes = 2_000_000;
+            try
+            {
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                stopwatch.Stop();
+
+                if (bytes.Length == 0 || stopwatch.Elapsed.TotalSeconds <= 0)
+                {
+                    return null;
+                }
+
+                return bytes.Length * 8.0 / stopwatch.Elapsed.TotalSeconds / 1_000_000.0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
         /// <inheritdoc />
         public void Dispose()
         {

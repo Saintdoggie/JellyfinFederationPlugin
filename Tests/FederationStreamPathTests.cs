@@ -34,6 +34,7 @@ public class FederationStreamPathTests : IDisposable
     private readonly RealPluginInstance _plugin;
     private readonly FederationItemCache _cache;
     private readonly FederationLibraryManager _manager;
+    private readonly WanBandwidthMonitor _bandwidthMonitor;
 
     public FederationStreamPathTests()
     {
@@ -53,11 +54,13 @@ public class FederationStreamPathTests : IDisposable
         lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>()))
             .Returns((string path, Type type) => new Guid(MD5.HashData(Encoding.UTF8.GetBytes(path + "|" + type.FullName))));
 
+        _bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
         _manager = new FederationLibraryManager(
             lm.Object,
             NullLogger<FederationLibraryManager>.Instance,
             Mock.Of<IRemoteServerClientFactory>(),
-            _cache);
+            _cache,
+            _bandwidthMonitor);
     }
 
     public void Dispose() => _plugin.Dispose();
@@ -199,9 +202,27 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanBitrateCap_Unset_StreamsRawSourceUnchanged()
+    public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansDirectPlay()
     {
-        AddServer();
+        // The default for every server, and the state of a brand-new one before the
+        // background classifier has had a chance to run even once: direct play, same
+        // as if WAN capping did not exist at all. A cap is never speculative.
+        var server = AddServer();
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
+
+        Assert.Equal(Configuration.WanCapMode.Auto, server.WanCapMode);
+        Assert.Contains("Static=true", item.Path);
+        Assert.DoesNotContain("VideoBitrate", item.Path);
+        Assert.Equal("mkv", item.Container);
+    }
+
+    [Fact]
+    public void WanCapMode_Off_StreamsRawSourceUnchanged()
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off;
+        server.WanMaxBitrateMbps = 12; // ignored in Off mode
+
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
 
         Assert.Contains("Static=true", item.Path);
@@ -210,9 +231,10 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanBitrateCap_Set_RequestsATranscodedStreamFromTheRemoteInstead_OfTheRawFile()
+    public void WanCapMode_Manual_RequestsATranscodedStreamFromTheRemoteInstead_OfTheRawFile()
     {
         var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
         server.WanMaxHeight = 1080;
 
@@ -231,9 +253,10 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanBitrateCap_Set_ButHeightUnset_OmitsTheHeightParamRatherThanCappingResolution()
+    public void WanCapMode_Manual_ButHeightUnset_OmitsTheHeightParamRatherThanCappingResolution()
     {
         var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
         server.WanMaxHeight = 0;
 
@@ -243,9 +266,10 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanBitrateCap_DoesNotApplyToAudio()
+    public void WanCapMode_DoesNotApplyToAudio()
     {
         var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
 
         var remoteId = Guid.NewGuid();
@@ -256,9 +280,10 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanBitrateCap_DoesNotApplyInProxyMode()
+    public void WanCapMode_DoesNotApplyInProxyMode()
     {
         var server = AddServer(StreamingMode.Proxy);
+        server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
         _plugin.Configuration.ServerUrl = "https://my-server.example";
 
@@ -269,6 +294,66 @@ public class FederationStreamPathTests : IDisposable
         // Direct mode's own remote-to-remote fetch.
         Assert.Contains("/Plugins/Federation/Stream", item.Path);
         Assert.DoesNotContain("VideoBitrate", item.Path);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedSameNetwork_StreamsRawSourceUnchanged()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: true, measuredMbps: null);
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.Contains("Static=true", item.Path);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_ButNotYetMeasured_UsesTheConservativePlaceholderCap()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: null);
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.Contains("VideoBitrate=10000000", item.Path);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredFast_StaysUncapped()
+    {
+        // Measured comfortably above what any real source needs - forcing a second
+        // transcode pass would cost CPU on both ends for no benefit, so direct play
+        // wins even on a confirmed WAN link.
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 80.0);
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.Contains("Static=true", item.Path);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredSlow_CapsToTheLargestBitrateThatFits()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 16.0);
+
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+
+        // 16 Mbps measured * 0.75 safety margin = 12 Mbps.
+        Assert.Contains("VideoBitrate=12000000", item.Path);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredVerySlow_ClampsToTheConfiguredFloor()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 2.0);
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.Contains("VideoBitrate=4000000", item.Path);
     }
 
     [Fact]

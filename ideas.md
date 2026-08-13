@@ -111,6 +111,48 @@ plus a short interval poll (jellyfin-web is a pushState SPA that doesn't
 reliably fire DOM mutations on route changes) to badge matching `[data-id]`
 cards and the detail-page title with a small inline SVG icon.
 
+## Adaptive WAN bitrate cap for Direct mode (0.0.32)
+
+Diagnosed from a real user report of stuttering on a 25.9 Mbps HEVC Main10
+HDR10 source, confirmed to be two servers in different physical locations
+connected only over the internet. Direct mode's own request to the remote
+(`BuildPlaybackUrl`) pulls the raw, untranscoded source file - fine on a LAN,
+but over the internet this server has to sustain the *source's own* bitrate
+from the remote's upload connection before it can even start its own
+transcode. A weak upload there stutters playback regardless of either
+server's CPU/GPU, which looks exactly like a local performance problem but
+isn't.
+
+First cut (`WanMaxBitrateMbps`, a flat admin-set number) worked but needed
+manual tuning per server and per network. `WanBandwidthMonitor` replaces it
+with an automatic policy, on by default (`WanCapMode.Auto`), built around one
+rule: **direct play whenever there is no positive evidence a cap is
+needed** - never a speculative guess.
+
+- Same-network detection: resolves the server's hostname and checks whether
+  every address is a private range (RFC1918, ULA, link-local, loopback). DNS
+  failure or a server not yet classified is treated the *same* as
+  same-network - a cap only applies once this has positively confirmed the
+  link is a WAN one.
+- Bandwidth measurement: only for a confirmed WAN server, times a fetch
+  against the remote's own `/Playback/BitrateTest` endpoint - the exact
+  mechanism jellyfin-web itself already uses client-side to auto-pick a
+  streaming quality before playback starts.
+- Both run in the background (`RefreshIfDueAsync`, called at the top of every
+  sync cycle, rate-limited to once per 20 minutes per server) so
+  `GetEffectiveCapMbps` - called from `BuildPlaybackUrl`, on the hot path of
+  building every playback URL - is a synchronous dictionary lookup, never a
+  network call.
+- The cap itself: 75% of measured bandwidth, clamped to 4-45 Mbps: skipped
+  entirely above 50 Mbps measured (no realistic source needs capping against
+  a connection that fast - forcing a pointless second transcode pass would
+  only cost CPU on both ends), and a conservative 10 Mbps placeholder for the
+  brief window after a server is confirmed WAN but not yet measured.
+
+`Manual` (a fixed admin-set Mbps) and `Off` (always raw, the pre-0.0.32
+default) remain available per server for anyone who wants to pin a specific
+number rather than trust the auto-detection.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and
