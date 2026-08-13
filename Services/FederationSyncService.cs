@@ -368,6 +368,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                if (result.PluginMissing)
+                {
+                    // Unlike an ordinary failure (network blip, remote overloaded,
+                    // temporary 502, ...) where stale cached items are kept so a
+                    // transient hiccup doesn't empty the library, a missing Federation
+                    // plugin is treated as "this server is no longer a federation
+                    // peer" - its items are actively removed rather than left stale,
+                    // same as if the server itself had been deleted (see DeleteServer).
+                    var removedForMissingPlugin = _cache.PruneServerSources(mapping.LocalLibraryName, source.ServerId, new HashSet<Guid>());
+                    if (removedForMissingPlugin > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] Removed {Count} item(s) from {Mapping} sourced from {Server} (Federation plugin no longer detected there)",
+                            removedForMissingPlugin,
+                            mapping.LocalLibraryName,
+                            server.Name);
+                    }
+
+                    continue;
+                }
+
                 if (result.Failed)
                 {
                     // Keep the existing cache for this server untouched.
@@ -401,6 +422,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 return SourceSyncResult.Failure();
             }
 
+            // Federation only ever talks to the remote's stock Jellyfin API (Items,
+            // Users, PlaybackInfo, ...), so nothing above this point actually proves
+            // the remote is a federation peer rather than just any reachable Jellyfin
+            // server - it would happily keep pulling content from one even after the
+            // owner uninstalled Federation there. Checked per source (not once up
+            // front) so it stays current even if the remote's plugin state changes
+            // mid-session.
+            if (!await client.HasFederationPluginAsync(cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogWarning(
+                    "[Federation] {Server} does not have the Federation plugin installed; its items in {Mapping} will be removed",
+                    server.Name,
+                    mapping.LocalLibraryName);
+                return SourceSyncResult.PluginMissingResult();
+            }
+
             var seen = new HashSet<Guid>();
             var mediaTypesToFetch = new List<string> { mapping.MediaType };
 
@@ -429,7 +466,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
-            return new SourceSyncResult(total, false, seen);
+            return new SourceSyncResult(total, false, false, seen);
         }
 
         private async Task<int?> FetchAndUpsertPagesAsync(
@@ -629,9 +666,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private sealed record MappingSyncResult(int ItemCount, int FailedSources);
 
-        private sealed record SourceSyncResult(int Count, bool Failed, HashSet<Guid> SeenRemoteItemIds)
+        private sealed record SourceSyncResult(int Count, bool Failed, bool PluginMissing, HashSet<Guid> SeenRemoteItemIds)
         {
-            public static SourceSyncResult Failure() => new SourceSyncResult(0, true, new HashSet<Guid>());
+            public static SourceSyncResult Failure() => new SourceSyncResult(0, true, false, new HashSet<Guid>());
+
+            public static SourceSyncResult PluginMissingResult() => new SourceSyncResult(0, true, true, new HashSet<Guid>());
         }
     }
 

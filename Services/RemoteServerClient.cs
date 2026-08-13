@@ -330,18 +330,44 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<SystemInfo?> GetSystemInfoAsync(CancellationToken cancellationToken = default)
         {
+            var (info, _) = await GetSystemInfoDetailedAsync(cancellationToken).ConfigureAwait(false);
+            return info;
+        }
+
+        /// <summary>
+        /// Same request as <see cref="GetSystemInfoAsync"/>, but also returns a
+        /// human-readable reason on failure. <c>/System/Info</c> (unlike
+        /// <c>/System/Info/Public</c>, which <see cref="TestConnectionAsync"/> uses)
+        /// requires a valid, sufficiently-privileged API key - so "connected fine,
+        /// then this fails" almost always means a bad/missing/insufficiently-
+        /// privileged key, not a dead server. Only <see cref="Api.FederationController.TestServer"/>
+        /// needs that distinction surfaced to the person setting up the connection;
+        /// every other caller of <see cref="GetSystemInfoAsync"/> only needs success/failure.
+        /// </summary>
+        public async Task<(SystemInfo? Info, string? Error)> GetSystemInfoDetailedAsync(CancellationToken cancellationToken = default)
+        {
             try
             {
                 var response = await _httpClient.GetAsync("/System/Info", cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                if (!response.IsSuccessStatusCode)
+                {
+                    var reason = response.StatusCode switch
+                    {
+                        System.Net.HttpStatusCode.Unauthorized => "the API key is invalid or missing",
+                        System.Net.HttpStatusCode.Forbidden => "the API key does not have permission to view system info (use an administrator account's key)",
+                        _ => $"the server returned {(int)response.StatusCode} {response.StatusCode}"
+                    };
+                    _logger.LogError("Error getting system info from remote server {ServerName}: {Reason}", _server.Name, reason);
+                    return (null, reason);
+                }
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                return JsonSerializer.Deserialize<SystemInfo>(content, JsonOpts);
+                return (JsonSerializer.Deserialize<SystemInfo>(content, JsonOpts), null);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting system info from remote server {ServerName}", _server.Name);
-                return null;
+                return (null, ex.Message);
             }
         }
 
@@ -497,6 +523,29 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to connect to remote server {ServerName}", _server.Name);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Checks whether the remote server is itself running the Federation plugin,
+        /// by requesting its <c>Plugins/Federation/Config</c> route - registered only
+        /// by this plugin's own controller, served <see cref="Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute"/>
+        /// so no API key is needed to probe it. A remote that isn't running Federation
+        /// 404s here even though ordinary item/library endpoints (which this plugin
+        /// also depends on) work fine against any stock Jellyfin server - this is
+        /// what actually distinguishes "a Jellyfin server" from "a federation peer."
+        /// </summary>
+        public async Task<bool> HasFederationPluginAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Config", cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not confirm the Federation plugin is installed on {ServerName}", _server.Name);
                 return false;
             }
         }

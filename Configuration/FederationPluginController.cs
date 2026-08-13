@@ -282,10 +282,13 @@ namespace Jellyfin.Plugin.Federation.Api
                     return Ok(new { success = false, message = "Failed to connect to server" });
                 }
 
-                var systemInfo = await client.GetSystemInfoAsync(cancellationToken).ConfigureAwait(false);
+                var (systemInfo, systemInfoError) = await client.GetSystemInfoDetailedAsync(cancellationToken).ConfigureAwait(false);
                 if (systemInfo == null)
                 {
-                    return Ok(new { success = false, message = "Connected but failed to get system info" });
+                    var message = systemInfoError != null
+                        ? $"Connected, but failed to get system info: {systemInfoError}"
+                        : "Connected but failed to get system info";
+                    return Ok(new { success = false, message });
                 }
 
                 string? userId = server.UserId;
