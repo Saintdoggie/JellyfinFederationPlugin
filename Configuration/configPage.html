@@ -115,6 +115,28 @@
                 #federationConfigPage .fed-diagnostic div { padding: 0.7em 0.9em; background: rgba(255,255,255,0.04); border-radius: 0.4em; }
                 #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.8em; opacity: 0.65; margin-bottom: 0.25em; }
                 #federationConfigPage code { background: rgba(255,255,255,0.1); padding: 0.1em 0.4em; border-radius: 0.25em; font-size: 0.9em; }
+
+                /* A server that is switched off still lists its name, address and
+                   settings, so nothing about the card itself says "none of this is
+                   in effect". These states exist to make that unmissable - an off
+                   server silently explains an empty library, and that cost real
+                   debugging time. */
+                #federationConfigPage .fed-pill {
+                    font-size: 0.72em; letter-spacing: 0.04em; text-transform: uppercase;
+                    padding: 0.2em 0.55em; border-radius: 1em; font-weight: 600; white-space: nowrap;
+                }
+                #federationConfigPage .fed-pill-off { background: rgba(255,168,68,0.18); color: #ffb14d; }
+                #federationConfigPage .fed-server-off { border-left: 3px solid #ffa844; }
+                #federationConfigPage .fed-server-off .fed-details-body { opacity: 0.62; }
+                #federationConfigPage .fed-offnote {
+                    margin-top: 0.6em; padding: 0.55em 0.8em; border-radius: 0.35em; font-size: 0.9em;
+                    background: rgba(255,168,68,0.12); color: #ffc27a;
+                }
+                #federationConfigPage .fed-warnbar {
+                    margin-bottom: 1em; padding: 0.8em 1em; border-radius: 0.4em;
+                    background: rgba(255,168,68,0.13); border-left: 3px solid #ffa844; color: #ffc27a;
+                }
+                #federationConfigPage .fed-warnbar strong { color: #ffd6a5; }
             </style>
 
             <div class="sectionTitleContainer flex align-items-center">
@@ -125,6 +147,7 @@
             </p>
 
             <div id="fedErrorContainer"></div>
+            <div id="fedDisabledWarn"></div>
 
             <div class="fed-card fed-statusstrip" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -434,8 +457,37 @@
                         return html;
                     }
 
+                    /* A switched-off server is the single easiest way to end up with an
+                       empty federated library and no visible reason for it: every card
+                       still shows a name, an address and a full set of settings. This
+                       banner states it once, at the top, where it cannot be missed. */
+                    function renderDisabledWarning() {
+                        var el = q('#fedDisabledWarn');
+                        if (!el) {
+                            return;
+                        }
+
+                        var all = currentConfig.RemoteServers || [];
+                        var off = all.filter(function (x) { return x.Enabled === false; });
+                        if (off.length === 0) {
+                            el.innerHTML = '';
+                            return;
+                        }
+
+                        var names = off.map(function (x) { return escapeHtml(x.Name || x.Url); }).join(', ');
+                        var allOff = off.length === all.length;
+                        el.innerHTML = '<div class="fed-warnbar"><strong>'
+                            + (off.length === 1 ? 'One server is switched off' : off.length + ' servers are switched off')
+                            + ':</strong> ' + names + '. '
+                            + (allOff
+                                ? 'Nothing will sync or play until at least one is re-enabled.'
+                                : 'Their libraries will not sync, and their titles will not play.')
+                            + '</div>';
+                    }
+
                     function renderServers() {
                         var c = q('#fedServerList');
+                        renderDisabledWarning();
                         if (!c) {
                             return;
                         }
@@ -451,10 +503,15 @@
                             var title = server.Name || server.Url || ('Server ' + (i + 1));
                             var keyPlaceholder = server.HasApiKey ? '••••••••  (saved — type to replace)' : 'API key';
                             var isOpen = expandedServers[server.Id] !== false;
-                            html += '<div class="fed-server">';
+                            var isOff = server.Enabled === false;
+                            html += '<div class="fed-server' + (isOff ? ' fed-server-off' : '') + '">';
                             html += '<div class="fed-server-head">';
                             html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
                             html += '<strong>' + escapeHtml(title) + '</strong>';
+                            if (isOff) {
+                                html += '<span class="fed-pill fed-pill-off">Disabled</span>';
+                            }
+
                             if (server.Name && server.Url) {
                                 html += '<span class="fed-server-url">' + escapeHtml(server.Url) + '</span>';
                             }
@@ -463,6 +520,10 @@
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-server" data-i="' + i + '">Test</button>';
                             html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-server" data-i="' + i + '">Remove</button>';
                             html += '</div>';
+                            if (isOff) {
+                                html += '<div class="fed-offnote">Switched off — nothing syncs from this server and its titles will not play. Re-enable it under Connection details below.</div>';
+                            }
+
                             html += '<div class="fed-srvstatus" id="fedSrvStatus' + i + '" style="display:none;"></div>';
                             html += '<details class="fed-details" id="fedSrvDetails' + i + '"' + (isOpen ? ' open' : '') + '><summary>Connection details</summary><div class="fed-details-body">';
                             html += '<div class="fed-inline">';
@@ -486,13 +547,23 @@
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">Streaming mode</label>';
                             html += '<select class="emby-select fed-select fedSrvMode" data-i="' + i + '">';
-                            html += '<option value="0"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct (recommended)</option>';
-                            html += '<option value="1"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy (hides API key, slower)</option>';
-                            html += '</select></div>';
+                            html += '<option value="0"' + (server.StreamingMode !== 1 ? ' selected' : '') + '>Direct — best on a local network</option>';
+                            html += '<option value="1"' + (server.StreamingMode === 1 ? ' selected' : '') + '>Proxy — best over the internet</option>';
+                            html += '</select>';
+                            // Direct was previously labelled "recommended" outright, which is
+                            // only true on a LAN: it hands the player a raw URL to the remote,
+                            // so a dropped read is the player's problem and there is nothing to
+                            // retry it. Over a tunnel or any long-haul link that shows up as
+                            // stuttering, which is exactly what Proxy's resumable relay exists
+                            // to absorb.
+                            html += '<p class="fed-hint">' + (server.StreamingMode === 1
+                                ? 'Relayed through this server, which retries dropped reads — steadier across the internet, tunnels and reverse proxies. Also keeps the remote API key server-side.'
+                                : 'The player pulls straight from the remote server. Lowest overhead on a LAN, but nothing retries a dropped read — over the internet this is what shows up as stuttering.')
+                                + '</p></div>';
                             html += '<div class="fed-input-container"><label class="fed-label">Priority (lower = preferred)</label>';
                             html += '<input type="number" class="emby-input fed-input fedSrvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" /></div>';
                             html += '</div>';
-                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled — sync and play from this server</label>';
                             html += '<details class="fed-details"><summary>Streaming tuning (WAN bitrate cap, image API key)</summary><div class="fed-details-body">';
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">WAN bitrate cap (Direct mode only)</label>';
@@ -1042,7 +1113,15 @@
                         .then(function (res) {
                             if (!res.success || !res.servers || res.servers.length === 0) {
                                 pickerLoaded = false;
-                                hint.textContent = 'No servers available yet.';
+                                // "No servers available yet" is misleading when servers
+                                // are configured but switched off - it reads as "you
+                                // haven't added one", sending people to re-add a server
+                                // they already have.
+                                var configured = (currentConfig.RemoteServers || []).length;
+                                var enabled = (currentConfig.RemoteServers || []).filter(function (x) { return x.Enabled !== false; }).length;
+                                hint.textContent = (configured > 0 && enabled === 0)
+                                    ? 'Nothing to show: every connected server is switched off. Re-enable one under step 1 to pick its libraries.'
+                                    : 'No servers available yet.';
                                 return;
                             }
 
@@ -1340,7 +1419,14 @@
                             var se = q('#fedStatServers');
                             var ie = q('#fedStatItems');
                             var re = q('#fedStatRefresh');
-                            if (se) { se.textContent = (d.activeServers || 0) + '/' + (d.totalServers || 0); }
+                            if (se) {
+                                se.textContent = (d.activeServers || 0) + '/' + (d.totalServers || 0);
+                                // "0/1" in the same neutral styling as every other stat
+                                // reads like a count, not like a fault. Colour it when
+                                // servers exist but none of them are live.
+                                se.style.color = ((d.totalServers || 0) > 0 && (d.activeServers || 0) === 0) ? '#ffb14d' : '';
+                            }
+
                             if (ie) { ie.textContent = (d.federatedItems || 0).toLocaleString(); }
                             if (re) { re.textContent = d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never'; }
                         })
