@@ -71,6 +71,13 @@
                 }
                 #federationConfigPage details.fed-details > summary:hover { opacity: 1; }
                 #federationConfigPage .fed-details-body { padding-top: 0.8em; }
+                #federationConfigPage details.fed-details details.fed-details {
+                    margin-top: 1em; padding-top: 0.8em; border-top: 1px solid rgba(255,255,255,0.08);
+                }
+                #federationConfigPage .fed-userrow { display: flex; gap: 0.4em; align-items: center; }
+                #federationConfigPage .fed-userrow .fed-select { flex: 1; }
+                #federationConfigPage .fed-userrow .emby-button { margin: 0; padding: 0.4em 0.6em; flex-shrink: 0; }
+                #federationConfigPage .fed-savemsg-fade { transition: opacity 1.2s ease; }
                 #federationConfigPage .fed-libgroup { margin: 0.9em 0; }
                 #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
                 #federationConfigPage .fed-librow {
@@ -145,7 +152,8 @@
                         </div>
                         <button is="emby-button" type="button" class="raised emby-button" data-fed-action="add-server">Add server</button>
                     </div>
-                    <p class="fed-hint">New servers are tested automatically when added. Defaults work out of the box — streaming mode and other dials live under each server's "Connection details".</p>
+                    <p class="fed-hint">New servers are tested automatically when added. Defaults work out of the box — streaming mode and other dials live under each server's "Connection details" below.</p>
+                    <p class="fed-hint">Editing a connected server's details below saves automatically, field by field — there's no separate save step for those.</p>
                 </div>
 
                 <div class="fed-card">
@@ -173,9 +181,12 @@
                     </details>
                 </div>
 
-                <div class="fed-card fed-savebar">
-                    <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save</span></button>
-                    <span class="fed-savemsg" id="fedSaveMsg"></span>
+                <div class="fed-card">
+                    <p class="fed-hint" style="margin:0 0 0.9em;">This button saves your library selections and the advanced settings below. Server connections in step 1 already saved themselves as you edited them.</p>
+                    <div class="fed-savebar">
+                        <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
+                        <span class="fed-savemsg" id="fedSaveMsg"></span>
+                    </div>
                 </div>
 
                 <details class="fed-card fed-details" id="fedAdvancedSettings">
@@ -223,6 +234,14 @@
                     var pickerLoaded = false;
                     var pageEl = null;
                     var loadWatchdog = null;
+                    // Per-server "Connection details" open/closed state, keyed by
+                    // server.Id, preserved across the DOM rebuilds renderServers()
+                    // does on every reload. Undefined (never toggled) means open.
+                    var expandedServers = {};
+                    // Live user lists fetched from each remote server, keyed by
+                    // server.Id, so the "Remote user" dropdown shows real names
+                    // instead of raw GUIDs once loaded, and survives re-renders.
+                    var serverUsersCache = {};
 
                     var COLLECTION_TYPE_MAP = {
                         movies: { mediaType: 'Movie', label: 'Movies' },
@@ -359,6 +378,35 @@
 
                     /* ---------------- Servers ---------------- */
 
+                    function shortId(id) {
+                        return id ? (id.length > 13 ? id.slice(0, 8) + '…' + id.slice(-4) : id) : '';
+                    }
+
+                    function userOptionsHtml(server, users) {
+                        var html = '';
+                        var matched = false;
+                        if (users && users.length) {
+                            users.forEach(function (u) {
+                                var sel = !!server.UserId && u.id === server.UserId;
+                                if (sel) { matched = true; }
+                                html += '<option value="' + escapeHtml(u.id) + '"' + (sel ? ' selected' : '') + '>'
+                                    + escapeHtml(u.name || u.id) + (u.isAdministrator ? ' — admin' : '') + '</option>';
+                            });
+                        }
+
+                        if (server.UserId && !matched) {
+                            html += '<option value="' + escapeHtml(server.UserId) + '" selected>Current: ' + escapeHtml(shortId(server.UserId))
+                                + (users && users.length ? ' (not in list below)' : '') + '</option>';
+                        }
+
+                        if (!server.UserId && (!users || users.length === 0)) {
+                            html += '<option value="" selected disabled>Not chosen yet — click Test or ↻ to load remote users</option>';
+                        }
+
+                        html += '<option value="__custom__">Enter user ID manually…</option>';
+                        return html;
+                    }
+
                     function renderServers() {
                         var c = q('#fedServerList');
                         if (!c) {
@@ -375,6 +423,7 @@
                         s.forEach(function (server, i) {
                             var title = server.Name || server.Url || ('Server ' + (i + 1));
                             var keyPlaceholder = server.HasApiKey ? '••••••••  (saved — type to replace)' : 'API key';
+                            var isOpen = expandedServers[server.Id] !== false;
                             html += '<div class="fed-server">';
                             html += '<div class="fed-server-head">';
                             html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
@@ -388,7 +437,7 @@
                             html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-server" data-i="' + i + '">Remove</button>';
                             html += '</div>';
                             html += '<div class="fed-srvstatus" id="fedSrvStatus' + i + '" style="display:none;"></div>';
-                            html += '<details class="fed-details"><summary>Connection details</summary><div class="fed-details-body">';
+                            html += '<details class="fed-details" id="fedSrvDetails' + i + '"' + (isOpen ? ' open' : '') + '><summary>Connection details</summary><div class="fed-details-body">';
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">Name</label>';
                             html += '<input type="text" class="emby-input fed-input fedSrvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" /></div>';
@@ -398,8 +447,14 @@
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">API key</label>';
                             html += '<input type="password" class="emby-input fed-input fedSrvKey" data-i="' + i + '" value="" placeholder="' + keyPlaceholder + '" autocomplete="new-password" /></div>';
-                            html += '<div class="fed-input-container"><label class="fed-label">User ID (blank = first user)</label>';
-                            html += '<input type="text" class="emby-input fed-input fedSrvUser" id="fedSrvUser' + i + '" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>';
+                            html += '<div class="fed-input-container"><label class="fed-label">Remote user</label>';
+                            html += '<div class="fed-userrow">';
+                            html += '<select class="emby-select fed-select fedSrvUserSelect" id="fedSrvUserSelect' + i + '" data-i="' + i + '">' + userOptionsHtml(server, serverUsersCache[server.Id]) + '</select>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="load-users" data-i="' + i + '" title="Fetch the user list from this server">↻</button>';
+                            html += '</div>';
+                            html += '<input type="text" class="emby-input fed-input fedSrvUser" id="fedSrvUser' + i + '" data-i="' + i + '" value="' + escapeHtml(server.UserId) + '" placeholder="Paste a user ID from the remote server" autocapitalize="off" autocorrect="off" spellcheck="false" style="display:none;margin-top:0.5em;" />';
+                            html += '<p class="fed-hint">Picked from the remote server\'s real accounts — playback works best with an administrator.</p>';
+                            html += '</div>';
                             html += '</div>';
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">Streaming mode</label>';
@@ -410,6 +465,8 @@
                             html += '<div class="fed-input-container"><label class="fed-label">Priority (lower = preferred)</label>';
                             html += '<input type="number" class="emby-input fed-input fedSrvPri" data-i="' + i + '" value="' + (server.Priority || 0) + '" /></div>';
                             html += '</div>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                            html += '<details class="fed-details"><summary>Streaming tuning (WAN bitrate cap, image API key)</summary><div class="fed-details-body">';
                             html += '<div class="fed-inline">';
                             html += '<div class="fed-input-container"><label class="fed-label">WAN bitrate cap (Direct mode only)</label>';
                             html += '<select class="emby-select fed-select fedSrvWanMode" data-i="' + i + '">';
@@ -424,11 +481,20 @@
                             html += '</div>';
                             html += '<p class="fed-muted">Only matters when this server is Direct mode and reached over the internet (not the same local network) - direct play (the raw source file, best quality) is always used otherwise. <strong>Auto</strong> detects same-network vs. internet-only automatically and, only for a confirmed internet link, measures what it can actually sustain and caps to the largest bitrate that fits - never guesses, and stays uncapped until it has real evidence a cap is needed. <strong>Manual</strong> always caps to the fixed value below, useful to pin a known-good number. <strong>Off</strong> always streams the raw source file, matching pre-0.0.32 behavior.</p>';
                             html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Remote server requires api_key for images</label>';
-                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled</label>';
+                            html += '</div></details>';
                             html += '</div></details>';
                             html += '</div>';
                         });
                         c.innerHTML = html;
+
+                        s.forEach(function (server, i) {
+                            var det = q('#fedSrvDetails' + i);
+                            if (det) {
+                                det.addEventListener('toggle', function () {
+                                    expandedServers[server.Id] = det.open;
+                                });
+                            }
+                        });
                     }
 
                     function collectServer(i) {
@@ -450,6 +516,7 @@
                         var n = q('.fedSrvName[data-i="' + i + '"]');
                         var u = q('.fedSrvUrl[data-i="' + i + '"]');
                         var k = q('.fedSrvKey[data-i="' + i + '"]');
+                        var us = q('.fedSrvUserSelect[data-i="' + i + '"]');
                         var ui = q('.fedSrvUser[data-i="' + i + '"]');
                         var m = q('.fedSrvMode[data-i="' + i + '"]');
                         var p = q('.fedSrvPri[data-i="' + i + '"]');
@@ -461,7 +528,15 @@
                         if (n) { out.Name = n.value.trim(); }
                         if (u) { out.Url = u.value.trim(); }
                         if (k && k.value) { out.ApiKey = k.value; }
-                        if (ui) { out.UserId = ui.value.trim(); }
+                        // The user select is the primary source of truth when present;
+                        // its "__custom__" option defers to the manual text fallback
+                        // (kept for when the remote user list can't be fetched).
+                        if (us) {
+                            out.UserId = us.value === '__custom__' ? (ui ? ui.value.trim() : '') : us.value;
+                        } else if (ui) {
+                            out.UserId = ui.value.trim();
+                        }
+
                         if (m) { out.StreamingMode = parseInt(m.value, 10) || 0; }
                         if (p) { out.Priority = parseInt(p.value, 10) || 0; }
                         if (ik) { out.RequireApiKeyForImages = ik.checked; }
@@ -488,6 +563,25 @@
                         if (dot) {
                             dot.className = 'fed-dot' + (state === 'ok' ? ' fed-dot-ok' : (state === 'err' ? ' fed-dot-err' : ''));
                         }
+                    }
+
+                    function flashServerSaved(i) {
+                        var st = q('#fedSrvStatus' + i);
+                        if (!st) {
+                            return;
+                        }
+
+                        st.style.display = 'block';
+                        st.className = 'fed-srvstatus fed-srvstatus-ok';
+                        st.textContent = 'Saved ✓';
+                        st.setAttribute('data-fed-transient', '1');
+                        clearTimeout(st._fedFadeTimer);
+                        st._fedFadeTimer = setTimeout(function () {
+                            if (st.getAttribute('data-fed-transient') === '1') {
+                                st.style.display = 'none';
+                                st.removeAttribute('data-fed-transient');
+                            }
+                        }, 2500);
                     }
 
                     function saveServerDetails(i, silent) {
@@ -519,10 +613,97 @@
                             if (server.ApiKey) {
                                 s.HasApiKey = true;
                             }
+
+                            if (silent) {
+                                // "silent" only means "don't show a wordy confirmation" -
+                                // a failure below is never swallowed. Autosave that fails
+                                // without telling anyone is exactly how this page has lost
+                                // edits before, so a quiet success still gets a brief flash.
+                                flashServerSaved(i);
+                            }
+                        })
+                        .catch(function (e) {
+                            setServerStatus(i, 'Save failed: ' + escapeHtml(e.message), 'err');
+                        });
+                    }
+
+                    function refreshUserSelect(i) {
+                        var sel = q('.fedSrvUserSelect[data-i="' + i + '"]');
+                        var server = currentConfig.RemoteServers[i];
+                        if (!sel || !server) {
+                            return;
+                        }
+
+                        var wasCustom = sel.value === '__custom__';
+                        sel.innerHTML = userOptionsHtml(server, serverUsersCache[server.Id]);
+                        if (wasCustom) {
+                            sel.value = '__custom__';
+                        }
+                    }
+
+                    // Fetches the remote server's real user accounts so "Remote user"
+                    // can be a dropdown of names instead of a blind-pasted GUID. When
+                    // no user is configured yet, mirrors the server's own suggestion
+                    // policy (prefer an administrator - see TestServer/GetUsersAsync)
+                    // and saves it, since GetItemsAsync treats a blank UserId as "sync
+                    // this server" = fail, unlike the friendlier fallbacks Libraries/
+                    // Playback endpoints have.
+                    function loadServerUsers(i, silent) {
+                        var server = collectServer(i);
+                        if (!server.Url) {
+                            return Promise.resolve();
+                        }
+
+                        if (!silent) {
+                            setServerStatus(i, 'Loading users…', 'info');
+                        }
+
+                        return fedFetch('/Plugins/Federation/GetRemoteUsers', {
+                            method: 'POST',
+                            body: JSON.stringify(server)
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success || !res.users) {
+                                if (!silent) {
+                                    setServerStatus(i, 'Could not load users: ' + escapeHtml(res.message || 'unknown error'), 'err');
+                                }
+
+                                return;
+                            }
+
+                            var srv = currentConfig.RemoteServers[i];
+                            serverUsersCache[srv.Id] = res.users;
+
+                            if (!srv.UserId && res.users.length) {
+                                var pick = res.users.filter(function (u) { return u.isAdministrator; })[0] || res.users[0];
+                                srv.UserId = pick.id;
+                                refreshUserSelect(i);
+                                saveServerDetails(i, true);
+                            } else {
+                                refreshUserSelect(i);
+                            }
+
+                            if (!silent) {
+                                setServerStatus(i, 'Loaded ' + res.users.length + ' user(s) from the server.', 'ok');
+                            }
                         })
                         .catch(function (e) {
                             if (!silent) {
-                                setServerStatus(i, 'Save failed: ' + escapeHtml(e.message), 'err');
+                                setServerStatus(i, 'Could not load users: ' + escapeHtml(e.message), 'err');
+                            }
+                        });
+                    }
+
+                    // Best-effort, once-per-session enrichment: fills in real user
+                    // names for servers that already have an API key but whose user
+                    // list hasn't been fetched yet in this page load. Skips anything
+                    // already cached so it doesn't re-hit every remote server on every
+                    // autosave-triggered reload.
+                    function warmUserCaches() {
+                        (currentConfig.RemoteServers || []).forEach(function (s, i) {
+                            if (s.HasApiKey && s.Url && !serverUsersCache[s.Id]) {
+                                loadServerUsers(i, true);
                             }
                         });
                     }
@@ -552,7 +733,10 @@
                             Enabled: true,
                             StreamingMode: 0,
                             Priority: 0,
-                            RequireApiKeyForImages: false
+                            RequireApiKeyForImages: false,
+                            WanCapMode: 0,
+                            WanMaxBitrateMbps: 0,
+                            WanMaxHeight: 1080
                         };
                         fedFetch('/Plugins/Federation/Servers', {
                             method: 'POST',
@@ -578,7 +762,10 @@
                                         Enabled: true,
                                         StreamingMode: 0,
                                         Priority: 0,
-                                        RequireApiKeyForImages: false
+                                        RequireApiKeyForImages: false,
+                                        WanCapMode: 0,
+                                        WanMaxBitrateMbps: 0,
+                                        WanMaxHeight: 1080
                                     };
                                     return fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(added.Id), {
                                         method: 'PUT',
@@ -646,14 +833,11 @@
                             if (res.success) {
                                 setServerDot(i, 'ok');
                                 setServerStatus(i, '<strong>Connected</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version), 'ok');
-                                if (res.serverInfo.suggestedUserId && !server.UserId) {
-                                    var ui = q('#fedSrvUser' + i);
-                                    if (ui) {
-                                        ui.value = res.serverInfo.suggestedUserId;
-                                    }
-
-                                    saveServerDetails(i, true);
-                                }
+                                // Populate the "Remote user" dropdown with the server's
+                                // real accounts; if none is chosen yet, this also picks
+                                // and saves a sensible default the same way suggestedUserId
+                                // used to (see loadServerUsers).
+                                loadServerUsers(i, true);
                             } else {
                                 setServerDot(i, 'err');
                                 setServerStatus(i, 'Failed: ' + escapeHtml(res.message), 'err');
@@ -1064,6 +1248,7 @@
                             renderMappings();
                             loadStatus();
                             loadDiagnostics();
+                            warmUserCaches();
                         })
                         .catch(function (e) {
                             stopWatchdog();
@@ -1152,6 +1337,9 @@
                                 case 'test-server':
                                     testServer(i);
                                     break;
+                                case 'load-users':
+                                    loadServerUsers(i, false);
+                                    break;
                                 case 'picker-all':
                                     pickerLibs.forEach(function (lib) { lib.selected = true; });
                                     renderPicker();
@@ -1230,6 +1418,30 @@
                                     pickerLibs[tidx].mediaType = t.value;
                                 }
 
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSrvUserSelect')) {
+                                var usi = parseInt(t.getAttribute('data-i') || '0', 10);
+                                var customInput = q('#fedSrvUser' + usi);
+                                if (t.value === '__custom__') {
+                                    // Just a UI mode switch to reveal the manual-entry
+                                    // fallback - not itself a value worth saving.
+                                    if (customInput) {
+                                        customInput.style.display = 'block';
+                                        customInput.focus();
+                                    }
+
+                                    return;
+                                }
+
+                                if (customInput) {
+                                    customInput.style.display = 'none';
+                                }
+
+                                saveServerDetails(usi, true).then(function () {
+                                    loadStatus();
+                                });
                                 return;
                             }
 

@@ -320,6 +320,63 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Fetches the live list of user accounts from a remote server, so the config
+        /// page can offer a picker instead of the admin having to paste a raw user
+        /// GUID from the remote's dashboard. Mirrors <see cref="TestServer"/>'s
+        /// handling of an unsaved-but-filled-in server form (blank ApiKey + known Id
+        /// falls back to the stored key) so it works both while adding a server and
+        /// while editing one already saved.
+        /// </summary>
+        [HttpPost("GetRemoteUsers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetRemoteUsers([FromBody] RemoteServer server, CancellationToken cancellationToken)
+        {
+            if (server == null || string.IsNullOrWhiteSpace(server.Url))
+            {
+                return BadRequest(new { success = false, message = "Server URL is required" });
+            }
+
+            if (string.IsNullOrEmpty(server.ApiKey) && !string.IsNullOrEmpty(server.Id))
+            {
+                var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+                if (configured != null)
+                {
+                    server.ApiKey = configured.ApiKey;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(server.ApiKey))
+            {
+                return BadRequest(new { success = false, message = "API key is required" });
+            }
+
+            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            {
+                return BadRequest(new { success = false, message = "Server URL must be an absolute http(s) URL" });
+            }
+
+            try
+            {
+                using var client = new RemoteServerClient(server, _logger);
+                var users = await client.GetUsersAsync(cancellationToken).ConfigureAwait(false);
+                if (users == null)
+                {
+                    return Ok(new { success = false, message = "Failed to fetch users from server" });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    users = users.Select(u => new { id = u.Id, name = u.Name, isAdministrator = u.IsAdministrator }).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { success = false, message = $"Error: {ex.Message}" });
+            }
+        }
+
+        /// <summary>
         /// Returns configured servers with API keys stripped (HasApiKey flags instead).
         /// </summary>
         [HttpGet("Servers")]
