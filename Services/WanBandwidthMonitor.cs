@@ -43,9 +43,18 @@ namespace Jellyfin.Plugin.Federation.Services
         // across a link already known to be a WAN one.
         private const int PendingMeasurementCapMbps = 10;
 
-        private const int MinAutoCapMbps = 4;
+        // Floor kept at what the plugin's owner has asked for as a minimum
+        // acceptable streaming quality - a connection that measures below this
+        // isn't going to sustain a good federated-streaming experience regardless,
+        // so there's no benefit to capping any lower than this.
+        private const int MinAutoCapMbps = 10;
         private const int MaxAutoCapMbps = 45;
-        private const double SafetyMargin = 0.75;
+
+        // Fraction of measured bandwidth actually requested. Was 0.75; raised to
+        // 0.85 - the earlier margin was leaving real, usable bandwidth on the table
+        // on connections that measured comfortably above the floor, capping lower
+        // than the connection could actually sustain.
+        private const double SafetyMargin = 0.85;
 
         private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(20);
 
