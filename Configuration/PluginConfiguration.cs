@@ -167,6 +167,26 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// is reset, as with prior rebuilds.
         /// </summary>
         public bool MigratedRemoveShortcutV9 { get; set; }
+
+        /// <summary>
+        /// One-time migration: rebuilds every federated item on a Direct-mode server
+        /// with WAN bitrate capping enabled (WanCapMode Auto or Manual). Those items
+        /// had item.Path deliberately left null (to avoid a stale cap value freezing
+        /// onto it - see the comment on ResolvePlaybackUrl) - the exact
+        /// null-Path-means-Placeholder problem V7 already fixed once, reintroduced
+        /// for this subset of items. Jellyfin's own static media source for a
+        /// null-Path item is MediaSourceType.Placeholder, which the item-detail
+        /// endpoint embeds directly (it does not call this plugin's dynamic
+        /// FederationMediaSourceProvider), so jellyfin-web's Details page never
+        /// rendered a Play button for any of them - confirmed live via a real
+        /// browser session against a federated item on 0.0.37. item.Path is now
+        /// always stamped (0.0.38), but reconciliation only creates and deletes
+        /// items, never updates them in place (same as V4-V9), so every affected
+        /// item already persisted needs rebuilding once to pick it up. Item ids are
+        /// unchanged; local watch progress on rebuilt items is reset, as with prior
+        /// rebuilds.
+        /// </summary>
+        public bool MigratedPlaceholderPathV10 { get; set; }
     }
 
     /// <summary>
