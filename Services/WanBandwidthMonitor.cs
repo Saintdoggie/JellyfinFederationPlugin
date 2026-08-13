@@ -102,6 +102,20 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// True only when this server has been positively confirmed as same-network.
+        /// Used by <see cref="FederationLibraryManager"/> to decide whether a static
+        /// <c>item.Path</c> is safe to stamp once at item-creation time: it is, for a
+        /// confirmed-LAN server, since that classification is for practical purposes
+        /// permanent (no bandwidth measurement to ever go stale) - but not yet
+        /// classified and confirmed-WAN both still mean "could start needing a cap
+        /// later", exactly the staleness this method exists to avoid freezing in.
+        /// </summary>
+        public bool IsConfirmedLocalNetwork(RemoteServer server)
+        {
+            return _cache.TryGetValue(server.Id, out var info) && info.IsLocalNetwork == true;
+        }
+
+        /// <summary>
         /// Refreshes this server's network classification and bandwidth measurement if
         /// due (rate-limited internally to <see cref="RefreshInterval"/>). Intended to
         /// be called from the regular background sync cycle for every enabled
@@ -206,6 +220,16 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Drops any cached classification/measurement for a server - called when a
+        /// server is removed, so a stale entry does not linger in memory forever
+        /// keyed by an id nothing references anymore.
+        /// </summary>
+        public void RemoveServer(string serverId)
+        {
+            _cache.TryRemove(serverId, out _);
         }
 
         /// <summary>

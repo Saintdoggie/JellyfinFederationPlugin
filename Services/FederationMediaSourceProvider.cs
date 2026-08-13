@@ -155,6 +155,21 @@ namespace Jellyfin.Plugin.Federation.Services
                         ? $"{server.Name}{(i == primaryIndex ? " (primary)" : string.Empty)}"
                         : server.Name;
 
+                    // Whether this server's Direct-mode stream to this item is
+                    // currently a WanBandwidthMonitor-capped transcode rather than the
+                    // raw source file (see BuildPlaybackPath/BuildPlaybackUrl). When it
+                    // is, the remote's own PlaybackInfo response fetched below
+                    // describes the *original* file - the wrong container, codecs, and
+                    // bitrate for what this URL actually serves. Reporting that here
+                    // would certify direct play against bytes that do not match, so
+                    // it is skipped entirely (also saving a remote round-trip) in
+                    // favor of the existing "remote didn't hand back info" fallback
+                    // below: SupportsProbing = true lets the transcoder discover the
+                    // real, capped stream's actual characteristics itself.
+                    var isWanCapped = server.StreamingMode == StreamingMode.Direct
+                        && entry.ItemType != "Audio"
+                        && _federationManager.BandwidthMonitor.GetEffectiveCapMbps(server) != null;
+
                     // The remote's own view of the file. Without Container and
                     // MediaStreams, MediaInfoHelper.SetDeviceSpecificData has nothing
                     // to run StreamBuilder against, so it cannot certify direct play
@@ -162,7 +177,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     // back unplayable - which surfaces in clients as
                     // PlaybackError.NO_MEDIA_ERROR ("Unable to find a valid media
                     // source to play") even though a source was returned.
-                    var remote = await FetchRemoteSourceAsync(server, src, cancellationToken).ConfigureAwait(false);
+                    var remote = isWanCapped
+                        ? null
+                        : await FetchRemoteSourceAsync(server, src, cancellationToken).ConfigureAwait(false);
 
                     _logger.LogInformation(
                         "[Federation] GetMediaSources: {Name} source #{Index} on {ServerName} -> container={Container}, streams={StreamCount}, bitrate={Bitrate}",
@@ -192,7 +209,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         // (several smart-TV webviews), which would needlessly block
                         // Proxy-mode playback that this server is perfectly able to serve.
                         IsRemote = server.StreamingMode == StreamingMode.Direct,
-                        Container = remote?.Container,
+                        // "mp4" for a capped stream matches exactly what
+                        // BuildPlaybackUrl requests (VideoCodec=h264&AudioCodec=aac)
+                        // for one - not a guess.
+                        Container = isWanCapped ? "mp4" : remote?.Container,
                         Size = remote?.Size,
                         Bitrate = remote?.Bitrate,
                         MediaStreams = remote?.MediaStreams ?? new List<MediaStream>(),

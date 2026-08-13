@@ -153,6 +153,34 @@ needed** - never a speculative guess.
 default) remain available per server for anyone who wants to pin a specific
 number rather than trust the auto-detection.
 
+**Follow-up bug, found on first real test**: item.Path was still being stamped
+once, at item-creation time, with whatever the cap decision was *right then* -
+the exact "reconciliation never updates an existing item" trap this codebase
+has been bitten by repeatedly (V4-V9), now showing up in a new shape. Since
+the decision can legitimately change over time (classification completing,
+bandwidth remeasured), items created at different times ended up permanently
+disagreeing with each other - "works for some files, not others," reported
+directly by the user. Fixed by only ever stamping a static Path when the
+decision is provably permanent (`WanCapMode.Off`, or `Auto` once
+`WanBandwidthMonitor.IsConfirmedLocalNetwork` is true) - everything else
+resolves fresh through `FederationMediaSourceProvider` on every single
+playback request instead, so there is nothing left to freeze stale. A second,
+related bug in that same live path: it reported the *original* source's
+container/codecs (fetched via PlaybackInfo) even when actually serving a
+capped transcode - fixed by skipping that fetch entirely for a capped source
+and reporting `Container = "mp4"` directly (what `BuildPlaybackUrl` actually
+requests), letting `SupportsProbing = true` discover the rest, the same
+existing fallback this file already used for "remote didn't hand back info."
+
+General lesson, worth restating since it keeps recurring in new forms: **any
+plugin-computed value that can change after an item is created needs to
+either never be cached on the item, or have an explicit invalidation path.**
+Static-Path staleness was fixed once already (for the "server address/API key
+changed" case - see FederationMediaSourceProvider's `staticSourceCoversPrimary`
+comparison), but that fix does not generalize to "the URL should be different
+right now for reasons that have nothing to do with the URL itself" - it only
+catches literal string mismatches after the fact, not proactively.
+
 ## Known follow-ups on streaming (0.0.26)
 
 - `item.Path` is stamped once at sync time with the source server's address and

@@ -28,6 +28,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationStreamHandler _streamHandler;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
+        private readonly FederationItemPersistenceService _persistence;
+        private readonly WanBandwidthMonitor _bandwidthMonitor;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -36,7 +38,9 @@ namespace Jellyfin.Plugin.Federation.Api
             LibraryProvisioningService provisioning,
             FederationStreamHandler streamHandler,
             IRemoteServerClientFactory clientFactory,
-            FederationItemCache cache)
+            FederationItemCache cache,
+            FederationItemPersistenceService persistence,
+            WanBandwidthMonitor bandwidthMonitor)
         {
             _logger = logger;
             _syncService = syncService;
@@ -45,6 +49,8 @@ namespace Jellyfin.Plugin.Federation.Api
             _streamHandler = streamHandler;
             _clientFactory = clientFactory;
             _cache = cache;
+            _persistence = persistence;
+            _bandwidthMonitor = bandwidthMonitor;
         }
 
         #region Configuration
@@ -391,7 +397,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
         [HttpDelete("Servers/{id}")]
         [Authorize(Policy = "RequiresElevation")]
-        public IActionResult DeleteServer(string id)
+        public async Task<IActionResult> DeleteServer(string id, CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
             var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
@@ -405,7 +411,8 @@ namespace Jellyfin.Plugin.Federation.Api
             // Drop this server's library sources and cached entries so no stale
             // items keep pointing at a deleted server.
             var seen = new HashSet<Guid>();
-            foreach (var mapping in config.LibraryMappings ?? new List<LibraryMapping>())
+            var affectedMappings = config.LibraryMappings ?? new List<LibraryMapping>();
+            foreach (var mapping in affectedMappings)
             {
                 mapping.RemoteLibrarySources?.RemoveAll(s => s.ServerId == id);
                 _cache.PruneServerSources(mapping.LocalLibraryName, id, seen);
@@ -413,6 +420,31 @@ namespace Jellyfin.Plugin.Federation.Api
 
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(id);
+
+            // Drops the deleted server's own cached network classification/bandwidth
+            // measurement (see WanBandwidthMonitor) - nothing references this id
+            // anymore, so nothing should keep holding state for it.
+            _bandwidthMonitor.RemoveServer(id);
+
+            // Reconcile every affected mapping immediately rather than waiting for
+            // the next scheduled/triggered sync: the cache entries for this server's
+            // content are already gone above, so without this, its federated items
+            // would keep sitting in the library - now pointing at a server that no
+            // longer exists in config, unplayable - until whenever the next sync
+            // happens to run. This only touches the already-pruned local cache, no
+            // remote network calls, so it is cheap even though it runs inline.
+            foreach (var mapping in affectedMappings.Where(m => m.Enabled))
+            {
+                try
+                {
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Post-delete reconciliation failed for {Name}; it will be retried on the next sync", mapping.LocalLibraryName);
+                }
+            }
+
             return Ok(new { success = true });
         }
 
