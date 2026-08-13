@@ -197,7 +197,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     return IsPrivateAddress(literal);
                 }
 
-                var addresses = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false);
+                // An unresponsive DNS resolver has no built-in bound on how long this
+                // can hang otherwise - same stalling risk as the unbounded HTTP
+                // timeout fixed in MeasureBandwidthMbpsAsync, and for the same reason
+                // (this runs at the start of every sync cycle), it needs its own
+                // short, explicit one instead.
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                var addresses = await Dns.GetHostAddressesAsync(host, timeoutCts.Token).ConfigureAwait(false);
                 return addresses.Length == 0 ? null : addresses.All(IsPrivateAddress);
             }
             catch (Exception)
