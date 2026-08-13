@@ -484,10 +484,23 @@ namespace Jellyfin.Plugin.Federation.Services
             const int sampleBytes = 5_000_000;
             try
             {
+                // The shared HttpClient's own timeout (5 minutes - reasonable for a
+                // real library sync, which can legitimately take a while) is far too
+                // long for what is supposed to be a quick background health check: an
+                // unreachable or badly congested remote would otherwise stall this
+                // probe for up to 5 minutes, and since WanBandwidthMoniton.
+                // RefreshIfDueAsync is awaited at the very start of every sync cycle,
+                // that stalls reconciliation for every other server and mapping too,
+                // not just the slow one. 20s is generous enough to still get an
+                // accurate reading down to roughly 2 Mbps (5MB / 2Mbps ≈ 20s) without
+                // risking that blast radius.
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", cancellationToken).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                var bytes = await response.Content.ReadAsByteArrayAsync(linkedCts.Token).ConfigureAwait(false);
                 stopwatch.Stop();
 
                 if (bytes.Length == 0 || stopwatch.Elapsed.TotalSeconds <= 0)

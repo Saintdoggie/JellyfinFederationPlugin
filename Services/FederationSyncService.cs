@@ -55,12 +55,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Internally rate-limited and never throws, so it is safe to call at the top
         /// of every sync cycle.
         /// </summary>
-        private async Task RefreshWanBandwidthAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
+        private Task RefreshWanBandwidthAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
         {
-            foreach (var server in servers.Where(s => s.Enabled))
-            {
-                await _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken).ConfigureAwait(false);
-            }
+            // Parallel rather than sequential: each server's check is now
+            // individually bounded (~28s worst case - see MeasureBandwidthMbpsAsync
+            // and WanBandwidthMonitor.ClassifyAsync's own timeouts), but a sequential
+            // loop still multiplies that by however many servers are actually due for
+            // a recheck this cycle. WanBandwidthMonitor's cache is a
+            // ConcurrentDictionary keyed per server, so concurrent refreshes for
+            // different servers cannot race each other.
+            var refreshes = servers.Where(s => s.Enabled)
+                .Select(server => _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken));
+            return Task.WhenAll(refreshes);
         }
 
         /// <summary>
