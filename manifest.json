@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.36",
+        "changelog": "Robustness pass on the WAN bandwidth checks added in 0.0.32-0.0.35, prompted by a request to make federation resilient behind things like a Cloudflare Tunnel or any other reverse proxy in front of a remote server. Found a real gap: the bandwidth probe and same-network DNS check had no timeout of their own, inheriting the shared HTTP client's 5-minute timeout - meaning a slow or briefly unresponsive remote (tunnel cold-starting, proxy hiccup, etc.) could stall not just its own check but the entire sync cycle for up to 5 minutes, since this runs at the start of every sync. Both now fail fast on their own short, explicit timeouts (20s for the bandwidth probe, 8s for DNS) instead. Also parallelized these checks across servers - previously sequential, so a mapping with several remote servers multiplied any per-server delay by however many needed rechecking that cycle. None of this changes what topology is supported: the adaptive cap was already transport-agnostic, since it measures real achieved throughput against whatever URL is configured rather than assuming anything about network layout - a tunneled or proxied server already gets classified as not-same-network and measured the same as any other internet-only link. No forced item recreation; existing watch progress and ids are untouched.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.36/Jellyfin.Federation.zip",
+        "checksum": "dfbd2cf8fda2683a327c106e42a1c513",
+        "timestamp": "2026-08-13T00:00:00Z"
+      },
+      {
         "version": "0.0.35",
         "changelog": "Tunes the adaptive WAN bitrate cap added in 0.0.32-0.0.34, per feedback that streaming still wasn't fast/high-bitrate enough: (1) the minimum bitrate the auto-cap will ever request is raised from 4 to 10 Mbps - a connection measuring below that still gets 10 Mbps requested rather than something proportionally lower. (2) The safety margin applied to measured bandwidth is raised from 75% to 85% of what a connection actually measures, so less real, usable bandwidth is left unused. (3) The bandwidth measurement itself now samples 5MB instead of 2MB, reducing how much TCP slow-start (the connection ramping up over its first several round-trips) skews a short sample toward reading lower than the connection's real sustained throughput - most noticeable on faster links. No forced item recreation; existing watch progress and ids are untouched.",
         "targetAbi": "10.11.0.0",
