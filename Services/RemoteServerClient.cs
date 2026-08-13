@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -17,6 +18,17 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class RemoteServerClient : IDisposable
     {
+        // A new RemoteServerClient is constructed per call (see
+        // RemoteServerClientFactory), so this cache is static/shared rather than an
+        // instance field - otherwise it would never survive between calls. Every
+        // play of a federated item calls GetPlaybackInfoAsync, which is a live HTTP
+        // round trip to the remote; a short TTL absorbs the common case of a client
+        // re-requesting playback info seconds apart (multiple sources for the same
+        // item, a player re-checking on resume) without going stale for an actual
+        // viewing session.
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, PlaybackInfoResponse Response)> PlaybackInfoCache = new();
+        private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromSeconds(15);
+
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -213,6 +225,18 @@ namespace Jellyfin.Plugin.Federation.Services
                     userIdToUse = chosen?.Id;
                     fallbackToFirstUser = userIdToUse != null;
 
+                    if (userId == null && userIdToUse != null)
+                    {
+                        // GetClient(serverId) reads this same RemoteServer instance out
+                        // of Plugin.Instance.Configuration on every call, so writing the
+                        // resolution back here makes every future play of any item on
+                        // this server skip this GetUsersAsync round trip for the rest of
+                        // this server session - not just this one request. Not persisted
+                        // to disk: an admin who configures a UserId later should still
+                        // win over this auto-resolved value on next restart.
+                        _server.UserId = userIdToUse;
+                    }
+
                     if (chosen != null && !chosen.IsAdministrator)
                     {
                         _logger.LogWarning(
@@ -251,6 +275,13 @@ namespace Jellyfin.Plugin.Federation.Services
                         itemId);
                 }
 
+                var cacheKey = $"{_server.Id}:{itemId}:{userIdToUse}";
+                if (PlaybackInfoCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+                {
+                    _logger.LogDebug("[Federation] Using cached playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
+                    return cached.Response;
+                }
+
                 var url = $"/Items/{itemId}/PlaybackInfo?UserId={userIdToUse}";
                 _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName} as user {UserId}", itemId, _server.Name, userIdToUse);
 
@@ -264,6 +295,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     itemId,
                     _server.Name,
                     playbackInfo?.MediaSources?.Count ?? 0);
+
+                if (playbackInfo != null && (playbackInfo.MediaSources?.Count ?? 0) > 0)
+                {
+                    PlaybackInfoCache[cacheKey] = (DateTime.UtcNow + PlaybackInfoCacheTtl, playbackInfo);
+                }
 
                 if ((playbackInfo?.MediaSources?.Count ?? 0) == 0)
                 {

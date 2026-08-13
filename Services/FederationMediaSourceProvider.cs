@@ -114,7 +114,14 @@ namespace Jellyfin.Plugin.Federation.Services
                         item.Name);
                 }
 
-                var sources = new List<MediaSourceInfo>();
+                // Each candidate source needs one remote HTTP round trip
+                // (FetchRemoteSourceAsync) to describe the actual file. Resolving
+                // every non-network field first and firing all the remote fetches
+                // together (instead of one `await` per source in a sequential loop)
+                // turns N sources' worth of serial round-trip latency on every single
+                // play into roughly one round trip's worth - the slowest source, not
+                // the sum of all of them.
+                var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string Path, string SourceName, bool IsWanCapped)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
                     if (staticSourceCoversPrimary && i == primaryIndex)
@@ -170,16 +177,26 @@ namespace Jellyfin.Plugin.Federation.Services
                         && entry.ItemType != "Audio"
                         && _federationManager.BandwidthMonitor.GetEffectiveCapMbps(server) != null;
 
-                    // The remote's own view of the file. Without Container and
-                    // MediaStreams, MediaInfoHelper.SetDeviceSpecificData has nothing
-                    // to run StreamBuilder against, so it cannot certify direct play
-                    // or direct stream for any device profile and every source comes
-                    // back unplayable - which surfaces in clients as
-                    // PlaybackError.NO_MEDIA_ERROR ("Unable to find a valid media
-                    // source to play") even though a source was returned.
-                    var remote = isWanCapped
-                        ? null
-                        : await FetchRemoteSourceAsync(server, src, cancellationToken).ConfigureAwait(false);
+                    candidates.Add((i, src, server, path, sourceName, isWanCapped));
+                }
+
+                // The remote's own view of each file. Without Container and
+                // MediaStreams, MediaInfoHelper.SetDeviceSpecificData has nothing
+                // to run StreamBuilder against, so it cannot certify direct play
+                // or direct stream for any device profile and every source comes
+                // back unplayable - which surfaces in clients as
+                // PlaybackError.NO_MEDIA_ERROR ("Unable to find a valid media
+                // source to play") even though a source was returned.
+                var fetchTasks = candidates.Select(c => c.IsWanCapped
+                    ? Task.FromResult<MediaSourceInfo?>(null)
+                    : FetchRemoteSourceAsync(c.Server, c.Src, cancellationToken)).ToArray();
+                var remoteResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+
+                var sources = new List<MediaSourceInfo>();
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    var (i, src, server, path, sourceName, isWanCapped) = candidates[c];
+                    var remote = remoteResults[c];
 
                     _logger.LogInformation(
                         "[Federation] GetMediaSources: {Name} source #{Index} on {ServerName} -> container={Container}, streams={StreamCount}, bitrate={Bitrate}",
