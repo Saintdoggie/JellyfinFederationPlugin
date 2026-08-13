@@ -30,6 +30,12 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, (DateTime Expires, PlaybackInfoResponse Response)> PlaybackInfoCache = new();
         private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromSeconds(15);
 
+        // Same rationale as PlaybackInfoCache above (a client is constructed per
+        // call, so this has to be static to survive between them). Keeps one sync
+        // cycle from probing the same server once per mapping/source.
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, FederationPeerStatus Status)> PeerStatusCache = new();
+        private static readonly TimeSpan PeerStatusCacheTtl = TimeSpan.FromSeconds(30);
+
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -528,25 +534,97 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Checks whether the remote server is itself running the Federation plugin,
-        /// by requesting its <c>Plugins/Federation/Config</c> route - registered only
-        /// by this plugin's own controller, served <see cref="Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute"/>
-        /// so no API key is needed to probe it. A remote that isn't running Federation
+        /// Determines whether the remote server is itself running the Federation
+        /// plugin, by requesting its <c>Plugins/Federation/Config</c> route -
+        /// registered only by this plugin's own controller, served
+        /// <see cref="Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute"/> so
+        /// no API key is needed to probe it. A remote that isn't running Federation
         /// 404s here even though ordinary item/library endpoints (which this plugin
-        /// also depends on) work fine against any stock Jellyfin server - this is
-        /// what actually distinguishes "a Jellyfin server" from "a federation peer."
+        /// also depends on) work fine against any stock Jellyfin server - this is what
+        /// actually distinguishes "a Jellyfin server" from "a federation peer."
+        /// <para>
+        /// Deliberately tri-state rather than a bool. The caller deletes a server's
+        /// entire federated library when told the plugin is gone, so "I could not
+        /// reach the remote" must never be reported as "the plugin is not installed" -
+        /// that is the difference between riding out a transient outage and wiping a
+        /// library because a tunnel returned 502 for a minute. Only a 404 from a
+        /// server that is provably alive counts as absence; everything else
+        /// (timeouts, refused connections, 5xx from a proxy, an auth layer answering
+        /// 401/403) is <see cref="FederationPeerStatus.Unknown"/>.
+        /// </para>
         /// </summary>
-        public async Task<bool> HasFederationPluginAsync(CancellationToken cancellationToken = default)
+        public async Task<FederationPeerStatus> GetFederationPeerStatusAsync(CancellationToken cancellationToken = default)
         {
+            var cacheKey = _server.Id ?? _server.Url;
+            if (PeerStatusCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+            {
+                return cached.Status;
+            }
+
+            var status = await ProbeFederationPeerStatusAsync(cancellationToken).ConfigureAwait(false);
+
+            // Cached briefly so a sync covering several mappings/sources on the same
+            // server does not re-probe once per source. Short enough that a plugin
+            // installed or removed mid-session is still noticed on the next cycle.
+            PeerStatusCache[cacheKey] = (DateTime.UtcNow.Add(PeerStatusCacheTtl), status);
+            return status;
+        }
+
+        private async Task<FederationPeerStatus> ProbeFederationPeerStatusAsync(CancellationToken cancellationToken)
+        {
+            System.Net.HttpStatusCode statusCode;
             try
             {
-                var response = await _httpClient.GetAsync("/Plugins/Federation/Config", cancellationToken).ConfigureAwait(false);
-                return response.IsSuccessStatusCode;
+                using var response = await _httpClient.GetAsync("/Plugins/Federation/Config", cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return FederationPeerStatus.Installed;
+                }
+
+                statusCode = response.StatusCode;
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[Federation] Could not confirm the Federation plugin is installed on {ServerName}", _server.Name);
-                return false;
+                // Timeout, DNS failure, connection refused, TLS error, ... - says
+                // nothing about whether the plugin is installed.
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} to check whether it runs Federation; treating as unknown", _server.Name);
+                return FederationPeerStatus.Unknown;
+            }
+
+            if (statusCode != System.Net.HttpStatusCode.NotFound)
+            {
+                // 502/503 from a tunnel or reverse proxy, 500 from a struggling
+                // remote, 401/403 from an access layer in front of it. None of these
+                // mean "no Federation here".
+                _logger.LogDebug(
+                    "[Federation] {ServerName} answered {StatusCode} for the Federation plugin probe; treating as unknown rather than uninstalled",
+                    _server.Name,
+                    (int)statusCode);
+                return FederationPeerStatus.Unknown;
+            }
+
+            // A 404 alone is not proof either: a misrouted tunnel or a reverse proxy
+            // pointed at the wrong origin will 404 every path, including this one.
+            // Confirm the address really is serving a live Jellyfin before reporting
+            // an absence the caller will delete content over.
+            try
+            {
+                using var alive = await _httpClient.GetAsync("/System/Info/Public", cancellationToken).ConfigureAwait(false);
+                if (alive.IsSuccessStatusCode)
+                {
+                    return FederationPeerStatus.NotInstalled;
+                }
+
+                _logger.LogDebug(
+                    "[Federation] {ServerName} 404s the Federation probe and is not serving Jellyfin either ({StatusCode}); treating as unknown",
+                    _server.Name,
+                    (int)alive.StatusCode);
+                return FederationPeerStatus.Unknown;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not confirm {ServerName} is a live Jellyfin server; treating as unknown", _server.Name);
+                return FederationPeerStatus.Unknown;
             }
         }
 
@@ -873,6 +951,33 @@ namespace Jellyfin.Plugin.Federation.Services
             PropertyNameCaseInsensitive = true,
             Converters = { new JsonStringEnumConverter() }
         };
+    }
+
+    /// <summary>
+    /// Whether a remote server is a Federation peer, as far as this server can
+    /// tell. See <see cref="RemoteServerClient.GetFederationPeerStatusAsync"/> for
+    /// why an unreachable remote must be reported as <see cref="Unknown"/> rather
+    /// than <see cref="NotInstalled"/>.
+    /// </summary>
+    public enum FederationPeerStatus
+    {
+        /// <summary>
+        /// Could not be determined: the remote was unreachable, answered from a
+        /// proxy/error page, or otherwise gave no trustworthy answer. Callers must
+        /// treat this as a transient failure and leave cached content alone.
+        /// </summary>
+        Unknown = 0,
+
+        /// <summary>
+        /// The remote answered this plugin's own route: it is running Federation.
+        /// </summary>
+        Installed = 1,
+
+        /// <summary>
+        /// The remote is demonstrably a live Jellyfin server that does not have
+        /// Federation installed. Only this value justifies removing content.
+        /// </summary>
+        NotInstalled = 2
     }
 
     /// <summary>

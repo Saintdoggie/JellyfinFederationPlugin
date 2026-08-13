@@ -404,12 +404,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (result.PluginMissing)
                 {
-                    // Unlike an ordinary failure (network blip, remote overloaded,
-                    // temporary 502, ...) where stale cached items are kept so a
-                    // transient hiccup doesn't empty the library, a missing Federation
-                    // plugin is treated as "this server is no longer a federation
-                    // peer" - its items are actively removed rather than left stale,
-                    // same as if the server itself had been deleted (see DeleteServer).
+                    // Only ever set for a server that answered as a live Jellyfin
+                    // without Federation installed - never for an unreachable one
+                    // (see GetFederationPeerStatusAsync, which reports anything it
+                    // cannot verify as Unknown, handled as an ordinary failure
+                    // below). A confirmed absence means "this server is no longer a
+                    // federation peer", so its items are actively removed rather
+                    // than left stale, same as if the server had been deleted
+                    // outright (see DeleteServer).
                     var removedForMissingPlugin = _cache.PruneServerSources(mapping.LocalLibraryName, source.ServerId, new HashSet<Guid>());
                     if (removedForMissingPlugin > 0)
                     {
@@ -462,14 +464,29 @@ namespace Jellyfin.Plugin.Federation.Services
             // server - it would happily keep pulling content from one even after the
             // owner uninstalled Federation there. Checked per source (not once up
             // front) so it stays current even if the remote's plugin state changes
-            // mid-session.
-            if (!await client.HasFederationPluginAsync(cancellationToken).ConfigureAwait(false))
+            // mid-session; the client caches the probe briefly so this is one round
+            // trip per server per cycle, not one per source.
+            var peerStatus = await client.GetFederationPeerStatusAsync(cancellationToken).ConfigureAwait(false);
+            if (peerStatus == FederationPeerStatus.NotInstalled)
             {
                 _logger.LogWarning(
                     "[Federation] {Server} does not have the Federation plugin installed; its items in {Mapping} will be removed",
                     server.Name,
                     mapping.LocalLibraryName);
                 return SourceSyncResult.PluginMissingResult();
+            }
+
+            if (peerStatus == FederationPeerStatus.Unknown)
+            {
+                // Unreachable, or answered from something that isn't the remote's
+                // Jellyfin (a tunnel 502, a proxy error page, an access gate). This
+                // is an ordinary failure: the cache is preserved untouched, exactly
+                // as for any other transient fault. Reporting it as "plugin missing"
+                // would delete this server's whole library over a blip.
+                _logger.LogWarning(
+                    "[Federation] Could not confirm whether {Server} is running Federation; skipping it this cycle and keeping its cached content",
+                    server.Name);
+                return SourceSyncResult.Failure();
             }
 
             var seen = new HashSet<Guid>();
