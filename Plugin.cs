@@ -1,8 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Plugin.Federation.Configuration;
+using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 using Microsoft.Extensions.Logging;
@@ -15,6 +20,7 @@ namespace Jellyfin.Plugin.Federation
     public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         private readonly ILogger<Plugin> _logger;
+        private readonly ILibraryManager _libraryManager;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Plugin"/> class.
@@ -22,10 +28,12 @@ namespace Jellyfin.Plugin.Federation
         public Plugin(
             IApplicationPaths applicationPaths,
             IXmlSerializer xmlSerializer,
-            ILogger<Plugin> logger)
+            ILogger<Plugin> logger,
+            ILibraryManager libraryManager)
             : base(applicationPaths, xmlSerializer)
         {
             _logger = logger;
+            _libraryManager = libraryManager;
             Instance = this;
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
         }
@@ -60,6 +68,61 @@ namespace Jellyfin.Plugin.Federation
                 DisplayName = "Federation",
                 MenuIcon = "public"
             };
+        }
+
+        /// <summary>
+        /// Called by Jellyfin's plugin manager right before this plugin's assembly
+        /// directory is removed. Every Movie/Series/Season/Episode this plugin ever
+        /// created is a virtual item with no real file underneath it (see
+        /// <see cref="FederationLibraryManager.MaterializeItem"/>) - once the plugin
+        /// is gone, nothing will ever provide a MediaSource for them or clean them
+        /// up on the next sync (that sync will never run again), so they would sit
+        /// in the library forever as dead, unplayable entries. Deleted here,
+        /// synchronously, so the library is clean by the time uninstall finishes.
+        /// The Jellyfin core handles removing this plugin's own DLL/meta.json/data
+        /// folder after this method returns - that part is not this plugin's job
+        /// and nothing here touches it.
+        /// </summary>
+        public override void OnUninstalling()
+        {
+            try
+            {
+                var mappings = Configuration.LibraryMappings ?? new List<LibraryMapping>();
+                var root = _libraryManager.GetUserRootFolder();
+                var removed = 0;
+
+                foreach (var mapping in mappings)
+                {
+                    var libraryFolder = root.Children.OfType<Folder>()
+                        .FirstOrDefault(f => string.Equals(f.Name, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+                    if (libraryFolder == null)
+                    {
+                        continue;
+                    }
+
+                    var federatedItems = libraryFolder.GetRecursiveChildren()
+                        .Where(i => FederationLibraryManager.GetFederationKey(i) != null)
+                        .ToList();
+
+                    foreach (var item in federatedItems)
+                    {
+                        _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = false });
+                        removed++;
+                    }
+                }
+
+                _logger.LogInformation(
+                    "[Federation] Plugin uninstall: removed {Count} federated item(s) across {MappingCount} mapped librar{Suffix} before the plugin is unloaded",
+                    removed,
+                    mappings.Count,
+                    mappings.Count == 1 ? "y" : "ies");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Plugin uninstall: failed to remove federated items; some virtual items may be left behind");
+            }
+
+            base.OnUninstalling();
         }
     }
 }
