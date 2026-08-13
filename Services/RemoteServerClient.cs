@@ -475,10 +475,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default)
         {
-            // 2MB: large enough that connection setup/TLS handshake overhead doesn't
-            // dominate the measurement, small enough to run in a second or two even on
-            // a fairly slow link.
-            const int sampleBytes = 2_000_000;
+            // 5MB: large enough that TCP slow-start (the connection ramping up to its
+            // real throughput over the first several round-trips) doesn't skew a
+            // short sample toward an artificially low reading - a real concern on
+            // faster links, where slow-start accounts for a bigger fraction of a
+            // small sample's total time. Still finishes in a few seconds on a
+            // fairly slow link.
+            const int sampleBytes = 5_000_000;
             try
             {
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();

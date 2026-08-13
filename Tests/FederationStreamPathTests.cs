@@ -373,26 +373,30 @@ public class FederationStreamPathTests : IDisposable
     public void WanCapMode_Auto_ConfirmedWan_MeasuredSlow_CapsToTheLargestBitrateThatFits()
     {
         var server = AddServer();
-        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 16.0);
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0);
 
         var remoteId = Guid.NewGuid();
         var entry = AddEntry("Movie", remoteId);
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        // 16 Mbps measured * 0.75 safety margin = 12 Mbps.
-        Assert.Contains("VideoBitrate=12000000", liveUrl);
+        // 20 Mbps measured * 0.85 safety margin = 17 Mbps.
+        Assert.Contains("VideoBitrate=17000000", liveUrl);
     }
 
     [Fact]
     public void WanCapMode_Auto_ConfirmedWan_MeasuredVerySlow_ClampsToTheConfiguredFloor()
     {
+        // The floor is a deliberate minimum-acceptable-quality choice, not just a
+        // safety clamp - a connection that measures below it still gets this
+        // bitrate requested rather than something even lower proportional to what
+        // it measured.
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 2.0);
 
         var entry = AddEntry("Movie", Guid.NewGuid());
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("VideoBitrate=4000000", liveUrl);
+        Assert.Contains("VideoBitrate=10000000", liveUrl);
     }
 
     [Fact]

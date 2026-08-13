@@ -143,11 +143,15 @@ needed** - never a speculative guess.
   `GetEffectiveCapMbps` - called from `BuildPlaybackUrl`, on the hot path of
   building every playback URL - is a synchronous dictionary lookup, never a
   network call.
-- The cap itself: 75% of measured bandwidth, clamped to 4-45 Mbps: skipped
-  entirely above 50 Mbps measured (no realistic source needs capping against
-  a connection that fast - forcing a pointless second transcode pass would
-  only cost CPU on both ends), and a conservative 10 Mbps placeholder for the
-  brief window after a server is confirmed WAN but not yet measured.
+- The cap itself: 85% of measured bandwidth, clamped to 10-45 Mbps (originally
+  75%/4-45 - raised after the plugin's owner asked for faster streaming and a
+  10 Mbps floor specifically): skipped entirely above 50 Mbps measured (no
+  realistic source needs capping against a connection that fast - forcing a
+  pointless second transcode pass would only cost CPU on both ends), and a
+  10 Mbps placeholder for the brief window after a server is confirmed WAN
+  but not yet measured. The bandwidth probe itself samples 5MB (was 2MB) -
+  large enough that TCP slow-start doesn't skew a short sample toward a
+  lower-than-real reading on faster links.
 
 `Manual` (a fixed admin-set Mbps) and `Off` (always raw, the pre-0.0.32
 default) remain available per server for anyone who wants to pin a specific
