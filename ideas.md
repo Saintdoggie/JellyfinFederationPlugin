@@ -4,50 +4,54 @@ Future feature ideas for the federation plugin, captured so they don't get lost
 between sessions. This is a planning list, not a changelog - items marked
 **Done** note where the work landed.
 
-## Feature request dump (owner, 2026-08-13) - ranked, not started
+## Feature request dump (owner, 2026-08-13) - ranked
 
 A batch of asks came in together; several turn out to already exist or be
 partially built elsewhere in this file. Cross-referenced against the rest of
-this doc before ranking so nothing gets rebuilt from scratch. Nothing in this
-section has been implemented yet - ranked by (dependency order) x (how much
-is already built), for the owner to greenlight individually rather than taken
-as a go-ahead to build all of it.
+this doc before ranking so nothing gets rebuilt from scratch.
 
-**Already solved - just needs verifying/re-enabling, not building:**
+**Done:**
 
 - *"A way of adding people without handing over a raw API key"* and *"a friend
   request system - enter their server address, check if the plugin is
-  installed, send a request they can accept/decline"* - this is exactly the
-  friend system built in 0.0.24 (see "Friend system" below): connect by URL,
-  each side mints a fresh API key for the other automatically on accept, no
-  manual copy-paste. It was withdrawn in 0.0.27 to stabilize core streaming
-  (see "Withdrawn, preserved on `archive/friend-system`" at the top of this
-  file) - that condition ("once streaming and sharing are solid") is arguably
-  met now after the 0.0.37-0.0.39 playback fixes. Reviving this branch is the
-  highest-leverage single item here: it directly answers two of the asks at
-  once and is already-written, already-tested code, not a new design.
+  installed, send a request they can accept/decline"* - **Done.** The 0.0.24/
+  0.0.25 friend system (withdrawn in 0.0.27 alongside an unrelated critical
+  fix - see "Never subclass Jellyfin's entity types" below) has been restored:
+  `FederationFriendService`, its 8 `Friends/*` endpoints on
+  `FederationPluginController`, the config-page UI, and its full test suite
+  (18 tests) are back, ported forward against everything built since (WAN
+  caps, streaming modes, dedup) rather than a raw revert of the withdrawal
+  commit, since that commit also carried the real bug fix. Friends-of-friends
+  discovery (`AllowFriendsOfFriends`, off by default) came back with it. While
+  restoring this, also fixed a real bug found along the way: two migration
+  flags (`MigratedRemoveShortcutV9`, `MigratedPlaceholderPathV10`) were never
+  added to `UpdateConfiguration`'s server-internal-state preservation list, so
+  every config save from the UI was silently resetting them - re-triggering a
+  full rebuild of every WAN-capped/shortcut-affected federated item on the
+  next sync after any unrelated settings change.
 - *"If I share with someone and they share with someone else, that third
-  person shouldn't get my stuff"* - already true. `FederationSyncService`
-  skips any remote item carrying a `FederationKey` provider id (content a
-  server only has because it was federated in), regardless of how many hops
-  away - see "Done (0.0.25)" under "Friend system" below. Worth a manual
-  re-check after the friend system is revived, since this guarantee lives in
-  sync logic that hasn't been exercised alongside it recently.
-- *"Force sync"* - `POST /Plugins/Federation/Refresh` (all mappings) and
-  `POST /Plugins/Federation/RefreshServer` (one server) already exist
-  (`FederationPluginController`). If the config page doesn't currently expose
-  a button for these, that's a small UI gap, not new backend work.
+  person shouldn't get my stuff"* - already true, confirmed still true after
+  the revival above. `FederationSyncService` skips any remote item carrying a
+  `FederationKey` provider id (content a server only has because it was
+  federated in), regardless of how many hops away.
+- *"Force sync"* - already existed: `POST /Plugins/Federation/Refresh` (all
+  mappings) and `POST /Plugins/Federation/RefreshServer` (one server), and the
+  config page already has a "Refresh now" button wired to it. No gap after all.
 
 **Scoped already, straightforward to build (no missing dependencies):**
 
 - Send-only / receive-only per friend, with a notice on the *other* admin's
   dashboard when toggled - already its own section below ("Send-only /
-  receive-only per friend"), unimplemented. Natural follow-on once the friend
-  system is back, since it's a per-friend setting on that same relationship.
+  receive-only per friend"), unimplemented. Natural follow-on now that the
+  friend system is back, since it's a per-friend setting on that same
+  relationship.
 - Manual per-item dedup exclusion ("manage duplicates... exclude from
   sharing") - the automatic side (`EnableDedup`/`DedupProviderIds`) already
   exists; the gap is admin override UI, already noted under "Dedup
   management" below.
+- A "someone is currently watching your federated content" indicator on the
+  local dashboard - smallest, most isolated of the new asks; a plain Sessions
+  poll filtered to federated items would cover it. Low risk either way.
 
 **Needs scoping before work starts:**
 
@@ -67,6 +71,9 @@ as a go-ahead to build all of it.
   of which specific settings the owner wants defaulted/auto-detected, since
   several (server URL, streaming mode, WAN cap mode) already have sensible
   defaults or auto-detection (see "Adaptive WAN bitrate cap" below).
+- A directory/lookup service so friends can be found by name instead of by
+  address - the one piece of the original friend-system design that was never
+  built even before the 0.0.27 withdrawal.
 
 **Novel, no existing groundwork:**
 
@@ -75,21 +82,6 @@ as a go-ahead to build all of it.
   map onto the current one-friend-at-a-time model at all; would need its own
   design pass (membership, who can add whom, how content from N servers
   merges) rather than an incremental change.
-- A "someone is currently watching your federated content" indicator on the
-  local dashboard - smallest, most isolated of the new asks; a plain Sessions
-  poll filtered to federated items would cover it. Fine to build any time,
-  low risk either way.
-
-## Withdrawn, preserved on `archive/friend-system`
-
-## Withdrawn, preserved on `archive/friend-system`
-
-The friend-request system and friends-of-friends discovery (0.0.24 / 0.0.25) were
-pulled out in 0.0.27 to get the core back to a working state. Nothing is lost -
-the full implementation, its tests, and its config-page UI are on the
-`archive/friend-system` branch and can be brought back once streaming and
-sharing are solid. What is still open from that work: a directory/lookup service
-so friends can be found by name instead of by address.
 
 ## Never subclass Jellyfin's entity types
 

@@ -29,6 +29,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
+
+            // Scoped, not Singleton: needs IAuthenticationManager, which Jellyfin
+            // registers scoped. FederationSyncService (a singleton) resolves it
+            // through a short-lived DI scope rather than a direct constructor
+            // dependency - see DiscoverFriendsOfFriendsAsync there.
+            serviceCollection.AddScoped<FederationFriendService>();
             serviceCollection.AddSingleton<FederationImageProvider>();
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
