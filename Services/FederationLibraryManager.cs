@@ -53,6 +53,13 @@ namespace Jellyfin.Plugin.Federation.Services
         public IRemoteServerClientFactory ClientFactory => _clientFactory;
 
         /// <summary>
+        /// Gets the WAN bandwidth monitor, so <see cref="FederationMediaSourceProvider"/>
+        /// can tell whether a given server's Direct-mode stream is currently a capped
+        /// transcode rather than the raw source file.
+        /// </summary>
+        public WanBandwidthMonitor BandwidthMonitor => _bandwidthMonitor;
+
+        /// <summary>
         /// Initializes the manager (loads cache if not already loaded).
         /// </summary>
         public void Initialize(string cacheFilePath)
@@ -116,26 +123,15 @@ namespace Jellyfin.Plugin.Federation.Services
             // remote did not report one, the container is discovered by the
             // EnableRemoteContentProbe pass described above instead.
             //
-            // Skipped when a WAN cap is currently in effect for the primary source
-            // (see WanBandwidthMonitor - "direct play whenever possible" means this is
-            // usually not the case): Path then points at a server-side transcode (see
-            // BuildPlaybackUrl), always mp4/h264/aac, not whatever the original
-            // source's container/codecs were - stamping the source's real container
-            // here would certify direct play against bytes that are not actually what
-            // gets served.
-            var primaryForContainer = entry.GetPrimarySource();
-            var primaryServerForContainer = primaryForContainer != null ? GetServer(primaryForContainer.ServerId) : null;
-            var isWanTranscoded = primaryServerForContainer != null
-                && primaryServerForContainer.StreamingMode == StreamingMode.Direct
-                && _bandwidthMonitor.GetEffectiveCapMbps(primaryServerForContainer) != null
-                && IsStreamableType(entry.ItemType)
-                && !IsAudioType(entry.ItemType);
-
-            if (isWanTranscoded)
-            {
-                item.Container = "mp4";
-            }
-            else if (!string.IsNullOrEmpty(entry.Metadata.Container))
+            // Tied directly to whether a static Path was actually stamped above
+            // (rather than re-deriving the WAN-cap condition separately, which used
+            // to drift out of sync with it): with no Path, Jellyfin's static source is
+            // a placeholder regardless of Container, so stamping one here would be
+            // meaningless at best - and actively wrong when the item.Path omission
+            // above is specifically because a WAN cap *could* apply, since the
+            // server's real container/codecs are then not necessarily what gets
+            // served on any given request.
+            if (streamUrl != null && !string.IsNullOrEmpty(entry.Metadata.Container))
             {
                 item.Container = entry.Metadata.Container;
             }
@@ -345,7 +341,49 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 var primary = entry.GetPrimarySource();
-                return primary == null ? null : BuildPlaybackUrl(entry.ItemType, primary);
+                if (primary == null)
+                {
+                    return null;
+                }
+
+                // Direct mode with WanCapMode Auto or Manual: never stamp a static
+                // Path. Reconciliation only ever creates and deletes items, it never
+                // updates one in place, so a Path stamped here would freeze in
+                // whatever WanBandwidthMonitor happened to decide at the exact moment
+                // this particular item was first created - permanently, even after
+                // later classification or a fresh bandwidth measurement changes what
+                // the *correct* URL should now be. That produced exactly the "works
+                // for some files, not others" symptom: items created before
+                // classification finished (most of an existing library) froze
+                // uncapped forever; items created after froze capped forever;
+                // whichever one no longer matches the current decision leaves
+                // Jellyfin's own static source stale while this plugin's dynamic
+                // FederationMediaSourceProvider offers a second, correct one
+                // alongside it - and playback does not reliably pick the right one of
+                // the two. Leaving Path null sidesteps all of it: with no static
+                // source to (possibly wrongly) trust, every playback of this item
+                // goes through the provider instead, which rebuilds the URL fresh -
+                // and therefore always current - on every single request. Off mode is
+                // exempt: its URL (the raw source, unconditionally) can never change,
+                // so stamping it is safe and saves a request-time remote round-trip.
+                // So is Auto mode once WanBandwidthMonitor has positively confirmed
+                // the server is on the same network - that classification is, for
+                // practical purposes, permanent, since there is no bandwidth
+                // measurement in play for it to ever go stale against. Everything
+                // else that could plausibly still start needing a cap later - not yet
+                // classified, confirmed WAN, or Manual (an admin can edit the fixed
+                // number at any time) - stays unstamped.
+                var server = GetServer(primary.ServerId);
+                if (server != null
+                    && server.StreamingMode == StreamingMode.Direct
+                    && server.WanCapMode != WanCapMode.Off
+                    && !(server.WanCapMode == WanCapMode.Auto && _bandwidthMonitor.IsConfirmedLocalNetwork(server))
+                    && !IsAudioType(entry.ItemType))
+                {
+                    return null;
+                }
+
+                return BuildPlaybackUrl(entry.ItemType, primary);
             }
             catch (Exception ex)
             {

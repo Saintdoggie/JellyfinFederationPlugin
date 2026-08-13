@@ -102,7 +102,13 @@ public class FederationStreamPathTests : IDisposable
     [Fact]
     public void Movie_DirectMode_GetsRemoteStreamUrlAsPath_SoTheSourceIsNotAPlaceholder()
     {
-        AddServer();
+        // WanCapMode.Off: this test is about the historical placeholder-source bug,
+        // unrelated to WAN capping - Auto's default of never stamping a static Path
+        // (see the WanCapMode_* tests) would make item.Path null here regardless of
+        // whether this specific source needs capping, which isn't what this test
+        // means to exercise.
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off;
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
@@ -121,7 +127,8 @@ public class FederationStreamPathTests : IDisposable
     [Fact]
     public void Movie_WithPath_ResolvesLocationTypeRemote()
     {
-        AddServer();
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off; // needs a stamped Path - see the comment on the Off test above
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
 
         // An http path resolves to Remote from BaseItem's own logic. A null path
@@ -194,7 +201,8 @@ public class FederationStreamPathTests : IDisposable
     [Fact]
     public void Container_ReportedByTheRemote_IsStampedOnTheItem()
     {
-        AddServer();
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off; // needs a stamped Path/Container - see the comment on the Off test above
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
 
         // Lets Jellyfin certify direct play immediately instead of waiting on a probe.
@@ -202,18 +210,32 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansDirectPlay()
+    public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansNoStaticPath_ButStillResolvesToDirectPlay()
     {
         // The default for every server, and the state of a brand-new one before the
-        // background classifier has had a chance to run even once: direct play, same
-        // as if WAN capping did not exist at all. A cap is never speculative.
+        // background classifier has had a chance to run even once. Two distinct
+        // things are both true here:
+        //  1. item.Path/Container are NOT stamped - unlike Off or a confirmed-LAN
+        //     Auto server, this decision could still change once classification
+        //     completes, and reconciliation never revisits an already-created item,
+        //     so freezing a guess in here is exactly the bug that made WAN capping
+        //     "work for some files, not others" - only items happening to be created
+        //     while the decision matched the *current* one behaved correctly.
+        //  2. Direct play is still what a live request resolves to right now (via
+        //     FederationMediaSourceProvider, which calls BuildPlaybackUrl fresh on
+        //     every playback) - a cap is never speculative, unclassified means
+        //     "no evidence a cap is needed", same as if WAN capping did not exist.
         var server = AddServer();
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
+        var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv");
+        var item = _manager.MaterializeItem(entry);
 
         Assert.Equal(Configuration.WanCapMode.Auto, server.WanCapMode);
-        Assert.Contains("Static=true", item.Path);
-        Assert.DoesNotContain("VideoBitrate", item.Path);
-        Assert.Equal("mkv", item.Container);
+        Assert.True(string.IsNullOrEmpty(item.Path));
+        Assert.Null(item.Container);
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains("Static=true", liveUrl);
+        Assert.DoesNotContain("VideoBitrate", liveUrl);
     }
 
     [Fact]
@@ -239,17 +261,21 @@ public class FederationStreamPathTests : IDisposable
         server.WanMaxHeight = 1080;
 
         var remoteId = Guid.NewGuid();
-        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId, container: "mkv"));
+        var entry = AddEntry("Movie", remoteId, container: "mkv");
+        var item = _manager.MaterializeItem(entry);
 
+        // Manual is a fixed number, but an admin can edit it at any time - the same
+        // staleness risk as Auto, so it is never stamped statically either. Always
+        // resolved fresh through BuildPlaybackUrl (what FederationMediaSourceProvider
+        // calls on every playback request) instead.
+        Assert.True(string.IsNullOrEmpty(item.Path));
+        Assert.Null(item.Container);
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Equal(
             $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
                 + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080",
-            item.Path);
-
-        // The URL now serves a server-side transcode, not the original mkv/HEVC file -
-        // stamping the source's real container would certify direct play against bytes
-        // that are not actually what gets served.
-        Assert.Equal("mp4", item.Container);
+            liveUrl);
     }
 
     [Fact]
@@ -260,9 +286,10 @@ public class FederationStreamPathTests : IDisposable
         server.WanMaxBitrateMbps = 12;
         server.WanMaxHeight = 0;
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.DoesNotContain("MaxHeight", item.Path);
+        Assert.DoesNotContain("MaxHeight", liveUrl);
     }
 
     [Fact]
@@ -275,6 +302,9 @@ public class FederationStreamPathTests : IDisposable
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Audio", remoteId));
 
+        // Audio is exempt from the "never stamp statically" rule too - a cap never
+        // applies to it in the first place, so there is nothing for it to go stale
+        // against.
         Assert.Contains("Static=true", item.Path);
         Assert.DoesNotContain("VideoBitrate", item.Path);
     }
@@ -313,9 +343,15 @@ public class FederationStreamPathTests : IDisposable
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: null);
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var item = _manager.MaterializeItem(entry);
 
-        Assert.Contains("VideoBitrate=10000000", item.Path);
+        // Confirmed WAN is never safe to stamp statically - only confirmed LAN and
+        // Off are (see the two tests above/below this block).
+        Assert.True(string.IsNullOrEmpty(item.Path));
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains("VideoBitrate=10000000", liveUrl);
     }
 
     [Fact]
@@ -327,9 +363,10 @@ public class FederationStreamPathTests : IDisposable
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 80.0);
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("Static=true", item.Path);
+        Assert.Contains("Static=true", liveUrl);
     }
 
     [Fact]
@@ -339,10 +376,11 @@ public class FederationStreamPathTests : IDisposable
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 16.0);
 
         var remoteId = Guid.NewGuid();
-        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+        var entry = AddEntry("Movie", remoteId);
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
         // 16 Mbps measured * 0.75 safety margin = 12 Mbps.
-        Assert.Contains("VideoBitrate=12000000", item.Path);
+        Assert.Contains("VideoBitrate=12000000", liveUrl);
     }
 
     [Fact]
@@ -351,9 +389,10 @@ public class FederationStreamPathTests : IDisposable
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 2.0);
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("VideoBitrate=4000000", item.Path);
+        Assert.Contains("VideoBitrate=4000000", liveUrl);
     }
 
     [Fact]
