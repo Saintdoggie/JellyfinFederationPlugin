@@ -239,36 +239,70 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool RequireApiKeyForImages { get; set; } = false;
 
         /// <summary>
-        /// Gets or sets the bitrate cap (in Mbps) applied to Direct-mode streams from
-        /// this server, or 0 to disable and stream the raw source file as-is (the
-        /// original, and still default, behavior).
-        ///
-        /// Direct mode's own request to the remote (see
+        /// Gets or sets how a bitrate cap is chosen for Direct-mode streams from this
+        /// server. Direct mode's own request to the remote (see
         /// <see cref="Services.FederationLibraryManager.BuildPlaybackUrl"/>) fetches the
-        /// raw file unmodified (<c>Static=true</c>) - fine when both servers are on the
-        /// same network, but when they are two independent servers connected only over
-        /// the internet, this receiving server has to sustain the *source's own*
-        /// bitrate (which can be 25+ Mbps for a 4K HDR release) pulling from the
+        /// raw file unmodified (<c>Static=true</c>) by default - fine when both servers
+        /// are on the same network, but when they are two independent servers connected
+        /// only over the internet, this receiving server has to sustain the *source's
+        /// own* bitrate (which can be 25+ Mbps for a 4K HDR release) pulling from the
         /// remote's upload connection before it can even start its own transcode. If
         /// that upload can't keep up - a very common asymmetric-home-internet
         /// situation, unrelated to either server's CPU/GPU - playback stutters exactly
         /// as if buffering, no matter how fast either machine is.
         ///
-        /// Setting this makes the remote server itself transcode down to this bitrate
-        /// before the receiving server ever pulls a byte over the WAN link, at the
-        /// cost of a second, real transcode pass (now on both ends) instead of one.
+        /// <see cref="Services.WanBandwidthMonitor"/> implements the actual policy:
+        /// direct play (the raw file, best quality, no extra transcode cost) whenever
+        /// it can - same network, or not yet proven otherwise - and only asks the
+        /// remote to transcode down once it has positively confirmed the link is a WAN
+        /// one and measured what it can actually sustain, capping to the largest
+        /// bitrate that fits rather than a blind guess.
+        /// </summary>
+        public WanCapMode WanCapMode { get; set; } = WanCapMode.Auto;
+
+        /// <summary>
+        /// Gets or sets the fixed bitrate cap (in Mbps) used when
+        /// <see cref="WanCapMode"/> is <see cref="Configuration.WanCapMode.Manual"/>.
+        /// Ignored in <see cref="Configuration.WanCapMode.Auto"/> and
+        /// <see cref="Configuration.WanCapMode.Off"/>.
         /// </summary>
         public int WanMaxBitrateMbps { get; set; } = 0;
 
         /// <summary>
-        /// Gets or sets the max output height (e.g. 1080) applied alongside
-        /// <see cref="WanMaxBitrateMbps"/>, or 0 for no resolution cap. Only takes
-        /// effect when <see cref="WanMaxBitrateMbps"/> is set - downscaling
+        /// Gets or sets the max output height (e.g. 1080) applied whenever a bitrate
+        /// cap is in effect (Auto or Manual), or 0 for no resolution cap. Downscaling
         /// resolution alongside a bitrate cap gives noticeably better quality per bit
         /// than keeping the source's full 4K resolution squeezed into the same
         /// bitrate.
         /// </summary>
         public int WanMaxHeight { get; set; } = 1080;
+    }
+
+    /// <summary>
+    /// How a Direct-mode server's WAN bitrate cap is determined.
+    /// </summary>
+    public enum WanCapMode
+    {
+        /// <summary>
+        /// Default. Same-network servers (and anything not yet classified) stream the
+        /// raw source file unchanged; a server confirmed to be reached only over the
+        /// internet gets capped to what <see cref="Services.WanBandwidthMonitor"/>
+        /// measures it can actually sustain.
+        /// </summary>
+        Auto = 0,
+
+        /// <summary>
+        /// Always cap Direct-mode streams from this server to the fixed
+        /// <see cref="RemoteServer.WanMaxBitrateMbps"/>, regardless of network
+        /// detection or measurement.
+        /// </summary>
+        Manual = 1,
+
+        /// <summary>
+        /// Never cap; always stream the raw source file. The original, pre-0.0.32
+        /// behavior.
+        /// </summary>
+        Off = 2
     }
 
 

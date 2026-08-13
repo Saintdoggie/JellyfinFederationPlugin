@@ -23,6 +23,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddHttpContextAccessor();
             serviceCollection.AddSingleton<IRemoteServerClientFactory, RemoteServerClientFactory>();
             serviceCollection.AddSingleton<FederationItemCache>();
+            serviceCollection.AddSingleton<WanBandwidthMonitor>();
             serviceCollection.AddSingleton<FederationLibraryManager>();
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();

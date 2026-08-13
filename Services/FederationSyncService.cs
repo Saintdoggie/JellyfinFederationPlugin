@@ -20,6 +20,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
         private readonly FederationItemPersistenceService _persistence;
+        private readonly WanBandwidthMonitor _bandwidthMonitor;
 
         // Guards SyncAllAsync/SyncServerAsync against running concurrently with each
         // other (e.g. the 5s-after-startup sync overlapping the hourly scheduled
@@ -37,13 +38,29 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationLibraryManager federationManager,
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache,
-            FederationItemPersistenceService persistence)
+            FederationItemPersistenceService persistence,
+            WanBandwidthMonitor bandwidthMonitor)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _cache = cache;
             _persistence = persistence;
+            _bandwidthMonitor = bandwidthMonitor;
+        }
+
+        /// <summary>
+        /// Refreshes WAN network classification/bandwidth measurement (see
+        /// <see cref="WanBandwidthMonitor"/>) for every enabled server, best-effort.
+        /// Internally rate-limited and never throws, so it is safe to call at the top
+        /// of every sync cycle.
+        /// </summary>
+        private async Task RefreshWanBandwidthAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
+        {
+            foreach (var server in servers.Where(s => s.Enabled))
+            {
+                await _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         /// <summary>
@@ -75,6 +92,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     SyncProgressTracker.Complete(operationId, true, "No mappings configured");
                     return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
                 }
+
+                await RefreshWanBandwidthAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
 
                 // One-time migration: items created before 0.0.16 never had
                 // SeriesPresentationUniqueKey set (see FederationLibraryManager.
@@ -240,6 +259,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     return Failed("No mappings use this server");
                 }
+
+                await RefreshWanBandwidthAsync(new[] { server }, cancellationToken).ConfigureAwait(false);
 
                 // Same one-time migrations as SyncAllAsync (see there for details). The
                 // global flags are only ever set by SyncAllAsync, since this only covers
