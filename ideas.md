@@ -4,6 +4,84 @@ Future feature ideas for the federation plugin, captured so they don't get lost
 between sessions. This is a planning list, not a changelog - items marked
 **Done** note where the work landed.
 
+## Feature request dump (owner, 2026-08-13) - ranked, not started
+
+A batch of asks came in together; several turn out to already exist or be
+partially built elsewhere in this file. Cross-referenced against the rest of
+this doc before ranking so nothing gets rebuilt from scratch. Nothing in this
+section has been implemented yet - ranked by (dependency order) x (how much
+is already built), for the owner to greenlight individually rather than taken
+as a go-ahead to build all of it.
+
+**Already solved - just needs verifying/re-enabling, not building:**
+
+- *"A way of adding people without handing over a raw API key"* and *"a friend
+  request system - enter their server address, check if the plugin is
+  installed, send a request they can accept/decline"* - this is exactly the
+  friend system built in 0.0.24 (see "Friend system" below): connect by URL,
+  each side mints a fresh API key for the other automatically on accept, no
+  manual copy-paste. It was withdrawn in 0.0.27 to stabilize core streaming
+  (see "Withdrawn, preserved on `archive/friend-system`" at the top of this
+  file) - that condition ("once streaming and sharing are solid") is arguably
+  met now after the 0.0.37-0.0.39 playback fixes. Reviving this branch is the
+  highest-leverage single item here: it directly answers two of the asks at
+  once and is already-written, already-tested code, not a new design.
+- *"If I share with someone and they share with someone else, that third
+  person shouldn't get my stuff"* - already true. `FederationSyncService`
+  skips any remote item carrying a `FederationKey` provider id (content a
+  server only has because it was federated in), regardless of how many hops
+  away - see "Done (0.0.25)" under "Friend system" below. Worth a manual
+  re-check after the friend system is revived, since this guarantee lives in
+  sync logic that hasn't been exercised alongside it recently.
+- *"Force sync"* - `POST /Plugins/Federation/Refresh` (all mappings) and
+  `POST /Plugins/Federation/RefreshServer` (one server) already exist
+  (`FederationPluginController`). If the config page doesn't currently expose
+  a button for these, that's a small UI gap, not new backend work.
+
+**Scoped already, straightforward to build (no missing dependencies):**
+
+- Send-only / receive-only per friend, with a notice on the *other* admin's
+  dashboard when toggled - already its own section below ("Send-only /
+  receive-only per friend"), unimplemented. Natural follow-on once the friend
+  system is back, since it's a per-friend setting on that same relationship.
+- Manual per-item dedup exclusion ("manage duplicates... exclude from
+  sharing") - the automatic side (`EnableDedup`/`DedupProviderIds`) already
+  exists; the gap is admin override UI, already noted under "Dedup
+  management" below.
+
+**Needs scoping before work starts:**
+
+- Selective per-library include/exclude for sharing - `LibraryMapping` is
+  already per-library, so "share this library, not that one" may already be
+  possible by simply not mapping the excluded one. What's actually missing
+  (a picker UI? finer-than-library granularity?) needs a concrete example
+  from the owner before this is buildable.
+- A separate library so federated content doesn't mix with local content -
+  check current behavior first: the web client already shows a distinct
+  "Federation" tile on the home page in this server's actual library list,
+  separate from "Movies"/"Shows" - unclear whether that's already what's
+  wanted or a different, currently-unused mode. Confirm against a real
+  example of "mixed" before designing anything.
+- Auto-configuration ("everything should be auto-set since this is sharing to
+  multiple servers") - too vague to scope as written. Needs a concrete list
+  of which specific settings the owner wants defaulted/auto-detected, since
+  several (server URL, streaming mode, WAN cap mode) already have sensible
+  defaults or auto-detection (see "Adaptive WAN bitrate cap" below).
+
+**Novel, no existing groundwork:**
+
+- Multi-server "pools" (group-chat-style: one pool, multiple server
+  addresses, several people federating together) - biggest ask here. Doesn't
+  map onto the current one-friend-at-a-time model at all; would need its own
+  design pass (membership, who can add whom, how content from N servers
+  merges) rather than an incremental change.
+- A "someone is currently watching your federated content" indicator on the
+  local dashboard - smallest, most isolated of the new asks; a plain Sessions
+  poll filtered to federated items would cover it. Fine to build any time,
+  low risk either way.
+
+## Withdrawn, preserved on `archive/friend-system`
+
 ## Withdrawn, preserved on `archive/friend-system`
 
 The friend-request system and friends-of-friends discovery (0.0.24 / 0.0.25) were
