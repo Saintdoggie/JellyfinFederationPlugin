@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -803,9 +804,25 @@ namespace Jellyfin.Plugin.Federation.Services
             return client;
         }
 
+        // Without a string-enum converter, System.Text.Json's default enum handling
+        // expects the underlying numeric value, not a name - but every modern
+        // Jellyfin server (including every remote this plugin talks to) serializes
+        // enums as their string name (e.g. "Protocol": "File"). That mismatch meant
+        // deserializing *any* PlaybackInfo response threw on its very first enum
+        // field (Protocol) - not an occasional or item-specific failure, every
+        // single call, for every item, on every server, always fell back to the
+        // catch block in GetPlaybackInfoAsync and returned null. Confirmed live:
+        // querying a remote directly showed a perfectly ordinary "Protocol":"File",
+        // yet the plugin's own deserialization of that exact response threw
+        // JsonException every time. This is very likely the single biggest
+        // contributor to "sometimes takes a long time to load" - every play
+        // wasted a full remote round trip that could never succeed, then fell back
+        // to local ffprobe discovery instead of the fast, accurate codec info the
+        // remote had been correctly sending back the whole time.
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
-            PropertyNameCaseInsensitive = true
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
         };
     }
 
