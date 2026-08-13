@@ -147,6 +147,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 // MigratedRemoveShortcutV9.
                 var needsRemoveShortcutMigration = !config.MigratedRemoveShortcutV9;
 
+                // V10 rebuilds every federated item on a Direct-mode WAN-capped server
+                // so it picks up the always-stamped item.Path from 0.0.38 (see
+                // MigratedPlaceholderPathV10) - without it, those items keep the
+                // null-Path/Placeholder condition that hid their Play button forever.
+                var needsPlaceholderPathMigration = !config.MigratedPlaceholderPathV10;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -164,7 +170,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -198,8 +204,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogInformation("[Federation] One-time IsShortcut-removal migration complete");
                 }
 
+                if (needsPlaceholderPathMigration)
+                {
+                    config.MigratedPlaceholderPathV10 = true;
+                    _logger.LogInformation("[Federation] One-time WAN-capped Placeholder-path migration complete");
+                }
+
                 if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration
-                    || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration)
+                    || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration
+                    || needsPlaceholderPathMigration)
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
@@ -278,6 +291,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var needsRemotePathMigration = !config!.MigratedRemotePathV7;
                 var needsStockTypeMigration = !config!.MigratedStockTypesV8;
                 var needsRemoveShortcutMigration = !config!.MigratedRemoveShortcutV9;
+                var needsPlaceholderPathMigration = !config!.MigratedPlaceholderPathV10;
 
                 int total = 0;
                 int failedSources = 0;
@@ -292,7 +306,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
