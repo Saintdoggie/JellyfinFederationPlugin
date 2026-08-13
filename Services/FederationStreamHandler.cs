@@ -21,6 +21,16 @@ namespace Jellyfin.Plugin.Federation.Services
             Timeout = TimeSpan.FromHours(3)
         };
 
+        // A single ReadAsync stalling this long (remote briefly saturated, tunnel
+        // hiccup, etc.) is treated as a failed attempt and retried rather than
+        // silently hanging for up to the 3-hour HttpClient timeout above.
+        private static readonly TimeSpan IdleReadTimeout = TimeSpan.FromSeconds(20);
+
+        // One initial attempt plus up to two resumes. A dropped/stalled connection
+        // resumes with a Range request from the last byte actually written to the
+        // client instead of failing the whole stream outright.
+        private const int MaxAttempts = 3;
+
         private readonly ILogger<FederationStreamHandler> _logger;
         private readonly FederationLibraryManager _federationManager;
 
@@ -81,51 +91,101 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = BuildDirectStreamUrl(serverId, remoteItemId, isAudio);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
-                using var remoteReq = new HttpRequestMessage(HttpMethod.Get, url);
-                if (!string.IsNullOrEmpty(range))
-                {
-                    remoteReq.Headers.TryAddWithoutValidation("Range", range);
-                }
-
-                using var remoteResp = await ProxyHttpClient.SendAsync(
-                    remoteReq,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (!remoteResp.IsSuccessStatusCode && remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent)
-                {
-                    response.StatusCode = (int)remoteResp.StatusCode;
-                    return;
-                }
-
-                response.StatusCode = (int)remoteResp.StatusCode;
-                if (remoteResp.Content.Headers.ContentType != null)
-                {
-                    response.ContentType = remoteResp.Content.Headers.ContentType.ToString();
-                }
-
-                if (remoteResp.Content.Headers.ContentLength.HasValue)
-                {
-                    response.ContentLength = remoteResp.Content.Headers.ContentLength.Value;
-                }
-
-                if (remoteResp.Headers.Contains("Accept-Ranges"))
-                {
-                    response.Headers["Accept-Ranges"] = remoteResp.Headers.GetValues("Accept-Ranges").FirstOrDefault() ?? "bytes";
-                }
-
-                if (remoteResp.Content.Headers.ContentRange != null)
-                {
-                    response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
-                }
-
-                await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                var (rangeStartInit, rangeEnd) = ParseRange(range);
+                var rangeStart = rangeStartInit;
+                var headersSent = false;
                 var buffer = new byte[81920];
-                int read;
-                while ((read = await remoteStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+
+                for (var attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
-                    await response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    await response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        using var remoteReq = new HttpRequestMessage(HttpMethod.Get, url);
+                        var requestRange = rangeStart > 0 || rangeEnd.HasValue
+                            ? $"bytes={rangeStart}-{(rangeEnd.HasValue ? rangeEnd.Value.ToString() : string.Empty)}"
+                            : null;
+                        if (requestRange != null)
+                        {
+                            remoteReq.Headers.TryAddWithoutValidation("Range", requestRange);
+                        }
+
+                        using var remoteResp = await ProxyHttpClient.SendAsync(
+                            remoteReq,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            cancellationToken).ConfigureAwait(false);
+
+                        if (!remoteResp.IsSuccessStatusCode && remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                        {
+                            if (!headersSent)
+                            {
+                                response.StatusCode = (int)remoteResp.StatusCode;
+                            }
+
+                            return;
+                        }
+
+                        if (!headersSent)
+                        {
+                            response.StatusCode = (int)remoteResp.StatusCode;
+                            if (remoteResp.Content.Headers.ContentType != null)
+                            {
+                                response.ContentType = remoteResp.Content.Headers.ContentType.ToString();
+                            }
+
+                            if (remoteResp.Content.Headers.ContentLength.HasValue)
+                            {
+                                // Total bytes this response promises the client, from the
+                                // originally requested start - fixed here, before any
+                                // retry can change what rangeStart means.
+                                response.ContentLength = rangeStart + remoteResp.Content.Headers.ContentLength.Value;
+                            }
+
+                            if (remoteResp.Headers.Contains("Accept-Ranges"))
+                            {
+                                response.Headers["Accept-Ranges"] = remoteResp.Headers.GetValues("Accept-Ranges").FirstOrDefault() ?? "bytes";
+                            }
+
+                            if (remoteResp.Content.Headers.ContentRange != null)
+                            {
+                                response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
+                            }
+
+                            headersSent = true;
+                        }
+
+                        await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                        while (true)
+                        {
+                            int read;
+                            using (var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                            {
+                                idleCts.CancelAfter(IdleReadTimeout);
+                                read = await remoteStream.ReadAsync(buffer, idleCts.Token).ConfigureAwait(false);
+                            }
+
+                            if (read == 0)
+                            {
+                                return;
+                            }
+
+                            // No per-chunk FlushAsync: Kestrel already sends each
+                            // WriteAsync over the wire immediately for a streamed
+                            // response, so the extra flush was just per-chunk syscall
+                            // overhead on the hot path of every byte relayed.
+                            await response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                            rangeStart += read;
+                        }
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "[Federation] Proxy stream for item {ItemId} stalled/dropped at byte {Offset} (attempt {Attempt}/{Max}), retrying",
+                            remoteItemId,
+                            rangeStart,
+                            attempt,
+                            MaxAttempts);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -135,8 +195,29 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Error proxying stream");
-                response.StatusCode = StatusCodes.Status500InternalServerError;
+                if (!response.HasStarted)
+                {
+                    response.StatusCode = StatusCodes.Status500InternalServerError;
+                }
             }
+        }
+
+        /// <summary>
+        /// Parses a "bytes=start-end" Range header value. Missing/unparseable input
+        /// is treated as "from the beginning, no upper bound".
+        /// </summary>
+        private static (long Start, long? End) ParseRange(string? range)
+        {
+            if (string.IsNullOrEmpty(range) || !range.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+            {
+                return (0, null);
+            }
+
+            var spec = range.Substring("bytes=".Length);
+            var parts = spec.Split('-');
+            var start = parts.Length > 0 && long.TryParse(parts[0], out var s) ? s : 0;
+            long? end = parts.Length > 1 && long.TryParse(parts[1], out var e) ? e : (long?)null;
+            return (start, end);
         }
     }
 }
