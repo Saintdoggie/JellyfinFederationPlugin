@@ -210,28 +210,22 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansNoStaticPath_ButStillResolvesToDirectPlay()
+    public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansNoCap_SoTheStampedPathIsUncapped()
     {
         // The default for every server, and the state of a brand-new one before the
-        // background classifier has had a chance to run even once. Two distinct
-        // things are both true here:
-        //  1. item.Path/Container are NOT stamped - unlike Off or a confirmed-LAN
-        //     Auto server, this decision could still change once classification
-        //     completes, and reconciliation never revisits an already-created item,
-        //     so freezing a guess in here is exactly the bug that made WAN capping
-        //     "work for some files, not others" - only items happening to be created
-        //     while the decision matched the *current* one behaved correctly.
-        //  2. Direct play is still what a live request resolves to right now (via
-        //     FederationMediaSourceProvider, which calls BuildPlaybackUrl fresh on
-        //     every playback) - a cap is never speculative, unclassified means
-        //     "no evidence a cap is needed", same as if WAN capping did not exist.
+        // background classifier has had a chance to run even once. Unclassified means
+        // "no evidence a cap is needed" (WanBandwidthMonitor.GetEffectiveCapMbps
+        // returns null for it, same as confirmed-local), so this is a plain,
+        // never-changes-later URL - safe to stamp statically like Off, unlike the
+        // confirmed-WAN/Manual cases below whose cap value can genuinely still move.
         var server = AddServer();
         var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv");
         var item = _manager.MaterializeItem(entry);
 
         Assert.Equal(Configuration.WanCapMode.Auto, server.WanCapMode);
-        Assert.True(string.IsNullOrEmpty(item.Path));
-        Assert.Null(item.Container);
+        Assert.Contains("Static=true", item.Path);
+        Assert.DoesNotContain("VideoBitrate", item.Path);
+        Assert.Equal("mkv", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Contains("Static=true", liveUrl);
@@ -264,18 +258,26 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", remoteId, container: "mkv");
         var item = _manager.MaterializeItem(entry);
 
-        // Manual is a fixed number, but an admin can edit it at any time - the same
-        // staleness risk as Auto, so it is never stamped statically either. Always
-        // resolved fresh through BuildPlaybackUrl (what FederationMediaSourceProvider
-        // calls on every playback request) instead.
-        Assert.True(string.IsNullOrEmpty(item.Path));
-        Assert.Null(item.Container);
+        // Manual is a fixed number, but an admin can edit it at any time, so the
+        // stamped Path can go stale if they do. That used to mean never stamping one
+        // at all - but a null Path makes Jellyfin's own static media source a
+        // Placeholder, which hides the Play button on the item's own detail page
+        // entirely (see the comment on ResolvePlaybackUrl). Stamped now, accepting
+        // that staleness: FederationMediaSourceProvider.GetMediaSources already
+        // detects a stale Path (it no longer matches a freshly built URL) and serves
+        // a corrected alternate source alongside it - a wrong bitrate until that
+        // self-heals, not an unplayable item.
+        var expectedUrl =
+            $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
+                + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080";
+        Assert.Equal(expectedUrl, item.Path);
+        // The URL forces h264/aac in an mp4 container regardless of the source
+        // file's real one (mkv here) - Container must match what actually gets
+        // served, not the remote's original file.
+        Assert.Equal("mp4", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
-        Assert.Equal(
-            $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
-                + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080",
-            liveUrl);
+        Assert.Equal(expectedUrl, liveUrl);
     }
 
     [Fact]
@@ -346,9 +348,13 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid());
         var item = _manager.MaterializeItem(entry);
 
-        // Confirmed WAN is never safe to stamp statically - only confirmed LAN and
-        // Off are (see the two tests above/below this block).
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // Confirmed WAN's cap can still move (classification is permanent, but a
+        // fresh bandwidth measurement can still change the number), so this Path can
+        // go stale exactly like the Manual case above - stamped anyway, for the same
+        // reason: a null Path hides the Play button entirely, which is worse than an
+        // occasionally-stale bitrate that GetMediaSources already self-heals.
+        Assert.Contains("VideoBitrate=10000000", item.Path);
+        Assert.Equal("mp4", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Contains("VideoBitrate=10000000", liveUrl);
