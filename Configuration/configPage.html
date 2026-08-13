@@ -238,7 +238,7 @@
                         <div class="fed-input-container">
                             <label class="fed-label" for="fedTxtServerUrl">This server's public URL (optional override)</label>
                             <input type="text" id="fedTxtServerUrl" class="emby-input fed-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                            <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect. Only needed for Proxy streaming mode behind unusual reverse proxies.</p>
+                            <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all.</p>
                         </div>
                         <div class="fed-input-container">
                             <label class="fed-label" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>

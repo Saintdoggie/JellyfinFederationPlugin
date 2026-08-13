@@ -64,7 +64,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <paramref name="forceRecreateNested"/> deliberately leaves out (they have no
         /// Series-matching mechanism).
         /// </param>
-        public Task ReconcileMappingAsync(
+        public async Task ReconcileMappingAsync(
             LibraryMapping mapping,
             CancellationToken cancellationToken = default,
             bool forceRecreateNested = false,
@@ -80,7 +80,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (libraryFolder == null)
                 {
                     _logger.LogDebug("[Federation] Library {Name} is not provisioned; skipping item persistence", mapping.LocalLibraryName);
-                    return Task.CompletedTask;
+                    return;
                 }
 
                 var desired = _federationManager.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
@@ -366,6 +366,65 @@ namespace Jellyfin.Plugin.Federation.Services
                     _libraryManager.DeleteItem(stale, new DeleteOptions { DeleteFileLocation = false });
                 }
 
+                // Reconciliation creates and deletes but has never updated an item in
+                // place, so the stream URL stamped on an item was effectively frozen at
+                // creation time. That is what made switching a server to Proxy mode look
+                // like it did nothing: item.Path still held the Direct URL built when the
+                // item was created, and Jellyfin serves that stored path as a *static*
+                // media source alongside the one this plugin builds fresh - with the
+                // stale entry first, so clients play it and none of Proxy's resumable
+                // relay is ever involved. The same freeze applies after a server changes
+                // address or mints a new API key.
+                //
+                // Restamped in place rather than by delete-and-recreate (the tool every
+                // earlier migration reached for) specifically because deleting an item
+                // discards its watch progress, and there is no reason to lose a resume
+                // point over a URL change.
+                var deletedIds = new HashSet<Guid>(toDelete.Select(d => d.Id));
+                var restamped = new List<BaseItem>();
+                foreach (var x in existing)
+                {
+                    if (deletedIds.Contains(x.Item.Id))
+                    {
+                        continue;
+                    }
+
+                    var entry = _federationManager.Cache.GetEntryByKey(x.Key!);
+                    if (entry == null || !FederationLibraryManager.IsStreamableType(entry.ItemType))
+                    {
+                        continue;
+                    }
+
+                    var primary = entry.GetPrimarySource();
+                    if (primary == null)
+                    {
+                        continue;
+                    }
+
+                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, primary);
+                    if (string.IsNullOrEmpty(expected) || string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    x.Item.Path = expected;
+                    restamped.Add(x.Item);
+                }
+
+                if (restamped.Count > 0)
+                {
+                    await _libraryManager.UpdateItemsAsync(
+                        restamped,
+                        itemParent,
+                        ItemUpdateType.MetadataEdit,
+                        cancellationToken).ConfigureAwait(false);
+
+                    _logger.LogInformation(
+                        "[Federation] Refreshed the stored stream URL on {Count} item(s) in {Name} (streaming mode or server address changed); watch progress preserved",
+                        restamped.Count,
+                        mapping.LocalLibraryName);
+                }
+
                 if (toCreate.Count > 0)
                 {
                     // Created tier-by-tier (Series/Movies, then Seasons, then Episodes)
@@ -448,8 +507,6 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Failed to reconcile library items for {Name}", mapping.LocalLibraryName);
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>
