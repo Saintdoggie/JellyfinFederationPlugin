@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.41",
+        "changelog": "Cleans up after itself in two places that previously left dead items behind. (1) Uninstalling the plugin from the dashboard now removes every federated Movie/Series/Season/Episode item it ever created, across every mapped library, before the plugin is unloaded - previously these virtual items (which have no real file behind them) were left in the library forever, since nothing would ever provide a MediaSource for them again or clean them up once the plugin providing that sync was gone. Implemented via BasePlugin.OnUninstalling(), which Jellyfin's plugin manager calls before removing the plugin's own DLL/data folder - that removal step was already handled correctly by Jellyfin core and is unaffected by this change. (2) Confirmed removing a remote server (\"Servers/{id}\" DELETE) already reconciles every affected library inline and removes its items immediately rather than waiting for the next sync - this was already correct, verified while implementing (1).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/v0.0.41/Jellyfin.Federation.zip",
+        "checksum": "b0ca59077a9ccd2e99f38b6087bb4f2a",
+        "timestamp": "2026-08-13T00:00:00Z"
+      },
+      {
         "version": "0.0.40",
         "changelog": "Fixes a systemic bug found live while testing 0.0.39: RemoteServerClient's JsonSerializerOptions had no string-enum converter, so System.Text.Json fell back to expecting enum fields as raw numbers instead of names. Every modern Jellyfin server (every remote this plugin talks to) serializes enums as their string name - e.g. \"Protocol\":\"File\" - so deserializing any PlaybackInfo response threw on its very first enum field, every single time, for every item, on every server. Confirmed live: querying a remote directly showed an entirely ordinary response, yet the plugin's own deserialization of that exact payload threw JsonException on every attempt. This was not occasional - GetPlaybackInfoAsync has been silently failing on every call and falling back to null, meaning federated items never got the remote's fast, accurate codec/container info and always fell back to local ffprobe discovery instead, and the 15s PlaybackInfo cache added in 0.0.37 never had a successful response to cache. Added JsonStringEnumConverter to the shared JsonOpts. No config or data migration.",
         "targetAbi": "10.11.0.0",
