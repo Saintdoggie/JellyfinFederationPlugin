@@ -123,17 +123,29 @@ namespace Jellyfin.Plugin.Federation.Services
             // remote did not report one, the container is discovered by the
             // EnableRemoteContentProbe pass described above instead.
             //
-            // Tied directly to whether a static Path was actually stamped above
-            // (rather than re-deriving the WAN-cap condition separately, which used
-            // to drift out of sync with it): with no Path, Jellyfin's static source is
-            // a placeholder regardless of Container, so stamping one here would be
-            // meaningless at best - and actively wrong when the item.Path omission
-            // above is specifically because a WAN cap *could* apply, since the
-            // server's real container/codecs are then not necessarily what gets
-            // served on any given request.
-            if (streamUrl != null && !string.IsNullOrEmpty(entry.Metadata.Container))
+            // ResolvePlaybackUrl now always stamps a Path (see its comment - a null
+            // Path made Jellyfin's static source a Placeholder, which hid the Play
+            // button entirely), including for WAN-capped Direct-mode video, whose URL
+            // is forced to mp4/h264/aac (BuildPlaybackUrl) rather than the source
+            // file's real container. Stamping the raw container in that case would
+            // mismatch what the URL actually serves, so it must still be checked here
+            // even though streamUrl itself is no longer null for that case.
+            if (streamUrl != null)
             {
-                item.Container = entry.Metadata.Container;
+                var primaryForContainer = entry.GetPrimarySource();
+                var isWanCappedVideo = primaryForContainer != null
+                    && !IsAudioType(entry.ItemType)
+                    && GetServer(primaryForContainer.ServerId) is { StreamingMode: StreamingMode.Direct } capServer
+                    && _bandwidthMonitor.GetEffectiveCapMbps(capServer) != null;
+
+                if (isWanCappedVideo)
+                {
+                    item.Container = "mp4";
+                }
+                else if (!string.IsNullOrEmpty(entry.Metadata.Container))
+                {
+                    item.Container = entry.Metadata.Container;
+                }
             }
 
             item.Overview = entry.Metadata.Overview;
@@ -346,43 +358,36 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                // Direct mode with WanCapMode Auto or Manual: never stamp a static
-                // Path. Reconciliation only ever creates and deletes items, it never
-                // updates one in place, so a Path stamped here would freeze in
-                // whatever WanBandwidthMonitor happened to decide at the exact moment
-                // this particular item was first created - permanently, even after
-                // later classification or a fresh bandwidth measurement changes what
-                // the *correct* URL should now be. That produced exactly the "works
-                // for some files, not others" symptom: items created before
-                // classification finished (most of an existing library) froze
-                // uncapped forever; items created after froze capped forever;
-                // whichever one no longer matches the current decision leaves
-                // Jellyfin's own static source stale while this plugin's dynamic
-                // FederationMediaSourceProvider offers a second, correct one
-                // alongside it - and playback does not reliably pick the right one of
-                // the two. Leaving Path null sidesteps all of it: with no static
-                // source to (possibly wrongly) trust, every playback of this item
-                // goes through the provider instead, which rebuilds the URL fresh -
-                // and therefore always current - on every single request. Off mode is
-                // exempt: its URL (the raw source, unconditionally) can never change,
-                // so stamping it is safe and saves a request-time remote round-trip.
-                // So is Auto mode once WanBandwidthMonitor has positively confirmed
-                // the server is on the same network - that classification is, for
-                // practical purposes, permanent, since there is no bandwidth
-                // measurement in play for it to ever go stale against. Everything
-                // else that could plausibly still start needing a cap later - not yet
-                // classified, confirmed WAN, or Manual (an admin can edit the fixed
-                // number at any time) - stays unstamped.
-                var server = GetServer(primary.ServerId);
-                if (server != null
-                    && server.StreamingMode == StreamingMode.Direct
-                    && server.WanCapMode != WanCapMode.Off
-                    && !(server.WanCapMode == WanCapMode.Auto && _bandwidthMonitor.IsConfirmedLocalNetwork(server))
-                    && !IsAudioType(entry.ItemType))
-                {
-                    return null;
-                }
-
+                // Previously left Path null here for Direct mode with WanCapMode Auto
+                // or Manual, specifically to avoid freezing a URL that could go stale
+                // once WanBandwidthMonitor's classification/measurement changes
+                // (reconciliation never updates an existing item's Path in place).
+                // That traded a minor problem for a much worse one: with Path null,
+                // Jellyfin's own static media source comes back as
+                // MediaSourceType.Placeholder (see the comment on item.Path above -
+                // this is precisely the "no media here" case it warns about), and
+                // GetMediaSources.staticSourceCoversPrimary correctly resolves to
+                // false when Path is empty - so the item-detail endpoint
+                // (Users/{id}/Items/{itemId}, which embeds Jellyfin core's *static*
+                // source rather than calling this plugin's dynamic provider) surfaces
+                // that Placeholder to clients. jellyfin-web's Details page uses
+                // exactly that embedded source to decide whether to render the Play
+                // button at all, regardless of the SupportsDirectPlay/DirectStream/
+                // Transcoding flags on it - so every WAN-capped Direct-mode item was
+                // permanently unplayable from its own detail page, confirmed live
+                // (0.0.37 testing): "Placeholder"/"File" protocol/IsRemote=false on
+                // the embedded source despite a fully valid, correctly-capped source
+                // being available through PlaybackInfo the whole time.
+                //
+                // The staleness this was guarding against is already handled: when
+                // WanBandwidthMonitor's decision moves on and the stored Path no
+                // longer matches a freshly built URL, staticSourceCoversPrimary
+                // resolves to false and FederationMediaSourceProvider.GetMediaSources
+                // already logs a warning and serves a freshly built alternate source
+                // instead (see the comment above staticSourceCoversPrimary). Worst
+                // case a client ends up direct-playing the stale-but-still-valid
+                // cached URL until the item is recreated - a wrong bitrate, not an
+                // unplayable item. That is strictly better than no Play button.
                 return BuildPlaybackUrl(entry.ItemType, primary);
             }
             catch (Exception ex)
