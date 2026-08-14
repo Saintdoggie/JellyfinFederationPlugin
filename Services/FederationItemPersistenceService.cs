@@ -395,13 +395,49 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var primary = entry.GetPrimarySource();
-                    if (primary == null)
+                    // Switching a server off has to actually stop its titles playing.
+                    // The dynamic provider already refuses to serve a source for a
+                    // disabled server, but Jellyfin independently exposes whatever is
+                    // stamped on item.Path as a *static* source, so a stale URL kept
+                    // the title playing straight from a server the admin had just
+                    // turned off - silently contradicting what the switch claims to do.
+                    //
+                    // Resolved against every source in priority order rather than just
+                    // GetPrimarySource(), because sources are ordered by Priority alone
+                    // and never re-ordered by enabled state. On a deduped entry - the
+                    // same title matched across servers, which is the whole point of
+                    // dedup - the primary can be switched off while another server
+                    // still serves it. Keying off the primary alone would blank the
+                    // path and remove the Play button from an item that is perfectly
+                    // playable elsewhere, breaking exactly the redundancy dedup exists
+                    // to provide. The dynamic provider already picks the first enabled
+                    // source this way; this keeps the stamped path consistent with it.
+                    var playable = FirstEnabledSource(entry, config);
+
+                    // Only when no source has an enabled home does the title genuinely
+                    // have nowhere to play from. Clearing the path leaves Jellyfin with
+                    // a placeholder source and no Play button, which is the intended
+                    // meaning of "disabled"; a URL is stamped back automatically on the
+                    // first sync after any of its servers is re-enabled.
+                    if (playable == null)
                     {
+                        if (!string.IsNullOrEmpty(x.Item.Path))
+                        {
+                            x.Item.Path = null;
+                            restamped.Add(x.Item);
+                        }
+
                         continue;
                     }
 
-                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, primary);
+                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, playable);
+
+                    // A null here does NOT mean "disabled" - that case is handled
+                    // above. It means the URL cannot be built right now, which for
+                    // Proxy mode happens whenever this server's own address is unknown
+                    // (a background sync has no incoming request to infer one from).
+                    // Blanking a working path over a temporary inability to rebuild it
+                    // would take the whole library offline, so leave it alone.
                     if (string.IsNullOrEmpty(expected) || string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
                     {
                         continue;
@@ -420,7 +456,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken).ConfigureAwait(false);
 
                     _logger.LogInformation(
-                        "[Federation] Refreshed the stored stream URL on {Count} item(s) in {Name} (streaming mode or server address changed); watch progress preserved",
+                        "[Federation] Refreshed the stored stream URL on {Count} item(s) in {Name} (streaming mode, server address, or enabled state changed); watch progress preserved",
                         restamped.Count,
                         mapping.LocalLibraryName);
                 }
@@ -507,6 +543,33 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Failed to reconcile library items for {Name}", mapping.LocalLibraryName);
             }
+        }
+
+        /// <summary>
+        /// Returns the highest-priority source of <paramref name="entry"/> whose server
+        /// is still enabled, or null when none is - meaning the title genuinely has
+        /// nowhere left to play from and its stamped path should be cleared.
+        /// <para>
+        /// Deliberately not <c>GetPrimarySource()</c>. Sources are ordered by Priority
+        /// and never re-ordered by enabled state, so on a deduped entry (the same title
+        /// matched across several servers) the primary can be switched off while another
+        /// server still serves it. Treating that as "nowhere to play" would strip the
+        /// Play button from an item that is perfectly playable elsewhere - breaking the
+        /// exact redundancy dedup exists to provide.
+        /// </para>
+        /// </summary>
+        internal static FederatedSource? FirstEnabledSource(FederatedCacheEntry entry, PluginConfiguration? config)
+        {
+            foreach (var candidate in entry.GetSourcesSnapshot())
+            {
+                var candidateServer = config?.RemoteServers?.FirstOrDefault(s => s.Id == candidate.ServerId);
+                if (candidateServer != null && candidateServer.Enabled)
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
