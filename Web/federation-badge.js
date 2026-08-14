@@ -11,17 +11,16 @@
 
   var STYLE_ID = 'federation-badge-style';
 
-  // Hand-built "network of nodes" glyph (not lifted from any icon set) -
-  // three small circles in a triangle, connected by lines. Kept simple and
-  // stroke-based so it renders correctly via currentColor without needing
-  // to embed and verify an external icon library's exact path data.
+  // A cloud reads immediately as "this comes from somewhere else and is
+  // streamed", which is exactly the fact being conveyed. The previous node-graph
+  // glyph was consistently read as a generic "share" icon instead - it said
+  // nothing about where the file lives, which is the whole point.
   var ICON_SVG =
     '<svg viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
-    '<circle cx="12" cy="5" r="2.5"></circle>' +
-    '<circle cx="5" cy="19" r="2.5"></circle>' +
-    '<circle cx="19" cy="19" r="2.5"></circle>' +
-    '<path d="M12 7.5 L5 16.5 M12 7.5 L19 16.5"></path>' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97 6 6 0 0 0-11.66-1.5A3.75 3.75 0 0 0 6.5 19z"></path>' +
+    '<path d="M12 11.5v5.5"></path>' +
+    '<path d="M9.75 14.25 12 11.5l2.25 2.75"></path>' +
     '</svg>';
 
   // Small icon inline with text, used only on the detail page (a fixed,
@@ -43,10 +42,18 @@
       // scrolling regardless of whether the card shows its title text at
       // all. Top-left, since Jellyfin's own played-checkmark and
       // unwatched-count badges live top-right/bottom-right.
-      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;',
-      'background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;color:#fff;',
-      'z-index:3;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.5);}',
-      '.federation-badge-corner svg{width:13px;height:13px;}'
+      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:21px;height:21px;border-radius:50%;',
+      'background:rgba(12,14,18,.72);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;',
+      'color:rgba(255,255,255,.92);z-index:3;pointer-events:none;',
+      'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.16);}',
+      '.federation-badge-corner svg{width:12px;height:12px;}',
+      // Detail page: a labelled chip naming the server. An unlabelled glyph only
+      // says "not from here", which raises the question it should be answering.
+      '.federation-badge-pill{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
+      'margin-right:.55em;padding:.2em .6em .2em .45em;border-radius:1em;font-size:.5em;',
+      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;',
+      'background:rgba(120,170,255,.16);color:#9fc4ff;border:1px solid rgba(120,170,255,.3);}',
+      '.federation-badge-pill .federation-badge-icon{width:1.15em;height:1.15em;margin-right:0;opacity:1;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -55,18 +62,27 @@
     return (id || '').replace(/-/g, '').toLowerCase();
   }
 
-  var federatedIds = new Set();
+  // id -> source server name ('' when unknown). A map rather than a set so the
+  // badge can name the server instead of just asserting "not local".
+  var federatedIds = new Map();
 
   function refreshFederatedIds() {
     fetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
       .then(function (res) {
-        return res.ok ? res.json() : [];
+        return res.ok ? res.json() : {};
       })
-      .then(function (ids) {
-        var next = new Set();
-        (ids || []).forEach(function (id) {
-          next.add(normalizeId(id));
-        });
+      .then(function (data) {
+        var next = new Map();
+        if (Array.isArray(data)) {
+          // Older servers returned a bare id list; still honour it so a
+          // half-upgraded setup degrades to an unlabelled badge rather than none.
+          data.forEach(function (id) { next.set(normalizeId(id), ''); });
+        } else {
+          Object.keys(data || {}).forEach(function (id) {
+            next.set(normalizeId(id), data[id] || '');
+          });
+        }
+
         federatedIds = next;
       })
       .catch(function () {
@@ -93,9 +109,10 @@
         el.style.position = 'relative';
       }
 
+      var srv = federatedIds.get(id);
       var badge = document.createElement('div');
       badge.className = 'federation-badge-corner';
-      badge.title = 'Streamed from another server';
+      badge.title = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
       badge.innerHTML = ICON_SVG;
       el.appendChild(badge);
     }
@@ -114,19 +131,35 @@
       return;
     }
 
+    var srv = federatedIds.get(id);
+    var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
+    var pill = '<span class="federation-badge-pill" title="' + label.replace(/"/g, '&quot;') + '">'
+      + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>';
+
     var selectors = ['.nameContainer bdi', '.itemName-primary bdi', '.detailPagePrimaryContainer h1 bdi', 'h1 bdi'];
     for (var i = 0; i < selectors.length; i++) {
       var title = document.querySelector(selectors[i]);
-      if (title && !title.querySelector('.federation-badge-icon')) {
-        title.insertAdjacentHTML('afterbegin', INLINE_ICON_HTML);
+      if (title && !title.querySelector('.federation-badge-pill')) {
+        title.insertAdjacentHTML('afterbegin', pill);
         return;
       }
     }
   }
 
+  // Only real poster cards. "[data-id]" alone also matches the action buttons
+  // inside a card's hover overlay (played, favourite, context menu) and the
+  // card's own text/footer container - all of which carry the same data-id -
+  // so every federated title sprouted the icon three or four times over,
+  // including in the middle of the hover controls. Restricting to the card
+  // element itself gives exactly one badge per title.
+  var CARD_SELECTOR = [
+    '.card[data-id]:not([data-federation-badge])',
+    '.listItem[data-id]:not([data-federation-badge])'
+  ].join(',');
+
   function scan() {
     injectStyle();
-    document.querySelectorAll('[data-id]:not([data-federation-badge])').forEach(badgeCard);
+    document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
   }
 

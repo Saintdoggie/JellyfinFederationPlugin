@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Jellyfin.Controller" Version="10.11.6" />
     <PackageReference Include="Jellyfin.Model" Version="10.11.6" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

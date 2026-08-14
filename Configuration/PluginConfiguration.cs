@@ -222,6 +222,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// rebuilds.
         /// </summary>
         public bool MigratedPlaceholderPathV10 { get; set; }
+
+        /// <summary>
+        /// Gets or sets the multi-server pools this server belongs to (owns or has
+        /// joined). See <see cref="Services.FederationFriendService"/> for how a pool
+        /// invite rides the same friend-request handshake as a direct friendship.
+        /// </summary>
+        public List<FederationPool> Pools { get; set; } = new List<FederationPool>();
     }
 
     /// <summary>
@@ -415,6 +422,81 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// the real trust boundary, not this check.
         /// </summary>
         public bool Verified { get; set; }
+
+        /// <summary>
+        /// Gets or sets the pool this request is introducing the recipient to, or
+        /// null for an ordinary direct friend request. Set by
+        /// <see cref="Services.FederationFriendService.SendPoolInviteAsync"/>; when
+        /// present, accepting this request also joins the named pool and fans out
+        /// friend requests to every other member in <see cref="PoolRoster"/> -
+        /// see <see cref="Services.FederationFriendService.AcceptFriendRequestAsync"/>.
+        /// </summary>
+        public string? PoolId { get; set; }
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string? PoolName { get; set; }
+
+        /// <summary>Gets or sets the persistent federation id of the pool's owner.</summary>
+        public string? PoolOwnerFederationId { get; set; }
+
+        /// <summary>Gets or sets the pool owner's display name.</summary>
+        public string? PoolOwnerName { get; set; }
+
+        /// <summary>
+        /// Gets or sets the pool's membership as known by the sender at the time this
+        /// request was sent - used to fan out connections to the rest of the pool on
+        /// accept, not kept in sync afterward.
+        /// </summary>
+        public List<PoolMember>? PoolRoster { get; set; }
+    }
+
+    /// <summary>
+    /// A multi-server pool: a named group of Federation servers who all federate
+    /// with every other member. Membership is admin-curated - one admin creates the
+    /// pool and invites specific servers into it - but every pairwise connection
+    /// still goes through the ordinary friend-request handshake, so joining a pool
+    /// never connects two servers without a human on each side clicking Accept.
+    /// Each member keeps its own best-effort copy of the roster; there is no
+    /// central server or consensus protocol reconciling them.
+    /// </summary>
+    public class FederationPool
+    {
+        /// <summary>Gets or sets the pool's id, shared by every member's copy.</summary>
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this server created the pool.
+        /// Informational only (e.g. for the UI to show "you own this pool") - every
+        /// member can invite new servers in, ownership does not gate that.
+        /// </summary>
+        public bool IsOwner { get; set; }
+
+        /// <summary>Gets or sets the owner's persistent federation id.</summary>
+        public string OwnerFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the owner's display name.</summary>
+        public string OwnerName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets this server's best-effort view of the pool's members.</summary>
+        public List<PoolMember> Members { get; set; } = new List<PoolMember>();
+    }
+
+    /// <summary>
+    /// A server's entry in a <see cref="FederationPool"/>'s roster.
+    /// </summary>
+    public class PoolMember
+    {
+        /// <summary>Gets or sets the member's persistent federation id.</summary>
+        public string FederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the member's display name.</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the member's server address.</summary>
+        public string Url { get; set; } = string.Empty;
     }
 
     /// <summary>

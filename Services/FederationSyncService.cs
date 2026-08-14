@@ -658,7 +658,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 foreach (var key in dedupKeys)
                 {
-                    if (providerIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
+                    if (FederationLibraryManager.TryGetProviderId(providerIds, key, out var val))
                     {
                         matchedProvider = key;
                         matchedId = val;

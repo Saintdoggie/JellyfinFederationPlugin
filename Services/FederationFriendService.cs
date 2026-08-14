@@ -93,7 +93,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Sends a friend request to a remote Federation server: mints a fresh API
         /// key on this server for the remote to use, and asks them to accept.
         /// </summary>
-        public async Task<(bool Success, string Message)> SendFriendRequestAsync(string remoteUrl, CancellationToken cancellationToken)
+        /// <param name="remoteUrl">The remote server's address.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <param name="pool">
+        /// When set, this request also introduces the recipient to the named pool -
+        /// see <see cref="SendPoolInviteAsync"/>. Null for an ordinary direct friend
+        /// request.
+        /// </param>
+        public async Task<(bool Success, string Message)> SendFriendRequestAsync(string remoteUrl, CancellationToken cancellationToken, FederationPool? pool = null)
         {
             remoteUrl = (remoteUrl ?? string.Empty).TrimEnd('/');
             if (!ConfigValidator.IsValidServerUrl(remoteUrl))
@@ -134,6 +141,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 ApiKeyForYou = apiKey
             };
 
+            if (pool != null)
+            {
+                payload.PoolId = pool.Id;
+                payload.PoolName = pool.Name;
+                payload.PoolOwnerFederationId = pool.OwnerFederationId;
+                payload.PoolOwnerName = pool.OwnerName;
+                payload.PoolRoster = pool.Members.ToList();
+            }
+
             try
             {
                 using var content = JsonContent(payload);
@@ -153,7 +169,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerUrl = remoteUrl,
                     RemoteServerName = result?.ServerName ?? remoteUrl,
                     ApiKey = apiKey,
-                    CreatedUtc = DateTime.UtcNow
+                    CreatedUtc = DateTime.UtcNow,
+                    PoolId = pool?.Id,
+                    PoolName = pool?.Name,
+                    PoolOwnerFederationId = pool?.OwnerFederationId,
+                    PoolOwnerName = pool?.OwnerName,
+                    PoolRoster = pool?.Members.ToList()
                 });
                 Plugin.Instance.SaveConfiguration();
 
@@ -281,7 +302,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerName = string.IsNullOrEmpty(payload.FromServerName) ? fromUrl : payload.FromServerName,
                     RemoteServerId = payload.FromServerId ?? string.Empty,
                     ApiKey = payload.ApiKeyForYou,
-                    CreatedUtc = DateTime.UtcNow
+                    CreatedUtc = DateTime.UtcNow,
+                    PoolId = payload.PoolId,
+                    PoolName = payload.PoolName,
+                    PoolOwnerFederationId = payload.PoolOwnerFederationId,
+                    PoolOwnerName = payload.PoolOwnerName,
+                    PoolRoster = payload.PoolRoster
                 };
                 config.IncomingFriendRequests.Add(existing);
             }
@@ -382,7 +408,162 @@ namespace Jellyfin.Plugin.Federation.Services
             Plugin.Instance.SaveConfiguration();
             _clientFactory.InvalidateAll();
 
+            if (!string.IsNullOrEmpty(entry.PoolId))
+            {
+                await AdoptPoolAndFanOutAsync(entry, cancellationToken).ConfigureAwait(false);
+            }
+
             return (true, $"You and {entry.RemoteServerName} are now federated.");
+        }
+
+        /// <summary>
+        /// Admin-triggered: creates a new pool owned by this server, with this server
+        /// as its sole initial member.
+        /// </summary>
+        public FederationPool CreatePool(string name)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var selfId = GetOrCreateLocalFederationId();
+            var selfName = _applicationHost.FriendlyName;
+            var selfUrl = ResolveLocalUrl();
+
+            var pool = new FederationPool
+            {
+                Name = string.IsNullOrWhiteSpace(name) ? "Pool" : name.Trim(),
+                IsOwner = true,
+                OwnerFederationId = selfId,
+                OwnerName = selfName
+            };
+            pool.Members.Add(new PoolMember { FederationId = selfId, Name = selfName, Url = selfUrl });
+
+            config.Pools.Add(pool);
+            Plugin.Instance.SaveConfiguration();
+            return pool;
+        }
+
+        /// <summary>
+        /// Admin-triggered: invites a server into a pool this server already belongs
+        /// to. Just a friend request that also carries the pool's identity and
+        /// current roster - see <see cref="SendFriendRequestAsync"/> - so accepting it
+        /// both connects the two servers directly and (via
+        /// <see cref="AdoptPoolAndFanOutAsync"/>) triggers the recipient to connect to
+        /// every other member too.
+        /// </summary>
+        public async Task<(bool Success, string Message)> SendPoolInviteAsync(string poolId, string remoteUrl, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
+            if (pool == null)
+            {
+                return (false, "Pool not found.");
+            }
+
+            return await SendFriendRequestAsync(remoteUrl, cancellationToken, pool).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Admin-triggered: removes this server's own membership record for a pool.
+        /// Existing friendships formed through it are left alone - leaving a pool
+        /// stops it introducing you to *new* members, it does not unfriend anyone.
+        /// </summary>
+        public bool LeavePool(string poolId)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
+            if (pool == null)
+            {
+                return false;
+            }
+
+            config.Pools.Remove(pool);
+            Plugin.Instance.SaveConfiguration();
+            return true;
+        }
+
+        /// <summary>
+        /// Called after accepting a pool-tagged friend request: records/updates this
+        /// server's local copy of the pool (creating it on first contact) and, for
+        /// every other member the invite told us about that we're not already
+        /// connected to, sends a pool invite of our own so the mesh keeps forming.
+        /// Each of those is still an ordinary friend request - the recipient's admin
+        /// still has to click Accept, same trust boundary as any direct friendship.
+        /// A failure introducing any one member is logged and skipped rather than
+        /// aborting the rest; a full picture converges over the next few pool syncs
+        /// rather than depending on every hop succeeding in one pass.
+        /// </summary>
+        private async Task AdoptPoolAndFanOutAsync(FriendRequest entry, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var pool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+            if (pool == null)
+            {
+                pool = new FederationPool
+                {
+                    Id = entry.PoolId!,
+                    Name = entry.PoolName ?? entry.PoolId!,
+                    IsOwner = false,
+                    OwnerFederationId = entry.PoolOwnerFederationId ?? string.Empty,
+                    OwnerName = entry.PoolOwnerName ?? entry.RemoteServerName
+                };
+                config.Pools.Add(pool);
+            }
+
+            var selfId = GetOrCreateLocalFederationId();
+            var selfName = _applicationHost.FriendlyName;
+            var selfUrl = ResolveLocalUrl();
+
+            void AddMember(string? federationId, string? name, string? url)
+            {
+                if (string.IsNullOrEmpty(url))
+                {
+                    return;
+                }
+
+                var normalized = url.TrimEnd('/');
+                if (pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
+                pool.Members.Add(new PoolMember { FederationId = federationId ?? string.Empty, Name = name ?? url, Url = url });
+            }
+
+            AddMember(selfId, selfName, selfUrl);
+            AddMember(entry.RemoteServerId, entry.RemoteServerName, entry.RemoteServerUrl);
+            foreach (var member in entry.PoolRoster ?? new List<PoolMember>())
+            {
+                AddMember(member.FederationId, member.Name, member.Url);
+            }
+
+            Plugin.Instance.SaveConfiguration();
+
+            var selfUrlNormalized = (selfUrl ?? string.Empty).TrimEnd('/');
+            var inviterUrlNormalized = entry.RemoteServerUrl.TrimEnd('/');
+            var toIntroduce = pool.Members
+                .Where(m => !string.Equals(m.Url.TrimEnd('/'), selfUrlNormalized, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(m.Url.TrimEnd('/'), inviterUrlNormalized, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var member in toIntroduce)
+            {
+                if (AlreadyKnown(config, member.Url))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var (success, message) = await SendPoolInviteAsync(pool.Id, member.Url, cancellationToken).ConfigureAwait(false);
+                    if (!success)
+                    {
+                        _logger.LogDebug("[Federation] Pool mesh introduction to {Url} did not send: {Message}", member.Url, message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Pool mesh introduction to {Url} failed (non-fatal - will retry on a future pool sync)", member.Url);
+                }
+            }
         }
 
         /// <summary>
@@ -449,15 +630,29 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            var memberName = string.IsNullOrEmpty(payload.FromServerName) ? entry.RemoteServerName : payload.FromServerName;
+            var memberUrl = string.IsNullOrEmpty(payload.FromServerUrl) ? entry.RemoteServerUrl : payload.FromServerUrl.TrimEnd('/');
+
             config.RemoteServers.Add(new RemoteServer
             {
                 Id = Guid.NewGuid().ToString(),
-                Name = string.IsNullOrEmpty(payload.FromServerName) ? entry.RemoteServerName : payload.FromServerName,
-                Url = string.IsNullOrEmpty(payload.FromServerUrl) ? entry.RemoteServerUrl : payload.FromServerUrl.TrimEnd('/'),
+                Name = memberName,
+                Url = memberUrl,
                 ApiKey = payload.ApiKeyForYou,
                 Enabled = true,
                 StreamingMode = StreamingMode.Direct
             });
+
+            if (!string.IsNullOrEmpty(entry.PoolId))
+            {
+                var pool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+                var normalized = memberUrl.TrimEnd('/');
+                if (pool != null && !pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+                {
+                    pool.Members.Add(new PoolMember { FederationId = payload.FromServerId ?? string.Empty, Name = memberName, Url = memberUrl });
+                }
+            }
+
             config.OutgoingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
             _clientFactory.InvalidateAll();
@@ -596,6 +791,25 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the API key the sender minted for the recipient to use.</summary>
         public string ApiKeyForYou { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the pool this request is introducing the recipient to, or
+        /// null for an ordinary direct friend request. See
+        /// <see cref="FederationFriendService.SendPoolInviteAsync"/>.
+        /// </summary>
+        public string? PoolId { get; set; }
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string? PoolName { get; set; }
+
+        /// <summary>Gets or sets the persistent federation id of the pool's owner.</summary>
+        public string? PoolOwnerFederationId { get; set; }
+
+        /// <summary>Gets or sets the pool owner's display name.</summary>
+        public string? PoolOwnerName { get; set; }
+
+        /// <summary>Gets or sets the pool's membership as known by the sender when this request was sent.</summary>
+        public List<PoolMember>? PoolRoster { get; set; }
     }
 
     /// <summary>
