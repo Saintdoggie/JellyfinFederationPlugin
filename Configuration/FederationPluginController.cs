@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -31,6 +32,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationItemPersistenceService _persistence;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly FederationFriendService _friends;
+        private readonly ILibraryManager _libraryManager;
+        private readonly IUserManager _userManager;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -42,7 +45,9 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationItemCache cache,
             FederationItemPersistenceService persistence,
             WanBandwidthMonitor bandwidthMonitor,
-            FederationFriendService friends)
+            FederationFriendService friends,
+            ILibraryManager libraryManager,
+            IUserManager userManager)
         {
             _logger = logger;
             _syncService = syncService;
@@ -53,7 +58,9 @@ namespace Jellyfin.Plugin.Federation.Api
             _cache = cache;
             _persistence = persistence;
             _bandwidthMonitor = bandwidthMonitor;
+            _userManager = userManager;
             _friends = friends;
+            _libraryManager = libraryManager;
         }
 
         #region Configuration
@@ -712,6 +719,134 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok();
         }
 
+        /// <summary>
+        /// Admin-triggered: sets which of this server's own libraries a specific
+        /// friend can see. Enforced via an existing local Jellyfin user the admin
+        /// picks, not anything the plugin polices itself - see
+        /// <see cref="FederationFriendService.UpdateFriendSharingAsync"/>.
+        /// </summary>
+        [HttpPost("Friends/{id}/Sharing")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> UpdateFriendSharing(string id, [FromBody] UpdateSharingBody body, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.UpdateFriendSharingAsync(
+                id,
+                body?.ShareAll ?? true,
+                body?.FolderIds ?? new List<string>(),
+                body?.LocalUserId ?? string.Empty,
+                cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend we already share content with is telling us
+        /// which local user id to use when querying them from now on. Not
+        /// AllowAnonymous - only an existing friend's API key (or this server's own
+        /// admin) passes RequiresElevation, same reasoning as Friends/List.
+        /// </summary>
+        [HttpPost("Friends/SharedUserUpdate")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ReceiveSharedUserUpdate([FromBody] SharedUserUpdatePayload payload)
+        {
+            _friends.ReceiveSharedUserUpdate(payload);
+            return Ok();
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists this server's own top-level libraries, for the
+        /// per-friend sharing picker. Deliberately not filtered down to "real,
+        /// non-federated" libraries - a library the plugin auto-provisions from
+        /// federated content shares the same name (and merges into) an admin's own
+        /// real library just as often as it stands alone, and there is no reliable
+        /// signal in config to tell those two cases apart. It doesn't need to be:
+        /// FederationSyncService already refuses to pull in any item carrying a
+        /// FederationKey provider id regardless of which library grants access to
+        /// it, so a friend seeing a library that happens to contain re-shared
+        /// content can still never relay that content onward through their own
+        /// server - the non-transitive guarantee holds at the content layer, not
+        /// this picker.
+        /// </summary>
+        [HttpGet("LocalLibraries")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLocalLibraries()
+        {
+            var folders = _libraryManager.GetVirtualFolders()
+                .Select(f => new { id = f.ItemId, name = f.Name })
+                .ToList();
+
+            return Ok(folders);
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists this server's own local Jellyfin users, for
+        /// picking which restricted account enforces a friend's sharing scope -
+        /// see <see cref="FederationFriendService.UpdateFriendSharingAsync"/>. The
+        /// admin creates the account itself (Dashboard -> Users) so it goes
+        /// through Jellyfin's own working user-creation path.
+        /// </summary>
+        [HttpGet("LocalUsers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLocalUsers()
+        {
+            var users = new List<object>();
+            foreach (var u in EnumerateLocalUsers())
+            {
+                var t = u.GetType();
+                var id = t.GetProperty("Id")?.GetValue(u);
+                var name = t.GetProperty("Username")?.GetValue(u) as string;
+                if (id is Guid guid && name != null)
+                {
+                    users.Add(new { id = guid.ToString("N"), name });
+                }
+            }
+
+            return Ok(users);
+        }
+
+        /// <summary>
+        /// Lists Jellyfin's own local users, entirely through reflection rather
+        /// than a direct <c>_userManager.Users</c>/<c>GetUsers()</c> call. The
+        /// member exposing this changed shape between the <c>Jellyfin.Controller</c>
+        /// NuGet version this plugin compiles against (10.11.6, a <c>Users</c>
+        /// property) and at least one real server build it runs on (10.11.11, a
+        /// <c>GetUsers()</c> method, no property) - binding to either one directly
+        /// throws <see cref="MissingMethodException"/> on whichever server doesn't
+        /// have it. The element type (User) is itself defined in a versioned
+        /// assembly that differs the same way, so even a successful reflective
+        /// call is read back via reflection too (see GetLocalUsers above) rather
+        /// than cast to a compile-time type, which could throw its own
+        /// cross-version identity mismatch.
+        /// </summary>
+        private IEnumerable<object> EnumerateLocalUsers()
+        {
+            var type = _userManager.GetType();
+            var iface = typeof(IUserManager);
+
+            var prop = iface.GetProperty("Users") ?? type.GetProperty("Users");
+            if (prop?.GetValue(_userManager) is System.Collections.IEnumerable propResult)
+            {
+                foreach (var u in propResult)
+                {
+                    yield return u;
+                }
+
+                yield break;
+            }
+
+            var method = iface.GetMethod("GetUsers", Type.EmptyTypes) ?? type.GetMethod("GetUsers", Type.EmptyTypes);
+            if (method?.Invoke(_userManager, null) is System.Collections.IEnumerable methodResult)
+            {
+                foreach (var u in methodResult)
+                {
+                    yield return u;
+                }
+
+                yield break;
+            }
+
+            _logger.LogWarning("[Federation] Could not find a Users property or GetUsers() method on IUserManager for this server build");
+        }
+
         #endregion
 
         #region Pools
@@ -775,6 +910,20 @@ namespace Jellyfin.Plugin.Federation.Api
         {
             var removed = _friends.LeavePool(poolId);
             return removed ? Ok(new { success = true }) : NotFound(new { error = "Pool not found" });
+        }
+
+        /// <summary>
+        /// Server-to-server: an already-known friend added us to a pool, or has an
+        /// updated roster for one we're already in. Not AllowAnonymous - only an
+        /// existing friend's API key (or this server's own admin) passes
+        /// RequiresElevation, same reasoning as Friends/List.
+        /// </summary>
+        [HttpPost("Pools/Notice")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ReceivePoolNotice([FromBody] PoolNoticePayload payload, CancellationToken cancellationToken)
+        {
+            await _friends.ReceivePoolNotice(payload, cancellationToken).ConfigureAwait(false);
+            return Ok();
         }
 
         #endregion
@@ -1027,7 +1176,10 @@ namespace Jellyfin.Plugin.Federation.Api
                 WanCapMode = (int)s.WanCapMode,
                 s.WanMaxBitrateMbps,
                 s.WanMaxHeight,
-                HasApiKey = !string.IsNullOrEmpty(s.ApiKey)
+                HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
+                s.ShareAllLibraries,
+                s.SharedLibraryFolderIds,
+                s.LocalShareUserId
             };
         }
     }
@@ -1045,5 +1197,14 @@ namespace Jellyfin.Plugin.Federation.Api
     public class CreatePoolBody
     {
         public string? Name { get; set; }
+    }
+
+    public class UpdateSharingBody
+    {
+        public bool ShareAll { get; set; } = true;
+
+        public List<string>? FolderIds { get; set; }
+
+        public string? LocalUserId { get; set; }
     }
 }

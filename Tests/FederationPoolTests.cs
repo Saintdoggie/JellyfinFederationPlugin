@@ -71,7 +71,9 @@ public class FederationPoolTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            _clientFactory.Object);
+            _clientFactory.Object,
+            Mock.Of<IUserManager>(),
+            libraryManager.Object);
     }
 
     public void Dispose()
@@ -140,6 +142,110 @@ public class FederationPoolTests : IDisposable
 
         var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
         Assert.Equal(pool.Id, outgoing.PoolId);
+    }
+
+    [Fact]
+    public async Task SendPoolInviteAsync_TargetIsAlreadyAFriend_AddsDirectlyInsteadOfSendingAFriendRequest()
+    {
+        // The whole point of a pool is not re-doing the handshake for someone you
+        // already trust - inviting an existing friend must never hit "already
+        // friends" the way a plain SendFriendRequestAsync would.
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+
+        string? capturedUrl = null;
+        UseFakeHttp(req =>
+        {
+            capturedUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var (success, message) = await _service.SendPoolInviteAsync(pool.Id, "http://bob.example", CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
+
+        // A pool notice, not a fresh friend-request handshake.
+        Assert.Equal("http://bob.example/Plugins/Federation/Pools/Notice", capturedUrl);
+
+        // No new friend request was ever created for someone already known.
+        Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_FromExistingFriend_AdoptsPoolAndFansOutToUnknownMembers()
+    {
+        // Reached via someone we're already friends with - no accept step, but the
+        // resulting fan-out to a member we don't know yet still goes through the
+        // ordinary friend-request handshake, same as the accept-flow path.
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+
+        var introducedTo = new List<string>();
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/Plugins/Federation/Friends/Request", StringComparison.Ordinal))
+            {
+                introducedTo.Add(url);
+                return Json(HttpStatusCode.OK, new { success = true, serverName = "Introduced" });
+            }
+
+            throw new InvalidOperationException("Unexpected request to " + url);
+        });
+
+        await _service.ReceivePoolNotice(
+            new PoolNoticePayload
+            {
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Movie Night",
+                OwnerFederationId = "fed-owner",
+                OwnerName = "Owner",
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
+                    new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
+                }
+            },
+            CancellationToken.None);
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("pool-1", pool.Id);
+        Assert.Equal(3, pool.Members.Count); // us, Bob, Owner
+        Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
+
+        // Fanned out to Owner (not already known) via a real friend request; never
+        // re-sent anything to Bob, who is how we learned about this in the first place.
+        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
+        Assert.DoesNotContain(introducedTo, u => u.StartsWith("http://bob.example", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_FromUnknownFederationId_DoesNothing()
+    {
+        var called = false;
+        UseFakeHttp(req => { called = true; return new HttpResponseMessage(HttpStatusCode.OK); });
+
+        await _service.ReceivePoolNotice(
+            new PoolNoticePayload { FromFederationId = "someone-we-dont-know", PoolId = "pool-1" },
+            CancellationToken.None);
+
+        Assert.Empty(_plugin.Configuration.Pools);
+        Assert.False(called);
     }
 
     [Fact]

@@ -8,7 +8,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Security;
+using MediaBrowser.Model.Users;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -50,6 +52,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly IUserManager _userManager;
+        private readonly ILibraryManager _libraryManager;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationFriendService"/> class.
@@ -60,7 +64,9 @@ namespace Jellyfin.Plugin.Federation.Services
             IServerApplicationHost applicationHost,
             FederationLibraryManager federationManager,
             IHttpContextAccessor httpContextAccessor,
-            IRemoteServerClientFactory clientFactory)
+            IRemoteServerClientFactory clientFactory,
+            IUserManager userManager,
+            ILibraryManager libraryManager)
         {
             _logger = logger;
             _authManager = authManager;
@@ -68,6 +74,8 @@ namespace Jellyfin.Plugin.Federation.Services
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
             _clientFactory = clientFactory;
+            _userManager = userManager;
+            _libraryManager = libraryManager;
         }
 
         /// <summary>
@@ -401,6 +409,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Name = entry.RemoteServerName,
                 Url = entry.RemoteServerUrl,
                 ApiKey = entry.ApiKey,
+                FederationId = entry.RemoteServerId,
                 Enabled = true,
                 StreamingMode = StreamingMode.Direct
             });
@@ -442,12 +451,15 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Admin-triggered: invites a server into a pool this server already belongs
-        /// to. Just a friend request that also carries the pool's identity and
-        /// current roster - see <see cref="SendFriendRequestAsync"/> - so accepting it
-        /// both connects the two servers directly and (via
-        /// <see cref="AdoptPoolAndFanOutAsync"/>) triggers the recipient to connect to
-        /// every other member too.
+        /// Admin-triggered: adds a server into a pool this server already belongs
+        /// to. The whole point of a pool is not re-doing the friend handshake for
+        /// people you've already connected with one at a time - so if the target is
+        /// already a friend, this just adds them to the pool roster locally and
+        /// sends them a pool notice (no accept step, they're already trusted); only
+        /// a genuinely new contact goes through the full friend-request handshake,
+        /// carrying the pool's identity and current roster so accepting it also
+        /// triggers them to connect to every other member - see
+        /// <see cref="SendFriendRequestAsync"/> and <see cref="AdoptPoolAndFanOutAsync"/>.
         /// </summary>
         public async Task<(bool Success, string Message)> SendPoolInviteAsync(string poolId, string remoteUrl, CancellationToken cancellationToken)
         {
@@ -458,7 +470,63 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Pool not found.");
             }
 
+            var normalizedUrl = remoteUrl.TrimEnd('/');
+            var existingFriend = config.RemoteServers.FirstOrDefault(s => string.Equals(s.Url.TrimEnd('/'), normalizedUrl, StringComparison.OrdinalIgnoreCase));
+            if (existingFriend != null)
+            {
+                return await AddExistingFriendToPoolAsync(pool, existingFriend, cancellationToken).ConfigureAwait(false);
+            }
+
             return await SendFriendRequestAsync(remoteUrl, cancellationToken, pool).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Adds an already-known friend to a pool without repeating the friend
+        /// handshake, and tells them so their own copy of the pool (and their own
+        /// fan-out to whichever members they don't already know) stays in sync.
+        /// </summary>
+        private async Task<(bool Success, string Message)> AddExistingFriendToPoolAsync(FederationPool pool, RemoteServer friend, CancellationToken cancellationToken)
+        {
+            var normalized = friend.Url.TrimEnd('/');
+            if (!pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                pool.Members.Add(new PoolMember { FederationId = friend.FederationId, Name = friend.Name, Url = friend.Url });
+                Plugin.Instance!.SaveConfiguration();
+            }
+
+            if (string.IsNullOrEmpty(friend.Url) || string.IsNullOrEmpty(friend.ApiKey))
+            {
+                return (true, $"{friend.Name} added to the pool locally, but has no address/key on file to notify.");
+            }
+
+            try
+            {
+                var payload = new PoolNoticePayload
+                {
+                    FromFederationId = GetOrCreateLocalFederationId(),
+                    PoolId = pool.Id,
+                    PoolName = pool.Name,
+                    OwnerFederationId = pool.OwnerFederationId,
+                    OwnerName = pool.OwnerName,
+                    Roster = pool.Members.ToList()
+                };
+                using var response = await PostAuthenticatedAsync(
+                    $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/Notice",
+                    payload,
+                    friend.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (true, $"{friend.Name} added to the pool locally, but could not notify them (HTTP {(int)response.StatusCode}) - they'll pick up the pool the next time they see it another way.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not notify {Name} about being added to pool {Pool} (non-fatal)", friend.Name, pool.Name);
+                return (true, $"{friend.Name} added to the pool locally, but could not be reached to notify.");
+            }
+
+            return (true, $"{friend.Name} added to the pool.");
         }
 
         /// <summary>
@@ -482,28 +550,62 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Called after accepting a pool-tagged friend request: records/updates this
-        /// server's local copy of the pool (creating it on first contact) and, for
-        /// every other member the invite told us about that we're not already
-        /// connected to, sends a pool invite of our own so the mesh keeps forming.
-        /// Each of those is still an ordinary friend request - the recipient's admin
-        /// still has to click Accept, same trust boundary as any direct friendship.
+        /// server's local copy of the pool and fans out to the rest of the roster -
+        /// see <see cref="AdoptPoolRosterAndFanOutAsync"/>.
+        /// </summary>
+        private Task AdoptPoolAndFanOutAsync(FriendRequest entry, CancellationToken cancellationToken)
+        {
+            return AdoptPoolRosterAndFanOutAsync(
+                entry.PoolId!,
+                entry.PoolName,
+                entry.PoolOwnerFederationId,
+                entry.PoolOwnerName,
+                entry.RemoteServerUrl,
+                entry.RemoteServerId,
+                entry.RemoteServerName,
+                entry.PoolRoster,
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Records/updates this server's local copy of a pool (creating it on first
+        /// contact) and, for every other member the roster told us about that we're
+        /// not already connected to, sends a pool invite of our own so the mesh
+        /// keeps forming. Shared by two entry points that both amount to "I just
+        /// learned about this pool's roster from someone I'm already connected to":
+        /// accepting a pool-tagged friend request (<see cref="AdoptPoolAndFanOutAsync"/>)
+        /// and a pool notice from an existing friend who added us to a pool we
+        /// weren't already in (<see cref="ReceivePoolNotice"/>) - the latter needs
+        /// no new friend request of its own, since the two servers are already
+        /// connected. Each introduction sent here is still an ordinary friend
+        /// request or pool notice - the recipient's admin still has to click Accept
+        /// for anyone genuinely new, same trust boundary as any direct friendship.
         /// A failure introducing any one member is logged and skipped rather than
         /// aborting the rest; a full picture converges over the next few pool syncs
         /// rather than depending on every hop succeeding in one pass.
         /// </summary>
-        private async Task AdoptPoolAndFanOutAsync(FriendRequest entry, CancellationToken cancellationToken)
+        private async Task AdoptPoolRosterAndFanOutAsync(
+            string poolId,
+            string? poolName,
+            string? ownerFederationId,
+            string? ownerName,
+            string reachedViaUrl,
+            string? reachedViaFederationId,
+            string? reachedViaName,
+            List<PoolMember>? roster,
+            CancellationToken cancellationToken)
         {
             var config = Plugin.Instance!.Configuration;
-            var pool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+            var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
             if (pool == null)
             {
                 pool = new FederationPool
                 {
-                    Id = entry.PoolId!,
-                    Name = entry.PoolName ?? entry.PoolId!,
+                    Id = poolId,
+                    Name = poolName ?? poolId,
                     IsOwner = false,
-                    OwnerFederationId = entry.PoolOwnerFederationId ?? string.Empty,
-                    OwnerName = entry.PoolOwnerName ?? entry.RemoteServerName
+                    OwnerFederationId = ownerFederationId ?? string.Empty,
+                    OwnerName = ownerName ?? reachedViaName ?? string.Empty
                 };
                 config.Pools.Add(pool);
             }
@@ -529,8 +631,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             AddMember(selfId, selfName, selfUrl);
-            AddMember(entry.RemoteServerId, entry.RemoteServerName, entry.RemoteServerUrl);
-            foreach (var member in entry.PoolRoster ?? new List<PoolMember>())
+            AddMember(reachedViaFederationId, reachedViaName, reachedViaUrl);
+            foreach (var member in roster ?? new List<PoolMember>())
             {
                 AddMember(member.FederationId, member.Name, member.Url);
             }
@@ -538,19 +640,14 @@ namespace Jellyfin.Plugin.Federation.Services
             Plugin.Instance.SaveConfiguration();
 
             var selfUrlNormalized = (selfUrl ?? string.Empty).TrimEnd('/');
-            var inviterUrlNormalized = entry.RemoteServerUrl.TrimEnd('/');
+            var reachedViaUrlNormalized = reachedViaUrl.TrimEnd('/');
             var toIntroduce = pool.Members
                 .Where(m => !string.Equals(m.Url.TrimEnd('/'), selfUrlNormalized, StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(m.Url.TrimEnd('/'), inviterUrlNormalized, StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(m.Url.TrimEnd('/'), reachedViaUrlNormalized, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             foreach (var member in toIntroduce)
             {
-                if (AlreadyKnown(config, member.Url))
-                {
-                    continue;
-                }
-
                 try
                 {
                     var (success, message) = await SendPoolInviteAsync(pool.Id, member.Url, cancellationToken).ConfigureAwait(false);
@@ -564,6 +661,39 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogWarning(ex, "[Federation] Pool mesh introduction to {Url} failed (non-fatal - will retry on a future pool sync)", member.Url);
                 }
             }
+        }
+
+        /// <summary>
+        /// Server-to-server: an existing friend added us to a pool we weren't
+        /// already in, or has an updated roster for one we're already in. No accept
+        /// step needed - the two servers are already connected, so this is purely
+        /// informational, same trust boundary as <see cref="ReceiveSharedUserUpdate"/>.
+        /// </summary>
+        public Task ReceivePoolNotice(PoolNoticePayload payload, CancellationToken cancellationToken)
+        {
+            if (payload == null || string.IsNullOrEmpty(payload.PoolId) || string.IsNullOrEmpty(payload.FromFederationId))
+            {
+                return Task.CompletedTask;
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            var sender = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
+            if (sender == null)
+            {
+                _logger.LogWarning("[Federation] Received a pool notice from an unrecognized federation id {FederationId}", payload.FromFederationId);
+                return Task.CompletedTask;
+            }
+
+            return AdoptPoolRosterAndFanOutAsync(
+                payload.PoolId,
+                payload.PoolName,
+                payload.OwnerFederationId,
+                payload.OwnerName,
+                sender.Url,
+                sender.FederationId,
+                sender.Name,
+                payload.Roster,
+                cancellationToken);
         }
 
         /// <summary>
@@ -639,6 +769,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Name = memberName,
                 Url = memberUrl,
                 ApiKey = payload.ApiKeyForYou,
+                FederationId = payload.FromServerId ?? string.Empty,
                 Enabled = true,
                 StreamingMode = StreamingMode.Direct
             });
@@ -674,6 +805,169 @@ namespace Jellyfin.Plugin.Federation.Services
             config.OutgoingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
             await RevokeApiKeyAsync(entry.ApiKey).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Admin-triggered: sets which of this server's own local libraries a
+        /// specific friend can see, enforced through an existing local Jellyfin
+        /// user the admin picks (create one under Dashboard -> Users first, the
+        /// same way you would restrict a family member's account) rather than one
+        /// this plugin creates itself. Jellyfin's own <c>IUserManager.CreateUserAsync</c>
+        /// was tried first and does not work reliably here - it can leave the new
+        /// user's <c>AuthenticationProviderId</c> unset and then fail its own save
+        /// with a NOT NULL constraint, before ever handing the created user back
+        /// to calling code to fix up. Since that happens inside Jellyfin's own
+        /// user-creation path, nothing this plugin does afterward can correct it;
+        /// reusing a user Jellyfin's own admin UI already created successfully
+        /// sidesteps the bug entirely. Pushes the result to the friend so their
+        /// plugin starts querying as the newly-scoped user.
+        /// </summary>
+        public async Task<(bool Success, string Message)> UpdateFriendSharingAsync(
+            string remoteServerId,
+            bool shareAll,
+            List<string> folderIds,
+            string localUserId,
+            CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.Id == remoteServerId);
+            if (server == null)
+            {
+                return (false, "Friend not found.");
+            }
+
+            if (!shareAll)
+            {
+                if (string.IsNullOrEmpty(localUserId) || !Guid.TryParse(localUserId, out var parsedUserId))
+                {
+                    return (false, "Pick a local account to enforce this friend's restricted view - create one under Dashboard → Users first if you haven't already.");
+                }
+
+                if (_userManager.GetUserById(parsedUserId) == null)
+                {
+                    return (false, "That local account no longer exists.");
+                }
+
+                server.LocalShareUserId = localUserId;
+            }
+
+            server.ShareAllLibraries = shareAll;
+            server.SharedLibraryFolderIds = folderIds ?? new List<string>();
+
+            Guid? shareUserId = null;
+            if (!shareAll)
+            {
+                try
+                {
+                    shareUserId = await ApplySharePolicyAsync(server, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Failed to apply a sharing policy to the restricted account for {Name}", server.Name);
+                    return (false, "Could not apply the restriction to that local account.");
+                }
+            }
+
+            Plugin.Instance.SaveConfiguration();
+
+            if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
+            {
+                return (true, "Sharing updated locally, but this friend has no address/key on file to notify.");
+            }
+
+            // "Share everything" needs no restricted account and nothing new to
+            // tell the friend - they already query using whatever UserId they were
+            // already configured with (typically an administrator), same as before
+            // per-friend sharing existed.
+            if (shareUserId == null)
+            {
+                return (true, "Sharing updated.");
+            }
+
+            try
+            {
+                var payload = new SharedUserUpdatePayload
+                {
+                    FromFederationId = GetOrCreateLocalFederationId(),
+                    UserId = shareUserId.Value.ToString("N")
+                };
+                using var response = await PostAuthenticatedAsync(
+                    $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/SharedUserUpdate",
+                    payload,
+                    server.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (true, $"Sharing updated locally, but could not notify {server.Name} (HTTP {(int)response.StatusCode}) - they will keep using their old view until they resync.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not notify {Name} of an updated sharing scope (non-fatal)", server.Name);
+                return (true, $"Sharing updated locally, but could not reach {server.Name} - they will keep using their old view until they resync.");
+            }
+
+            return (true, "Sharing updated.");
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend we already share content with is telling us
+        /// which local user id to use when querying them from now on - the
+        /// counterpart to <see cref="UpdateFriendSharingAsync"/> on their side.
+        /// Matched by federation id rather than URL/key, since those can change
+        /// without the friendship itself changing. Only ever narrows or changes
+        /// *our* view of *their* content; never touches what we share back.
+        /// </summary>
+        public void ReceiveSharedUserUpdate(SharedUserUpdatePayload payload)
+        {
+            if (payload == null || string.IsNullOrEmpty(payload.FromFederationId) || string.IsNullOrEmpty(payload.UserId))
+            {
+                return;
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
+            if (server == null)
+            {
+                _logger.LogWarning("[Federation] Received a sharing update from an unrecognized federation id {FederationId}", payload.FromFederationId);
+                return;
+            }
+
+            server.UserId = payload.UserId;
+            Plugin.Instance.SaveConfiguration();
+            _clientFactory.InvalidateAll();
+            _logger.LogInformation("[Federation] {Name} updated what they share with us", server.Name);
+        }
+
+        /// <summary>
+        /// Applies <see cref="RemoteServer.SharedLibraryFolderIds"/> to the admin-
+        /// picked local user's policy via Jellyfin's own EnabledFolders enforcement
+        /// - the same mechanism an admin would use by hand for e.g. a family
+        /// member's account, not anything this plugin polices itself. Enforcement
+        /// holds for the intended case of two cooperating Federation instances,
+        /// same trust boundary as the rest of the friend system - not a defense
+        /// against a key holder deliberately querying as a different, unrestricted
+        /// user of their own.
+        /// </summary>
+        private async Task<Guid> ApplySharePolicyAsync(RemoteServer server, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var userId = Guid.Parse(server.LocalShareUserId);
+
+            var policy = new UserPolicy
+            {
+                IsAdministrator = false,
+                EnableAllFolders = false,
+                EnabledFolders = server.SharedLibraryFolderIds
+                    .Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
+                    .Where(g => g != Guid.Empty)
+                    .ToArray(),
+                EnableMediaPlayback = true
+            };
+
+            await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
+            return userId;
         }
 
         private static bool AlreadyKnown(PluginConfiguration config, string url)
@@ -770,6 +1064,22 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             return new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         }
+
+        /// <summary>
+        /// POSTs to an endpoint on an already-known friend's server that requires
+        /// an elevated session (<c>[Authorize(Policy = "RequiresElevation")]</c>) -
+        /// unlike the handshake endpoints (Friends/Request, Friends/Accept,
+        /// Friends/Reject), which are anonymous by necessity since no key exists
+        /// yet at that point. An API key alone satisfies that policy the same way
+        /// this server's own admin session does, so the friend's stored key is all
+        /// that is needed here - no per-user id.
+        /// </summary>
+        private static async Task<HttpResponseMessage> PostAuthenticatedAsync(string url, object payload, string apiKey, CancellationToken cancellationToken)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent(payload) };
+            request.Headers.TryAddWithoutValidation("X-Emby-Token", apiKey);
+            return await SharedHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -834,5 +1144,45 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         /// <summary>Gets or sets the id of the request being rejected.</summary>
         public string RequestId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Wire payload telling an existing friend which local user id to use when
+    /// querying this server from now on - see
+    /// <see cref="FederationFriendService.UpdateFriendSharingAsync"/>.
+    /// </summary>
+    public class SharedUserUpdatePayload
+    {
+        /// <summary>Gets or sets the sender's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the user id the recipient should now query as.</summary>
+        public string UserId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Wire payload telling an already-known friend about a pool - either that
+    /// they've been added to one, or an updated roster for one they're already in.
+    /// See <see cref="FederationFriendService.ReceivePoolNotice"/>.
+    /// </summary>
+    public class PoolNoticePayload
+    {
+        /// <summary>Gets or sets the sender's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool's id.</summary>
+        public string PoolId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string? PoolName { get; set; }
+
+        /// <summary>Gets or sets the persistent federation id of the pool's owner.</summary>
+        public string? OwnerFederationId { get; set; }
+
+        /// <summary>Gets or sets the pool owner's display name.</summary>
+        public string? OwnerName { get; set; }
+
+        /// <summary>Gets or sets the pool's membership as known by the sender.</summary>
+        public List<PoolMember>? Roster { get; set; }
     }
 }
