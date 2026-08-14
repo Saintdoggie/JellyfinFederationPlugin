@@ -2,6 +2,24 @@
     <div data-role="content">
         <div class="content-primary">
             <style>
+                /* Plain text on this page (headings, hints, labels, card body copy)
+                   carries no emby-* class of its own and has no color set here
+                   either, on the assumption it would inherit Jellyfin's own theme
+                   text color from an ancestor element. On at least one real
+                   install that inheritance did not hold - text rendered with the
+                   browser's default black, illegible against the dashboard's dark
+                   background. Forced explicitly here as a fallback rather than left
+                   to inherit - but wrapped in :where() so it contributes ZERO
+                   specificity: an ID selector's normal specificity would otherwise
+                   outrank Jellyfin's own .emby-button/.emby-select/etc rules and
+                   silently override colors those elements had deliberately (e.g. a
+                   light-background button expecting dark text), which is exactly
+                   what happened the first time this was "fixed". With :where(), any
+                   more specific rule - Jellyfin's or this page's own - still wins;
+                   this only ever fills in the gap where nothing else set a color.
+                */
+                :where(#federationConfigPage) { color: var(--theme-body-text-color, var(--primary-text-color, #eee)); }
+
                 /* Layout base mirroring jellyfin-web form styles; colors/borders come
                    from the active theme via the emby-* classes. */
                 #federationConfigPage .fed-input,
@@ -326,6 +344,21 @@
                     // instead of raw GUIDs once loaded, and survives re-renders.
                     var serverUsersCache = {};
 
+                    // This server's own real libraries (never the virtual ones this
+                    // plugin provisions), for the per-friend sharing picker. Loaded
+                    // once and cached the same way serverUsersCache is.
+                    var localLibrariesCache = null;
+
+                    // This server's own local Jellyfin users, for picking which
+                    // restricted account enforces a friend's sharing scope.
+                    var localUsersCache = null;
+
+                    // Pending per-friend sharing selections, keyed by server.Id, so a
+                    // checkbox toggle survives the re-render loadFriendRequests()/
+                    // loadConfiguration() trigger elsewhere on the page without
+                    // needing its own local state machine.
+                    var pendingSharing = {};
+
                     var COLLECTION_TYPE_MAP = {
                         movies: { mediaType: 'Movie', label: 'Movies' },
                         tvshows: { mediaType: 'Series', label: 'TV Shows' },
@@ -490,6 +523,125 @@
                         return html;
                     }
 
+                    /* ---------------- Per-friend sharing ---------------- */
+
+                    function loadLocalLibraries() {
+                        if (localLibrariesCache) {
+                            return Promise.resolve(localLibrariesCache);
+                        }
+
+                        return fedFetch('/Plugins/Federation/LocalLibraries')
+                        .then(function (r) { return r.json(); })
+                        .then(function (libs) {
+                            localLibrariesCache = libs || [];
+                            // The picker needed the list to render checkboxes with the
+                            // right names - now that it's here, redraw once so a page
+                            // load doesn't have to show "loading" and wait for a
+                            // second interaction.
+                            renderServers();
+                            return localLibrariesCache;
+                        })
+                        .catch(function () { return []; });
+                    }
+
+                    function loadLocalUsers() {
+                        if (localUsersCache) {
+                            return Promise.resolve(localUsersCache);
+                        }
+
+                        return fedFetch('/Plugins/Federation/LocalUsers')
+                        .then(function (r) { return r.json(); })
+                        .then(function (users) {
+                            localUsersCache = users || [];
+                            renderServers();
+                            return localUsersCache;
+                        })
+                        .catch(function () { return []; });
+                    }
+
+                    function renderSharingBlock(server) {
+                        var pending = pendingSharing[server.Id] || {
+                            ShareAll: server.ShareAllLibraries !== false,
+                            FolderIds: (server.SharedLibraryFolderIds || []).slice(),
+                            LocalUserId: server.LocalShareUserId || ''
+                        };
+                        pendingSharing[server.Id] = pending;
+
+                        var html = '<details class="fed-details"><summary>Sharing (what this friend can see)</summary><div class="fed-details-body">';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingAll" data-id="' + escapeHtml(server.Id) + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Share everything</label>';
+
+                        html += '<div class="fedSharingLibs" data-id="' + escapeHtml(server.Id) + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.5em;">';
+                        html += '<label class="fed-label">Restricted account (enforces what\'s below)</label>';
+                        html += '<select class="emby-select fed-select fedSharingUser" data-id="' + escapeHtml(server.Id) + '">';
+                        html += '<option value="">— choose an account —</option>';
+                        (localUsersCache || []).forEach(function (u) {
+                            html += '<option value="' + escapeHtml(u.id) + '"' + (pending.LocalUserId === u.id ? ' selected' : '') + '>' + escapeHtml(u.name) + '</option>';
+                        });
+                        html += '</select>';
+                        html += '<p class="fed-hint">Don\'t have one yet? Create a regular user for this friend under Dashboard → Users first (no password needed - it never logs in itself), then pick it here.</p>';
+
+                        html += '<label class="fed-label" style="margin-top:0.6em;">Libraries visible to that account</label>';
+                        if (!localLibrariesCache) {
+                            html += '<p class="fed-muted">Loading your libraries…</p>';
+                        } else if (localLibrariesCache.length === 0) {
+                            html += '<p class="fed-muted">No libraries found.</p>';
+                        } else {
+                            localLibrariesCache.forEach(function (lib) {
+                                var checked = pending.FolderIds.indexOf(lib.id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingLib" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                            });
+                        }
+
+                        html += '</div>';
+                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend - enforced through the picked account\'s own library access, the same mechanism you\'d use to restrict a family member\'s login.</p>';
+                        html += '<div class="fed-inline" style="margin-top:0.5em;">';
+                        html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="save-sharing" data-id="' + escapeHtml(server.Id) + '">Save sharing</button>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="block-friend" data-id="' + escapeHtml(server.Id) + '">Block (share nothing)</button>';
+                        html += '</div>';
+                        html += '<div class="fed-srvstatus" id="fedSharingStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                        html += '</div></details>';
+                        return html;
+                    }
+
+                    function setSharingStatus(serverId, msg, kind) {
+                        var el = q('#fedSharingStatus-' + serverId);
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function saveSharing(serverId) {
+                        var pending = pendingSharing[serverId] || { ShareAll: true, FolderIds: [], LocalUserId: '' };
+                        setSharingStatus(serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Sharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, FolderIds: pending.FolderIds, LocalUserId: pending.LocalUserId })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setSharingStatus(serverId, res.message, res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { setSharingStatus(serverId, 'Failed: ' + e.message, 'err'); });
+                    }
+
+                    function blockFriend(serverId) {
+                        var existing = pendingSharing[serverId] || {};
+                        pendingSharing[serverId] = { ShareAll: false, FolderIds: [], LocalUserId: existing.LocalUserId || '' };
+                        saveSharing(serverId);
+                    }
+
                     /* A switched-off server is the single easiest way to end up with an
                        empty federated library and no visible reason for it: every card
                        still shows a name, an address and a full set of settings. This
@@ -613,10 +765,13 @@
                             html += '<p class="fed-muted">Only matters when this server is Direct mode and reached over the internet (not the same local network) - direct play (the raw source file, best quality) is always used otherwise. <strong>Auto</strong> detects same-network vs. internet-only automatically and, only for a confirmed internet link, measures what it can actually sustain and caps to the largest bitrate that fits - never guesses, and stays uncapped until it has real evidence a cap is needed. <strong>Manual</strong> always caps to the fixed value below, useful to pin a known-good number. <strong>Off</strong> always streams the raw source file, matching pre-0.0.32 behavior.</p>';
                             html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Remote server requires api_key for images</label>';
                             html += '</div></details>';
+                            html += renderSharingBlock(server);
                             html += '</div></details>';
                             html += '</div>';
                         });
                         c.innerHTML = html;
+                        loadLocalLibraries();
+                        loadLocalUsers();
 
                         s.forEach(function (server, i) {
                             var det = q('#fedSrvDetails' + i);
@@ -1793,6 +1948,12 @@
                                 case 'leave-pool':
                                     leavePool(t.getAttribute('data-pool'));
                                     break;
+                                case 'save-sharing':
+                                    saveSharing(t.getAttribute('data-id'));
+                                    break;
+                                case 'block-friend':
+                                    blockFriend(t.getAttribute('data-id'));
+                                    break;
                                 case 'add-server':
                                     addServer();
                                     break;
@@ -1883,6 +2044,42 @@
                                     pickerLibs[tidx].mediaType = t.value;
                                 }
 
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSharingAll')) {
+                                var sid = t.getAttribute('data-id');
+                                var p = pendingSharing[sid] || { ShareAll: true, FolderIds: [] };
+                                p.ShareAll = t.checked;
+                                pendingSharing[sid] = p;
+                                var libsDiv = q('.fedSharingLibs[data-id="' + sid + '"]');
+                                if (libsDiv) {
+                                    libsDiv.style.display = t.checked ? 'none' : 'block';
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSharingLib')) {
+                                var lsid = t.getAttribute('data-id');
+                                var libId = t.getAttribute('data-lib');
+                                var lp = pendingSharing[lsid] || { ShareAll: false, FolderIds: [] };
+                                var pos = lp.FolderIds.indexOf(libId);
+                                if (t.checked && pos === -1) {
+                                    lp.FolderIds.push(libId);
+                                } else if (!t.checked && pos !== -1) {
+                                    lp.FolderIds.splice(pos, 1);
+                                }
+
+                                pendingSharing[lsid] = lp;
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSharingUser')) {
+                                var usid = t.getAttribute('data-id');
+                                var up = pendingSharing[usid] || { ShareAll: false, FolderIds: [] };
+                                up.LocalUserId = t.value;
+                                pendingSharing[usid] = up;
                                 return;
                             }
 

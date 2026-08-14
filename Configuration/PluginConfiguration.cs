@@ -284,6 +284,42 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string UserId { get; set; } = string.Empty;
 
         /// <summary>
+        /// Gets or sets this friend's persistent federation id (their
+        /// <see cref="PluginConfiguration.LocalFederationId"/>), captured when the
+        /// friendship is formed. Used to match an inbound sharing-update call back
+        /// to this specific friend - a URL alone is not a safe key across a rename
+        /// or address change.
+        /// </summary>
+        public string FederationId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether every one of this server's own
+        /// local libraries is shared with this friend. True by default, matching
+        /// the plugin's original behavior before per-friend sharing existed. When
+        /// false, only <see cref="SharedLibraryFolderIds"/> is visible to them.
+        /// </summary>
+        public bool ShareAllLibraries { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the ids of this server's own local library folders shared
+        /// with this friend when <see cref="ShareAllLibraries"/> is false. Ignored
+        /// (and irrelevant) otherwise.
+        /// </summary>
+        public List<string> SharedLibraryFolderIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the id of the local, hidden, non-loginable Jellyfin user
+        /// created to enforce this friend's view of this server - its
+        /// <c>EnabledFolders</c> policy is kept in sync with
+        /// <see cref="ShareAllLibraries"/>/<see cref="SharedLibraryFolderIds"/>, and
+        /// its id is pushed to the friend so their plugin queries as this user
+        /// instead of an unrestricted one. Empty until sharing is first customized
+        /// away from "everything" - see
+        /// <see cref="Services.FederationFriendService.UpdateFriendSharingAsync"/>.
+        /// </summary>
+        public string LocalShareUserId { get; set; } = string.Empty;
+
+        /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
         /// </summary>
         public StreamingMode StreamingMode { get; set; } = StreamingMode.Direct;
