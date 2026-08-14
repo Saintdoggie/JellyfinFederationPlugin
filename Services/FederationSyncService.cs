@@ -33,6 +33,28 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly SemaphoreSlim _syncLock = new(1, 1);
 
         /// <summary>
+        /// Gets the outcome of the most recent sync, or null if none has finished
+        /// since startup. Exists so the config page can show whether federation is
+        /// actually working: until now the only record of a sync failing - a remote
+        /// that could not be reached, a source skipped, content preserved rather than
+        /// refreshed - was a line in the server log, so a library that had quietly
+        /// stopped updating looked identical to one that was fine.
+        /// </summary>
+        public SyncHealth? LastSync { get; private set; }
+
+        private void RecordSyncOutcome(bool success, string message, int itemCount, int failedSources)
+        {
+            LastSync = new SyncHealth
+            {
+                FinishedUtc = DateTime.UtcNow,
+                Success = success,
+                Message = message,
+                ItemCount = itemCount,
+                FailedSources = failedSources
+            };
+        }
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="FederationSyncService"/> class.
         /// </summary>
         public FederationSyncService(
@@ -230,6 +252,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     ? $"Refreshed {totalItems} items across {mappings.Count} mapping(s)"
                     : $"Refreshed {totalItems} items across {mappings.Count} mapping(s); {failedSources} source(s) failed (cached data preserved)";
                 SyncProgressTracker.Complete(operationId, success, message);
+                RecordSyncOutcome(success, message, totalItems, failedSources);
                 return new SyncResult
                 {
                     Success = success,
@@ -248,6 +271,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Error during refresh");
                 SyncProgressTracker.Complete(operationId, false, ex.Message);
+                RecordSyncOutcome(false, ex.Message, 0, 0);
                 return Failed(ex.Message, operationId);
             }
             finally
@@ -317,19 +341,27 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
                 var success = failedSources == 0;
+                var serverMessage = success
+                    ? $"Refreshed {total} items from {server.Name}"
+                    : $"Refreshed {total} items from {server.Name}; {failedSources} source(s) failed (cached data preserved)";
+                RecordSyncOutcome(success, serverMessage, total, failedSources);
                 return new SyncResult
                 {
                     Success = success,
                     ItemCount = total,
                     FailedSources = failedSources,
-                    Message = success
-                        ? $"Refreshed {total} items from {server.Name}"
-                        : $"Refreshed {total} items from {server.Name}; {failedSources} source(s) failed (cached data preserved)"
+                    Message = serverMessage
                 };
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Error syncing server {ServerId}", serverId);
+
+                // Mirrors SyncAllAsync's catch. Without this the health banner keeps
+                // reporting the previous run's success after a per-server refresh
+                // throws - the precise "stopped working but looks fine" state the
+                // banner exists to eliminate.
+                RecordSyncOutcome(false, ex.Message, 0, 0);
                 return Failed(ex.Message);
             }
             finally
@@ -723,6 +755,29 @@ namespace Jellyfin.Plugin.Federation.Services
 
             public static SourceSyncResult PluginMissingResult() => new SourceSyncResult(0, true, true, new HashSet<Guid>());
         }
+    }
+
+    /// <summary>
+    /// The outcome of the most recently completed sync, kept in memory so the
+    /// config page can report whether federation is actually working rather than
+    /// leaving that information only in the server log.
+    /// </summary>
+    public class SyncHealth
+    {
+        /// <summary>Gets or sets when the sync finished (UTC).</summary>
+        public DateTime FinishedUtc { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether every source synced cleanly.</summary>
+        public bool Success { get; set; }
+
+        /// <summary>Gets or sets the human-readable outcome.</summary>
+        public string Message { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets how many items were refreshed.</summary>
+        public int ItemCount { get; set; }
+
+        /// <summary>Gets or sets how many sources failed (their cached content was preserved).</summary>
+        public int FailedSources { get; set; }
     }
 
     /// <summary>

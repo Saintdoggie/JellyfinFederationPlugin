@@ -441,7 +441,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
         [HttpPut("Servers/{id}")]
         [Authorize(Policy = "RequiresElevation")]
-        public IActionResult UpdateServer(string id, [FromBody] RemoteServer server)
+        public async Task<IActionResult> UpdateServer(string id, [FromBody] RemoteServer server, CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
             var existing = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
@@ -463,6 +463,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             existing.UserId = server.UserId;
+            var enabledChanged = existing.Enabled != server.Enabled;
             existing.Enabled = server.Enabled;
             existing.StreamingMode = server.StreamingMode;
             existing.Priority = server.Priority;
@@ -473,6 +474,29 @@ namespace Jellyfin.Plugin.Federation.Api
 
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(existing.Id);
+
+            // Toggling Enabled has to take effect now, not whenever the next
+            // scheduled sync happens to run (up to RefreshIntervalHours later).
+            // Switching a server off is meant to stop its titles playing, which
+            // depends on reconciliation clearing the stream URL stamped on each of
+            // its items; switching it back on has to restore those URLs. Leaving
+            // that to the next cycle makes the switch look broken for an hour.
+            // Same inline reconcile DeleteServer already does, for the same reason.
+            if (enabledChanged)
+            {
+                foreach (var mapping in (config!.LibraryMappings ?? new List<LibraryMapping>()).Where(m => m.Enabled))
+                {
+                    try
+                    {
+                        await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Post-toggle reconciliation failed for {Name}; it will be retried on the next sync", mapping.LocalLibraryName);
+                    }
+                }
+            }
+
             return Ok(new { success = true });
         }
 
@@ -803,6 +827,18 @@ namespace Jellyfin.Plugin.Federation.Api
                 activeServers = config?.RemoteServers?.Count(s => s.Enabled) ?? 0,
                 federatedItems = _federationManager.Cache.Count,
                 lastRefresh = _federationManager.Cache.LastRefresh,
+
+                // Whether the last sync actually worked. Without this the page can
+                // only show counts, which look identical whether federation is
+                // healthy or has been failing every cycle for hours.
+                lastSync = _syncService.LastSync == null ? null : new
+                {
+                    finishedUtc = _syncService.LastSync.FinishedUtc,
+                    success = _syncService.LastSync.Success,
+                    message = _syncService.LastSync.Message,
+                    itemCount = _syncService.LastSync.ItemCount,
+                    failedSources = _syncService.LastSync.FailedSources
+                },
                 servers = (config?.RemoteServers ?? new List<RemoteServer>()).Select(s => new
                 {
                     id = s.Id,

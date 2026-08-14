@@ -137,6 +137,18 @@
                     background: rgba(255,168,68,0.13); border-left: 3px solid #ffa844; color: #ffc27a;
                 }
                 #federationConfigPage .fed-warnbar strong { color: #ffd6a5; }
+                #federationConfigPage .fed-synchealth {
+                    margin-bottom: 1em; padding: 0.7em 1em; border-radius: 0.4em; font-size: 0.92em;
+                }
+                #federationConfigPage .fed-synchealth-ok {
+                    background: rgba(82,181,75,0.10); border-left: 3px solid #52b54b; color: #a9dfa4;
+                }
+                #federationConfigPage .fed-synchealth-ok strong { color: #c6ecc2; }
+                #federationConfigPage .fed-synchealth-bad {
+                    background: rgba(255,68,68,0.10); border-left: 3px solid #e34f4f; color: #ffb3b3;
+                }
+                #federationConfigPage .fed-synchealth-bad strong { color: #ffd0d0; }
+                #federationConfigPage .fed-synchealth .fed-hint { color: inherit; opacity: 0.75; }
             </style>
 
             <div class="sectionTitleContainer flex align-items-center">
@@ -148,6 +160,7 @@
 
             <div id="fedErrorContainer"></div>
             <div id="fedDisabledWarn"></div>
+            <div id="fedSyncHealth"></div>
 
             <div class="fed-card fed-statusstrip" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -1412,6 +1425,44 @@
 
                     /* ---------------- Status / diagnostics ---------------- */
 
+                    /* Whether the last sync actually succeeded. The counts above look
+                       exactly the same whether federation is healthy or has been
+                       failing every cycle for hours - the difference only existed in
+                       the server log, which is a bad place to hide "your library
+                       stopped updating". */
+                    function renderSyncHealth(sync) {
+                        var el = q('#fedSyncHealth');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!sync) {
+                            el.innerHTML = '';
+                            return;
+                        }
+
+                        var when = new Date(sync.finishedUtc);
+                        var mins = Math.max(0, Math.round((Date.now() - when.getTime()) / 60000));
+                        var ago = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min ago' : Math.round(mins / 60) + ' h ago');
+
+                        if (sync.success) {
+                            el.innerHTML = '<div class="fed-synchealth fed-synchealth-ok">'
+                                + '<strong>Last sync OK</strong> · ' + escapeHtml(ago) + ' · '
+                                + escapeHtml(sync.message) + '</div>';
+                            return;
+                        }
+
+                        el.innerHTML = '<div class="fed-synchealth fed-synchealth-bad">'
+                            + '<strong>Last sync had problems</strong> · ' + escapeHtml(ago) + '<br>'
+                            + escapeHtml(sync.message)
+                            + (sync.failedSources
+                                ? '<br><span class="fed-hint">Content already synced from the affected server'
+                                  + (sync.failedSources === 1 ? '' : 's')
+                                  + ' was kept, not deleted. Use <em>Test</em> on the server below to see why it could not be reached.</span>'
+                                : '')
+                            + '</div>';
+                    }
+
                     function loadStatus() {
                         fedFetch('/Plugins/Federation/Status')
                         .then(function (r) { return r.json(); })
@@ -1429,6 +1480,7 @@
 
                             if (ie) { ie.textContent = (d.federatedItems || 0).toLocaleString(); }
                             if (re) { re.textContent = d.lastRefresh ? new Date(d.lastRefresh).toLocaleString() : 'Never'; }
+                            renderSyncHealth(d.lastSync);
                         })
                         .catch(function () { /* status strip is best-effort */ });
                     }
