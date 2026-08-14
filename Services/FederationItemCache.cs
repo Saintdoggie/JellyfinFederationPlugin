@@ -179,10 +179,26 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Raw entries are keyed by server + remote item id.
                     if (TryParsePath("federation://" + entry.Key, out _, out _, out _, out var rawServerId, out var rawRemoteItemId)
                         && rawServerId == serverId
-                        && rawRemoteItemId.HasValue
-                        && !seenRemoteItemIds.Contains(rawRemoteItemId.Value))
+                        && rawRemoteItemId.HasValue)
                     {
-                        if (_entries.TryRemove(kvp.Key, out _))
+                        // Gone from the remote entirely.
+                        var vanished = !seenRemoteItemIds.Contains(rawRemoteItemId.Value);
+
+                        // Or still present, but now held under a provider-id key
+                        // instead. An item first seen without provider ids lands under
+                        // a raw key; once the remote reports its ids (a metadata
+                        // refresh there, or dedup being switched on here) the very same
+                        // item is upserted under "Movies/imdb:tt…" and the raw entry is
+                        // orphaned. It could never be pruned before, because its remote
+                        // id *is* still seen every sync - so the library ended up
+                        // showing every affected title twice, once per key. The remote
+                        // index records which key currently owns a given remote item,
+                        // so anything else claiming it is by definition the stale copy.
+                        var superseded = !vanished
+                            && _remoteIndex.TryGetValue((serverId, rawRemoteItemId.Value), out var owningKey)
+                            && !string.Equals(owningKey, entry.Key, StringComparison.OrdinalIgnoreCase);
+
+                        if ((vanished || superseded) && _entries.TryRemove(kvp.Key, out _))
                         {
                             removed++;
                         }
@@ -192,6 +208,32 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 entry.RemoveSourcesNotIn(serverId, seenRemoteItemIds);
+
+                // A source can also be stale the other way round: the remote item
+                // is still seen, but a *different* key now owns it in the remote
+                // index (e.g. dedup was turned off, or the provider id this entry
+                // was keyed on disappeared from the remote's metadata, so the item
+                // re-lands under a raw key or a different provider key on the next
+                // sync). RemoveSourcesNotIn can't catch that - the remote id is
+                // still "seen" - so without this check the old provider-keyed entry
+                // never lets go of its source and the title stays duplicated
+                // forever, which is exactly what production was showing.
+                var supersededIds = new HashSet<Guid>();
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (source.ServerId == serverId
+                        && _remoteIndex.TryGetValue((serverId, source.RemoteItemId), out var owningKey)
+                        && !string.Equals(owningKey, entry.Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        supersededIds.Add(source.RemoteItemId);
+                    }
+                }
+
+                if (supersededIds.Count > 0)
+                {
+                    entry.RemoveSources(serverId, supersededIds);
+                }
+
                 if (entry.GetSourcesSnapshot().Length == 0 && _entries.TryRemove(kvp.Key, out _))
                 {
                     removed++;
@@ -535,6 +577,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 var before = Sources.Count;
                 Sources = Sources
                     .Where(s => !(s.ServerId == serverId && !keepRemoteItemIds.Contains(s.RemoteItemId)))
+                    .ToList();
+                if (PrimarySourceIndex >= Sources.Count)
+                {
+                    PrimarySourceIndex = 0;
+                }
+
+                return before - Sources.Count;
+            }
+        }
+
+        /// <summary>
+        /// Removes sources for the given server whose remote item id is in
+        /// <paramref name="remoteItemIds"/>. Returns the number removed.
+        /// </summary>
+        public int RemoveSources(string serverId, ICollection<Guid> remoteItemIds)
+        {
+            lock (_sync)
+            {
+                var before = Sources.Count;
+                Sources = Sources
+                    .Where(s => !(s.ServerId == serverId && remoteItemIds.Contains(s.RemoteItemId)))
                     .ToList();
                 if (PrimarySourceIndex >= Sources.Count)
                 {

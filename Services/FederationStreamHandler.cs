@@ -16,10 +16,18 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederationStreamHandler
     {
         // Shared for the app lifetime: streaming responses can run for hours.
-        private static readonly HttpClient ProxyHttpClient = new HttpClient
+        private static readonly HttpClient DefaultProxyHttpClient = new HttpClient
         {
             Timeout = TimeSpan.FromHours(3)
         };
+
+        /// <summary>
+        /// Test-only seam: when set, used instead of <see cref="DefaultProxyHttpClient"/>.
+        /// Tests must reset this to null afterwards.
+        /// </summary>
+        internal static HttpClient? HttpClientOverride { get; set; }
+
+        private static HttpClient ProxyHttpClient => HttpClientOverride ?? DefaultProxyHttpClient;
 
         // A single ReadAsync stalling this long (remote briefly saturated, tunnel
         // hiccup, etc.) is treated as a failed attempt and retried rather than
@@ -134,10 +142,23 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             if (remoteResp.Content.Headers.ContentLength.HasValue)
                             {
-                                // Total bytes this response promises the client, from the
-                                // originally requested start - fixed here, before any
-                                // retry can change what rangeStart means.
-                                response.ContentLength = rangeStart + remoteResp.Content.Headers.ContentLength.Value;
+                                // The number of bytes this response body will actually
+                                // contain, full stop - not rangeStart plus that. A 206's
+                                // Content-Length is already relative to the requested
+                                // range (e.g. a 5,000,000-byte remaining length for a
+                                // 6,000,000-byte file when the client asked for
+                                // "bytes=1000000-"), so adding rangeStart on top
+                                // overstated it by exactly the seek offset on every
+                                // non-zero-start request - which is every seek, and every
+                                // buffer-ahead read during normal playback. Clients then
+                                // waited forever for bytes that were never coming: this is
+                                // what "seeking is broken" and "playback stalls" actually
+                                // were. A later retry never re-enters this block (guarded
+                                // by headersSent below), so this value, captured once, is
+                                // also the correct total across every subsequent resume -
+                                // each resume's own remaining length keeps summing back to
+                                // what was promised here.
+                                response.ContentLength = remoteResp.Content.Headers.ContentLength.Value;
                             }
 
                             if (remoteResp.Headers.Contains("Accept-Ranges"))

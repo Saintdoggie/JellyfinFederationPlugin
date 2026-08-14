@@ -516,6 +516,34 @@ namespace Jellyfin.Plugin.Federation.Services
             return null;
         }
 
+        /// <summary>
+        /// Case-insensitive provider id lookup. Dedup provider names are configured
+        /// lowercase ("imdb", "tmdb", "tvdb"), but Jellyfin stamps them on both
+        /// <see cref="BaseItem.ProviderIds"/> and <see cref="MediaBrowser.Model.Dto.BaseItemDto.ProviderIds"/>
+        /// Pascal-cased ("Imdb", "Tmdb") and neither dictionary is guaranteed to use
+        /// a case-insensitive comparer - a plain <c>TryGetValue(key, ...)</c> with the
+        /// configured casing silently misses every real entry, which is why dedup
+        /// (both across servers and against content the user already owns locally)
+        /// never actually matched anything despite the provider ids being right there.
+        /// </summary>
+        public static bool TryGetProviderId(IReadOnlyDictionary<string, string>? providerIds, string key, out string value)
+        {
+            if (providerIds != null)
+            {
+                foreach (var kv in providerIds)
+                {
+                    if (!string.IsNullOrEmpty(kv.Value) && string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = kv.Value;
+                        return true;
+                    }
+                }
+            }
+
+            value = string.Empty;
+            return false;
+        }
+
         private static BaseItem CreateItemShell(string itemType)
         {
             return (BaseItem)Activator.CreateInstance(GetClrType(itemType))!;

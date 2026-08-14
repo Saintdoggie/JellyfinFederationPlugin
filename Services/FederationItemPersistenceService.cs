@@ -19,6 +19,26 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationItemPersistenceService
     {
+        /// <summary>
+        /// The item kinds local-dedup compares against - everything this plugin can
+        /// federate and that carries provider ids. See the comment in
+        /// <see cref="CollectServerWideLocalProviderIds"/> for why the query must name
+        /// them rather than enumerate the library unrestricted.
+        /// </summary>
+        private static readonly Jellyfin.Data.Enums.BaseItemKind[] DedupCandidateKinds =
+        {
+            Jellyfin.Data.Enums.BaseItemKind.Movie,
+            Jellyfin.Data.Enums.BaseItemKind.Series,
+            Jellyfin.Data.Enums.BaseItemKind.Season,
+            Jellyfin.Data.Enums.BaseItemKind.Episode,
+            Jellyfin.Data.Enums.BaseItemKind.Video,
+            Jellyfin.Data.Enums.BaseItemKind.MusicVideo,
+            Jellyfin.Data.Enums.BaseItemKind.Audio,
+            Jellyfin.Data.Enums.BaseItemKind.MusicAlbum,
+            Jellyfin.Data.Enums.BaseItemKind.BoxSet,
+            Jellyfin.Data.Enums.BaseItemKind.Book
+        };
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
@@ -413,6 +433,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     // to provide. The dynamic provider already picks the first enabled
                     // source this way; this keeps the stamped path consistent with it.
                     var playable = FirstEnabledSource(entry, config);
+                    var changed = false;
+
+                    // The duration/container shown on an item (grid badge, detail page,
+                    // and - via item.RunTimeTicks as GetMediaSources' last-resort
+                    // fallback when a live remote fetch fails - occasionally the actual
+                    // playback bar) is stamped once at creation from whatever the cache
+                    // held that sync and, unlike Path below, was never refreshed after
+                    // that. The cache's own copy does get corrected on every sync (see
+                    // UpdateFromRemote), so a bad value from one flaky sync - or from
+                    // before some earlier fix - stayed wrong on the materialized item
+                    // forever with no self-healing path. This is exactly what "the
+                    // playbar shows the wrong length" turned out to be: not a live
+                    // per-play miscalculation, but a stale value frozen in at creation
+                    // time. Comparing and restamping it here, the same way Path already
+                    // self-heals below, fixes it going forward without a full
+                    // delete/recreate - so watch progress on the item is preserved.
+                    if (entry.Metadata.RunTimeTicks.HasValue && x.Item.RunTimeTicks != entry.Metadata.RunTimeTicks)
+                    {
+                        x.Item.RunTimeTicks = entry.Metadata.RunTimeTicks;
+                        changed = true;
+                    }
 
                     // Only when no source has an enabled home does the title genuinely
                     // have nowhere to play from. Clearing the path leaves Jellyfin with
@@ -424,6 +465,11 @@ namespace Jellyfin.Plugin.Federation.Services
                         if (!string.IsNullOrEmpty(x.Item.Path))
                         {
                             x.Item.Path = null;
+                            changed = true;
+                        }
+
+                        if (changed)
+                        {
                             restamped.Add(x.Item);
                         }
 
@@ -438,13 +484,16 @@ namespace Jellyfin.Plugin.Federation.Services
                     // (a background sync has no incoming request to infer one from).
                     // Blanking a working path over a temporary inability to rebuild it
                     // would take the whole library offline, so leave it alone.
-                    if (string.IsNullOrEmpty(expected) || string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
+                    if (!string.IsNullOrEmpty(expected) && !string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
                     {
-                        continue;
+                        x.Item.Path = expected;
+                        changed = true;
                     }
 
-                    x.Item.Path = expected;
-                    restamped.Add(x.Item);
+                    if (changed)
+                    {
+                        restamped.Add(x.Item);
+                    }
                 }
 
                 if (restamped.Count > 0)
@@ -456,7 +505,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken).ConfigureAwait(false);
 
                     _logger.LogInformation(
-                        "[Federation] Refreshed the stored stream URL on {Count} item(s) in {Name} (streaming mode, server address, or enabled state changed); watch progress preserved",
+                        "[Federation] Refreshed the stored stream URL and/or duration on {Count} item(s) in {Name}; watch progress preserved",
                         restamped.Count,
                         mapping.LocalLibraryName);
                 }
@@ -729,7 +778,22 @@ namespace Jellyfin.Plugin.Federation.Services
             IReadOnlyList<BaseItem> allItems;
             try
             {
-                allItems = _libraryManager.GetItemList(new InternalItemsQuery { Recursive = true });
+                // Restricted to the kinds that can actually carry a provider id and be
+                // duplicated. An unrestricted Recursive query walks every row in the
+                // library, and Jellyfin keeps rows there that are not media at all -
+                // including a built-in "PLACEHOLDER" row (id 0000...0001) that holds
+                // UserData detached from deleted items and whose stored type resolves
+                // to no CLR type. Deserializing the result set threw on that single
+                // row, and because the throw aborts the whole enumeration, dedup was
+                // silently skipped on every sync - which is exactly how a library ends
+                // up showing every title twice, once local and once federated. Naming
+                // the types both avoids that row and skips the thousands of
+                // Person/Studio/Genre rows this never needed to load.
+                allItems = _libraryManager.GetItemList(new InternalItemsQuery
+                {
+                    Recursive = true,
+                    IncludeItemTypes = DedupCandidateKinds
+                });
             }
             catch (Exception ex)
             {
@@ -746,7 +810,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 foreach (var key in dedupKeys)
                 {
-                    if (item.ProviderIds.TryGetValue(key, out var val) && !string.IsNullOrEmpty(val))
+                    if (FederationLibraryManager.TryGetProviderId(item.ProviderIds, key, out var val))
                     {
                         localProviderIds.Add($"{key}:{val}");
                     }
@@ -765,8 +829,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             foreach (var key in dedupKeys)
             {
-                if (entry.Metadata.ProviderIds.TryGetValue(key, out var val)
-                    && !string.IsNullOrEmpty(val)
+                if (FederationLibraryManager.TryGetProviderId(entry.Metadata.ProviderIds, key, out var val)
                     && localProviderIds.Contains($"{key}:{val}"))
                 {
                     return true;

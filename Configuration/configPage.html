@@ -190,6 +190,26 @@
                 <div id="fedFriendOutgoing"></div>
             </div>
 
+            <div class="fed-card">
+                <h2 class="fed-step">Pools</h2>
+                <p class="fed-step-desc">
+                    A pool is a named group of Federation servers who all federate with every other member, not just you.
+                    Create a pool and invite servers into it - each invite still goes through the normal friend request,
+                    so every server's admin has to accept before it connects to anyone.
+                </p>
+
+                <div class="fed-inline">
+                    <div class="fed-input-container">
+                        <label class="fed-label" for="fedNewPoolName">New pool name</label>
+                        <input type="text" id="fedNewPoolName" class="emby-input fed-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                    </div>
+                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-pool">Create pool</button>
+                </div>
+                <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                <div id="fedPoolList"></div>
+            </div>
+
             <form id="fedConfigForm">
                 <div class="fed-card">
                     <h2 class="fed-step">1 · Connect your servers</h2>
@@ -1064,6 +1084,7 @@
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
                             loadFriendRequests();
                             if (res.success) {
+                                loadPools();
                                 return loadConfiguration(true).then(function () { loadLibraryPicker(); });
                             }
                         })
@@ -1088,6 +1109,131 @@
                             loadFriendRequests();
                         })
                         .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Pools ---------------- */
+
+                    function setPoolStatus(msg, kind) {
+                        var el = q('#fedPoolStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function renderPools(pools) {
+                        var list = q('#fedPoolList');
+                        if (!list) {
+                            return;
+                        }
+
+                        pools = pools || [];
+                        if (pools.length === 0) {
+                            list.innerHTML = '<p class="fed-muted">No pools yet. Create one above, or accept a pool invite from a friend.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        pools.forEach(function (p) {
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<span class="fed-dot fed-dot-ok"></span>';
+                            html += '<strong>' + escapeHtml(p.Name) + '</strong>';
+                            html += '<span class="fed-server-url">' + (p.IsOwner ? 'you own this pool' : ('owned by ' + escapeHtml(p.OwnerName))) + ' · ' + p.Members.length + ' member' + (p.Members.length === 1 ? '' : 's') + '</span>';
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="leave-pool" data-pool="' + escapeHtml(p.Id) + '">Leave</button>';
+                            html += '</div>';
+
+                            if (p.Members.length > 0) {
+                                html += '<p class="fed-hint" style="margin:0.4em 0 0.6em;">' + p.Members.map(function (m) { return escapeHtml(m.Name || m.Url); }).join(', ') + '</p>';
+                            }
+
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container">';
+                            html += '<input type="text" id="fedPoolInvite-' + escapeHtml(p.Id) + '" class="emby-input fed-input" placeholder="Server address to invite" autocapitalize="off" autocorrect="off" spellcheck="false" />';
+                            html += '</div>';
+                            html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="invite-pool" data-pool="' + escapeHtml(p.Id) + '">Invite</button>';
+                            html += '</div>';
+                            html += '</div>';
+                        });
+
+                        list.innerHTML = html;
+                    }
+
+                    function loadPools() {
+                        fedFetch('/Plugins/Federation/Pools')
+                        .then(function (r) { return r.json(); })
+                        .then(renderPools)
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function createPool() {
+                        var nameEl = q('#fedNewPoolName');
+                        var name = nameEl ? nameEl.value.trim() : '';
+                        if (!name) {
+                            setPoolStatus('Enter a pool name first.', 'err');
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/Pools/Create', {
+                            method: 'POST',
+                            body: JSON.stringify({ Name: name })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (res.success) {
+                                setPoolStatus('Pool created.', 'ok');
+                                if (nameEl) {
+                                    nameEl.value = '';
+                                }
+                            } else {
+                                setPoolStatus('Failed to create pool.', 'err');
+                            }
+
+                            loadPools();
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function invitePool(poolId) {
+                        var urlEl = q('#fedPoolInvite-' + poolId);
+                        var url = urlEl ? urlEl.value.trim() : '';
+                        if (!url) {
+                            setPoolStatus('Enter a server address to invite first.', 'err');
+                            return;
+                        }
+
+                        setPoolStatus('Sending…', 'info');
+                        fedFetch('/Plugins/Federation/Pools/' + encodeURIComponent(poolId) + '/Invite', {
+                            method: 'POST',
+                            body: JSON.stringify({ Url: url })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setPoolStatus(res.message, res.success ? 'ok' : 'err');
+                            if (res.success && urlEl) {
+                                urlEl.value = '';
+                            }
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function leavePool(poolId) {
+                        fedFetch('/Plugins/Federation/Pools/' + encodeURIComponent(poolId), { method: 'DELETE' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setPoolStatus(res.success ? 'Left the pool.' : 'Failed to leave the pool.', res.success ? 'ok' : 'err');
+                            loadPools();
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
                     }
 
                     /* ---------------- Library picker ---------------- */
@@ -1638,6 +1784,15 @@
                                 case 'cancel-friend':
                                     cancelFriendRequest(friendId);
                                     break;
+                                case 'create-pool':
+                                    createPool();
+                                    break;
+                                case 'invite-pool':
+                                    invitePool(t.getAttribute('data-pool'));
+                                    break;
+                                case 'leave-pool':
+                                    leavePool(t.getAttribute('data-pool'));
+                                    break;
                                 case 'add-server':
                                     addServer();
                                     break;
@@ -1780,6 +1935,7 @@
                         pageEl = page;
                         attachHandlers(page);
                         loadFriendRequests();
+                        loadPools();
                         loadConfiguration(false).then(function () {
                             loadLibraryPicker();
                         });

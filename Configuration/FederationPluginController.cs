@@ -157,6 +157,11 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.LocalFederationId = existing.LocalFederationId;
                     config.IncomingFriendRequests = existing.IncomingFriendRequests;
                     config.OutgoingFriendRequests = existing.OutgoingFriendRequests;
+
+                    // Pools are managed through their own Pools/* endpoints (create,
+                    // invite, leave), never sent by the config page's main Save form -
+                    // same class of field as the friend-request lists above.
+                    config.Pools = existing.Pools;
                 }
 
                 var errors = ConfigValidator.Validate(config);
@@ -227,12 +232,31 @@ namespace Jellyfin.Plugin.Federation.Api
         [HttpGet("FederatedIds")]
         [AllowAnonymous]
         [Produces("application/json")]
-        public ActionResult<IEnumerable<string>> GetFederatedIds()
+        public ActionResult<object> GetFederatedIds()
         {
-            var ids = _federationManager.GetAllEntries()
-                .Select(e => _federationManager.ComputeItemId(e).ToString("N"))
-                .Distinct();
-            return Ok(ids);
+            var config = Plugin.Instance?.Configuration;
+
+            // Carries the source server's display name alongside each id so the
+            // in-page badge can say *which* server a title comes from, rather than
+            // only that it is "from somewhere else" - that is the useful half of the
+            // information and what makes showing a badge worth the pixels.
+            var items = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in _federationManager.GetAllEntries())
+            {
+                var id = _federationManager.ComputeItemId(entry).ToString("N");
+                if (items.ContainsKey(id))
+                {
+                    continue;
+                }
+
+                var primary = entry.GetPrimarySource();
+                var server = primary == null
+                    ? null
+                    : config?.RemoteServers?.FirstOrDefault(s => s.Id == primary.ServerId);
+                items[id] = server?.Name ?? string.Empty;
+            }
+
+            return Ok(items);
         }
 
         #endregion
@@ -690,6 +714,71 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        #region Pools
+
+        /// <summary>
+        /// Admin-triggered: lists the multi-server pools this server owns or belongs to.
+        /// </summary>
+        [HttpGet("Pools")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetPools()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            var pools = config.Pools.Select(p => new
+            {
+                p.Id,
+                p.Name,
+                p.IsOwner,
+                p.OwnerFederationId,
+                p.OwnerName,
+                Members = p.Members.Select(m => new { m.FederationId, m.Name, m.Url })
+            });
+            return Ok(pools);
+        }
+
+        /// <summary>
+        /// Admin-triggered: creates a new pool owned by this server.
+        /// </summary>
+        [HttpPost("Pools/Create")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult CreatePool([FromBody] CreatePoolBody body)
+        {
+            if (string.IsNullOrWhiteSpace(body?.Name))
+            {
+                return BadRequest(new { error = "Pool name is required" });
+            }
+
+            var pool = _friends.CreatePool(body.Name);
+            return Ok(new { success = true, poolId = pool.Id });
+        }
+
+        /// <summary>
+        /// Admin-triggered: invites a server into a pool this server belongs to.
+        /// Rides the ordinary friend-request handshake - the recipient's admin still
+        /// has to accept, same as a direct friend request.
+        /// </summary>
+        [HttpPost("Pools/{poolId}/Invite")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> InviteToPool(string poolId, [FromBody] SendFriendRequestBody body, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.SendPoolInviteAsync(poolId, body?.Url ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: removes this server's own membership record for a pool.
+        /// Does not unfriend servers already connected through it.
+        /// </summary>
+        [HttpDelete("Pools/{poolId}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult LeavePool(string poolId)
+        {
+            var removed = _friends.LeavePool(poolId);
+            return removed ? Ok(new { success = true }) : NotFound(new { error = "Pool not found" });
+        }
+
+        #endregion
+
         #region Remote Library Browsing
 
         [HttpGet("GetRemoteLibraries")]
@@ -951,5 +1040,10 @@ namespace Jellyfin.Plugin.Federation.Api
     public class SendFriendRequestBody
     {
         public string? Url { get; set; }
+    }
+
+    public class CreatePoolBody
+    {
+        public string? Name { get; set; }
     }
 }
