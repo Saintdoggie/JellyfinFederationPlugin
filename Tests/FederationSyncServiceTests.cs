@@ -92,6 +92,80 @@ public class FederationSyncServiceTests
         Assert.NotNull(cache.GetEntryByKey(episodeEntry.ParentKey!));
     }
 
+    /// <summary>
+    /// Regression test for an ultra-review finding: when an episode's series was
+    /// not synced this cycle (fetch error, missing from this mapping's pages,
+    /// etc.), <c>UpsertEpisodeSeason</c> already correctly returns null per its own
+    /// docstring - but the caller used to upsert the episode anyway with a null
+    /// ParentKey, which <see cref="FederationItemPersistenceService"/> then
+    /// materializes as a loose item sitting at the library root with no
+    /// SeriesId/SeasonId. Once created, its federation key lands in `seen` and no
+    /// later sync ever revisits or removes it. The episode must be skipped
+    /// entirely instead.
+    /// </summary>
+    [Fact]
+    public async Task RefreshMapping_EpisodeWithMissingSeries_IsSkippedNotOrphaned()
+    {
+        var seriesId = Guid.NewGuid();
+        var seasonId = Guid.NewGuid();
+        var episodeId = Guid.NewGuid();
+
+        // The series page comes back empty - standing in for the series never
+        // having been synced this cycle (a swallowed per-item error, a page the
+        // series simply wasn't on, etc.) - while the episode page still offers an
+        // episode pointing at that never-synced series.
+        var seriesJson = "{\"Items\":[],\"TotalRecordCount\":0}";
+        var episodeJson = $"{{\"Items\":[{{\"Id\":\"{episodeId}\",\"Name\":\"Pilot\",\"Type\":\"Episode\",\"SeriesId\":\"{seriesId}\",\"SeasonId\":\"{seasonId}\",\"SeasonName\":\"Season 1\",\"ParentIndexNumber\":1,\"IndexNumber\":1}}],\"TotalRecordCount\":1}}";
+
+        var httpClient = new HttpClient(new FakeHttpMessageHandler(seriesJson, episodeJson))
+        {
+            BaseAddress = new Uri("http://fake.local")
+        };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "key", UserId = "user1", Enabled = true, WanCapMode = WanCapMode.Off };
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
+
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor);
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager);
+        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, bandwidthMonitor, new Mock<IServiceProvider>().Object);
+
+        var mapping = new LibraryMapping
+        {
+            LocalLibraryName = "Shows",
+            MediaType = "Series",
+            Enabled = true,
+            RemoteLibrarySources = new List<RemoteLibrarySource>
+            {
+                new RemoteLibrarySource { ServerId = "serverA", RemoteLibraryId = "lib1", RemoteLibraryName = "Shows" }
+            }
+        };
+        var config = new PluginConfiguration
+        {
+            EnableDedup = false,
+            RemoteServers = new List<RemoteServer> { server }
+        };
+
+        var method = typeof(FederationSyncService).GetMethod("RefreshMappingAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(syncService, new object?[] { mapping, config, CancellationToken.None, null })!;
+
+        var entries = cache.GetEntriesForMapping("Shows").ToList();
+
+        // No Episode (and no synthesized Season, which only gets created as a side
+        // effect of upserting a valid episode) should have been materialized.
+        Assert.DoesNotContain(entries, e => e.ItemType == "Episode");
+        Assert.DoesNotContain(entries, e => e.ItemType == "Season");
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _seriesJson;

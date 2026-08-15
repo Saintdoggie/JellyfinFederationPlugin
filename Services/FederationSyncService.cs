@@ -606,9 +606,17 @@ namespace Jellyfin.Plugin.Federation.Services
                             continue;
                         }
 
-                        UpsertRemoteItem(mapping, remoteItem, server, config, seen);
-                        seen.Add(remoteItem.Id);
-                        total++;
+                        if (UpsertRemoteItem(mapping, remoteItem, server, config, seen))
+                        {
+                            seen.Add(remoteItem.Id);
+                            total++;
+                        }
+
+                        // else: skipped as an orphaned episode (its series wasn't
+                        // synced this cycle) - deliberately not added to `seen`, so
+                        // PruneServerSources does not treat a correctly parented copy
+                        // already persisted from an earlier, successful sync as
+                        // vanished and delete it.
                     }
                     catch (Exception ex)
                     {
@@ -633,7 +641,14 @@ namespace Jellyfin.Plugin.Federation.Services
             return total;
         }
 
-        private void UpsertRemoteItem(
+        /// <summary>
+        /// Upserts a single remote item into the cache. Returns false without
+        /// upserting anything when this is an Episode whose series has not been
+        /// synced yet this cycle (see <see cref="UpsertEpisodeSeason"/>) - skipped
+        /// rather than materialized as a loose item at the library root with no
+        /// SeriesId/SeasonId, which nothing afterward would ever notice or repair.
+        /// </summary>
+        private bool UpsertRemoteItem(
             LibraryMapping mapping,
             MediaBrowser.Model.Dto.BaseItemDto remoteItem,
             RemoteServer server,
@@ -643,6 +658,11 @@ namespace Jellyfin.Plugin.Federation.Services
             var itemType = remoteItem.Type.ToString();
             var isEpisode = string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase);
             var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server, seen) : null;
+
+            if (isEpisode && parentKey == null)
+            {
+                return false;
+            }
 
             var providerIds = remoteItem.ProviderIds;
             var dedupKeys = config.EnableDedup ? (config.DedupProviderIds ?? new List<string>()) : new List<string>();
@@ -691,6 +711,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     itemType: itemType,
                     parentKey: parentKey);
             }
+
+            return true;
         }
 
         /// <summary>
