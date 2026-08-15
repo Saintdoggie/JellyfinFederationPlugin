@@ -85,7 +85,12 @@ public class RemoteServerClientPlaybackTests
 
         var server = new RemoteServer
         {
-            Id = "serverA",
+            // A distinct server id from the other test in this file: the resolved
+            // playback user is now cached in-memory keyed by server id only (see
+            // RemoteServerClient.ResolvedPlaybackUserIdCache), so sharing an id
+            // would let whichever test happens to run first poison this one with
+            // its own resolved user.
+            Id = "serverB",
             Name = "Remote",
             Url = "http://fake.local",
             ApiKey = "key",
@@ -101,12 +106,61 @@ public class RemoteServerClientPlaybackTests
         Assert.Equal("22222222-2222-2222-2222-222222222222", handler.PlaybackUserId);
     }
 
+    /// <summary>
+    /// Regression test for an ultra-review finding: the resolved fallback user
+    /// used to be written straight onto <c>_server.UserId</c> - the same
+    /// <see cref="RemoteServer"/> instance <c>Plugin.Instance.Configuration</c>
+    /// holds - so it would get silently persisted to disk by the next unrelated
+    /// <c>SaveConfiguration()</c> call (adding a server, accepting a friend
+    /// request, ...), indistinguishable from an admin having configured it
+    /// themselves. The resolution must stay in-memory only while still skipping
+    /// the extra <c>/Users</c> round trip on a later call for the same server.
+    /// </summary>
+    [Fact]
+    public async Task GetPlaybackInfoAsync_MissingUserId_ResolutionNeverWritesBackToServerConfig()
+    {
+        var usersJson = "[" +
+                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"user1\"}" +
+                        "]";
+        var playbackJson = "{\"PlaySessionId\":\"abc\",\"MediaSources\":[" +
+                           "{\"Id\":\"src1\",\"Path\":\"http://remote/video\",\"Container\":\"mkv\"}]}";
+
+        var handler = new FakeHttpMessageHandler(usersJson, playbackJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        // A globally unique id: the in-memory resolution cache is a process-wide
+        // static keyed by server id, so a fixed id like "serverA" could collide
+        // with unrelated tests in this same run.
+        var server = new RemoteServer
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = "Remote",
+            Url = "http://fake.local",
+            ApiKey = "key",
+            UserId = string.Empty,
+            Enabled = true
+        };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
+        Assert.Equal(string.Empty, server.UserId);
+        Assert.Equal(1, handler.UsersEndpointCallCount);
+
+        // A second play on the same server must still skip the /Users round trip
+        // (the whole point of caching the resolution) without ever having written
+        // it onto the persisted config object.
+        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
+        Assert.Equal(string.Empty, server.UserId);
+        Assert.Equal(1, handler.UsersEndpointCallCount);
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _usersJson;
         private readonly string _playbackJson;
 
         public bool CalledUsersEndpoint { get; private set; }
+        public int UsersEndpointCallCount { get; private set; }
         public string? PlaybackUserId { get; private set; }
 
         public FakeHttpMessageHandler(string usersJson, string playbackJson)
@@ -122,6 +176,7 @@ public class RemoteServerClientPlaybackTests
             if (path.Equals("/Users", StringComparison.OrdinalIgnoreCase))
             {
                 CalledUsersEndpoint = true;
+                UsersEndpointCallCount++;
                 return Task.FromResult(Json(_usersJson));
             }
 

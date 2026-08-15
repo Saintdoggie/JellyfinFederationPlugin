@@ -132,6 +132,26 @@ namespace Jellyfin.Plugin.Federation.Services
                             return;
                         }
 
+                        // A resume (headers already sent, resuming from a non-zero
+                        // offset) asked the remote for "bytes={rangeStart}-" and the
+                        // Content-Length already committed to the client covers only
+                        // what was promised on the very first attempt. If an
+                        // intermediate proxy/tunnel strips the Range header on this
+                        // retry, the remote answers 200 with the *whole* file from
+                        // byte 0 instead of 206 from rangeStart - accepting that would
+                        // splice bytes 0..N onto the wire at the position rangeStart
+                        // already reached (corrupted playback) and eventually write
+                        // past the committed Content-Length, which is the exact
+                        // Kestrel mismatch/reset this handler works elsewhere to
+                        // avoid. Require the resume to actually be a resume.
+                        if (headersSent && rangeStart > 0
+                            && (remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent
+                                || remoteResp.Content.Headers.ContentRange?.From != rangeStart))
+                        {
+                            response.HttpContext.Abort();
+                            return;
+                        }
+
                         if (!headersSent)
                         {
                             response.StatusCode = (int)remoteResp.StatusCode;
@@ -211,7 +231,26 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (OperationCanceledException)
             {
+                // Aborting here (rather than just returning) matters whenever
+                // headers were already sent: those already committed a
+                // Content-Length covering the *entire* remaining file. Returning
+                // normally would make ASP.NET think this response completed
+                // successfully; Kestrel then discovers far fewer bytes were
+                // actually written than promised and throws its own fatal
+                // "Content-Length mismatch" InvalidOperationException while
+                // flushing the response - which resets the TCP connection instead
+                // of closing it cleanly. Video players constantly open and cancel
+                // range requests as completely normal behavior (seeking,
+                // prefetching, probing), so every single one of those was being
+                // turned into what looked like a hard streaming error to the
+                // player, forcing it into expensive recovery (re-fetching
+                // PlaybackInfo, rebuilding the media source) instead of just
+                // opening its next range request - this is what "3 minutes to
+                // start, then stutters every ~20s" actually was. When nothing was
+                // sent yet, aborting is still safe: the client is already gone
+                // either way.
                 _logger.LogInformation("[Federation] Proxy stream cancelled by client");
+                response.HttpContext.Abort();
             }
             catch (Exception ex)
             {
@@ -219,6 +258,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!response.HasStarted)
                 {
                     response.StatusCode = StatusCodes.Status500InternalServerError;
+                }
+                else
+                {
+                    // Same reasoning as the OperationCanceledException case above:
+                    // retries exhausted after headers were already sent, so the
+                    // promised Content-Length can never be fulfilled.
+                    response.HttpContext.Abort();
                 }
             }
         }

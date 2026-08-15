@@ -36,6 +36,17 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, (DateTime Expires, FederationPeerStatus Status)> PeerStatusCache = new();
         private static readonly TimeSpan PeerStatusCacheTtl = TimeSpan.FromSeconds(30);
 
+        // In-memory only, deliberately never written to _server.UserId: that field
+        // lives on the same RemoteServer instance Plugin.Instance.Configuration
+        // holds, so mutating it would get silently persisted to disk the next time
+        // anything calls SaveConfiguration() (adding a server, accepting a friend
+        // request, ...) - indistinguishable from an admin having configured it
+        // themselves, and immune to an admin's later attempt to clear or change it.
+        // Keyed by server id so this still skips the GetUsersAsync round trip on
+        // every subsequent play for the rest of this process's lifetime, without
+        // that persistence risk.
+        private static readonly ConcurrentDictionary<string, string> ResolvedPlaybackUserIdCache = new(StringComparer.OrdinalIgnoreCase);
+
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -211,6 +222,13 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 var userIdToUse = userId ?? _server.UserId;
                 bool fallbackToFirstUser = false;
+                if (string.IsNullOrEmpty(userIdToUse) && userId == null
+                    && ResolvedPlaybackUserIdCache.TryGetValue(_server.Id, out var previouslyResolved))
+                {
+                    userIdToUse = previouslyResolved;
+                    fallbackToFirstUser = true;
+                }
+
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
                     // PlaybackInfo is a per-user endpoint. When no user is stored on
@@ -234,14 +252,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     if (userId == null && userIdToUse != null)
                     {
-                        // GetClient(serverId) reads this same RemoteServer instance out
-                        // of Plugin.Instance.Configuration on every call, so writing the
-                        // resolution back here makes every future play of any item on
-                        // this server skip this GetUsersAsync round trip for the rest of
-                        // this server session - not just this one request. Not persisted
-                        // to disk: an admin who configures a UserId later should still
-                        // win over this auto-resolved value on next restart.
-                        _server.UserId = userIdToUse;
+                        // Cached in-memory only (see ResolvedPlaybackUserIdCache) so
+                        // every future play of any item on this server skips this
+                        // GetUsersAsync round trip for the rest of this process's
+                        // lifetime, without ever touching the persisted config - an
+                        // admin who configures (or clears) UserId always wins,
+                        // immediately, not just after a restart.
+                        ResolvedPlaybackUserIdCache[_server.Id] = userIdToUse;
                     }
 
                     if (chosen != null && !chosen.IsAdministrator)
