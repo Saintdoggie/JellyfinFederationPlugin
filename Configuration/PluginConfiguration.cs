@@ -275,6 +275,30 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// someone else runs.
         /// </summary>
         public bool HostDirectory { get; set; }
+
+        /// <summary>
+        /// Gets or sets this server's own upload capacity in Mbps, as the admin
+        /// knows it (their ISP plan, a manual speedtest, etc.) - not measured
+        /// automatically, since testing outbound WAN capacity from inside the box
+        /// itself has no reliable external vantage point (the same honest
+        /// tradeoff <see cref="RemoteServer.WanMaxBitrateMbps"/> already makes for
+        /// a manual per-remote cap). Used by <see cref="Services.UploadBudgetService"/>
+        /// to divide this budget across however many playback sessions are
+        /// currently active when <see cref="AutoManageUploadBudget"/> is on.
+        /// </summary>
+        public int LocalUploadCapacityMbps { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether <see cref="Services.UploadBudgetService"/>
+        /// should keep Jellyfin's own native "Internet streaming bitrate limit"
+        /// (<c>ServerConfiguration.RemoteClientBitrateLimit</c>) automatically
+        /// divided across current concurrent playback sessions. Off by default:
+        /// this writes to Jellyfin's own core server configuration - a bigger
+        /// blast radius than anything else this plugin touches - and it governs
+        /// every remote-classified stream this server serves, not just federation
+        /// traffic, so it needs to be a deliberate opt-in.
+        /// </summary>
+        public bool AutoManageUploadBudget { get; set; }
     }
 
     /// <summary>
@@ -586,6 +610,17 @@ namespace Jellyfin.Plugin.Federation.Configuration
     /// </summary>
     public class LibraryMapping
     {
+        /// <summary>
+        /// Gets or sets a stable id for this mapping, independent of its
+        /// (renameable) <see cref="LocalLibraryName"/>. Added so the admin UI can
+        /// address a specific mapping for edit/delete without racing a rename -
+        /// existing mappings deserialized from before this field existed get one
+        /// lazily assigned the first time they're touched through the API rather
+        /// than a migration, since nothing before now ever needed to reference a
+        /// mapping by id.
+        /// </summary>
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+
         /// <summary>
         /// Gets or sets the local library name (shadow library).
         /// </summary>

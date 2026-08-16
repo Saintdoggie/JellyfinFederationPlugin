@@ -80,7 +80,7 @@ public class FederationStreamPathTests : IDisposable
         return server;
     }
 
-    private FederatedCacheEntry AddEntry(string itemType, Guid remoteId, string? container = null)
+    private FederatedCacheEntry AddEntry(string itemType, Guid remoteId, string? container = null, long? bitrate = null)
     {
         _cache.UpsertRaw(
             "Movies",
@@ -91,7 +91,10 @@ public class FederationStreamPathTests : IDisposable
                 Id = remoteId,
                 Name = "Gran Turismo",
                 Type = Jellyfin.Data.Enums.BaseItemKind.Movie,
-                Container = container
+                Container = container,
+                MediaSources = bitrate.HasValue
+                    ? new[] { new MediaSourceInfo { Bitrate = (int)bitrate.Value } }
+                    : null
             },
             0,
             itemType);
@@ -403,6 +406,56 @@ public class FederationStreamPathTests : IDisposable
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
         Assert.Contains("VideoBitrate=10000000", liveUrl);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_SourceBitrateAlreadyFitsUnderTheCap_StreamsRawSourceUnchanged()
+    {
+        // A file that already fits under what the link can sustain must not be
+        // forced through a remote transcode just because a cap number exists - that
+        // was the "same file plays fine from my own server but stutters from a
+        // friend's" bug (the remote server's ffmpeg falling behind real-time on
+        // ordinary home hardware, for a transcode that was never actually needed).
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0); // -> 17 Mbps cap
+
+        var remoteId = Guid.NewGuid();
+        var entry = AddEntry("Movie", remoteId, bitrate: 8_000_000); // 8 Mbps source, well under the cap
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!, entry.Metadata.Bitrate);
+
+        Assert.DoesNotContain("VideoBitrate", liveUrl);
+        Assert.Equal(
+            $"http://friend.example:8096/Videos/{remoteId:N}/stream?api_key=secret-key&Static=true",
+            liveUrl);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_SourceBitrateExceedsTheCap_StillTranscodes()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0); // -> 17 Mbps cap
+
+        var remoteId = Guid.NewGuid();
+        var entry = AddEntry("Movie", remoteId, bitrate: 25_000_000); // 25 Mbps source, exceeds the cap
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!, entry.Metadata.Bitrate);
+
+        Assert.Contains("VideoBitrate=17000000", liveUrl);
+    }
+
+    [Fact]
+    public void WanCapMode_Auto_ConfirmedWan_UnknownSourceBitrate_StillTranscodesConservatively()
+    {
+        // Older cached items synced before this fix (or a remote that never reported
+        // MediaSources[0].Bitrate) have no bitrate to compare against - falls back to
+        // the previous, conservative "any cap forces a transcode" behavior rather
+        // than guessing the file fits.
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0);
+
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!, entry.Metadata.Bitrate);
+
+        Assert.Contains("VideoBitrate=17000000", liveUrl);
     }
 
     [Fact]

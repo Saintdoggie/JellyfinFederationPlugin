@@ -70,6 +70,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 errors.Add("RefreshIntervalHours must be at least 1.");
             }
 
+            if (config.LocalUploadCapacityMbps < 0)
+            {
+                errors.Add("LocalUploadCapacityMbps cannot be negative.");
+            }
+
+            if (config.AutoManageUploadBudget && config.LocalUploadCapacityMbps <= 0)
+            {
+                errors.Add("Set an upload capacity before enabling automatic upload budget management.");
+            }
+
             if (!string.IsNullOrEmpty(config.LocalUsername) && !IsValidUsername(config.LocalUsername))
             {
                 errors.Add("LocalUsername must be 3-32 characters: letters, digits, underscore, or hyphen only.");

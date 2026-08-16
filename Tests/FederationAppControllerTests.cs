@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Security;
+using MediaBrowser.Controller.Session;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -61,6 +64,14 @@ public class FederationAppControllerTests : IDisposable
             Mock.Of<ILibraryManager>());
 
         var directory = new FederationDirectoryService(NullLogger<FederationDirectoryService>.Instance, Mock.Of<IServiceProvider>());
+        var libraryManager = Mock.Of<ILibraryManager>();
+        var userManager = Mock.Of<IUserManager>();
+        var sessionManager = new Mock<ISessionManager>();
+        sessionManager.SetupGet(s => s.Sessions).Returns(Array.Empty<SessionInfo>());
+        var uploadBudget = new UploadBudgetService(
+            NullLogger<UploadBudgetService>.Instance,
+            sessionManager.Object,
+            Mock.Of<IServerConfigurationManager>());
 
         _controller = new FederationAppController(
             NullLogger<FederationAppController>.Instance,
@@ -71,7 +82,10 @@ public class FederationAppControllerTests : IDisposable
             cache,
             bandwidthMonitor,
             directory,
-            friends);
+            friends,
+            libraryManager,
+            userManager,
+            uploadBudget);
     }
 
     public void Dispose() => _plugin.Dispose();
@@ -158,5 +172,113 @@ public class FederationAppControllerTests : IDisposable
             CancellationToken.None);
 
         Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    [Fact]
+    public void SaveSettings_RoundTrips_AndRejectsInvalidValues()
+    {
+        var ok = _controller.SaveSettings(new FederationAppController.SettingsRequest
+        {
+            RefreshIntervalHours = 3,
+            AutoProvisionLibraries = true,
+            EnableDedup = true,
+            LocalUploadCapacityMbps = 30,
+            AutoManageUploadBudget = true
+        });
+        Assert.IsType<OkObjectResult>(ok);
+        Assert.Equal(3, _plugin.Configuration.RefreshIntervalHours);
+        Assert.Equal(30, _plugin.Configuration.LocalUploadCapacityMbps);
+        Assert.True(_plugin.Configuration.AutoManageUploadBudget);
+
+        // Enabling auto-manage with no upload capacity configured is rejected by
+        // ConfigValidator (see the "set a capacity first" check).
+        var bad = _controller.SaveSettings(new FederationAppController.SettingsRequest
+        {
+            RefreshIntervalHours = 1,
+            LocalUploadCapacityMbps = 0,
+            AutoManageUploadBudget = true
+        });
+        Assert.IsType<BadRequestObjectResult>(bad);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task UpdateServer_PersistsEditedFields()
+    {
+        Assert.IsType<OkObjectResult>(_controller.AddServer(new RemoteServer
+        {
+            Name = "Friend",
+            Url = "https://friend.example",
+            ApiKey = "super-secret"
+        }));
+        var addedId = _plugin.Configuration.RemoteServers.Single().Id;
+
+        var result = await _controller.UpdateServer(
+            addedId,
+            new FederationAppController.UpdateServerRequest
+            {
+                Enabled = false,
+                StreamingMode = StreamingMode.Proxy,
+                Priority = 5,
+                WanCapMode = WanCapMode.Manual,
+                WanMaxBitrateMbps = 12,
+                WanMaxHeight = 720,
+                ShareAllLibraries = true
+            },
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        var stored = _plugin.Configuration.RemoteServers.Single(s => s.Id == addedId);
+        Assert.False(stored.Enabled);
+        Assert.Equal(StreamingMode.Proxy, stored.StreamingMode);
+        Assert.Equal(5, stored.Priority);
+        Assert.Equal(WanCapMode.Manual, stored.WanCapMode);
+        Assert.Equal(12, stored.WanMaxBitrateMbps);
+        Assert.Equal(720, stored.WanMaxHeight);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task UpdateServer_UnknownId_ReturnsNotFound()
+    {
+        var result = await _controller.UpdateServer(
+            Guid.NewGuid().ToString(),
+            new FederationAppController.UpdateServerRequest(),
+            CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task UpdateMapping_TogglesEnabled_AndDeleteRemovesIt()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "serverA", Name = "Friend", Url = "https://friend.example", ApiKey = "k" });
+        await _controller.AddMapping(
+            new FederationAppController.CreateMappingRequest { ServerId = "serverA", LocalLibraryName = "Movies", MediaType = "Movie" },
+            CancellationToken.None);
+        var mappingId = _plugin.Configuration.LibraryMappings.Single().Id;
+
+        var updateResult = await _controller.UpdateMapping(
+            mappingId,
+            new FederationAppController.UpdateMappingRequest { Enabled = false, AutoProvision = false },
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(updateResult);
+        Assert.False(_plugin.Configuration.LibraryMappings.Single().Enabled);
+
+        var deleteResult = await _controller.DeleteMapping(mappingId, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(deleteResult);
+        Assert.Empty(_plugin.Configuration.LibraryMappings);
+    }
+
+    [Fact]
+    public void GetDashboard_ReflectsUploadBudgetProjection()
+    {
+        _plugin.Configuration.LocalUploadCapacityMbps = 30;
+        _plugin.Configuration.AutoManageUploadBudget = true;
+
+        var result = Assert.IsType<OkObjectResult>(_controller.GetDashboard());
+        var uploadBudget = result.Value!.GetType().GetProperty("uploadBudget")!.GetValue(result.Value)!;
+        var projected = (int)uploadBudget.GetType().GetProperty("projectedPerStreamMbps")!.GetValue(uploadBudget)!;
+
+        // No active sessions in this test's mocked ISessionManager -> divisor of 1.
+        Assert.Equal(26, projected);
     }
 }

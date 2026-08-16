@@ -25,6 +25,9 @@ namespace Jellyfin.Plugin.Federation
         private readonly FederationItemPersistenceService _persistence;
         private readonly WebClientInjector _webClientInjector;
         private readonly FederationDirectoryStore _directoryStore;
+        private readonly UploadBudgetService _uploadBudget;
+        private PeriodicTimer? _uploadBudgetTimer;
+        private Task? _uploadBudgetLoop;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -36,7 +39,8 @@ namespace Jellyfin.Plugin.Federation
             FederationSyncService syncService,
             FederationItemPersistenceService persistence,
             WebClientInjector webClientInjector,
-            FederationDirectoryStore directoryStore)
+            FederationDirectoryStore directoryStore,
+            UploadBudgetService uploadBudget)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -45,6 +49,7 @@ namespace Jellyfin.Plugin.Federation
             _persistence = persistence;
             _webClientInjector = webClientInjector;
             _directoryStore = directoryStore;
+            _uploadBudget = uploadBudget;
         }
 
         /// <inheritdoc />
@@ -117,6 +122,17 @@ namespace Jellyfin.Plugin.Federation
                         _logger.LogError(ex, "[Federation] Background startup sync failed");
                     }
                 });
+
+                // A separate, much shorter cadence than the hourly-by-default
+                // FederationRefreshTask: the whole point of an automatically-managed
+                // upload budget is reacting to a friend joining/leaving playback
+                // within a couple of minutes, not waiting for the next scheduled
+                // library sync. ApplyIfDue() itself is cheap (one Sessions read, one
+                // conditional config save only when the value actually changed), so a
+                // short interval doesn't thrash Jellyfin's own config file the way
+                // running it on every single session event would.
+                _uploadBudgetTimer = new PeriodicTimer(TimeSpan.FromMinutes(2));
+                _uploadBudgetLoop = RunUploadBudgetLoopAsync(_uploadBudgetTimer);
             }
             catch (Exception ex)
             {
@@ -124,7 +140,33 @@ namespace Jellyfin.Plugin.Federation
             }
         }
 
+        private async Task RunUploadBudgetLoopAsync(PeriodicTimer timer)
+        {
+            try
+            {
+                while (await timer.WaitForNextTickAsync().ConfigureAwait(false))
+                {
+                    try
+                    {
+                        _uploadBudget.ApplyIfDue();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Upload budget check failed; keeping previous limit");
+                    }
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Expected: StopAsync disposes the timer to end this loop.
+            }
+        }
+
         /// <inheritdoc />
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            _uploadBudgetTimer?.Dispose();
+            return _uploadBudgetLoop ?? Task.CompletedTask;
+        }
     }
 }

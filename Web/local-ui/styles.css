@@ -28,59 +28,124 @@ body {
   font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-header {
+.fed-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.fed-topbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 24px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--fed-border);
+  flex: 0 0 auto;
 }
 
-header h1 {
-  font-size: 18px;
+.fed-topbar h1 {
+  font-size: 17px;
   font-weight: 600;
   margin: 0;
 }
 
-header .fed-dot {
+.fed-topbar .fed-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: var(--fed-blue);
 }
 
-nav {
+.fed-back {
   display: flex;
-  gap: 4px;
-  padding: 12px 24px 0;
-  border-bottom: 1px solid var(--fed-border);
-  overflow-x: auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  color: var(--fed-text);
+  text-decoration: none;
+  font-size: 22px;
+  line-height: 1;
+  margin-right: 4px;
 }
 
-nav button {
+.fed-back:hover {
+  background: var(--fed-surface-hover);
+}
+
+.fed-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fed-sidenav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 200px;
+  flex: 0 0 auto;
+  padding: 16px 10px;
+  border-right: 1px solid var(--fed-border);
+  overflow-y: auto;
+}
+
+.fed-sidenav button {
   background: transparent;
   border: none;
+  border-left: 3px solid transparent;
   color: var(--fed-muted);
-  padding: 10px 14px;
+  text-align: left;
+  padding: 10px 12px;
   font-size: 14px;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  white-space: nowrap;
+  border-radius: 0 6px 6px 0;
 }
 
-nav button:hover {
+.fed-sidenav button:hover {
   color: var(--fed-text);
+  background: var(--fed-surface-hover);
 }
 
-nav button.active {
+.fed-sidenav button.active {
   color: var(--fed-text);
-  border-bottom-color: var(--fed-blue);
+  background: var(--fed-surface);
+  border-left-color: var(--fed-blue);
 }
 
 main {
-  max-width: 860px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 900px;
   margin: 0 auto;
   padding: 24px;
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .fed-body {
+    flex-direction: column;
+  }
+
+  .fed-sidenav {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid var(--fed-border);
+  }
+
+  .fed-sidenav button {
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+  }
+
+  .fed-sidenav button.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--fed-blue);
+  }
 }
 
 .fed-panel {
@@ -261,4 +326,103 @@ button.fed-btn:disabled {
 .fed-badge.off {
   color: var(--fed-warn);
   border-color: var(--fed-warn);
+}
+
+.fed-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+}
+
+.fed-stat {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--fed-border);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.fed-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.fed-stat-label {
+  color: var(--fed-muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.fed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.fed-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fed-blue);
+}
+
+.fed-edit-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--fed-border);
+  display: none;
+}
+
+.fed-edit-form.open {
+  display: block;
+}
+
+.fed-edit-form .fed-field {
+  margin-bottom: 10px;
+}
+
+.fed-poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.fed-poster {
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--fed-border);
+  position: relative;
+}
+
+.fed-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.fed-poster-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 6px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fed-muted);
+}
+
+.fed-link {
+  color: var(--fed-blue);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.fed-link:hover {
+  text-decoration: underline;
 }
