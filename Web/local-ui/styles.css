@@ -1,0 +1,264 @@
+/* Jellyfin Federation - standalone local admin UI.
+   Palette matches the plugin's existing colors (grey/black/blue/white,
+   nothing fancy): Jellyfin blue #00a4dc, translucent-white-on-black card
+   surfaces, white/#eee text. */
+
+:root {
+  --fed-bg: #101214;
+  --fed-surface: rgba(255, 255, 255, 0.05);
+  --fed-surface-hover: rgba(255, 255, 255, 0.08);
+  --fed-border: rgba(255, 255, 255, 0.1);
+  --fed-text: #eee;
+  --fed-muted: #9aa0a6;
+  --fed-blue: #00a4dc;
+  --fed-blue-hover: #1db8f0;
+  --fed-danger: #e34f4f;
+  --fed-ok: #52b54b;
+  --fed-warn: #ffa844;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--fed-bg);
+  color: var(--fed-text);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--fed-border);
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+header .fed-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fed-blue);
+}
+
+nav {
+  display: flex;
+  gap: 4px;
+  padding: 12px 24px 0;
+  border-bottom: 1px solid var(--fed-border);
+  overflow-x: auto;
+}
+
+nav button {
+  background: transparent;
+  border: none;
+  color: var(--fed-muted);
+  padding: 10px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+nav button:hover {
+  color: var(--fed-text);
+}
+
+nav button.active {
+  color: var(--fed-text);
+  border-bottom-color: var(--fed-blue);
+}
+
+main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.fed-panel {
+  display: none;
+}
+
+.fed-panel.active {
+  display: block;
+}
+
+.fed-card {
+  background: var(--fed-surface);
+  border: 1px solid var(--fed-border);
+  border-radius: 8px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+.fed-card h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.fed-card p.fed-hint {
+  color: var(--fed-muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
+.fed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--fed-border);
+}
+
+.fed-row:last-child {
+  border-bottom: none;
+}
+
+.fed-row-main {
+  min-width: 0;
+}
+
+.fed-row-title {
+  font-weight: 500;
+}
+
+.fed-row-sub {
+  color: var(--fed-muted);
+  font-size: 12px;
+}
+
+.fed-input, .fed-select {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--fed-border);
+  color: var(--fed-text);
+  border-radius: 6px;
+  padding: 9px 10px;
+  font-size: 14px;
+  width: 100%;
+}
+
+.fed-input:focus, .fed-select:focus {
+  outline: none;
+  border-color: var(--fed-blue);
+}
+
+.fed-field {
+  margin-bottom: 12px;
+}
+
+.fed-field label {
+  display: block;
+  font-size: 12px;
+  color: var(--fed-muted);
+  margin-bottom: 4px;
+}
+
+.fed-inline {
+  display: flex;
+  gap: 8px;
+}
+
+.fed-inline > * {
+  flex: 1;
+}
+
+button.fed-btn {
+  background: var(--fed-blue);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.fed-btn:hover {
+  background: var(--fed-blue-hover);
+}
+
+button.fed-btn.fed-flat {
+  background: transparent;
+  border: 1px solid var(--fed-border);
+  color: var(--fed-text);
+}
+
+button.fed-btn.fed-flat:hover {
+  background: var(--fed-surface-hover);
+}
+
+button.fed-btn.fed-danger {
+  background: transparent;
+  border: 1px solid var(--fed-danger);
+  color: var(--fed-danger);
+}
+
+button.fed-btn.fed-danger:hover {
+  background: rgba(227, 79, 79, 0.1);
+}
+
+button.fed-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fed-status {
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.fed-status.ok {
+  color: var(--fed-ok);
+}
+
+.fed-status.err {
+  color: var(--fed-danger);
+}
+
+.fed-status.info {
+  color: var(--fed-muted);
+}
+
+.fed-muted {
+  color: var(--fed-muted);
+  font-size: 13px;
+}
+
+.fed-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--fed-surface);
+  border: 1px solid var(--fed-border);
+  object-fit: cover;
+}
+
+.fed-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--fed-surface);
+  border: 1px solid var(--fed-border);
+  color: var(--fed-muted);
+}
+
+.fed-badge.on {
+  color: var(--fed-ok);
+  border-color: var(--fed-ok);
+}
+
+.fed-badge.off {
+  color: var(--fed-warn);
+  border-color: var(--fed-warn);
+}

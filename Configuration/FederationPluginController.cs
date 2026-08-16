@@ -66,32 +66,42 @@ namespace Jellyfin.Plugin.Federation.Api
         #region Configuration
 
         /// <summary>
-        /// Serves the static configuration page markup (contains no secrets).
+        /// Redirects to the standalone local admin UI (<see cref="FederationAppController"/>),
+        /// which replaced the old in-Jellyfin config page. Kept at this same URL
+        /// rather than removed outright so anything bookmarked/linked to it
+        /// (including Jellyfin's own dashboard menu entry, see
+        /// <see cref="Plugin.GetPages"/>) still lands somewhere useful instead of
+        /// 404ing. A plain same-origin redirect - the new UI lives at a path on
+        /// this same server/port now, not a separate one, so no lookup is needed.
         /// </summary>
         [HttpGet("Config")]
         [AllowAnonymous]
-        [Produces("text/html")]
-        public IActionResult GetConfigPage()
-        {
-            try
-            {
-                var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-                var resourceName = "Jellyfin.Plugin.Federation.Configuration.configPage.html";
-                using var stream = assembly.GetManifestResourceStream(resourceName);
-                if (stream == null)
-                {
-                    return NotFound("Configuration page resource not found");
-                }
+        public IActionResult GetConfigPage() => Redirect("/Plugins/Federation/App/");
 
-                using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
-                var html = reader.ReadToEnd();
-                return Content(html, "text/html; charset=utf-8");
-            }
-            catch (Exception ex)
+        /// <summary>
+        /// Serves this server's own avatar image, peer-to-peer - fetched directly
+        /// by whoever is displaying it (a friend's local UI, a directory search
+        /// result), never uploaded to or stored by any directory service. See
+        /// <see cref="PluginConfiguration.HasAvatar"/>.
+        /// </summary>
+        [HttpGet("Avatar")]
+        [AllowAnonymous]
+        public IActionResult GetAvatar()
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.HasAvatar != true || Plugin.Instance == null)
             {
-                _logger.LogError(ex, "[Federation] Error serving config page");
-                return StatusCode(500, $"Error: {ex.Message}");
+                return NotFound();
             }
+
+            var path = System.IO.Path.Combine(Plugin.Instance.DataFolderPath, "avatar.img");
+            if (!System.IO.File.Exists(path))
+            {
+                return NotFound();
+            }
+
+            var contentType = string.IsNullOrEmpty(config.AvatarContentType) ? "application/octet-stream" : config.AvatarContentType;
+            return PhysicalFile(path, contentType);
         }
 
         /// <summary>

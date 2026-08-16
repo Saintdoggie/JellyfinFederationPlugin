@@ -38,6 +38,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         }
 
         /// <summary>
+        /// Validates a directory username: letters, digits, underscore, and
+        /// hyphen only, 3-32 characters. Kept simple and URL-safe with no
+        /// escaping needed, since it appears directly in directory search
+        /// results and (eventually) invite/profile URLs.
+        /// </summary>
+        public static bool IsValidUsername(string? username)
+        {
+            if (string.IsNullOrWhiteSpace(username) || username.Length is < 3 or > 32)
+            {
+                return false;
+            }
+
+            return username.All(c => char.IsLetterOrDigit(c) || c is '_' or '-');
+        }
+
+        /// <summary>
         /// Validates a full configuration, returning all problems found.
         /// </summary>
         public static IReadOnlyList<string> Validate(PluginConfiguration config)
@@ -52,6 +68,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
             if (config.RefreshIntervalHours < 1)
             {
                 errors.Add("RefreshIntervalHours must be at least 1.");
+            }
+
+            if (!string.IsNullOrEmpty(config.LocalUsername) && !IsValidUsername(config.LocalUsername))
+            {
+                errors.Add("LocalUsername must be 3-32 characters: letters, digits, underscore, or hyphen only.");
+            }
+
+            if (!string.IsNullOrEmpty(config.DirectoryServerUrl) && !IsValidServerUrl(config.DirectoryServerUrl))
+            {
+                errors.Add("DirectoryServerUrl must be an absolute http(s) URL.");
             }
 
             var servers = config.RemoteServers ?? new List<RemoteServer>();

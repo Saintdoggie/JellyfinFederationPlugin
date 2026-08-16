@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Federation</title>
+  <link rel="stylesheet" href="/Plugins/Federation/App/styles.css" />
+</head>
+<body>
+  <header>
+    <span class="fed-dot"></span>
+    <h1>Federation</h1>
+  </header>
+
+  <nav>
+    <button data-panel="home" class="active">Home</button>
+    <button data-panel="profile">Profile</button>
+    <button data-panel="servers">Servers</button>
+    <button data-panel="friends">Friends</button>
+    <button data-panel="pools">Pools</button>
+    <button data-panel="mappings">Libraries</button>
+    <button data-panel="directory">Find friends</button>
+  </nav>
+
+  <main>
+    <section id="panel-home" class="fed-panel active">
+      <div class="fed-card">
+        <h2>Status</h2>
+        <div class="fed-row">
+          <div class="fed-row-main">
+            <div class="fed-row-title">Federated servers</div>
+            <div class="fed-row-sub" id="homeServerCount">-</div>
+          </div>
+        </div>
+        <div class="fed-row">
+          <div class="fed-row-main">
+            <div class="fed-row-title">Sync</div>
+            <div class="fed-row-sub">Run a sync now to pull the latest content from every friend.</div>
+          </div>
+          <button class="fed-btn" data-fed-action="sync-now">Sync now</button>
+        </div>
+        <div id="homeSyncStatus" class="fed-status" style="display:none;"></div>
+      </div>
+    </section>
+
+    <section id="panel-profile" class="fed-panel">
+      <div class="fed-card">
+        <h2>Your profile</h2>
+        <p class="fed-hint">One username represents this whole server to the friend directory (see "Find friends") - not any one Jellyfin account.</p>
+        <div class="fed-field">
+          <label for="profileAvatarPreview">Avatar</label>
+          <img id="profileAvatarPreview" class="fed-avatar" alt="" />
+          <input type="file" id="profileAvatarFile" accept="image/*" style="margin-top:8px;display:block;" />
+        </div>
+        <div class="fed-field">
+          <label for="profileUsername">Username</label>
+          <input type="text" id="profileUsername" class="fed-input" placeholder="e.g. movie_night_mike" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <button class="fed-btn" data-fed-action="save-profile">Save profile</button>
+        <div id="profileStatus" class="fed-status" style="display:none;"></div>
+      </div>
+    </section>
+
+    <section id="panel-servers" class="fed-panel">
+      <div class="fed-card">
+        <h2>Add a server manually</h2>
+        <p class="fed-hint">Prefer "Find friends" or an invite code if you have one - this is for connecting with a known address and API key directly.</p>
+        <div class="fed-field">
+          <label for="serverName">Name</label>
+          <input type="text" id="serverName" class="fed-input" placeholder="e.g. Alex's server" />
+        </div>
+        <div class="fed-field">
+          <label for="serverUrl">Address</label>
+          <input type="text" id="serverUrl" class="fed-input" placeholder="https://example.com" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <div class="fed-field">
+          <label for="serverApiKey">API key</label>
+          <input type="text" id="serverApiKey" class="fed-input" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <button class="fed-btn" data-fed-action="add-server">Add server</button>
+        <div id="serverAddStatus" class="fed-status" style="display:none;"></div>
+      </div>
+      <div class="fed-card">
+        <h2>Connected servers</h2>
+        <div id="serverList"><p class="fed-muted">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="panel-friends" class="fed-panel">
+      <div class="fed-card">
+        <h2>Send a friend request</h2>
+        <div class="fed-inline">
+          <input type="text" id="friendUrl" class="fed-input" placeholder="https://their-server.example" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <button class="fed-btn" data-fed-action="send-friend-request" style="flex:0 0 auto;">Send</button>
+        </div>
+        <div id="friendSendStatus" class="fed-status" style="display:none;"></div>
+      </div>
+      <div class="fed-card">
+        <h2>Incoming requests</h2>
+        <div id="friendIncoming"><p class="fed-muted">Loading…</p></div>
+      </div>
+      <div class="fed-card">
+        <h2>Outgoing requests</h2>
+        <div id="friendOutgoing"><p class="fed-muted">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="panel-pools" class="fed-panel">
+      <div class="fed-card">
+        <h2>Create a pool</h2>
+        <div class="fed-inline">
+          <input type="text" id="poolName" class="fed-input" placeholder="e.g. Movie Night Crew" />
+          <button class="fed-btn" data-fed-action="create-pool" style="flex:0 0 auto;">Create</button>
+        </div>
+        <div id="poolCreateStatus" class="fed-status" style="display:none;"></div>
+      </div>
+      <div class="fed-card">
+        <h2>Your pools</h2>
+        <div id="poolList"><p class="fed-muted">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="panel-mappings" class="fed-panel">
+      <div class="fed-card">
+        <h2>Add a library</h2>
+        <p class="fed-hint">Pick a server, then one of its libraries to pull into a local virtual library here.</p>
+        <div class="fed-field">
+          <label for="mappingServer">Server</label>
+          <select id="mappingServer" class="fed-select"></select>
+        </div>
+        <div class="fed-field">
+          <label for="mappingRemoteLibrary">Their library</label>
+          <select id="mappingRemoteLibrary" class="fed-select"></select>
+        </div>
+        <div class="fed-field">
+          <label for="mappingLocalName">Local library name</label>
+          <input type="text" id="mappingLocalName" class="fed-input" placeholder="e.g. Movies" />
+        </div>
+        <button class="fed-btn" data-fed-action="add-mapping">Add library</button>
+        <div id="mappingAddStatus" class="fed-status" style="display:none;"></div>
+      </div>
+      <div class="fed-card">
+        <h2>Current libraries</h2>
+        <div id="mappingList"><p class="fed-muted">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="panel-directory" class="fed-panel">
+      <div class="fed-card">
+        <h2>Directory server</h2>
+        <p class="fed-hint">A directory is a small, optional lookup service that turns a username into a server address - point this at one you trust (your own, or a friend's) to search by username or use invite codes.</p>
+        <div class="fed-field">
+          <label for="directoryUrl">Directory address</label>
+          <input type="text" id="directoryUrl" class="fed-input" placeholder="https://directory.example" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <div class="fed-inline">
+          <button class="fed-btn fed-flat" data-fed-action="save-directory-url">Save</button>
+          <button class="fed-btn fed-flat" data-fed-action="register-directory">Register my username</button>
+        </div>
+        <div id="directorySettingsStatus" class="fed-status" style="display:none;"></div>
+      </div>
+
+      <div class="fed-card">
+        <h2>Search for a friend</h2>
+        <div class="fed-inline">
+          <input type="text" id="directorySearch" class="fed-input" placeholder="username" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <button class="fed-btn" data-fed-action="search-directory" style="flex:0 0 auto;">Search</button>
+        </div>
+        <div id="directorySearchResults"></div>
+      </div>
+
+      <div class="fed-card">
+        <h2>Invite someone with a code</h2>
+        <p class="fed-hint">Create a short code to hand to a friend, or paste one they gave you.</p>
+        <div class="fed-inline">
+          <button class="fed-btn fed-flat" data-fed-action="create-invite">Create invite code</button>
+          <div id="inviteCodeDisplay" class="fed-muted" style="flex:1;"></div>
+        </div>
+        <div class="fed-field" style="margin-top:12px;">
+          <label for="redeemCode">Have a code?</label>
+          <div class="fed-inline">
+            <input type="text" id="redeemCode" class="fed-input" placeholder="e.g. A1B2C3D4" autocapitalize="off" autocorrect="off" spellcheck="false" />
+            <button class="fed-btn" data-fed-action="redeem-invite" style="flex:0 0 auto;">Join</button>
+          </div>
+        </div>
+        <div id="inviteStatus" class="fed-status" style="display:none;"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/Plugins/Federation/App/app.js"></script>
+</body>
+</html>
