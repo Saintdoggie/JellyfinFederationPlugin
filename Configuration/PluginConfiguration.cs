@@ -229,6 +229,52 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// invite rides the same friend-request handshake as a direct friendship.
         /// </summary>
         public List<FederationPool> Pools { get; set; } = new List<FederationPool>();
+
+        /// <summary>
+        /// Gets or sets this server's single display username for the friend
+        /// directory (see <see cref="Services.FederationDirectoryService"/>) -
+        /// one per server/community, not per local Jellyfin user, matching how
+        /// <see cref="LocalFederationId"/> already identifies this server as a
+        /// whole rather than any one account on it.
+        /// </summary>
+        public string LocalUsername { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this server has an avatar image
+        /// on disk to serve. The image itself is never stored in this config file
+        /// (or sent to any directory service) - only fetched peer-to-peer, directly
+        /// from this server, by whoever is displaying it. See
+        /// <see cref="Api.FederationController.GetAvatar"/>.
+        /// </summary>
+        public bool HasAvatar { get; set; }
+
+        /// <summary>
+        /// Gets or sets the content type of the stored avatar image (e.g.
+        /// <c>image/png</c>), so <see cref="Api.FederationController.GetAvatar"/>
+        /// can serve it back with the right header without re-sniffing the file.
+        /// Meaningless when <see cref="HasAvatar"/> is false.
+        /// </summary>
+        public string AvatarContentType { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the friend directory this server registers its username
+        /// with and searches against. Empty by default - the directory feature is
+        /// opt-in, and this plugin ships with no built-in default so nobody's
+        /// username/address is sent anywhere without the admin deliberately
+        /// pointing this at a directory they've decided to trust (their own, or a
+        /// friend's).
+        /// </summary>
+        public string DirectoryServerUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this server offers itself as a
+        /// directory for other servers to register with/search against (see
+        /// <see cref="Services.FederationDirectoryStore"/>). Off by default -
+        /// running a directory means accepting registrations from servers you may
+        /// never otherwise interact with, a bigger step than just using one
+        /// someone else runs.
+        /// </summary>
+        public bool HostDirectory { get; set; }
     }
 
     /// <summary>

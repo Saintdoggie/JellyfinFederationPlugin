@@ -24,6 +24,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly FederationSyncService _syncService;
         private readonly FederationItemPersistenceService _persistence;
         private readonly WebClientInjector _webClientInjector;
+        private readonly FederationDirectoryStore _directoryStore;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -34,7 +35,8 @@ namespace Jellyfin.Plugin.Federation
             LibraryProvisioningService provisioning,
             FederationSyncService syncService,
             FederationItemPersistenceService persistence,
-            WebClientInjector webClientInjector)
+            WebClientInjector webClientInjector,
+            FederationDirectoryStore directoryStore)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -42,6 +44,7 @@ namespace Jellyfin.Plugin.Federation
             _syncService = syncService;
             _persistence = persistence;
             _webClientInjector = webClientInjector;
+            _directoryStore = directoryStore;
         }
 
         /// <inheritdoc />
@@ -67,6 +70,9 @@ namespace Jellyfin.Plugin.Federation
                     : Plugin.Instance?.GetDefaultCachePath() ?? Path.Combine(Path.GetTempPath(), "federation-cache.json");
 
                 _federationManager.Initialize(cachePath);
+
+                var directoryStorePath = Path.Combine(Plugin.Instance!.DataFolderPath, "directory-store.json");
+                _directoryStore.Initialize(directoryStorePath);
 
                 if (config.AutoProvisionLibraries)
                 {

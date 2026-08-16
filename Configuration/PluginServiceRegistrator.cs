@@ -40,6 +40,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
             serviceCollection.AddSingleton<FederationRefreshTask>();
             serviceCollection.AddSingleton<WebClientInjector>();
+            serviceCollection.AddSingleton<FederationDirectoryStore>();
+            serviceCollection.AddSingleton<FederationDirectoryService>();
             serviceCollection.AddHostedService<FederationEntryPoint>();
         }
     }

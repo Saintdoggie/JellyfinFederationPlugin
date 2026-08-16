@@ -105,6 +105,34 @@ public class ConfigValidatorTests
         Assert.Contains(errors, e => e.Contains("ServerUrl", System.StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("ab")]
+    [InlineData("this-username-is-definitely-too-long-to-be-valid")]
+    [InlineData("has spaces")]
+    [InlineData("has.dots")]
+    [InlineData("has@symbol")]
+    public void InvalidUsernames_Rejected(string? username)
+        => Assert.False(ConfigValidator.IsValidUsername(username));
+
+    [Theory]
+    [InlineData("mike")]
+    [InlineData("movie_night_mike")]
+    [InlineData("Movie-Night-99")]
+    public void ValidUsernames_Accepted(string username)
+        => Assert.True(ConfigValidator.IsValidUsername(username));
+
+    [Fact]
+    public void Validate_RejectsInvalidLocalUsername()
+    {
+        var config = new PluginConfiguration { LocalUsername = "x" };
+
+        var errors = ConfigValidator.Validate(config);
+
+        Assert.Contains(errors, e => e.Contains("LocalUsername", System.StringComparison.Ordinal));
+    }
+
     [Fact]
     public void Validate_AcceptsValidConfiguration()
     {
