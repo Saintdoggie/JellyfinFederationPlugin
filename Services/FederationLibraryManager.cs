@@ -134,9 +134,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 var primaryForContainer = entry.GetPrimarySource();
                 var isWanCappedVideo = primaryForContainer != null
-                    && !IsAudioType(entry.ItemType)
-                    && GetServer(primaryForContainer.ServerId) is { StreamingMode: StreamingMode.Direct } capServer
-                    && _bandwidthMonitor.GetEffectiveCapMbps(capServer) != null;
+                    && GetServer(primaryForContainer.ServerId) is { } capServer
+                    && IsWanCappedTranscode(capServer, entry.ItemType, entry.Metadata.Bitrate);
 
                 if (isWanCappedVideo)
                 {
@@ -388,7 +387,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // case a client ends up direct-playing the stale-but-still-valid
                 // cached URL until the item is recreated - a wrong bitrate, not an
                 // unplayable item. That is strictly better than no Play button.
-                return BuildPlaybackUrl(entry.ItemType, primary);
+                return BuildPlaybackUrl(entry.ItemType, primary, entry.Metadata.Bitrate);
             }
             catch (Exception ex)
             {
@@ -405,7 +404,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         /// <param name="itemType">Cache entry item type, e.g. "Movie" or "Audio".</param>
         /// <param name="src">The remote source to stream from.</param>
-        public string? BuildPlaybackUrl(string itemType, FederatedSource src)
+        /// <param name="sourceBitrateBps">
+        /// The source file's own bitrate in bits per second, when known (see
+        /// <see cref="FederatedItemMetadata.Bitrate"/>). Passed through to
+        /// <see cref="IsWanCappedTranscode"/> so a file that already fits under a WAN
+        /// cap is direct-played instead of needlessly remuxed.
+        /// </param>
+        public string? BuildPlaybackUrl(string itemType, FederatedSource src, long? sourceBitrateBps = null)
         {
             var server = GetServer(src.ServerId);
             if (server == null || !server.Enabled)
@@ -432,14 +437,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var baseUrl = $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream";
             var apiKeyParam = $"api_key={Uri.EscapeDataString(server.ApiKey)}";
 
-            // A cap never applies to audio (already a fraction of any sensible video
-            // cap). For video, WanBandwidthMonitor decides: direct play (the original,
-            // and still default, behavior) whenever it can - same network, unknown, or
-            // a WAN link that measured generously fast - and only a real number once
-            // it has positively confirmed both that the link is WAN-only *and* what it
-            // can actually sustain.
-            var capMbps = IsAudioType(itemType) ? null : _bandwidthMonitor.GetEffectiveCapMbps(server);
-            if (capMbps == null)
+            if (!IsWanCappedTranscode(server, itemType, sourceBitrateBps))
             {
                 return $"{baseUrl}?{apiKeyParam}&Static=true";
             }
@@ -448,9 +446,50 @@ namespace Jellyfin.Plugin.Federation.Services
             // sustain before this server ever pulls a byte, instead of pulling the raw
             // (potentially 25+ Mbps for a 4K HDR release) source file across the
             // internet only to immediately re-encode it.
-            var videoBitrateBps = capMbps.Value * 1_000_000L;
+            var capMbps = _bandwidthMonitor.GetEffectiveCapMbps(server)!.Value;
+            var videoBitrateBps = capMbps * 1_000_000L;
             var heightParam = server.WanMaxHeight > 0 ? $"&MaxHeight={server.WanMaxHeight}" : string.Empty;
             return $"{baseUrl}.mp4?{apiKeyParam}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
+        }
+
+        /// <summary>
+        /// Whether a Direct-mode server's stream to a given item is currently forced
+        /// through a capped remote transcode rather than the raw file - the single
+        /// source of truth shared by <see cref="BuildPlaybackUrl"/> (what URL to
+        /// build), <see cref="MaterializeItem"/> (what container to stamp on the
+        /// virtual item) and <see cref="FederationMediaSourceProvider"/> (whether the
+        /// remote's real PlaybackInfo still describes what this URL actually serves).
+        /// A cap never applies to audio, or once <see cref="WanBandwidthMonitor"/> has
+        /// confirmed same-network or a generously fast WAN link. And critically: even
+        /// on a confirmed-slow WAN link, a source whose own bitrate already fits under
+        /// what that link can sustain is still direct-played - the cap only exists to
+        /// protect against sources the link genuinely cannot sustain, not to force
+        /// every WAN stream through ffmpeg on principle. This was previously "any cap
+        /// number at all forces a transcode", which meant a small, perfectly
+        /// link-compatible file got remuxed through the remote's ffmpeg (often too
+        /// slow to keep ahead of playback in real time on modest home hardware) for no
+        /// reason - exactly the "same file plays fine from my own server but stutters
+        /// from a friend's" symptom.
+        /// </summary>
+        public bool IsWanCappedTranscode(RemoteServer server, string itemType, long? sourceBitrateBps)
+        {
+            if (IsAudioType(itemType) || server.StreamingMode != StreamingMode.Direct)
+            {
+                return false;
+            }
+
+            var capMbps = _bandwidthMonitor.GetEffectiveCapMbps(server);
+            if (capMbps == null)
+            {
+                return false;
+            }
+
+            if (sourceBitrateBps.HasValue && sourceBitrateBps.Value > 0 && sourceBitrateBps.Value <= capMbps.Value * 1_000_000L)
+            {
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>

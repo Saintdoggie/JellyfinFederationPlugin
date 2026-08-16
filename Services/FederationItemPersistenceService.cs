@@ -476,7 +476,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, playable);
+                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, playable, entry.Metadata.Bitrate);
 
                     // A null here does NOT mean "disabled" - that case is handled
                     // above. It means the URL cannot be built right now, which for

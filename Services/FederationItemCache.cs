@@ -633,6 +633,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
                 Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
                 Metadata.Container = remoteItem.Container ?? Metadata.Container;
+                Metadata.Bitrate = remoteItem.MediaSources?.FirstOrDefault()?.Bitrate ?? Metadata.Bitrate;
                 Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
                 Metadata.IndexNumber = remoteItem.IndexNumber ?? Metadata.IndexNumber;
                 Metadata.ParentIndexNumber = remoteItem.ParentIndexNumber ?? Metadata.ParentIndexNumber;
@@ -720,6 +721,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// without first probing the remote URL.
         /// </summary>
         public string? Container { get; set; }
+
+        /// <summary>
+        /// Gets or sets the source file's own bitrate in bits per second, as reported
+        /// by the remote (its first <c>MediaSources</c> entry). Used to decide whether
+        /// a WAN bandwidth cap actually needs to force a transcode - see
+        /// <see cref="FederationLibraryManager.IsWanCappedTranscode"/> - instead of
+        /// always remuxing every Direct-mode WAN stream regardless of whether the file
+        /// itself would already fit under the cap.
+        /// </summary>
+        public long? Bitrate { get; set; }
 
         public string? SeriesName { get; set; }
 

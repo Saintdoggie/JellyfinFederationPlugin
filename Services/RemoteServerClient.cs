@@ -785,6 +785,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.Container = containerProp.GetString();
             }
 
+            // Only the first source's Bitrate is kept (mirrors how Container above is
+            // read from the item level, which Jellyfin itself derives from the same
+            // first MediaSources entry) - enough for WanBandwidthMonitor to tell
+            // whether a file already fits under a WAN cap without needing a transcode.
+            if (itemElement.TryGetProperty("MediaSources", out var mediaSourcesProp)
+                && mediaSourcesProp.ValueKind == JsonValueKind.Array
+                && mediaSourcesProp.GetArrayLength() > 0)
+            {
+                var firstSource = mediaSourcesProp[0];
+                if (firstSource.TryGetProperty("Bitrate", out var bitrateProp) && bitrateProp.ValueKind == JsonValueKind.Number)
+                {
+                    item.MediaSources = new[] { new MediaSourceInfo { Bitrate = bitrateProp.GetInt32() } };
+                }
+            }
+
             if (itemElement.TryGetProperty("Genres", out var genresProp) && genresProp.ValueKind == JsonValueKind.Array)
             {
                 item.Genres = genresProp.EnumerateArray()

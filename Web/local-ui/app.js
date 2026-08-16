@@ -72,23 +72,90 @@
 
   function showPanel(name) {
     qa('.fed-panel').forEach(function (p) { p.classList.toggle('active', p.id === 'panel-' + name); });
-    qa('nav button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-panel') === name); });
+    qa('.fed-sidenav button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-panel') === name); });
     loaders[name] && loaders[name]();
   }
 
-  qa('nav button').forEach(function (btn) {
+  qa('.fed-sidenav button').forEach(function (btn) {
     btn.addEventListener('click', function () { showPanel(btn.getAttribute('data-panel')); });
   });
 
   // ---------------- Home ----------------
 
   function loadHome() {
-    api('/servers').then(function (servers) {
-      q('#homeServerCount').textContent = servers.length + (servers.length === 1 ? ' server' : ' servers');
-    }).catch(function () { q('#homeServerCount').textContent = '-'; });
+    api('/dashboard').then(function (d) {
+      q('#statServers').textContent = d.serverCount;
+      q('#statDisabled').textContent = d.disabledServerCount;
+      q('#statMappings').textContent = d.mappingCount;
+      q('#statSessions').textContent = d.activeSessions;
+
+      if (d.lastSync) {
+        q('#homeSyncSummary').textContent = (d.lastSync.success ? 'Last sync succeeded' : 'Last sync had issues') +
+          ' - ' + new Date(d.lastSync.finishedUtc).toLocaleString();
+        q('#homeSyncDetail').textContent = d.lastSync.message || (d.lastSync.itemCount + ' item(s) refreshed');
+      }
+
+      var budgetCard = q('#uploadBudgetCard');
+      if (d.uploadBudget && d.uploadBudget.autoManageUploadBudget) {
+        budgetCard.style.display = '';
+        q('#homeUploadBudgetDetail').textContent =
+          d.uploadBudget.projectedPerStreamMbps + ' Mbps per stream, ' + d.activeSessions +
+          ' active - capacity ' + d.uploadBudget.localUploadCapacityMbps + ' Mbps.';
+      } else {
+        budgetCard.style.display = 'none';
+      }
+    }).catch(function () { /* leave dashes on failure */ });
   }
 
-  // ---------------- Profile ----------------
+  // ---------------- Library ----------------
+
+  function renderLibraryPosters(container, mappingId) {
+    container.innerHTML = '<p class="fed-muted">Loading…</p>';
+    api('/library/' + encodeURIComponent(mappingId) + '/items?take=30').then(function (r) {
+      var items = r.items || [];
+      if (!items.length) { container.innerHTML = '<p class="fed-muted">No items yet - run a sync.</p>'; return; }
+      container.innerHTML = '<div class="fed-poster-grid">' + items.map(function (i) {
+        var img = i.hasImage
+          ? '<img src="/Items/' + encodeURIComponent(i.id) + '/Images/Primary?maxWidth=200" alt="" />'
+          : '<div class="fed-poster-fallback">' + escapeHtml(i.name) + '</div>';
+        return '<a class="fed-poster" href="/web/index.html#!/details?id=' + encodeURIComponent(i.id) + '" title="' + escapeHtml(i.name) + '">' + img + '</a>';
+      }).join('') + '</div>';
+    }).catch(function () { container.innerHTML = '<p class="fed-status err">Could not load items.</p>'; });
+  }
+
+  function renderLibrary(libraries) {
+    var list = q('#libraryList');
+    if (!libraries.length) { list.innerHTML = '<p class="fed-muted">No libraries yet - add one under "Mappings".</p>'; return; }
+
+    list.innerHTML = libraries.map(function (lib) {
+      var sources = (lib.sources || []).map(function (s) { return escapeHtml(s.serverName); }).join(', ');
+      var openLink = lib.folderId
+        ? '<a class="fed-link" href="/web/index.html#!/videos?topParentId=' + encodeURIComponent(lib.folderId) + '" target="_blank" rel="noopener">Open in Jellyfin</a>'
+        : '';
+      return '<div class="fed-card" style="margin-bottom:10px;">' +
+        '<div class="fed-row"><div class="fed-row-main">' +
+          '<div class="fed-row-title">' + escapeHtml(lib.localLibraryName) + ' <span class="fed-badge ' + (lib.enabled ? 'on' : 'off') + '">' + (lib.enabled ? 'enabled' : 'disabled') + '</span></div>' +
+          '<div class="fed-row-sub">' + lib.itemCount + ' item(s) &middot; ' + escapeHtml(lib.mediaType) + (sources ? ' &middot; from ' + sources : '') + '</div>' +
+        '</div>' +
+        '<div class="fed-inline" style="flex:0 0 auto;">' + openLink + ' <button class="fed-btn fed-flat" data-library-expand="' + escapeHtml(lib.id) + '" style="margin-left:8px;">Preview</button></div>' +
+        '</div>' +
+        '<div id="library-posters-' + escapeHtml(lib.id) + '"></div>' +
+      '</div>';
+    }).join('');
+
+    qa('[data-library-expand]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-library-expand');
+        renderLibraryPosters(q('#library-posters-' + id), id);
+      });
+    });
+  }
+
+  function loadLibrary() {
+    return api('/library').then(renderLibrary);
+  }
+
+  // ---------------- Profile & settings ----------------
 
   function loadProfile() {
     api('/status').then(function (status) {
@@ -96,6 +163,52 @@
       q('#profileAvatarPreview').src = status.hasAvatar ? ('/Plugins/Federation/Avatar?_=' + Date.now()) : '';
     });
   }
+
+  function loadSettings() {
+    loadProfile();
+    api('/settings').then(function (s) {
+      q('#settingsServerUrl').value = s.serverUrl || '';
+      q('#settingsRefreshHours').value = s.refreshIntervalHours;
+      q('#settingsAutoProvision').checked = !!s.autoProvisionLibraries;
+      q('#settingsEnableDedup').checked = !!s.enableDedup;
+      q('#settingsFriendsOfFriends').checked = !!s.allowFriendsOfFriends;
+      q('#settingsHostDirectory').checked = !!s.hostDirectory;
+      q('#settingsUploadCapacity').value = s.localUploadCapacityMbps || 0;
+      q('#settingsAutoManageBudget').checked = !!s.autoManageUploadBudget;
+      updateBudgetPreview();
+    });
+  }
+
+  function updateBudgetPreview() {
+    var capacity = parseInt(q('#settingsUploadCapacity').value, 10) || 0;
+    var preview = q('#settingsBudgetPreview');
+    if (!capacity) { preview.textContent = ''; return; }
+    api('/dashboard').then(function (d) {
+      preview.textContent = 'With ' + d.activeSessions + ' active stream(s) right now, each would get roughly ' +
+        Math.round(capacity * 0.85 / Math.max(1, d.activeSessions)) + ' Mbps.';
+    }).catch(function () { preview.textContent = ''; });
+  }
+
+  q('#settingsUploadCapacity').addEventListener('input', updateBudgetPreview);
+
+  q('[data-fed-action="save-settings"]').addEventListener('click', function () {
+    var status = q('#settingsStatus');
+    api('/settings', {
+      method: 'POST',
+      body: {
+        serverUrl: q('#settingsServerUrl').value.trim(),
+        refreshIntervalHours: parseInt(q('#settingsRefreshHours').value, 10) || 1,
+        autoProvisionLibraries: q('#settingsAutoProvision').checked,
+        enableDedup: q('#settingsEnableDedup').checked,
+        allowFriendsOfFriends: q('#settingsFriendsOfFriends').checked,
+        hostDirectory: q('#settingsHostDirectory').checked,
+        localUploadCapacityMbps: parseInt(q('#settingsUploadCapacity').value, 10) || 0,
+        autoManageUploadBudget: q('#settingsAutoManageBudget').checked
+      }
+    }).then(function (r) {
+      setStatus(status, r.success ? 'Saved.' : (r.error || 'Failed.'), r.success ? 'ok' : 'err');
+    }).catch(function (e) { setStatus(status, e.message, 'err'); });
+  });
 
   q('[data-fed-action="save-profile"]').addEventListener('click', function () {
     var status = q('#profileStatus');
@@ -123,17 +236,52 @@
 
   // ---------------- Servers ----------------
 
-  function renderServers(servers) {
+  function serverEditFormHtml(s, localUsers) {
+    var id = escapeHtml(s.id);
+    var userOptions = '<option value="">Choose an account…</option>' + (localUsers || []).map(function (u) {
+      return '<option value="' + escapeHtml(u.id) + '"' + (u.id === s.localShareUserId ? ' selected' : '') + '>' + escapeHtml(u.name) + '</option>';
+    }).join('');
+    return '<div class="fed-field"><label>Priority (lower = preferred when deduped)</label>' +
+        '<input type="number" class="fed-input" data-edit-priority="' + id + '" value="' + s.priority + '" /></div>' +
+      '<div class="fed-field"><label>Streaming mode</label>' +
+        '<select class="fed-select" data-edit-mode="' + id + '">' +
+          '<option value="Direct"' + (s.streamingMode === 'Direct' ? ' selected' : '') + '>Direct (client fetches from them)</option>' +
+          '<option value="Proxy"' + (s.streamingMode === 'Proxy' ? ' selected' : '') + '>Proxy (routed through this server)</option>' +
+        '</select></div>' +
+      '<div class="fed-field"><label>WAN bitrate cap</label>' +
+        '<select class="fed-select" data-edit-capmode="' + id + '">' +
+          '<option value="Auto"' + (s.wanCapMode === 'Auto' ? ' selected' : '') + '>Auto (measure and cap only when needed)</option>' +
+          '<option value="Manual"' + (s.wanCapMode === 'Manual' ? ' selected' : '') + '>Manual (fixed value)</option>' +
+          '<option value="Off"' + (s.wanCapMode === 'Off' ? ' selected' : '') + '>Off (never cap)</option>' +
+        '</select></div>' +
+      '<div class="fed-field"><label>Manual bitrate cap (Mbps)</label>' +
+        '<input type="number" class="fed-input" data-edit-bitrate="' + id + '" value="' + s.wanMaxBitrateMbps + '" /></div>' +
+      '<div class="fed-field"><label>Max height when capped</label>' +
+        '<input type="number" class="fed-input" data-edit-height="' + id + '" value="' + s.wanMaxHeight + '" /></div>' +
+      '<label class="fed-toggle"><input type="checkbox" data-edit-enabled="' + id + '"' + (s.enabled ? ' checked' : '') + ' /> Enabled</label>' +
+      '<label class="fed-toggle"><input type="checkbox" data-edit-shareall="' + id + '"' + (s.shareAllLibraries ? ' checked' : '') + ' /> Share all my libraries with this friend</label>' +
+      '<div class="fed-field"><label>Restricted-view account (only used when "share all" is off - create a hidden account under Dashboard &rarr; Users first)</label>' +
+        '<select class="fed-select" data-edit-shareuser="' + id + '">' + userOptions + '</select></div>' +
+      '<button class="fed-btn" data-save-server="' + id + '">Save</button>' +
+      '<div class="fed-status" data-edit-status="' + id + '" style="display:none;"></div>';
+  }
+
+  function renderServers(servers, localUsers) {
     var list = q('#serverList');
     if (!servers.length) { list.innerHTML = '<p class="fed-muted">No servers yet.</p>'; return; }
 
     list.innerHTML = servers.map(function (s) {
-      return '<div class="fed-row">' +
-        '<div class="fed-row-main">' +
+      var id = escapeHtml(s.id);
+      return '<div class="fed-card" style="margin-bottom:10px;">' +
+        '<div class="fed-row"><div class="fed-row-main">' +
           '<div class="fed-row-title">' + escapeHtml(s.name) + '</div>' +
-          '<div class="fed-row-sub">' + escapeHtml(s.url) + ' &middot; <span class="fed-badge ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? 'enabled' : 'disabled') + '</span></div>' +
+          '<div class="fed-row-sub">' + escapeHtml(s.url) + ' &middot; <span class="fed-badge ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? 'enabled' : 'disabled') + '</span> &middot; ' + escapeHtml(s.streamingMode) + '</div>' +
         '</div>' +
-        '<button class="fed-btn fed-danger" data-remove-server="' + escapeHtml(s.id) + '">Remove</button>' +
+        '<div class="fed-inline" style="flex:0 0 auto;">' +
+          '<button class="fed-btn fed-flat" data-edit-server="' + id + '">Edit</button>' +
+          '<button class="fed-btn fed-danger" data-remove-server="' + id + '">Remove</button>' +
+        '</div></div>' +
+        '<div class="fed-edit-form" data-edit-form="' + id + '">' + serverEditFormHtml(s, localUsers) + '</div>' +
       '</div>';
     }).join('');
 
@@ -144,10 +292,45 @@
           .then(loadServers);
       });
     });
+
+    qa('[data-edit-server]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-edit-server');
+        q('[data-edit-form="' + id + '"]').classList.toggle('open');
+      });
+    });
+
+    qa('[data-save-server]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-save-server');
+        var status = q('[data-edit-status="' + id + '"]');
+        api('/servers/' + encodeURIComponent(id), {
+          method: 'PUT',
+          body: {
+            enabled: q('[data-edit-enabled="' + id + '"]').checked,
+            streamingMode: q('[data-edit-mode="' + id + '"]').value,
+            priority: parseInt(q('[data-edit-priority="' + id + '"]').value, 10) || 0,
+            wanCapMode: q('[data-edit-capmode="' + id + '"]').value,
+            wanMaxBitrateMbps: parseInt(q('[data-edit-bitrate="' + id + '"]').value, 10) || 0,
+            wanMaxHeight: parseInt(q('[data-edit-height="' + id + '"]').value, 10) || 0,
+            shareAllLibraries: q('[data-edit-shareall="' + id + '"]').checked,
+            localShareUserId: q('[data-edit-shareuser="' + id + '"]').value.trim()
+          }
+        }).then(function (r) {
+          setStatus(status, r.message || (r.success ? 'Saved.' : 'Failed.'), r.success ? 'ok' : 'err');
+          if (r.success) { loadServers(); }
+        }).catch(function (e) { setStatus(status, e.message, 'err'); });
+      });
+    });
   }
 
+  var localUsersCache = null;
+
   function loadServers() {
-    return api('/servers').then(renderServers);
+    return Promise.all([
+      api('/servers'),
+      localUsersCache ? Promise.resolve(localUsersCache) : api('/local-users').then(function (u) { localUsersCache = u; return u; }).catch(function () { return []; })
+    ]).then(function (results) { renderServers(results[0], results[1]); });
   }
 
   q('[data-fed-action="add-server"]').addEventListener('click', function () {
@@ -284,11 +467,33 @@
     var list = q('#mappingList');
     if (!mappings.length) { list.innerHTML = '<p class="fed-muted">No libraries yet.</p>'; return; }
     list.innerHTML = mappings.map(function (m) {
+      var id = escapeHtml(m.id);
       return '<div class="fed-row"><div class="fed-row-main">' +
         '<div class="fed-row-title">' + escapeHtml(m.localLibraryName) + '</div>' +
         '<div class="fed-row-sub">' + escapeHtml(m.mediaType) + ' &middot; <span class="fed-badge ' + (m.enabled ? 'on' : 'off') + '">' + (m.enabled ? 'enabled' : 'disabled') + '</span></div>' +
+      '</div>' +
+      '<div class="fed-inline" style="flex:0 0 auto;">' +
+        '<button class="fed-btn fed-flat" data-toggle-mapping="' + id + '" data-enabled="' + m.enabled + '">' + (m.enabled ? 'Disable' : 'Enable') + '</button>' +
+        '<button class="fed-btn fed-danger" data-delete-mapping="' + id + '">Delete</button>' +
       '</div></div>';
     }).join('');
+
+    qa('[data-toggle-mapping]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-toggle-mapping');
+        var nowEnabled = btn.getAttribute('data-enabled') !== 'true';
+        api('/mappings/' + encodeURIComponent(id), { method: 'PUT', body: { enabled: nowEnabled, autoProvision: true } })
+          .then(loadMappings);
+      });
+    });
+
+    qa('[data-delete-mapping]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (!confirm('Delete this library mapping? Its virtual library will be removed.')) { return; }
+        api('/mappings/' + encodeURIComponent(btn.getAttribute('data-delete-mapping')), { method: 'DELETE' })
+          .then(loadMappings);
+      });
+    });
   }
 
   function loadMappings() {
@@ -304,7 +509,7 @@
       body: {
         serverId: q('#mappingServer').value,
         localLibraryName: q('#mappingLocalName').value.trim(),
-        mediaType: 'Movie',
+        mediaType: q('#mappingMediaType').value,
         remoteLibraryId: remoteSel.value,
         remoteLibraryName: remoteOpt ? remoteOpt.getAttribute('data-name') : ''
       }
@@ -390,12 +595,13 @@
 
   var loaders = {
     home: loadHome,
-    profile: loadProfile,
+    library: loadLibrary,
     servers: loadServers,
     friends: loadFriends,
     pools: loadPools,
     mappings: function () { loadMappingServers(); loadMappings(); },
-    directory: loadDirectorySettings
+    directory: loadDirectorySettings,
+    settings: loadSettings
   };
 
   loadHome();

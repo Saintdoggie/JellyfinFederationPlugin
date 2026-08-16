@@ -42,6 +42,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<WebClientInjector>();
             serviceCollection.AddSingleton<FederationDirectoryStore>();
             serviceCollection.AddSingleton<FederationDirectoryService>();
+            serviceCollection.AddSingleton<UploadBudgetService>();
             serviceCollection.AddHostedService<FederationEntryPoint>();
         }
     }

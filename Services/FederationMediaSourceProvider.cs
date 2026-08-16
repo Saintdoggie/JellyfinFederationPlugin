@@ -103,7 +103,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     : null;
                 var currentPrimaryUrl = primarySource == null
                     ? null
-                    : _federationManager.BuildPlaybackUrl(entry.ItemType, primarySource);
+                    : _federationManager.BuildPlaybackUrl(entry.ItemType, primarySource, entry.Metadata.Bitrate);
                 var staticSourceCoversPrimary = !string.IsNullOrEmpty(item.Path)
                     && string.Equals(item.Path, currentPrimaryUrl, StringComparison.Ordinal);
 
@@ -146,7 +146,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var path = BuildPlaybackPath(server, src, entry.ItemType);
+                    var path = BuildPlaybackPath(server, src, entry.ItemType, entry.Metadata.Bitrate);
                     if (path == null)
                     {
                         _logger.LogWarning(
@@ -173,9 +173,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // favor of the existing "remote didn't hand back info" fallback
                     // below: SupportsProbing = true lets the transcoder discover the
                     // real, capped stream's actual characteristics itself.
-                    var isWanCapped = server.StreamingMode == StreamingMode.Direct
-                        && entry.ItemType != "Audio"
-                        && _federationManager.BandwidthMonitor.GetEffectiveCapMbps(server) != null;
+                    var isWanCapped = _federationManager.IsWanCappedTranscode(server, entry.ItemType, entry.Metadata.Bitrate);
 
                     candidates.Add((i, src, server, path, sourceName, isWanCapped));
                 }
@@ -342,7 +340,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return Task.FromException<ILiveStream>(new NotSupportedException("Live stream opening is not supported for federated content"));
         }
 
-        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType)
+        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType, long? sourceBitrateBps)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
@@ -362,7 +360,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // Same URL shape the item's own Path uses, so an alternate source behaves
             // identically to the primary one.
-            return _federationManager.BuildPlaybackUrl(itemType, src);
+            return _federationManager.BuildPlaybackUrl(itemType, src, sourceBitrateBps);
         }
 
         /// <summary>

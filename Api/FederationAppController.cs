@@ -7,6 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -48,6 +50,9 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly FederationDirectoryService _directory;
         private readonly FederationFriendService _friends;
+        private readonly ILibraryManager _libraryManager;
+        private readonly IUserManager _userManager;
+        private readonly UploadBudgetService _uploadBudget;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationAppController"/> class.
@@ -61,7 +66,10 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationItemCache cache,
             WanBandwidthMonitor bandwidthMonitor,
             FederationDirectoryService directory,
-            FederationFriendService friends)
+            FederationFriendService friends,
+            ILibraryManager libraryManager,
+            IUserManager userManager,
+            UploadBudgetService uploadBudget)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -72,6 +80,9 @@ namespace Jellyfin.Plugin.Federation.Api
             _bandwidthMonitor = bandwidthMonitor;
             _directory = directory;
             _friends = friends;
+            _libraryManager = libraryManager;
+            _userManager = userManager;
+            _uploadBudget = uploadBudget;
         }
 
         private static PluginConfiguration Config => Plugin.Instance!.Configuration;
@@ -128,6 +139,83 @@ namespace Jellyfin.Plugin.Federation.Api
                 federationId = _friends.GetOrCreateLocalFederationId()
             });
         }
+
+        #endregion
+
+        #region Dashboard / Settings
+
+        [HttpGet("api/dashboard")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetDashboard()
+        {
+            var config = Config;
+            var servers = config.RemoteServers ?? new List<RemoteServer>();
+            var activeSessions = _uploadBudget.GetActiveSessionCount();
+            return Ok(new
+            {
+                lastSync = _syncService.LastSync,
+                serverCount = servers.Count,
+                disabledServerCount = servers.Count(s => !s.Enabled),
+                mappingCount = (config.LibraryMappings ?? new List<LibraryMapping>()).Count,
+                activeSessions,
+                uploadBudget = new
+                {
+                    config.LocalUploadCapacityMbps,
+                    config.AutoManageUploadBudget,
+                    projectedPerStreamMbps = UploadBudgetService.ComputePerStreamMbps(config.LocalUploadCapacityMbps, activeSessions)
+                }
+            });
+        }
+
+        [HttpGet("api/settings")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetSettings()
+        {
+            var config = Config;
+            return Ok(new
+            {
+                config.ServerUrl,
+                config.CachePath,
+                config.EnableDedup,
+                config.DedupProviderIds,
+                config.AutoProvisionLibraries,
+                config.RefreshIntervalHours,
+                config.AllowFriendsOfFriends,
+                config.HostDirectory,
+                config.LocalUploadCapacityMbps,
+                config.AutoManageUploadBudget
+            });
+        }
+
+        [HttpPost("api/settings")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SaveSettings([FromBody] SettingsRequest body)
+        {
+            var config = Config;
+            config.ServerUrl = body.ServerUrl ?? string.Empty;
+            config.CachePath = body.CachePath ?? string.Empty;
+            config.EnableDedup = body.EnableDedup;
+            config.DedupProviderIds = body.DedupProviderIds ?? config.DedupProviderIds;
+            config.AutoProvisionLibraries = body.AutoProvisionLibraries;
+            config.RefreshIntervalHours = body.RefreshIntervalHours;
+            config.AllowFriendsOfFriends = body.AllowFriendsOfFriends;
+            config.HostDirectory = body.HostDirectory;
+            config.LocalUploadCapacityMbps = body.LocalUploadCapacityMbps;
+            config.AutoManageUploadBudget = body.AutoManageUploadBudget;
+
+            var errors = ConfigValidator.Validate(config);
+            if (errors.Count > 0)
+            {
+                return BadRequest(new { error = string.Join(" ", errors) });
+            }
+
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true });
+        }
+
+        #endregion
+
+        #region Profile
 
         [HttpPost("api/profile")]
         [Authorize(Policy = "RequiresElevation")]
@@ -221,6 +309,49 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new { success = true });
         }
 
+        [HttpPut("api/servers/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> UpdateServer(string id, [FromBody] UpdateServerRequest body, CancellationToken cancellationToken)
+        {
+            var server = Config.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound();
+            }
+
+            if (!string.IsNullOrEmpty(body.Name))
+            {
+                server.Name = body.Name;
+            }
+
+            server.Enabled = body.Enabled;
+            server.StreamingMode = body.StreamingMode;
+            server.Priority = body.Priority;
+            server.RequireApiKeyForImages = body.RequireApiKeyForImages;
+            server.WanCapMode = body.WanCapMode;
+            server.WanMaxBitrateMbps = body.WanMaxBitrateMbps;
+            server.WanMaxHeight = body.WanMaxHeight;
+            Plugin.Instance!.SaveConfiguration();
+            _clientFactory.InvalidateAll();
+
+            // The share-picker fields go through FederationFriendService, which also
+            // enforces the restriction via a scoped local Jellyfin user and notifies
+            // the friend - see the comment on UpdateFriendSharingAsync.
+            var (success, message) = await _friends.UpdateFriendSharingAsync(
+                id,
+                body.ShareAllLibraries,
+                body.SharedLibraryFolderIds ?? new List<string>(),
+                body.LocalShareUserId ?? string.Empty,
+                cancellationToken).ConfigureAwait(false);
+
+            return Ok(new { success, message, server = SanitizeServer(server) });
+        }
+
+        [HttpGet("api/local-users")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLocalUsers()
+            => Ok(_userManager.Users.Select(u => new { id = u.Id, name = u.Username }));
+
         [HttpGet("api/remote-libraries/{serverId}")]
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> GetRemoteLibraries(string serverId, CancellationToken cancellationToken)
@@ -250,6 +381,13 @@ namespace Jellyfin.Plugin.Federation.Api
             s.StreamingMode,
             s.Priority,
             s.FederationId,
+            s.RequireApiKeyForImages,
+            s.WanCapMode,
+            s.WanMaxBitrateMbps,
+            s.WanMaxHeight,
+            s.ShareAllLibraries,
+            s.SharedLibraryFolderIds,
+            s.LocalShareUserId,
             HasApiKey = !string.IsNullOrEmpty(s.ApiKey)
         };
 
@@ -299,6 +437,114 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok(new { success = true });
+        }
+
+        [HttpPut("api/mappings/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> UpdateMapping(string id, [FromBody] UpdateMappingRequest body, CancellationToken cancellationToken)
+        {
+            var mapping = Config.LibraryMappings?.FirstOrDefault(m => m.Id == id);
+            if (mapping == null)
+            {
+                return NotFound();
+            }
+
+            mapping.Enabled = body.Enabled;
+            mapping.AutoProvision = body.AutoProvision;
+            Plugin.Instance!.SaveConfiguration();
+
+            if (Config.AutoProvisionLibraries)
+            {
+                await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return Ok(new { success = true, mapping });
+        }
+
+        [HttpDelete("api/mappings/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> DeleteMapping(string id, CancellationToken cancellationToken)
+        {
+            var mapping = Config.LibraryMappings?.FirstOrDefault(m => m.Id == id);
+            if (mapping == null)
+            {
+                return NotFound();
+            }
+
+            // Remove the provisioned Jellyfin library before dropping the mapping
+            // from config - EnsureLibrariesAsync's disabled-mapping cleanup pass
+            // needs the mapping's LocalLibraryName still present in config to know
+            // which virtual folder to tear down.
+            mapping.Enabled = false;
+            await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
+
+            Config.LibraryMappings!.Remove(mapping);
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true });
+        }
+
+        #endregion
+
+        #region Library
+
+        [HttpGet("api/library")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLibrary()
+        {
+            var mappings = Config.LibraryMappings ?? new List<LibraryMapping>();
+            var virtualFolders = _libraryManager.GetVirtualFolders();
+
+            return Ok(mappings.Select(m =>
+            {
+                var folder = virtualFolders?.FirstOrDefault(vf => string.Equals(vf.Name, m.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+                var itemCount = folder != null && Guid.TryParse(folder.ItemId, out var folderId)
+                    ? _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery { ParentId = folderId, Recursive = true }).Count
+                    : 0;
+
+                return new
+                {
+                    m.Id,
+                    m.LocalLibraryName,
+                    m.MediaType,
+                    m.Enabled,
+                    m.AutoProvision,
+                    itemCount,
+                    folderId = folder?.ItemId,
+                    sources = m.RemoteLibrarySources?.Select(s => new { s.ServerId, s.ServerName, s.RemoteLibraryName })
+                };
+            }));
+        }
+
+        [HttpGet("api/library/{id}/items")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLibraryItems(string id, [FromQuery] int skip = 0, [FromQuery] int take = 30)
+        {
+            var mapping = Config.LibraryMappings?.FirstOrDefault(m => m.Id == id);
+            if (mapping == null)
+            {
+                return NotFound();
+            }
+
+            var folder = _libraryManager.GetVirtualFolders()?
+                .FirstOrDefault(vf => string.Equals(vf.Name, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+            if (folder == null || !Guid.TryParse(folder.ItemId, out var folderId))
+            {
+                return Ok(new { items = Array.Empty<object>(), total = 0 });
+            }
+
+            var query = new MediaBrowser.Controller.Entities.InternalItemsQuery
+            {
+                ParentId = folderId,
+                Recursive = true,
+                Limit = Math.Clamp(take, 1, 100),
+                StartIndex = Math.Max(0, skip)
+            };
+            var items = _libraryManager.GetItemList(query);
+            return Ok(new
+            {
+                items = items.Select(i => new { id = i.Id, name = i.Name, hasImage = i.HasImage(MediaBrowser.Model.Entities.ImageType.Primary) }),
+                folderId = folder.ItemId
+            });
         }
 
         #endregion
@@ -441,11 +687,82 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        /// <summary>Request body for <see cref="SaveSettings"/>.</summary>
+        public class SettingsRequest
+        {
+            /// <summary>Gets or sets <see cref="PluginConfiguration.ServerUrl"/>.</summary>
+            public string? ServerUrl { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.CachePath"/>.</summary>
+            public string? CachePath { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.EnableDedup"/>.</summary>
+            public bool EnableDedup { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.DedupProviderIds"/>.</summary>
+            public List<string>? DedupProviderIds { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.AutoProvisionLibraries"/>.</summary>
+            public bool AutoProvisionLibraries { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.RefreshIntervalHours"/>.</summary>
+            public int RefreshIntervalHours { get; set; } = 1;
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.AllowFriendsOfFriends"/>.</summary>
+            public bool AllowFriendsOfFriends { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.HostDirectory"/>.</summary>
+            public bool HostDirectory { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.LocalUploadCapacityMbps"/>.</summary>
+            public int LocalUploadCapacityMbps { get; set; }
+
+            /// <summary>Gets or sets <see cref="PluginConfiguration.AutoManageUploadBudget"/>.</summary>
+            public bool AutoManageUploadBudget { get; set; }
+        }
+
         /// <summary>Request body for <see cref="SaveProfile"/>.</summary>
         public class ProfileRequest
         {
             /// <summary>Gets or sets the username to save.</summary>
             public string Username { get; set; } = string.Empty;
+        }
+
+        /// <summary>Request body for <see cref="UpdateServer"/>.</summary>
+        public class UpdateServerRequest
+        {
+            /// <summary>Gets or sets the friendly name.</summary>
+            public string? Name { get; set; }
+
+            /// <summary>Gets or sets whether the server is enabled.</summary>
+            public bool Enabled { get; set; } = true;
+
+            /// <summary>Gets or sets the streaming mode.</summary>
+            public StreamingMode StreamingMode { get; set; }
+
+            /// <summary>Gets or sets the priority used when picking a primary source.</summary>
+            public int Priority { get; set; }
+
+            /// <summary>Gets or sets whether the remote requires an api_key for image fetches.</summary>
+            public bool RequireApiKeyForImages { get; set; }
+
+            /// <summary>Gets or sets the WAN bitrate cap mode.</summary>
+            public WanCapMode WanCapMode { get; set; }
+
+            /// <summary>Gets or sets the fixed bitrate cap in Mbps (Manual mode only).</summary>
+            public int WanMaxBitrateMbps { get; set; }
+
+            /// <summary>Gets or sets the max output height applied alongside a cap.</summary>
+            public int WanMaxHeight { get; set; } = 1080;
+
+            /// <summary>Gets or sets whether every local library is shared with this friend.</summary>
+            public bool ShareAllLibraries { get; set; } = true;
+
+            /// <summary>Gets or sets the specific local folder ids shared when not sharing all.</summary>
+            public List<string>? SharedLibraryFolderIds { get; set; }
+
+            /// <summary>Gets or sets the local Jellyfin user id enforcing a restricted share.</summary>
+            public string? LocalShareUserId { get; set; }
         }
 
         /// <summary>Request body for <see cref="AddMapping"/>.</summary>
@@ -465,6 +782,16 @@ namespace Jellyfin.Plugin.Federation.Api
 
             /// <summary>Gets or sets the remote library's display name.</summary>
             public string RemoteLibraryName { get; set; } = string.Empty;
+        }
+
+        /// <summary>Request body for <see cref="UpdateMapping"/>.</summary>
+        public class UpdateMappingRequest
+        {
+            /// <summary>Gets or sets whether this mapping is enabled.</summary>
+            public bool Enabled { get; set; } = true;
+
+            /// <summary>Gets or sets whether a virtual library is auto-provisioned for it.</summary>
+            public bool AutoProvision { get; set; } = true;
         }
 
         /// <summary>Request body for <see cref="SendFriendRequest"/>.</summary>
