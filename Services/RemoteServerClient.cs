@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
@@ -530,6 +531,50 @@ namespace Jellyfin.Plugin.Federation.Services
         public string BuildDirectStreamUrl(string itemId)
         {
             return $"{_server.Url.TrimEnd('/')}/Videos/{itemId}/stream?api_key={Uri.EscapeDataString(_server.ApiKey)}&Static=true";
+        }
+
+        // The shared per-server _httpClient (see RemoteServerClientFactory) has a
+        // 5-minute Timeout, sized for metadata/PlaybackInfo calls - far too short for
+        // downloading a whole movie over a typical home upload link. A dedicated,
+        // long-lived client (mirroring FederationStreamHandler's DefaultProxyHttpClient)
+        // avoids either lengthening the shared client's timeout (which would let a
+        // hung metadata call block for hours) or timing out large downloads.
+        private static readonly HttpClient DownloadHttpClient = new HttpClient { Timeout = TimeSpan.FromHours(6) };
+
+        /// <summary>
+        /// Downloads a remote item's whole media file straight to local disk. Separate
+        /// from Proxy-mode streaming (<see cref="FederationStreamHandler"/>) - this is a
+        /// one-shot server-side fetch-and-save, not a live client-facing relay, so it
+        /// has no Range/seek handling and reports coarse progress via bytes written.
+        /// </summary>
+        /// <param name="itemId">The item id on the remote server.</param>
+        /// <param name="destinationPath">Local file path to write to; overwritten if present.</param>
+        /// <param name="progress">Receives 0-100 as bytes arrive, when the remote reports Content-Length.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        public async Task DownloadToFileAsync(string itemId, string destinationPath, IProgress<double>? progress, CancellationToken cancellationToken)
+        {
+            var url = BuildDirectStreamUrl(itemId);
+            using var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var totalBytes = response.Content.Headers.ContentLength;
+            await using var remoteStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+
+            var buffer = new byte[81920];
+            long totalRead = 0;
+            int read;
+            while ((read = await remoteStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                totalRead += read;
+                if (totalBytes.HasValue && totalBytes.Value > 0)
+                {
+                    progress?.Report(Math.Min(100.0, totalRead * 100.0 / totalBytes.Value));
+                }
+            }
+
+            progress?.Report(100.0);
         }
 
         /// <summary>

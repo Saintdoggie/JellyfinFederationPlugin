@@ -28,6 +28,14 @@
   // a fraction of a second with its text never even shown).
   var INLINE_ICON_HTML = '<span class="federation-badge-icon">' + ICON_SVG + '</span>';
 
+  var DOWNLOAD_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M12 4v11"></path>' +
+    '<path d="M7.5 11.5 12 16l4.5-4.5"></path>' +
+    '<path d="M5 19.5h14"></path>' +
+    '</svg>';
+
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) {
       return;
@@ -49,11 +57,24 @@
       '.federation-badge-corner svg{width:12px;height:12px;}',
       // Detail page: a labelled chip naming the server. An unlabelled glyph only
       // says "not from here", which raises the question it should be answering.
+      // Solid-ish background (not just a tinted overlay) plus its own border and
+      // text color, so it reads at the same contrast on a light theme's white
+      // background as it does on a dark theme's near-black one - the colors here
+      // are the chip's own, not inherited from the page.
       '.federation-badge-pill{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
       'margin-right:.55em;padding:.2em .6em .2em .45em;border-radius:1em;font-size:.5em;',
       'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;',
-      'background:rgba(120,170,255,.16);color:#9fc4ff;border:1px solid rgba(120,170,255,.3);}',
-      '.federation-badge-pill .federation-badge-icon{width:1.15em;height:1.15em;margin-right:0;opacity:1;}'
+      'background:#1c3a66;color:#bcd8ff;border:1px solid #3c6bb3;}',
+      '.federation-badge-pill .federation-badge-icon{width:1.15em;height:1.15em;margin-right:0;opacity:1;}',
+      '.federation-badge-download{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
+      'margin-right:.55em;padding:.2em .6em .2em .5em;border-radius:1em;font-size:.5em;',
+      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;cursor:pointer;',
+      'background:#20304a;color:#dbe6f5;border:1px solid #4a5f80;}',
+      '.federation-badge-download:hover{background:#2a3f5f;}',
+      '.federation-badge-download[data-state="busy"]{cursor:default;opacity:.85;}',
+      '.federation-badge-download[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
+      '.federation-badge-download[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
+      '.federation-badge-download .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -120,13 +141,102 @@
     el.setAttribute('data-federation-badge', '1');
   }
 
+  // Same token-resolution strategy as the admin config page: prefer the SPA's
+  // own ApiClient (works for whoever is actually logged in), fall back to the
+  // credentials Jellyfin's web client keeps in localStorage for this origin.
+  function getToken() {
+    try {
+      if (window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
+        var t = window.ApiClient.accessToken();
+        if (t) {
+          return t;
+        }
+      }
+    } catch (e) { /* fall through */ }
+
+    try {
+      var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+      var servers = creds.Servers || [];
+      var origin = window.location.origin.replace(/\/+$/, '');
+      for (var i = 0; i < servers.length; i++) {
+        var s = servers[i];
+        if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
+          return s.AccessToken;
+        }
+      }
+    } catch (e) { /* no credentials available */ }
+
+    return null;
+  }
+
+  function pollDownloadProgress(button, operationId) {
+    var token = getToken();
+    fetch('/Plugins/Federation/Download/Progress/' + operationId, {
+      credentials: 'same-origin',
+      headers: token ? { 'X-Emby-Token': token } : {}
+    })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data) {
+          return;
+        }
+
+        if (!data.isComplete) {
+          button.querySelector('span').textContent = 'Downloading ' + Math.round(data.percentComplete || 0) + '%';
+          setTimeout(function () { pollDownloadProgress(button, operationId); }, 1500);
+          return;
+        }
+
+        if (data.success) {
+          button.setAttribute('data-state', 'done');
+          button.querySelector('span').textContent = 'Downloaded';
+        } else {
+          button.setAttribute('data-state', 'error');
+          button.querySelector('span').textContent = 'Failed';
+          button.title = data.status || 'Download failed';
+        }
+      })
+      .catch(function () {
+        setTimeout(function () { pollDownloadProgress(button, operationId); }, 3000);
+      });
+  }
+
+  function startDownload(button, itemId) {
+    button.setAttribute('data-state', 'busy');
+    button.querySelector('span').textContent = 'Starting...';
+
+    var token = getToken();
+    fetch('/Plugins/Federation/Download', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      body: JSON.stringify({ ItemId: itemId })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.operationId) {
+          button.setAttribute('data-state', 'error');
+          button.querySelector('span').textContent = 'Failed';
+          button.title = (result.data && result.data.message) || 'Could not start download';
+          return;
+        }
+
+        pollDownloadProgress(button, result.data.operationId);
+      })
+      .catch(function () {
+        button.setAttribute('data-state', 'error');
+        button.querySelector('span').textContent = 'Failed';
+      });
+  }
+
   function badgeDetailPage() {
     var match = location.href.match(/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i);
     if (!match) {
       return;
     }
 
-    var id = normalizeId(match[0]);
+    var rawId = match[0];
+    var id = normalizeId(rawId);
     if (!federatedIds.has(id)) {
       return;
     }
@@ -134,13 +244,24 @@
     var srv = federatedIds.get(id);
     var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
     var pill = '<span class="federation-badge-pill" title="' + label.replace(/"/g, '&quot;') + '">'
-      + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>';
+      + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>'
+      + '<span class="federation-badge-download" data-state="idle" title="Save a local copy on this server">'
+      + '<span class="federation-badge-icon">' + DOWNLOAD_ICON_SVG + '</span><span>Download to server</span></span>';
 
     var selectors = ['.nameContainer bdi', '.itemName-primary bdi', '.detailPagePrimaryContainer h1 bdi', 'h1 bdi'];
     for (var i = 0; i < selectors.length; i++) {
       var title = document.querySelector(selectors[i]);
       if (title && !title.querySelector('.federation-badge-pill')) {
         title.insertAdjacentHTML('afterbegin', pill);
+        var btn = title.querySelector('.federation-badge-download');
+        if (btn) {
+          btn.addEventListener('click', function () {
+            if (this.getAttribute('data-state') === 'idle') {
+              startDownload(this, rawId);
+            }
+          });
+        }
+
         return;
       }
     }

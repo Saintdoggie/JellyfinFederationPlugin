@@ -530,6 +530,30 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Admin-triggered: adds an already-connected friend (picked from this
+        /// server's own friend list, by id, rather than typed in as a URL again) to
+        /// a pool. Thin wrapper around <see cref="AddExistingFriendToPoolAsync"/> so
+        /// the UI can offer "add someone I already know" without re-collecting a URL.
+        /// </summary>
+        public async Task<(bool Success, string Message)> AddFriendToPoolAsync(string poolId, string remoteServerId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
+            if (pool == null)
+            {
+                return (false, "Pool not found.");
+            }
+
+            var friend = config.RemoteServers.FirstOrDefault(s => s.Id == remoteServerId);
+            if (friend == null)
+            {
+                return (false, "Friend not found.");
+            }
+
+            return await AddExistingFriendToPoolAsync(pool, friend, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
         /// Admin-triggered: removes this server's own membership record for a pool.
         /// Existing friendships formed through it are left alone - leaving a pool
         /// stops it introducing you to *new* members, it does not unfriend anyone.
