@@ -180,6 +180,49 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AddFriendToPoolAsync_ExistingFriend_AddsWithoutRetypingUrl()
+    {
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var (success, message) = await _service.AddFriendToPoolAsync(pool.Id, "friend-1", CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
+    }
+
+    [Fact]
+    public async Task AddFriendToPoolAsync_UnknownPool_Fails()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "friend-1", Name = "Bob", Url = "http://bob.example" });
+
+        var (success, message) = await _service.AddFriendToPoolAsync("no-such-pool", "friend-1", CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Contains("Pool not found", message);
+    }
+
+    [Fact]
+    public async Task AddFriendToPoolAsync_UnknownFriend_Fails()
+    {
+        var pool = _service.CreatePool("Movie Night");
+
+        var (success, message) = await _service.AddFriendToPoolAsync(pool.Id, "no-such-friend", CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Contains("Friend not found", message);
+    }
+
+    [Fact]
     public async Task ReceivePoolNotice_FromExistingFriend_AdoptsPoolAndFansOutToUnknownMembers()
     {
         // Reached via someone we're already friends with - no accept step, but the

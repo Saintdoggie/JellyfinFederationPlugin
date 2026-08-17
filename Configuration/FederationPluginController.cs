@@ -34,6 +34,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationFriendService _friends;
         private readonly ILibraryManager _libraryManager;
         private readonly IUserManager _userManager;
+        private readonly FederationDownloadService _downloadService;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -47,7 +48,8 @@ namespace Jellyfin.Plugin.Federation.Api
             WanBandwidthMonitor bandwidthMonitor,
             FederationFriendService friends,
             ILibraryManager libraryManager,
-            IUserManager userManager)
+            IUserManager userManager,
+            FederationDownloadService downloadService)
         {
             _logger = logger;
             _syncService = syncService;
@@ -61,6 +63,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _userManager = userManager;
             _friends = friends;
             _libraryManager = libraryManager;
+            _downloadService = downloadService;
         }
 
         #region Configuration
@@ -901,6 +904,18 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: adds a friend this server is already connected to into a
+        /// pool, without re-typing their URL or repeating the handshake.
+        /// </summary>
+        [HttpPost("Pools/{poolId}/AddFriend")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> AddFriendToPool(string poolId, [FromBody] AddFriendToPoolBody body, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.AddFriendToPoolAsync(poolId, body?.RemoteServerId ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
         /// Admin-triggered: removes this server's own membership record for a pool.
         /// Does not unfriend servers already connected through it.
         /// </summary>
@@ -1108,6 +1123,50 @@ namespace Jellyfin.Plugin.Federation.Api
             });
         }
 
+        /// <summary>
+        /// Admin-triggered: downloads a federated item's media file to this server so
+        /// it becomes a normal local item, no longer dependent on the friend's server.
+        /// Starts a background job and returns immediately; poll
+        /// <see cref="GetDownloadProgress"/> for status.
+        /// </summary>
+        [HttpPost("Download")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult StartDownload([FromBody] DownloadItemBody body)
+        {
+            var (success, message, operationId) = _downloadService.StartDownload(body?.ItemId ?? string.Empty);
+            if (!success)
+            {
+                return BadRequest(new { success, message });
+            }
+
+            return Ok(new { success, message, operationId });
+        }
+
+        /// <summary>
+        /// Polls the progress of a "download to server" job started via
+        /// <see cref="StartDownload"/>.
+        /// </summary>
+        [HttpGet("Download/Progress/{operationId}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetDownloadProgress(string operationId)
+        {
+            var progress = DownloadProgressTracker.Get(operationId);
+            if (progress == null)
+            {
+                return NotFound(new { error = "Operation not found" });
+            }
+
+            return Ok(new
+            {
+                operationId = progress.OperationId,
+                itemName = progress.ItemName,
+                percentComplete = progress.PercentComplete,
+                status = progress.Status,
+                isComplete = progress.IsComplete,
+                success = progress.Success
+            });
+        }
+
         [HttpPost("TestAllServers")]
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> TestAllServers(CancellationToken cancellationToken)
@@ -1197,6 +1256,16 @@ namespace Jellyfin.Plugin.Federation.Api
     public class CreatePoolBody
     {
         public string? Name { get; set; }
+    }
+
+    public class AddFriendToPoolBody
+    {
+        public string? RemoteServerId { get; set; }
+    }
+
+    public class DownloadItemBody
+    {
+        public string? ItemId { get; set; }
     }
 
     public class UpdateSharingBody
