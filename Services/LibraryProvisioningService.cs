@@ -23,6 +23,33 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private const string FederationSubFolder = "federation";
 
+        /// <summary>
+        /// Marker file dropped into every federation shadow folder so the directory is
+        /// never empty on disk. Federated items have no real file behind them (their
+        /// Path is a remote http(s) URL - see FederationLibraryManager.MaterializeItem),
+        /// so without this the shadow folder stays genuinely empty. Jellyfin's own
+        /// library-scan validation (BaseItem's "Library folder ... is inaccessible or
+        /// empty, skipping" check) skips registering a real physical Folder row for an
+        /// empty directory - and CollectionFolder.GetPhysicalFolders() then returns
+        /// nothing for this library, forever. FederationItemPersistenceService already
+        /// falls back to parenting items directly under the library's own
+        /// CollectionFolder when that happens (see its "physical=False" branch), but
+        /// that fallback is not actually visible: every ancestor/TopParentId-scoped
+        /// query Jellyfin runs - browsing the library, Continue Watching/Resume, Latest,
+        /// Recommended, any Home-screen widget - resolves a CollectionFolder parent to
+        /// its PhysicalFolderIds and filters on that, which is empty, so those items
+        /// come back from literally every one of those queries with zero results
+        /// (confirmed against a live server: GetItemById finds the item directly by id
+        /// fine, but /Items?ParentId=<library> Recursive=true and Items/Resume both
+        /// return nothing for it). A one-line hidden marker file is enough to make the
+        /// directory non-empty so Jellyfin's normal scan registers a real physical
+        /// Folder for it exactly like it would for any other library, at which point
+        /// items land under that Folder instead and become visible everywhere a real
+        /// item would be. The leading "." keeps Jellyfin's file resolver from ever
+        /// trying to import the marker itself as a media item.
+        /// </summary>
+        private const string PlaceholderFileName = ".federation-keep";
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<LibraryProvisioningService> _logger;
 
@@ -122,6 +149,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 Directory.CreateDirectory(shadowPath);
             }
 
+            // Must exist before the scan below (new-library case) or before whatever
+            // scan next picks up an already-provisioned one (existing-library case) -
+            // see the comment on PlaceholderFileName for why an empty shadow folder
+            // makes every federated item under it invisible to library queries.
+            var placeholderJustCreated = EnsurePlaceholderMarker(shadowPath);
+
             var existing = _libraryManager.GetVirtualFolders()?.FirstOrDefault(vf =>
                 string.Equals(vf.Name, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
 
@@ -148,6 +181,25 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Clean up any legacy federation:// location that an older plugin version
                     // may have registered on this library (no-op when none is present).
                     RemoveLegacyFederationLocations(existing);
+
+                    // Upgrade path: a library provisioned before this marker existed has
+                    // an empty shadow folder that Jellyfin's scanner has already written
+                    // off as "inaccessible or empty" at least once, so its items are
+                    // stuck parented directly to the CollectionFolder (invisible to
+                    // browsing/Resume/Latest - see PlaceholderFileName). Now that the
+                    // folder is non-empty, prompt a scan so it gets registered as a real
+                    // physical Folder without waiting for the next scheduled one; the
+                    // next federation sync then re-parents affected items under it
+                    // automatically (FederationItemPersistenceService resolves the same
+                    // deterministic item ids, so this is an in-place update, not a
+                    // duplicate).
+                    if (placeholderJustCreated)
+                    {
+                        _libraryManager.QueueLibraryScan();
+                        _logger.LogInformation(
+                            "[Federation] {Name}'s shadow folder was empty on disk; queued a library scan so its items become visible to browsing/Resume/Latest again",
+                            mapping.LocalLibraryName);
+                    }
 
                     _logger.LogDebug("[Federation] Library {Name} already provisioned", mapping.LocalLibraryName);
                     return;
@@ -397,6 +449,41 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     _logger.LogWarning(ex, "[Federation] Could not remove legacy location {Path} from {Name}", l, vf.Name);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Writes <see cref="PlaceholderFileName"/> into a federation shadow folder if
+        /// not already present. Returns true only when the file was actually created
+        /// just now (as opposed to already existing), so callers can tell "freshly
+        /// non-empty, might need a scan nudged" apart from "already fine". Best-effort:
+        /// an I/O failure here is logged but never blocks provisioning, since the
+        /// library still works for playback either way - only browsing/Resume/Latest
+        /// visibility depends on it.
+        /// </summary>
+        private bool EnsurePlaceholderMarker(string shadowPath)
+        {
+            var markerPath = Path.Combine(shadowPath, PlaceholderFileName);
+            if (File.Exists(markerPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                File.WriteAllText(
+                    markerPath,
+                    "This file exists only so Jellyfin does not treat this folder as empty. " +
+                    "Federated items are remote content (their Path is a URL on another " +
+                    "server) and never write real files here. Do not delete this file - " +
+                    "removing it will make federated items in this library disappear from " +
+                    "browsing, Continue Watching, and Latest until the next library scan.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not write placeholder marker in {Path}", shadowPath);
+                return false;
             }
         }
 

@@ -94,7 +94,9 @@ namespace Jellyfin.Plugin.Federation.Services
             string? parentId = null,
             int? startIndex = null,
             int? limit = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
         {
             try
             {
@@ -136,7 +138,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
 
-                var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -183,7 +185,9 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task<BaseItemDto?> GetItemAsync(
             string itemId,
             string? userId = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
         {
             try
             {
@@ -197,7 +201,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = $"/Users/{userIdToUse}/Items/{itemId}";
                 _logger.LogDebug("Getting item {ItemId} from {ServerName}", itemId, _server.Name);
 
-                var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -217,7 +221,9 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task<PlaybackInfoResponse?> GetPlaybackInfoAsync(
             string itemId,
             string? userId = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
         {
             try
             {
@@ -310,7 +316,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = $"/Items/{itemId}/PlaybackInfo?UserId={userIdToUse}";
                 _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName} as user {UserId}", itemId, _server.Name, userIdToUse);
 
-                var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -980,6 +986,53 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return item;
+        }
+
+        /// <summary>
+        /// Header carrying the id of whichever local Jellyfin user's own action
+        /// (browsing, initiating playback) triggered this outbound call, so the
+        /// remote's <see cref="RemoteAccessControlService"/> can apply any
+        /// per-remote-user override its admin configured for us specifically -
+        /// see <see cref="RemoteUserAccessRule"/>. This plugin only ever talks to
+        /// itself (same codebase on both ends), so the shared <c>X-Emby-Token</c>
+        /// API key remains the real trust boundary; this header is routing
+        /// information within that trust, not an additional credential - a remote
+        /// that omits or ignores it (an older plugin version, or no override
+        /// configured) simply keeps behaving exactly as before.
+        /// </summary>
+        public const string RemoteUserIdHeader = "X-Federation-Remote-User-Id";
+
+        /// <summary>
+        /// Cosmetic companion to <see cref="RemoteUserIdHeader"/> - the acting
+        /// user's display name, never used for matching (only the id is), purely
+        /// so a remote admin's logs/UI can show a human-readable name without a
+        /// second round trip.
+        /// </summary>
+        public const string RemoteUserNameHeader = "X-Federation-Remote-User-Name";
+
+        /// <summary>
+        /// Issues a GET, attaching <see cref="RemoteUserIdHeader"/>/
+        /// <see cref="RemoteUserNameHeader"/> when the caller knows which local
+        /// user's action triggered it. Per-request rather than a default header on
+        /// <see cref="_httpClient"/>, since a shared/pooled HttpClient (see
+        /// <see cref="IRemoteServerClientFactory"/>) outlives any single request
+        /// and is reused across different local users.
+        /// </summary>
+        private Task<HttpResponseMessage> SendGetAsync(string url, string? localActingUserId, string? localActingUserName, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(localActingUserId))
+            {
+                return _httpClient.GetAsync(url, cancellationToken);
+            }
+
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+            if (!string.IsNullOrEmpty(localActingUserName))
+            {
+                request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localActingUserName);
+            }
+
+            return _httpClient.SendAsync(request, cancellationToken);
         }
 
         private static HttpClient CreateDefaultHttpClient(RemoteServer server)

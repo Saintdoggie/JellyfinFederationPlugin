@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -28,6 +29,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationMediaSourceProvider> _logger;
         private readonly FederationLibraryManager _federationManager;
         private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly IAuthorizationContext _authorizationContext;
+        private readonly RemoteAccessControlService _accessControl;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceProvider"/> class.
@@ -35,11 +38,47 @@ namespace Jellyfin.Plugin.Federation.Services
         public FederationMediaSourceProvider(
             ILogger<FederationMediaSourceProvider> logger,
             FederationLibraryManager federationManager,
-            IHttpContextAccessor httpContextAccessor)
+            IHttpContextAccessor httpContextAccessor,
+            IAuthorizationContext authorizationContext,
+            RemoteAccessControlService accessControl)
         {
             _logger = logger;
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
+            _authorizationContext = authorizationContext;
+            _accessControl = accessControl;
+        }
+
+        /// <summary>
+        /// Resolves which of this server's own local users is asking, via
+        /// Jellyfin's own <see cref="IAuthorizationContext"/> against the current
+        /// inbound HTTP request - GetMediaSources always runs inside a real,
+        /// authenticated PlaybackInfo request (see <see cref="ResolveLocalServerUrl"/>
+        /// for the same assumption elsewhere in this class), so this is reliable
+        /// without this plugin having to thread a user id through Jellyfin's own
+        /// IMediaSourceProvider interface (which does not carry one). Returns null
+        /// when it cannot be resolved (no request context, e.g. an internal call) -
+        /// <see cref="RemoteAccessControlService.IsAllowed"/> treats that as "allow",
+        /// the same as before this feature existed.
+        /// </summary>
+        private async Task<Guid?> ResolveLocalUserId()
+        {
+            try
+            {
+                var context = _httpContextAccessor.HttpContext;
+                if (context == null)
+                {
+                    return null;
+                }
+
+                var info = await _authorizationContext.GetAuthorizationInfo(context).ConfigureAwait(false);
+                return info != null && info.UserId != Guid.Empty ? info.UserId : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not resolve the local acting user for an access-control check");
+                return null;
+            }
         }
 
         /// <inheritdoc />
@@ -75,6 +114,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var entrySources = entry.GetSourcesSnapshot();
                 var primaryIndex = Math.Min(entry.PrimarySourceIndex, entrySources.Length - 1);
+                var localUserId = await ResolveLocalUserId().ConfigureAwait(false);
 
                 _logger.LogInformation(
                     "[Federation] Debug GetMediaSources: {Name} ({Type}) key={Key}, sources={SourceCount} [{Sources}]",
@@ -126,6 +166,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     if (staticSourceCoversPrimary && i == primaryIndex)
                     {
+                        // The item's own Path already IS this source (stamped once
+                        // at materialization time, outside any request context - see
+                        // ResolvePlaybackUrl), and Jellyfin builds a static media
+                        // source from it directly without calling this provider, so
+                        // there is nothing here to gate. A denied primary source
+                        // still logs below so it's visible that this known gap
+                        // applied, even though it can't be closed from this hook.
+                        if (!_accessControl.IsAllowed(_federationManager.GetServer(entrySources[i].ServerId), localUserId, entry.MappingName, entrySources[i].RemoteItemId))
+                        {
+                            _logger.LogWarning(
+                                "[Federation] {Name}'s primary source is blocked by a per-remote-user override for the current user, but is served via the item's own static Path (set outside any request context) which this provider cannot suppress - alternate sources are still filtered normally",
+                                item.Name);
+                        }
+
                         continue;
                     }
 
@@ -146,7 +200,17 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var path = BuildPlaybackPath(server, src, entry.ItemType);
+                    if (!_accessControl.IsAllowed(server, localUserId, entry.MappingName, src.RemoteItemId))
+                    {
+                        _logger.LogInformation(
+                            "[Federation] {Name} source #{Index} on {ServerName} skipped for the current user by a per-remote-user access override",
+                            item.Name,
+                            i,
+                            server.Name);
+                        continue;
+                    }
+
+                    var path = BuildPlaybackPath(server, src, entry.ItemType, localUserId);
                     if (path == null)
                     {
                         _logger.LogWarning(
@@ -189,7 +253,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // source to play") even though a source was returned.
                 var fetchTasks = candidates.Select(c => c.IsWanCapped
                     ? Task.FromResult<MediaSourceInfo?>(null)
-                    : FetchRemoteSourceAsync(c.Server, c.Src, cancellationToken)).ToArray();
+                    : FetchRemoteSourceAsync(c.Server, c.Src, localUserId, cancellationToken)).ToArray();
                 var remoteResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
 
                 var sources = new List<MediaSourceInfo>();
@@ -279,7 +343,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// in which case the caller still emits a source built from cached metadata -
         /// no worse than before, and the warning says why it will probably not play.
         /// </summary>
-        private async Task<MediaSourceInfo?> FetchRemoteSourceAsync(RemoteServer server, FederatedSource src, CancellationToken cancellationToken)
+        private async Task<MediaSourceInfo?> FetchRemoteSourceAsync(RemoteServer server, FederatedSource src, Guid? localUserId, CancellationToken cancellationToken)
         {
             var client = _federationManager.GetClient(src.ServerId);
             if (client == null)
@@ -300,7 +364,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var info = await client.GetPlaybackInfoAsync(
                 src.RemoteItemId.ToString("N"),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken,
+                localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
 
             var remote = info?.MediaSources?.FirstOrDefault();
             if (remote == null)
@@ -342,7 +407,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return Task.FromException<ILiveStream>(new NotSupportedException("Live stream opening is not supported for federated content"));
         }
 
-        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType)
+        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
@@ -357,7 +422,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 // The remote api_key stays server-side; clients only see this server.
                 var audioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
-                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+                // Redundant with the access check already applied in GetMediaSources
+                // above (which decides whether to emit this source at all) - carried
+                // along anyway so FederationController.Stream can re-check it itself
+                // at the moment the bytes are actually requested, in case this URL
+                // outlives the session it was minted for (bookmarked, cached by a
+                // client, replayed later after the admin tightens the rule).
+                var requestingUserFlag = localUserId.HasValue ? $"&requestingUserId={localUserId.Value:N}" : string.Empty;
+                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{requestingUserFlag}";
             }
 
             // Same URL shape the item's own Path uses, so an alternate source behaves

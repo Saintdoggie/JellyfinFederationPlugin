@@ -50,7 +50,8 @@ public class FederationStreamHandlerTests : IDisposable
             cache,
             bandwidthMonitor);
 
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager);
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance);
+        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl);
     }
 
     public void Dispose()

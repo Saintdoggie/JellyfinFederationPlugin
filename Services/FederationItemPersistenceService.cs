@@ -281,10 +281,19 @@ namespace Jellyfin.Plugin.Federation.Services
                     : new List<string>();
                 var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
 
+                // Admin-chosen local suppression list (see PluginConfiguration.
+                // HiddenFederatedItemIds) - keyed on the same stable cache key as
+                // dedup, folded into IsEntryValid/HasLocalMatch below so a hidden
+                // entry is treated exactly like a local-dedup match: never created,
+                // and removed if it already exists. Purely local; never touches the
+                // cache or is communicated to the friend server.
+                var hiddenKeys = new HashSet<string>(config?.HiddenFederatedItemIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}",
+                    "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}, hiddenKeys={HiddenKeyCount}",
                     mapping.LocalLibraryName,
-                    localProviderIds.Count);
+                    localProviderIds.Count,
+                    hiddenKeys.Count);
 
                 // Seasons/Episodes nest under a Series entry via ParentKey instead of
                 // itemParent directly (see IsEntryValid). An entry is only safe to
@@ -295,6 +304,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var toCreate = new List<(BaseItem Item, int Depth)>();
                 var skipExisting = 0;
                 var skipLocalMatch = 0;
+                var skipHidden = 0;
                 var skipOrphan = 0;
                 var skipOrphanNoParentEntry = 0;
                 var localMatchSamples = new List<string>();
@@ -304,6 +314,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (existingKeys.Contains(e.Key))
                     {
                         skipExisting++;
+                        continue;
+                    }
+
+                    if (IsHidden(e, hiddenKeys))
+                    {
+                        skipHidden++;
                         continue;
                     }
 
@@ -323,7 +339,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (e.ParentKey != null)
                     {
                         parentEntry = _federationManager.Cache.GetEntryByKey(e.ParentKey);
-                        if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds))
+                        if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds, hiddenKeys))
                         {
                             skipOrphan++;
                             if (parentEntry == null)
@@ -353,9 +369,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate} (byDepth={ByDepth})",
+                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipHidden={SkipHidden}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate} (byDepth={ByDepth})",
                     mapping.LocalLibraryName,
                     skipExisting,
+                    skipHidden,
                     skipLocalMatch,
                     string.Join(" | ", localMatchSamples),
                     skipOrphan,
@@ -370,7 +387,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // cascade that removal down to their Seasons/Episodes so nothing is
                 // left pointing at a deleted parent.
                 var toDelete = existing
-                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds)
+                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds, hiddenKeys)
                         || forcedRecreateKeys.Contains(x.Key!))
                     .Select(x => x.Item)
                     .ToList();
@@ -729,18 +746,27 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// True if the entry, and everything above it in the ParentKey chain, is
-        /// still present in the cache and none of them duplicates content the user
-        /// already owns locally. An entry with a missing/invalid ancestor is not
-        /// safe to create (its ParentId would point at an item that will never
-        /// exist) and not safe to leave persisted (its parent is about to be, or
-        /// already was, removed).
+        /// still present in the cache, none of them duplicates content the user
+        /// already owns locally, and none of them is locally hidden (see
+        /// <see cref="Configuration.PluginConfiguration.HiddenFederatedItemIds"/>).
+        /// An entry with a missing/invalid ancestor is not safe to create (its
+        /// ParentId would point at an item that will never exist) and not safe to
+        /// leave persisted (its parent is about to be, or already was, removed) -
+        /// the same reasoning applies to hiding a Series/Season: its children have
+        /// nothing sensible to nest under once it's gone from local browsing, so
+        /// they are hidden along with it.
         /// </summary>
-        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
+        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds, HashSet<string> hiddenKeys)
         {
             var depth = 0;
             while (entry != null)
             {
                 if (depth++ > 16)
+                {
+                    return false;
+                }
+
+                if (IsHidden(entry, hiddenKeys))
                 {
                     return false;
                 }
@@ -818,6 +844,20 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return localProviderIds;
+        }
+
+        /// <summary>
+        /// True if the entry's stable cache key is on the admin's local hide list
+        /// (see <see cref="Configuration.PluginConfiguration.HiddenFederatedItemIds"/>).
+        /// Extracted as its own static helper (rather than folded silently into
+        /// <see cref="HasLocalMatch"/>) so it is independently unit-testable and so a
+        /// log line/skip-reason can distinguish "hidden by choice" from "duplicates
+        /// something you already own" - the two look identical downstream (neither
+        /// gets created) but mean very different things to an admin reading logs.
+        /// </summary>
+        internal static bool IsHidden(FederatedCacheEntry? entry, HashSet<string> hiddenKeys)
+        {
+            return entry != null && hiddenKeys.Count > 0 && hiddenKeys.Contains(entry.Key);
         }
 
         private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)

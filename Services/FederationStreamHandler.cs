@@ -41,16 +41,19 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private readonly ILogger<FederationStreamHandler> _logger;
         private readonly FederationLibraryManager _federationManager;
+        private readonly RemoteAccessControlService _accessControl;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
         /// </summary>
         public FederationStreamHandler(
             ILogger<FederationStreamHandler> logger,
-            FederationLibraryManager federationManager)
+            FederationLibraryManager federationManager,
+            RemoteAccessControlService accessControl)
         {
             _logger = logger;
             _federationManager = federationManager;
+            _accessControl = accessControl;
         }
 
         /// <summary>
@@ -84,7 +87,8 @@ namespace Jellyfin.Plugin.Federation.Services
             HttpRequest request,
             HttpResponse response,
             CancellationToken cancellationToken,
-            bool isAudio = false)
+            bool isAudio = false,
+            string? requestingUserId = null)
         {
             try
             {
@@ -93,6 +97,33 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     response.StatusCode = StatusCodes.Status404NotFound;
                     return;
+                }
+
+                // Redundant with FederationMediaSourceProvider already having decided
+                // whether to hand this URL out in the first place (see its comment on
+                // requestingUserFlag) - re-checked here so a URL that outlived the
+                // rule that allowed it (bookmarked, cached, replayed later after the
+                // admin tightens an override) is still denied. No requestingUserId at
+                // all (an older client, or a URL minted before this feature existed)
+                // behaves exactly as before - only a URL that does carry one is
+                // subject to this check.
+                if (!string.IsNullOrEmpty(requestingUserId)
+                    && Guid.TryParse(requestingUserId, out var requestingUserGuid)
+                    && Guid.TryParse(remoteItemId, out var remoteItemGuid))
+                {
+                    var mappingName = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemGuid) is string key
+                        ? _federationManager.Cache.GetEntryByKey(key)?.MappingName
+                        : null;
+                    if (!_accessControl.IsAllowed(server, requestingUserGuid, mappingName, remoteItemGuid))
+                    {
+                        _logger.LogInformation(
+                            "[Federation] Denying proxy stream for item {ItemId} on {Server} to user {UserId} (blocked by a per-remote-user access override)",
+                            remoteItemId,
+                            server.Name,
+                            requestingUserId);
+                        response.StatusCode = StatusCodes.Status403Forbidden;
+                        return;
+                    }
                 }
 
                 var range = request.Headers["Range"].FirstOrDefault();

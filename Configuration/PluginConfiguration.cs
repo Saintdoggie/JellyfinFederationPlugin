@@ -229,6 +229,26 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// invite rides the same friend-request handshake as a direct friendship.
         /// </summary>
         public List<FederationPool> Pools { get; set; } = new List<FederationPool>();
+
+        /// <summary>
+        /// Gets or sets the federated items this server's own admin has chosen to hide
+        /// from local browsing/search/home - e.g. a friend's low-quality rip of a movie
+        /// already owned in better quality, or content that's simply unwanted clutter.
+        /// This is a purely local, receiving-side suppression list: it is never sent to
+        /// the friend server (they still think they're sharing it normally), and it is
+        /// unrelated to per-friend sharing permissions (which control what a friend can
+        /// see of *this* server's own content, the opposite direction).
+        /// <para>
+        /// Entries are <see cref="Services.FederatedCacheEntry.Key"/> values (the same stable
+        /// cache key stamped as the <c>FederationKey</c> provider id on every
+        /// materialized item - see <see cref="Services.FederationLibraryManager.MaterializeItem"/>),
+        /// not raw Jellyfin item ids. Item ids are derived from the entry's CLR type and
+        /// change across migrations (see the MigratedXxx flags above); the cache key does
+        /// not, so it is the only identifier stable enough to survive a delete/recreate
+        /// migration and still mean "the same friend item" on the other side.
+        /// </para>
+        /// </summary>
+        public List<string> HiddenFederatedItemIds { get; set; } = new List<string>();
     }
 
     /// <summary>
@@ -374,6 +394,120 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// bitrate.
         /// </summary>
         public int WanMaxHeight { get; set; } = 1080;
+
+        /// <summary>
+        /// Gets or sets per-remote-user overrides this server's admin has configured
+        /// for individuals on this friend's server, narrowing what
+        /// <see cref="ShareAllLibraries"/>/<see cref="SharedLibraryFolderIds"/>
+        /// already exposes to them. Keyed by the friend's own local user id (fetched
+        /// via <c>GetRemoteUsers</c>, not this server's <see cref="LocalShareUserId"/>
+        /// hidden account, since every one of the friend's users shares that single
+        /// hidden account today). This is the admin-editable source of truth on this
+        /// side; whenever it changes it is pushed to the friend so their plugin can
+        /// enforce it against their own users - see
+        /// <see cref="Services.FederationFriendService.SetRemoteUserAccessRuleAsync"/>
+        /// and <see cref="FriendUserAccessRules"/> for the mirror image of this on
+        /// the receiving side.
+        /// </summary>
+        public List<RemoteUserAccessRule> RemoteUserAccessRules { get; set; } = new List<RemoteUserAccessRule>();
+
+        /// <summary>
+        /// Gets or sets this friend's own per-remote-user overrides about *this
+        /// server's* local users, as last pushed to us by their admin - the mirror
+        /// image of <see cref="RemoteUserAccessRules"/>, received rather than
+        /// configured here. Enforced locally against whichever of this server's own
+        /// users is actually browsing/streaming content that originated from this
+        /// friend - see <see cref="Services.RemoteAccessControlService"/>. Not
+        /// editable from this server's own admin UI (the friend owns it, same
+        /// asymmetry as <see cref="LocalShareUserId"/> vs <see cref="UserId"/>).
+        /// </summary>
+        public List<RemoteUserAccessRule> FriendUserAccessRules { get; set; } = new List<RemoteUserAccessRule>();
+    }
+
+    /// <summary>
+    /// How a specific remote user (an individual login on a friend's own server) is
+    /// scoped, on top of whatever <see cref="RemoteServer.ShareAllLibraries"/>/
+    /// <see cref="RemoteServer.SharedLibraryFolderIds"/> already exposes to that
+    /// friend's server as a whole. Every mode here narrows that existing scope
+    /// further - it can never grant a remote user more than the friend's
+    /// server-level scope already allows.
+    /// </summary>
+    public enum RemoteUserAccessMode
+    {
+        /// <summary>
+        /// No narrowing: this remote user sees whatever the friend's server-level
+        /// scope already allows. Equivalent to having no rule at all - present so an
+        /// existing rule (e.g. previously CertainItems) can be reset back to the
+        /// default from the UI without deleting it outright.
+        /// </summary>
+        AllLibraries = 0,
+
+        /// <summary>
+        /// This remote user's view is intersected with a specific subset of the
+        /// already-shared library folders, identified by
+        /// <see cref="RemoteUserAccessRule.LibraryFolderIds"/> (this server's own
+        /// folder ids, same id space as <see cref="RemoteServer.SharedLibraryFolderIds"/>).
+        /// </summary>
+        CertainLibraries = 1,
+
+        /// <summary>
+        /// This remote user's view is narrowed all the way down to specific items,
+        /// identified by <see cref="RemoteUserAccessRule.ItemIds"/> (this server's
+        /// own item ids).
+        /// </summary>
+        CertainItems = 2,
+
+        /// <summary>
+        /// This remote user is blocked entirely: no item or library from this server
+        /// is visible to them, regardless of what the friend's server-level scope
+        /// allows.
+        /// </summary>
+        Blocked = 3
+    }
+
+    /// <summary>
+    /// One admin-configured override narrowing what a single individual login on a
+    /// friend's server (identified by <see cref="RemoteUserId"/>, not this server's
+    /// own <see cref="RemoteServer.LocalShareUserId"/> hidden account) is allowed to
+    /// see, layered on top of that friend's existing server-level sharing scope. See
+    /// <see cref="RemoteServer.RemoteUserAccessRules"/>.
+    /// </summary>
+    public class RemoteUserAccessRule
+    {
+        /// <summary>
+        /// Gets or sets the friend's own local user id this rule applies to, as
+        /// returned by their <c>GetRemoteUsers</c> (Jellyfin's native user id on
+        /// their server, not ours).
+        /// </summary>
+        public string RemoteUserId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the friend's own display name for this user at the time the
+        /// rule was created/edited. Cosmetic only (shown in this server's own admin
+        /// UI) - never used for matching, since a remote username can change or be
+        /// reused.
+        /// </summary>
+        public string RemoteUserName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets how this rule narrows the remote user's view. See
+        /// <see cref="RemoteUserAccessMode"/>.
+        /// </summary>
+        public RemoteUserAccessMode Mode { get; set; } = RemoteUserAccessMode.AllLibraries;
+
+        /// <summary>
+        /// Gets or sets the ids of this server's own library folders this remote
+        /// user may see when <see cref="Mode"/> is <see cref="RemoteUserAccessMode.CertainLibraries"/>.
+        /// Ignored otherwise.
+        /// </summary>
+        public List<string> LibraryFolderIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the ids of this server's own items this remote user may see
+        /// when <see cref="Mode"/> is <see cref="RemoteUserAccessMode.CertainItems"/>.
+        /// Ignored otherwise.
+        /// </summary>
+        public List<string> ItemIds { get; set; } = new List<string>();
     }
 
     /// <summary>

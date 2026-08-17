@@ -964,6 +964,102 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Admin-triggered: sets (or clears, when <paramref name="rule"/> is null) a
+        /// per-remote-user override on <paramref name="remoteServerId"/> for one of
+        /// that friend's own local users, and pushes the friend's complete
+        /// <see cref="RemoteServer.RemoteUserAccessRules"/> list to them so their
+        /// plugin can enforce it locally against their own users (this server has no
+        /// visibility into which of a friend's users is browsing/streaming at any
+        /// given moment - see <see cref="RemoteAccessControlService"/>). Mirrors the
+        /// shape of <see cref="UpdateFriendSharingAsync"/>: local state is saved
+        /// first regardless of whether the friend can be reached, so the admin's
+        /// change always sticks even if the push fails.
+        /// </summary>
+        public async Task<(bool Success, string Message)> SetRemoteUserAccessRuleAsync(
+            string remoteServerId,
+            RemoteUserAccessRule? rule,
+            CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.Id == remoteServerId);
+            if (server == null)
+            {
+                return (false, "Friend not found.");
+            }
+
+            if (rule == null || string.IsNullOrWhiteSpace(rule.RemoteUserId))
+            {
+                return (false, "A remote user id is required.");
+            }
+
+            server.RemoteUserAccessRules.RemoveAll(r => string.Equals(r.RemoteUserId, rule.RemoteUserId, StringComparison.OrdinalIgnoreCase));
+            if (rule.Mode != RemoteUserAccessMode.AllLibraries)
+            {
+                server.RemoteUserAccessRules.Add(rule);
+            }
+
+            Plugin.Instance.SaveConfiguration();
+
+            if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
+            {
+                return (true, "Saved locally, but this friend has no address/key on file to notify.");
+            }
+
+            try
+            {
+                var payload = new RemoteUserAccessRulesPayload
+                {
+                    FromFederationId = GetOrCreateLocalFederationId(),
+                    Rules = server.RemoteUserAccessRules
+                };
+                using var response = await PostAuthenticatedAsync(
+                    $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/RemoteUserRules",
+                    payload,
+                    server.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (true, $"Saved locally, but could not notify {server.Name} (HTTP {(int)response.StatusCode}) - they will keep enforcing their old copy until they resync.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not notify {Name} of an updated remote-user access rule (non-fatal)", server.Name);
+                return (true, $"Saved locally, but could not reach {server.Name} - they will keep enforcing their old copy until they resync.");
+            }
+
+            return (true, "Saved.");
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend we already share content with is telling us
+        /// the complete, current list of per-remote-user overrides they have
+        /// configured for our own local users - the counterpart to
+        /// <see cref="SetRemoteUserAccessRuleAsync"/> on their side. Replaces (not
+        /// merges) our stored copy, since the sender always pushes its full list.
+        /// Matched by federation id, same as <see cref="ReceiveSharedUserUpdate"/>.
+        /// </summary>
+        public void ReceiveRemoteUserAccessRules(RemoteUserAccessRulesPayload payload)
+        {
+            if (payload == null || string.IsNullOrEmpty(payload.FromFederationId))
+            {
+                return;
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
+            if (server == null)
+            {
+                _logger.LogWarning("[Federation] Received remote-user access rules from an unrecognized federation id {FederationId}", payload.FromFederationId);
+                return;
+            }
+
+            server.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
+            Plugin.Instance.SaveConfiguration();
+            _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", server.Name, server.FriendUserAccessRules.Count);
+        }
+
+        /// <summary>
         /// Applies <see cref="RemoteServer.SharedLibraryFolderIds"/> to the admin-
         /// picked local user's policy via Jellyfin's own EnabledFolders enforcement
         /// - the same mechanism an admin would use by hand for e.g. a family
@@ -1182,6 +1278,20 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the user id the recipient should now query as.</summary>
         public string UserId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Wire payload telling an already-known friend the complete, current list of
+    /// per-remote-user overrides configured for their own local users - see
+    /// <see cref="FederationFriendService.SetRemoteUserAccessRuleAsync"/>.
+    /// </summary>
+    public class RemoteUserAccessRulesPayload
+    {
+        /// <summary>Gets or sets the sender's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the sender's complete, current rule list.</summary>
+        public List<RemoteUserAccessRule>? Rules { get; set; }
     }
 
     /// <summary>
