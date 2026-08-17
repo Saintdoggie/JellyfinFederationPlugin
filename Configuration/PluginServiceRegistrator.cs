@@ -25,6 +25,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationItemCache>();
             serviceCollection.AddSingleton<WanBandwidthMonitor>();
             serviceCollection.AddSingleton<FederationLibraryManager>();
+            serviceCollection.AddSingleton<RemoteAccessControlService>();
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();

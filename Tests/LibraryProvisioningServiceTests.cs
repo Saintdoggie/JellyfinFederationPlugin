@@ -153,6 +153,65 @@ public class LibraryProvisioningServiceTests : IDisposable
 
         var shadowDir = Path.Combine(_federationRoot, "Anime");
         Assert.True(Directory.Exists(shadowDir));
+
+        // The shadow folder must never be empty on disk (see PlaceholderFileName's
+        // doc comment): federated items have no real file behind them, and an empty
+        // library folder makes Jellyfin's own scan skip registering a physical Folder
+        // for it, which in turn makes every item under it invisible to any
+        // ancestor/TopParentId-scoped query (browsing, Continue Watching, Latest) even
+        // though GetItemById still finds it directly - confirmed against a live
+        // server while diagnosing this.
+        Assert.True(File.Exists(Path.Combine(shadowDir, ".federation-keep")));
+    }
+
+    [Fact]
+    public async Task EnsureLibraryAsync_WritesPlaceholderMarker_AndQueuesScan_WhenExistingShadowFolderWasEmpty()
+    {
+        // Simulates a library provisioned by a plugin version before the marker file
+        // existed: the shadow folder is already registered and plugin-owned, but is
+        // still genuinely empty on disk.
+        var shadowPath = Path.Combine(_federationRoot, "Anime");
+        Directory.CreateDirectory(shadowPath);
+        var existing = new VirtualFolderInfo
+        {
+            Name = "Anime",
+            Locations = new[] { shadowPath }
+        };
+        _lm.Setup(x => x.GetVirtualFolders()).Returns(new List<VirtualFolderInfo> { existing });
+
+        var mapping = new LibraryMapping { LocalLibraryName = "Anime", MediaType = "Series", Enabled = true, AutoProvision = true };
+
+        await InvokeEnsureLibraryAsync(mapping);
+
+        Assert.True(File.Exists(Path.Combine(shadowPath, ".federation-keep")));
+
+        // A scan is prompted so the now-non-empty folder gets registered as a real
+        // physical Folder without waiting for the next scheduled scan - otherwise
+        // this library's already-created items would stay invisible to
+        // browsing/Resume/Latest indefinitely.
+        _lm.Verify(x => x.QueueLibraryScan(), Times.Once);
+    }
+
+    [Fact]
+    public async Task EnsureLibraryAsync_DoesNotQueueScan_WhenPlaceholderMarkerAlreadyPresent()
+    {
+        var shadowPath = Path.Combine(_federationRoot, "Anime");
+        Directory.CreateDirectory(shadowPath);
+        File.WriteAllText(Path.Combine(shadowPath, ".federation-keep"), "marker");
+        var existing = new VirtualFolderInfo
+        {
+            Name = "Anime",
+            Locations = new[] { shadowPath }
+        };
+        _lm.Setup(x => x.GetVirtualFolders()).Returns(new List<VirtualFolderInfo> { existing });
+
+        var mapping = new LibraryMapping { LocalLibraryName = "Anime", MediaType = "Series", Enabled = true, AutoProvision = true };
+
+        await InvokeEnsureLibraryAsync(mapping);
+
+        // Already non-empty on a prior run: no need to nudge a scan again every time
+        // provisioning runs.
+        _lm.Verify(x => x.QueueLibraryScan(), Times.Never);
     }
 
     [Fact]

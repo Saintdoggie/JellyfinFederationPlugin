@@ -36,6 +36,17 @@
     '<path d="M5 19.5h14"></path>' +
     '</svg>';
 
+  // Eye-with-a-slash: the standard "hide this" glyph, distinct enough from the
+  // cloud (source) and download-tray (save-a-copy) icons beside it that all
+  // three read as different actions at a glance.
+  var HIDE_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M3 12s3.6-7 9-7c1.7 0 3.2.5 4.5 1.3M21 12s-3.6 7-9 7c-1.7 0-3.2-.5-4.5-1.3"></path>' +
+    '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>' +
+    '<path d="M3 3l18 18"></path>' +
+    '</svg>';
+
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) {
       return;
@@ -74,7 +85,45 @@
       '.federation-badge-download[data-state="busy"]{cursor:default;opacity:.85;}',
       '.federation-badge-download[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
       '.federation-badge-download[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
-      '.federation-badge-download .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}'
+      '.federation-badge-download .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}',
+      // "Hide" chip - same shape/interaction as the download chip above (a
+      // clickable pill with an idle/busy/done/error state), but a distinct,
+      // neutral color so it doesn't read as another "save a copy" action.
+      '.federation-badge-hide{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
+      'margin-right:.55em;padding:.2em .6em .2em .5em;border-radius:1em;font-size:.5em;',
+      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;cursor:pointer;',
+      'background:#3a2a20;color:#f0ddc9;border:1px solid #806048;}',
+      '.federation-badge-hide:hover{background:#4a3626;}',
+      '.federation-badge-hide[data-state="busy"]{cursor:default;opacity:.85;}',
+      '.federation-badge-hide[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
+      '.federation-badge-hide[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
+      '.federation-badge-hide .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}',
+      // Origin filter: a small floating control (see "Origin filter" section
+      // below for why this is standalone rather than docked into jellyfin-web's
+      // own filter dialog). Fixed bottom-right so it never depends on knowing
+      // any of jellyfin-web's internal toolbar markup, which differs across
+      // pages (grid, search results) and versions.
+      '.federation-filter-fab{position:fixed;right:20px;bottom:20px;z-index:9999;',
+      'display:flex;align-items:center;gap:.4em;padding:.55em .9em;border-radius:2em;cursor:pointer;',
+      'background:#1c3a66;color:#bcd8ff;border:1px solid #3c6bb3;box-shadow:0 2px 10px rgba(0,0,0,.4);',
+      'font-size:13px;font-weight:600;user-select:none;}',
+      '.federation-filter-fab:hover{background:#25477a;}',
+      '.federation-filter-fab svg{width:16px;height:16px;flex-shrink:0;}',
+      '.federation-filter-fab[data-active="1"]{background:#2a5a3a;border-color:#4a9a63;color:#d3f5dc;}',
+      '.federation-filter-fab.federation-filter-hidden-fab{display:none;}',
+      '.federation-filter-panel{position:fixed;right:20px;bottom:70px;z-index:9999;min-width:220px;',
+      'max-width:280px;max-height:60vh;overflow-y:auto;padding:.6em;border-radius:.6em;',
+      'background:#161a22;border:1px solid #3c6bb3;box-shadow:0 4px 18px rgba(0,0,0,.5);',
+      'color:#e4ebf5;font-size:13px;}',
+      '.federation-filter-panel.federation-filter-hidden-panel{display:none;}',
+      '.federation-filter-panel-title{font-weight:700;text-transform:uppercase;font-size:11px;',
+      'letter-spacing:.04em;color:#9cb6de;margin:.1em .3em .5em;}',
+      '.federation-filter-row{display:flex;align-items:center;gap:.5em;padding:.3em .3em;border-radius:.35em;}',
+      '.federation-filter-row:hover{background:rgba(255,255,255,.06);}',
+      '.federation-filter-row input{margin:0;flex-shrink:0;}',
+      '.federation-filter-row label{flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.federation-filter-empty{padding:.4em .3em;opacity:.7;font-style:italic;}',
+      '.federation-filter-hidden{display:none !important;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -105,6 +154,10 @@
         }
 
         federatedIds = next;
+        applyFilters();
+        if (filterPanelOpen) {
+          renderFilterPanel();
+        }
       })
       .catch(function () {
         // Leave the previous set in place; try again on the next interval.
@@ -229,6 +282,52 @@
       });
   }
 
+  // Hides this item from the admin's own local library going forward: a
+  // purely local, receiving-side "don't show me this" choice (a low-quality
+  // rip already owned in better quality, unwanted clutter, ...) - it never
+  // reaches the friend server, which keeps sharing normally. See
+  // Configuration/FederationPluginController.cs's "Hidden Items" region and
+  // PluginConfiguration.HiddenFederatedItemIds for the backend half.
+  function startHide(button, itemId) {
+    button.setAttribute('data-state', 'busy');
+    button.querySelector('span').textContent = 'Hiding...';
+
+    var token = getToken();
+    fetch('/Plugins/Federation/HiddenItems/Hide', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      body: JSON.stringify({ ItemId: itemId })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.success) {
+          button.setAttribute('data-state', 'error');
+          button.querySelector('span').textContent = 'Failed';
+          button.title = (result.data && result.data.message) || 'Could not hide this item';
+          return;
+        }
+
+        button.setAttribute('data-state', 'done');
+        button.querySelector('span').textContent = 'Hidden';
+
+        // The server already deleted the local item, so this page has
+        // nothing left to show - stepping back is the same recovery the
+        // browser's own Back button gives after any item disappears out
+        // from under a detail page. A short delay lets the "Hidden" state
+        // actually register before the page navigates away.
+        setTimeout(function () {
+          if (history.length > 1) {
+            history.back();
+          }
+        }, 700);
+      })
+      .catch(function () {
+        button.setAttribute('data-state', 'error');
+        button.querySelector('span').textContent = 'Failed';
+      });
+  }
+
   function badgeDetailPage() {
     var match = location.href.match(/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i);
     if (!match) {
@@ -246,24 +345,239 @@
     var pill = '<span class="federation-badge-pill" title="' + label.replace(/"/g, '&quot;') + '">'
       + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>'
       + '<span class="federation-badge-download" data-state="idle" title="Save a local copy on this server">'
-      + '<span class="federation-badge-icon">' + DOWNLOAD_ICON_SVG + '</span><span>Download to server</span></span>';
+      + '<span class="federation-badge-icon">' + DOWNLOAD_ICON_SVG + '</span><span>Download to server</span></span>'
+      + '<span class="federation-badge-hide" data-state="idle" title="Hide this item from your local library (does not affect the friend sharing it)">'
+      + '<span class="federation-badge-icon">' + HIDE_ICON_SVG + '</span><span>Hide</span></span>';
 
     var selectors = ['.nameContainer bdi', '.itemName-primary bdi', '.detailPagePrimaryContainer h1 bdi', 'h1 bdi'];
     for (var i = 0; i < selectors.length; i++) {
       var title = document.querySelector(selectors[i]);
       if (title && !title.querySelector('.federation-badge-pill')) {
         title.insertAdjacentHTML('afterbegin', pill);
-        var btn = title.querySelector('.federation-badge-download');
-        if (btn) {
-          btn.addEventListener('click', function () {
+        var downloadBtn = title.querySelector('.federation-badge-download');
+        if (downloadBtn) {
+          downloadBtn.addEventListener('click', function () {
             if (this.getAttribute('data-state') === 'idle') {
               startDownload(this, rawId);
             }
           });
         }
 
+        var hideBtn = title.querySelector('.federation-badge-hide');
+        if (hideBtn) {
+          hideBtn.addEventListener('click', function () {
+            if (this.getAttribute('data-state') === 'idle') {
+              startHide(this, rawId);
+            }
+          });
+        }
+
         return;
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Origin filter
+  //
+  // Reuses the same federatedIds map the badge already fetches - no new
+  // endpoint is needed, since every server name a user could filter on is
+  // already present as a value in that map. An item id absent from the map is
+  // local content, represented below by LOCAL_ORIGIN_KEY.
+  //
+  // jellyfin-web ships its own filter dialog/sort menu for library views, but
+  // this plugin has no jellyfin-web checkout to verify current markup
+  // against, and that markup differs across pages (grid vs. search results)
+  // and has changed across jellyfin-web releases. Guessing at internal class
+  // names here risks silently failing (control never appears) or, worse,
+  // inserting into the wrong place on some version. So this is a standalone
+  // control instead: a small fixed-position toggle, always in the same spot,
+  // that works regardless of which page or theme is active - the same
+  // reasoning that makes the corner/pill badges DOM overlays rather than a
+  // jellyfin "tag".
+  var FILTER_STORAGE_KEY = 'federationOriginFilter.hidden';
+  var LOCAL_ORIGIN_KEY = ' federation-local';
+  var UNKNOWN_ORIGIN_KEY = ' federation-unknown';
+  var LOCAL_ORIGIN_LABEL = 'This server (local)';
+  var UNKNOWN_ORIGIN_LABEL = 'Unknown server';
+
+  var FILTER_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M4 5h16"></path><path d="M7 12h10"></path><path d="M10.5 19h3"></path>' +
+    '</svg>';
+
+  function loadHiddenOrigins() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || '[]');
+      if (Array.isArray(raw)) {
+        return new Set(raw);
+      }
+    } catch (e) { /* corrupt or missing - start fresh */ }
+
+    return new Set();
+  }
+
+  // Persisted the same way the rest of this file keeps client state - plain
+  // localStorage, no server round-trip, so the choice survives navigation and
+  // page reloads without needing any backend support.
+  var hiddenOrigins = loadHiddenOrigins();
+
+  function saveHiddenOrigins() {
+    try {
+      localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(Array.from(hiddenOrigins)));
+    } catch (e) { /* localStorage unavailable (private mode, quota) - filter still works this session */ }
+  }
+
+  function originKeyForId(id) {
+    if (!federatedIds.has(id)) {
+      return LOCAL_ORIGIN_KEY;
+    }
+
+    var srv = federatedIds.get(id);
+    return srv ? srv : UNKNOWN_ORIGIN_KEY;
+  }
+
+  function originLabel(key) {
+    if (key === LOCAL_ORIGIN_KEY) {
+      return LOCAL_ORIGIN_LABEL;
+    }
+
+    if (key === UNKNOWN_ORIGIN_KEY) {
+      return UNKNOWN_ORIGIN_LABEL;
+    }
+
+    return key;
+  }
+
+  // Every origin currently known: local plus every distinct server name seen
+  // in federatedIds. Recomputed each time the panel is (re)opened/redrawn so
+  // a friend added after the page loaded still shows up.
+  function knownOrigins() {
+    var seen = new Set();
+    federatedIds.forEach(function (srv) {
+      seen.add(srv ? srv : UNKNOWN_ORIGIN_KEY);
+    });
+
+    var origins = [LOCAL_ORIGIN_KEY].concat(Array.from(seen).sort(function (a, b) {
+      return originLabel(a).localeCompare(originLabel(b));
+    }));
+
+    return origins;
+  }
+
+  var FILTER_CARD_SELECTOR = '.card[data-id],.listItem[data-id]';
+
+  function applyFilterToCard(el) {
+    var id = normalizeId(el.getAttribute('data-id'));
+    if (!id) {
+      return;
+    }
+
+    var hide = hiddenOrigins.size > 0 && hiddenOrigins.has(originKeyForId(id));
+    el.classList.toggle('federation-filter-hidden', hide);
+  }
+
+  function applyFilters() {
+    document.querySelectorAll(FILTER_CARD_SELECTOR).forEach(applyFilterToCard);
+  }
+
+  var filterFab = null;
+  var filterPanel = null;
+  var filterPanelOpen = false;
+
+  function updateFabState() {
+    if (!filterFab) {
+      return;
+    }
+
+    filterFab.setAttribute('data-active', hiddenOrigins.size > 0 ? '1' : '0');
+  }
+
+  function renderFilterPanel() {
+    if (!filterPanel) {
+      return;
+    }
+
+    var origins = knownOrigins();
+    if (origins.length <= 1) {
+      // Only "local" known - nothing federated has loaded yet (or this
+      // server has no friends at all). Say so rather than showing a
+      // one-item list that can't actually filter anything.
+      filterPanel.innerHTML = '<div class="federation-filter-panel-title">Filter by origin</div>'
+        + '<div class="federation-filter-empty">No federated content found yet.</div>';
+      return;
+    }
+
+    var html = '<div class="federation-filter-panel-title">Filter by origin</div>';
+    origins.forEach(function (key, i) {
+      var checked = hiddenOrigins.has(key) ? '' : ' checked';
+      var inputId = 'federation-filter-opt-' + i;
+      html += '<div class="federation-filter-row">'
+        + '<input type="checkbox" id="' + inputId + '" data-origin-key="' + i + '"' + checked + '>'
+        + '<label for="' + inputId + '">' + originLabel(key).replace(/</g, '&lt;') + '</label>'
+        + '</div>';
+    });
+
+    filterPanel.innerHTML = html;
+    filterPanel.querySelectorAll('input[type="checkbox"]').forEach(function (input, i) {
+      input.addEventListener('change', function () {
+        var key = origins[i];
+        if (input.checked) {
+          hiddenOrigins.delete(key);
+        } else {
+          hiddenOrigins.add(key);
+        }
+
+        saveHiddenOrigins();
+        updateFabState();
+        applyFilters();
+      });
+    });
+  }
+
+  function toggleFilterPanel() {
+    filterPanelOpen = !filterPanelOpen;
+    if (filterPanelOpen) {
+      renderFilterPanel();
+    }
+
+    filterPanel.classList.toggle('federation-filter-hidden-panel', !filterPanelOpen);
+  }
+
+  function ensureFilterControl() {
+    if (filterFab) {
+      return;
+    }
+
+    filterFab = document.createElement('div');
+    filterFab.className = 'federation-filter-fab federation-filter-hidden-fab';
+    filterFab.setAttribute('data-active', '0');
+    filterFab.title = 'Filter library by origin server';
+    filterFab.innerHTML = FILTER_ICON_SVG + '<span>Origin filter</span>';
+    filterFab.addEventListener('click', toggleFilterPanel);
+
+    filterPanel = document.createElement('div');
+    filterPanel.className = 'federation-filter-panel federation-filter-hidden-panel';
+
+    document.body.appendChild(filterFab);
+    document.body.appendChild(filterPanel);
+    updateFabState();
+  }
+
+  // The control is only useful, and only shown, on a page currently
+  // displaying a card grid (library view, search results, home screen rows) -
+  // no point floating a filter button over the playback or settings pages.
+  function updateFilterControlVisibility() {
+    if (!filterFab) {
+      return;
+    }
+
+    var hasCards = !!document.querySelector(FILTER_CARD_SELECTOR);
+    filterFab.classList.toggle('federation-filter-hidden-fab', !hasCards);
+    if (!hasCards && filterPanelOpen) {
+      filterPanelOpen = false;
+      filterPanel.classList.add('federation-filter-hidden-panel');
     }
   }
 
@@ -282,6 +596,9 @@
     injectStyle();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
+    ensureFilterControl();
+    applyFilters();
+    updateFilterControlVisibility();
   }
 
   var scheduled = false;

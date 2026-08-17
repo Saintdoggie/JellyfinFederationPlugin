@@ -177,6 +177,20 @@
                     background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06);
                     border-radius: 0.5em; padding: 0.9em 1em; margin-bottom: 0.9em;
                 }
+                #federationConfigPage .fed-userrule-row {
+                    display: flex; align-items: center; gap: 0.7em; padding: 0.4em 0;
+                    border-bottom: 1px solid rgba(255,255,255,0.06);
+                }
+                #federationConfigPage .fed-userrule-row .fed-pill { margin-left: auto; }
+                #federationConfigPage .fed-userrule-editor {
+                    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);
+                    border-radius: 0.4em; padding: 0.8em; margin: 0.4em 0 0.8em;
+                }
+                #federationConfigPage .fed-userrule-results { margin-top: 0.4em; max-height: 12em; overflow-y: auto; }
+                #federationConfigPage .fed-userrule-result {
+                    display: flex; align-items: center; justify-content: space-between; gap: 0.6em;
+                    padding: 0.2em 0;
+                }
             </style>
 
             <div class="sectionTitleContainer flex align-items-center">
@@ -323,6 +337,28 @@
                         <div id="fedAdvancedStatus" class="fed-srvstatus" style="display:none;"></div>
                     </div>
                 </details>
+
+                <!--
+                    Hidden Items: purely local, receiving-side suppression - the admin
+                    chose not to see something a friend is sharing (a worse rip they
+                    already own, unwanted clutter, ...), independent of the People
+                    panel's per-friend sharing permissions (which control what a
+                    friend can see of THIS server's own content - the opposite
+                    direction). See Configuration/FederationPluginController.cs's
+                    "Hidden Items" region and PluginConfiguration.HiddenFederatedItemIds.
+                -->
+                <details class="fed-card fed-details" id="fedHiddenItemsSection">
+                    <summary>Hidden items (<span id="fedHiddenItemsCount">0</span>)</summary>
+                    <div class="fed-details-body">
+                        <p class="fed-hint">
+                            Items you've hidden from your own local library using the "Hide" button on an item's detail
+                            page. This only affects what you see here - the friend sharing it is never notified and keeps
+                            sharing it normally. Unhiding an item does not bring it back immediately; it reappears on the
+                            next sync (or click "Provision libraries" above).
+                        </p>
+                        <div id="fedHiddenItemsList"></div>
+                    </div>
+                </details>
             </form>
 
             <script type="text/javascript">
@@ -359,6 +395,30 @@
                     // loadConfiguration() trigger elsewhere on the page without
                     // needing its own local state machine.
                     var pendingSharing = {};
+
+                    // Each friend's own local user list (fetched via GetRemoteUsers,
+                    // the same endpoint originally added for picking a remote
+                    // playback account), keyed by server.Id - for the per-remote-user
+                    // access override picker below the sharing block.
+                    var remoteUsersCache = {};
+
+                    // Which per-remote-user override editor is currently open, keyed
+                    // by "<serverId>::<remoteUserId>".
+                    var expandedUserRuleEditors = {};
+
+                    // In-progress edits for an open override editor, same key shape
+                    // as expandedUserRuleEditors. Items is an array of {id, name} so
+                    // the "certain items" picker can show what's already selected
+                    // without a second round trip for names already known this
+                    // session (a rule loaded from saved config only has ids, so those
+                    // show their raw id until re-picked or re-searched).
+                    var pendingUserRuleEdits = {};
+
+                    // Last SearchLocalItems results per open "certain items" editor,
+                    // keyed the same way, so re-rendering the page (e.g. after
+                    // clicking a checkbox elsewhere) doesn't lose the search results
+                    // already on screen.
+                    var userRuleItemSearchResults = {};
 
                     var COLLECTION_TYPE_MAP = {
                         movies: { mediaType: 'Movie', label: 'Movies' },
@@ -617,6 +677,260 @@
                         saveSharing(serverId);
                     }
 
+                    /* ---------------- Per-remote-user access overrides ---------------- */
+
+                    var USER_RULE_MODE_LABELS = ['All shared libraries', 'Certain libraries', 'Certain items', 'Blocked'];
+
+                    function ruleKey(serverId, remoteUserId) {
+                        return serverId + '::' + remoteUserId;
+                    }
+
+                    function loadRemoteUsersFor(server) {
+                        if (remoteUsersCache[server.Id]) {
+                            return Promise.resolve(remoteUsersCache[server.Id]);
+                        }
+
+                        remoteUsersCache[server.Id] = { loading: true, users: [] };
+                        return fedFetch('/Plugins/Federation/GetRemoteUsers', {
+                            method: 'POST',
+                            body: JSON.stringify({ Id: server.Id, Url: server.Url, ApiKey: '' })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            remoteUsersCache[server.Id] = {
+                                loading: false,
+                                users: (res && res.success && res.users) ? res.users : [],
+                                error: (res && !res.success) ? (res.message || 'Could not fetch their users.') : null
+                            };
+                            renderFriends();
+                        })
+                        .catch(function (e) {
+                            remoteUsersCache[server.Id] = { loading: false, users: [], error: 'Failed: ' + e.message };
+                            renderFriends();
+                        });
+                    }
+
+                    function existingUserRule(server, remoteUserId) {
+                        return (server.RemoteUserAccessRules || []).filter(function (r) { return r.RemoteUserId === remoteUserId; })[0] || null;
+                    }
+
+                    function ruleStatusLabel(rule) {
+                        if (!rule) {
+                            return USER_RULE_MODE_LABELS[0];
+                        }
+
+                        if (rule.Mode === 3) {
+                            return 'Blocked';
+                        }
+
+                        if (rule.Mode === 1) {
+                            return (rule.LibraryFolderIds || []).length + ' librar' + ((rule.LibraryFolderIds || []).length === 1 ? 'y' : 'ies');
+                        }
+
+                        if (rule.Mode === 2) {
+                            return (rule.ItemIds || []).length + ' item' + ((rule.ItemIds || []).length === 1 ? '' : 's');
+                        }
+
+                        return USER_RULE_MODE_LABELS[0];
+                    }
+
+                    function renderRemoteUserAccessBlock(server) {
+                        var html = '<div class="fed-subcard">';
+                        html += '<h4 class="fed-subhead">' + escapeHtml(server.Name || server.Url) + '’s own people</h4>';
+                        html += '<p class="fed-hint" style="margin-top:0;">Block an individual login on their server, or narrow them to fewer libraries or specific items - layered on top of what’s shared above.</p>';
+
+                        var cached = remoteUsersCache[server.Id];
+                        if (!cached) {
+                            loadRemoteUsersFor(server);
+                            html += '<p class="fed-muted">Loading their users…</p></div>';
+                            return html;
+                        }
+
+                        if (cached.loading) {
+                            html += '<p class="fed-muted">Loading their users…</p></div>';
+                            return html;
+                        }
+
+                        if (cached.error) {
+                            html += '<p class="fed-muted">' + escapeHtml(cached.error) + '</p></div>';
+                            return html;
+                        }
+
+                        if (cached.users.length === 0) {
+                            html += '<p class="fed-muted">No users found on their server.</p></div>';
+                            return html;
+                        }
+
+                        cached.users.forEach(function (u) {
+                            var key = ruleKey(server.Id, u.id);
+                            var rule = existingUserRule(server, u.id);
+                            var isOpen = expandedUserRuleEditors[key] === true;
+                            html += '<div class="fed-userrule-row">';
+                            html += '<span>' + escapeHtml(u.name) + (u.isAdministrator ? ' <span class="fed-pill">admin</span>' : '') + '</span>';
+                            html += '<span class="fed-pill' + (rule && rule.Mode === 3 ? ' fed-pill-off' : '') + '">' + escapeHtml(ruleStatusLabel(rule)) + '</span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="toggle-user-rule" data-key="' + escapeHtml(key) + '">' + (isOpen ? 'Close' : 'Manage') + '</button>';
+                            html += '</div>';
+
+                            if (isOpen) {
+                                html += renderUserRuleEditor(server, u, rule, key);
+                            }
+                        });
+
+                        html += '<div class="fed-srvstatus" id="fedUserRuleListStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function renderUserRuleEditor(server, remoteUser, rule, key) {
+                        var pending = pendingUserRuleEdits[key];
+                        if (!pending) {
+                            pending = {
+                                Mode: rule ? rule.Mode : 0,
+                                LibraryFolderIds: rule ? (rule.LibraryFolderIds || []).slice() : [],
+                                Items: rule ? (rule.ItemIds || []).map(function (id) { return { id: id, name: id }; }) : []
+                            };
+                            pendingUserRuleEdits[key] = pending;
+                        }
+
+                        var html = '<div class="fed-userrule-editor">';
+                        html += '<label class="fed-label">Access</label>';
+                        html += '<select class="emby-select fed-select fedUserRuleMode" data-key="' + escapeHtml(key) + '">';
+                        USER_RULE_MODE_LABELS.forEach(function (label, idx) {
+                            html += '<option value="' + idx + '"' + (pending.Mode === idx ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+                        });
+                        html += '</select>';
+
+                        if (pending.Mode === 1) {
+                            html += '<div style="margin-top:0.5em;">';
+                            if (!localLibrariesCache || localLibrariesCache.length === 0) {
+                                html += '<p class="fed-muted">No libraries found.</p>';
+                            } else {
+                                localLibrariesCache.forEach(function (lib) {
+                                    var checked = pending.LibraryFolderIds.indexOf(lib.id) !== -1;
+                                    html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedUserRuleLib" data-key="' + escapeHtml(key) + '" data-lib="' + escapeHtml(lib.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                                });
+                            }
+
+                            html += '</div>';
+                        }
+
+                        if (pending.Mode === 2) {
+                            html += '<div style="margin-top:0.5em;">';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><input type="text" class="emby-input fed-input fedUserRuleItemSearch" data-key="' + escapeHtml(key) + '" placeholder="Search your library by name…" /></div>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="search-rule-items" data-key="' + escapeHtml(key) + '">Search</button>';
+                            html += '</div>';
+
+                            var results = userRuleItemSearchResults[key] || [];
+                            if (results.length > 0) {
+                                html += '<div class="fed-userrule-results">';
+                                results.forEach(function (it) {
+                                    var already = pending.Items.some(function (x) { return x.id === it.id; });
+                                    html += '<div class="fed-userrule-result">';
+                                    html += '<span>' + escapeHtml(it.name) + (it.year ? ' (' + it.year + ')' : '') + '</span>';
+                                    html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="add-rule-item" data-key="' + escapeHtml(key) + '" data-item-id="' + escapeHtml(it.id) + '" data-item-name="' + escapeHtml(it.name) + '"' + (already ? ' disabled' : '') + '>' + (already ? 'Added' : 'Add') + '</button>';
+                                    html += '</div>';
+                                });
+                                html += '</div>';
+                            }
+
+                            html += '<label class="fed-label" style="margin-top:0.6em;">Selected items (' + pending.Items.length + ')</label>';
+                            if (pending.Items.length === 0) {
+                                html += '<p class="fed-muted">None selected yet.</p>';
+                            } else {
+                                pending.Items.forEach(function (it) {
+                                    html += '<div class="fed-userrule-result">';
+                                    html += '<span>' + escapeHtml(it.name) + '</span>';
+                                    html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-rule-item" data-key="' + escapeHtml(key) + '" data-item-id="' + escapeHtml(it.id) + '">Remove</button>';
+                                    html += '</div>';
+                                });
+                            }
+
+                            html += '</div>';
+                        }
+
+                        html += '<div class="fed-inline" style="margin-top:0.6em;">';
+                        html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="save-user-rule" data-key="' + escapeHtml(key) + '">Save</button>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="cancel-user-rule" data-key="' + escapeHtml(key) + '">Cancel</button>';
+                        html += '</div>';
+                        html += '<div class="fed-srvstatus" id="fedUserRuleStatus-' + escapeHtml(key.replace(/[^a-zA-Z0-9]/g, '_')) + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function setUserRuleStatus(key, msg, kind) {
+                        var el = q('#fedUserRuleStatus-' + key.replace(/[^a-zA-Z0-9]/g, '_'));
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function toggleUserRuleEditor(key) {
+                        expandedUserRuleEditors[key] = !expandedUserRuleEditors[key];
+                        if (!expandedUserRuleEditors[key]) {
+                            delete pendingUserRuleEdits[key];
+                        }
+
+                        renderFriends();
+                    }
+
+                    function searchRuleItems(key) {
+                        var input = q('.fedUserRuleItemSearch[data-key="' + key + '"]');
+                        var query = input ? input.value : '';
+                        if (!query) {
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/SearchLocalItems?query=' + encodeURIComponent(query))
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            userRuleItemSearchResults[key] = res || [];
+                            renderFriends();
+                        })
+                        .catch(function () { userRuleItemSearchResults[key] = []; renderFriends(); });
+                    }
+
+                    function saveUserRule(serverId, remoteUserId, key) {
+                        var pending = pendingUserRuleEdits[key];
+                        if (!pending) {
+                            return;
+                        }
+
+                        var cached = remoteUsersCache[serverId];
+                        var remoteUser = cached ? cached.users.filter(function (u) { return u.id === remoteUserId; })[0] : null;
+
+                        setUserRuleStatus(key, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/RemoteUserRule', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                RemoteUserId: remoteUserId,
+                                RemoteUserName: remoteUser ? remoteUser.name : '',
+                                Mode: pending.Mode,
+                                LibraryFolderIds: pending.LibraryFolderIds,
+                                ItemIds: pending.Items.map(function (it) { return it.id; })
+                            })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setUserRuleStatus(key, res.message, res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                delete expandedUserRuleEditors[key];
+                                delete pendingUserRuleEdits[key];
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { setUserRuleStatus(key, 'Failed: ' + e.message, 'err'); });
+                    }
+
                     /* ---------------- Per-friend pools ---------------- */
 
                     function poolHasFriend(pool, friend) {
@@ -826,6 +1140,7 @@
                             if (isOpen) {
                                 html += '<div class="fed-friendpanel">';
                                 html += renderSharingBlock(server);
+                                html += renderRemoteUserAccessBlock(server);
                                 html += renderFriendPoolsBlock(server);
                                 html += renderFriendAdvanced(server, i);
                                 html += '<div style="margin-top:0.9em;">';
@@ -1693,6 +2008,65 @@
                         .catch(function () { /* diagnostics are best-effort */ });
                     }
 
+                    /* ---------------- Hidden items ---------------- */
+
+                    function renderHiddenItems(items) {
+                        items = items || [];
+                        var countEl = q('#fedHiddenItemsCount');
+                        if (countEl) {
+                            countEl.textContent = items.length;
+                        }
+
+                        var listEl = q('#fedHiddenItemsList');
+                        if (!listEl) {
+                            return;
+                        }
+
+                        if (items.length === 0) {
+                            listEl.innerHTML = '<p class="fed-muted">Nothing hidden. Use the "Hide" button on a federated item\'s detail page to add one here.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        items.forEach(function (it) {
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<strong>' + escapeHtml(it.name || '(unknown)') + '</strong>';
+                            html += '<span class="fed-server-url">' + escapeHtml(it.itemType || '') + (it.mappingName ? ' · ' + escapeHtml(it.mappingName) : '') + '</span>';
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="unhide-item" data-key="' + escapeHtml(it.key) + '">Unhide</button>';
+                            html += '</div>';
+                            html += '</div>';
+                        });
+
+                        listEl.innerHTML = html;
+                    }
+
+                    function loadHiddenItems() {
+                        return fedFetch('/Plugins/Federation/HiddenItems')
+                        .then(function (r) { return r.json(); })
+                        .then(function (items) { renderHiddenItems(items); })
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function unhideItem(key) {
+                        if (!key) {
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/HiddenItems/Unhide', {
+                            method: 'POST',
+                            body: JSON.stringify({ Key: key })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function () {
+                            // Does not recreate the item - see the hint text above the
+                            // list. Just reflects that it's off the hide list now.
+                            loadHiddenItems();
+                        })
+                        .catch(function (err) { showError('Unhide failed: ' + err.message); });
+                    }
+
                     function setAdvancedStatus(msg, kind) {
                         var el = q('#fedAdvancedStatus');
                         if (!el) {
@@ -1733,6 +2107,7 @@
                             renderMappings();
                             loadStatus();
                             loadDiagnostics();
+                            loadHiddenItems();
                         })
                         .catch(function (e) {
                             stopWatchdog();
@@ -1853,6 +2228,54 @@
                                 case 'test-server':
                                     testServer(i);
                                     break;
+                                case 'unhide-item':
+                                    unhideItem(t.getAttribute('data-key'));
+                                    break;
+                                case 'toggle-user-rule':
+                                    toggleUserRuleEditor(t.getAttribute('data-key'));
+                                    break;
+                                case 'search-rule-items':
+                                    searchRuleItems(t.getAttribute('data-key'));
+                                    break;
+                                case 'add-rule-item':
+                                    (function () {
+                                        var key = t.getAttribute('data-key');
+                                        var pending = pendingUserRuleEdits[key];
+                                        if (!pending) {
+                                            return;
+                                        }
+
+                                        var itemId = t.getAttribute('data-item-id');
+                                        if (!pending.Items.some(function (x) { return x.id === itemId; })) {
+                                            pending.Items.push({ id: itemId, name: t.getAttribute('data-item-name') || itemId });
+                                        }
+
+                                        renderFriends();
+                                    })();
+                                    break;
+                                case 'remove-rule-item':
+                                    (function () {
+                                        var key = t.getAttribute('data-key');
+                                        var pending = pendingUserRuleEdits[key];
+                                        if (!pending) {
+                                            return;
+                                        }
+
+                                        var itemId = t.getAttribute('data-item-id');
+                                        pending.Items = pending.Items.filter(function (x) { return x.id !== itemId; });
+                                        renderFriends();
+                                    })();
+                                    break;
+                                case 'save-user-rule':
+                                    (function () {
+                                        var key = t.getAttribute('data-key');
+                                        var parts = key.split('::');
+                                        saveUserRule(parts[0], parts.slice(1).join('::'), key);
+                                    })();
+                                    break;
+                                case 'cancel-user-rule':
+                                    toggleUserRuleEditor(t.getAttribute('data-key'));
+                                    break;
                                 case 'picker-all':
                                     pickerLibs.forEach(function (lib) { lib.selected = true; });
                                     renderPicker();
@@ -1967,6 +2390,30 @@
                                 var up = pendingSharing[usid] || { ShareAll: false, FolderIds: [] };
                                 up.LocalUserId = t.value;
                                 pendingSharing[usid] = up;
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserRuleMode')) {
+                                var mkey = t.getAttribute('data-key');
+                                var mpending = pendingUserRuleEdits[mkey] || { Mode: 0, LibraryFolderIds: [], Items: [] };
+                                mpending.Mode = parseInt(t.value, 10);
+                                pendingUserRuleEdits[mkey] = mpending;
+                                renderFriends();
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserRuleLib')) {
+                                var lkey = t.getAttribute('data-key');
+                                var libId2 = t.getAttribute('data-lib');
+                                var lpending = pendingUserRuleEdits[lkey] || { Mode: 1, LibraryFolderIds: [], Items: [] };
+                                var lpos = lpending.LibraryFolderIds.indexOf(libId2);
+                                if (t.checked && lpos === -1) {
+                                    lpending.LibraryFolderIds.push(libId2);
+                                } else if (!t.checked && lpos !== -1) {
+                                    lpending.LibraryFolderIds.splice(lpos, 1);
+                                }
+
+                                pendingUserRuleEdits[lkey] = lpending;
                                 return;
                             }
 

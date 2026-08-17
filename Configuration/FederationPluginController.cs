@@ -132,6 +132,27 @@ namespace Jellyfin.Plugin.Federation.Api
                             server.ApiKey = old.ApiKey;
                         }
                     }
+
+                    // The config page's main Save form (see saveConfiguration() in
+                    // configPage.html) only ever POSTs the explicit field list it
+                    // knows how to edit - every other per-server field managed
+                    // exclusively through its own dedicated endpoint (sharing via
+                    // Friends/{id}/Sharing, per-remote-user overrides via
+                    // Friends/{id}/RemoteUserRule, friendship identity via the
+                    // Friends/* handshake) would otherwise silently reset to its C#
+                    // default on every unrelated main Save, same class of bug the
+                    // top-level-field preservation block below this loop already
+                    // guards against.
+                    var oldServer = existing?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+                    if (oldServer != null)
+                    {
+                        server.FederationId = oldServer.FederationId;
+                        server.ShareAllLibraries = oldServer.ShareAllLibraries;
+                        server.SharedLibraryFolderIds = oldServer.SharedLibraryFolderIds;
+                        server.LocalShareUserId = oldServer.LocalShareUserId;
+                        server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
+                        server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
+                    }
                 }
 
                 // Preserve server-internal state the config page's UI has no field
@@ -172,6 +193,13 @@ namespace Jellyfin.Plugin.Federation.Api
                     // invite, leave), never sent by the config page's main Save form -
                     // same class of field as the friend-request lists above.
                     config.Pools = existing.Pools;
+
+                    // Same class of field again: the hide list is managed exclusively
+                    // through the HiddenItems/* endpoints (the item detail page's Hide
+                    // chip, and Unhide in the config page's own Hidden Items section),
+                    // never sent as part of the main Save form - without this, saving
+                    // any unrelated setting would silently un-hide everything.
+                    config.HiddenFederatedItemIds = existing.HiddenFederatedItemIds;
                 }
 
                 var errors = ConfigValidator.Validate(config);
@@ -756,6 +784,35 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: sets (mode AllLibraries clears) a per-remote-user
+        /// override for one of this friend's own local users - block them entirely,
+        /// narrow them to specific already-shared libraries, or narrow them all the
+        /// way to specific items. Pushed to the friend so their plugin can enforce
+        /// it against their own users - see
+        /// <see cref="FederationFriendService.SetRemoteUserAccessRuleAsync"/>.
+        /// </summary>
+        [HttpPost("Friends/{id}/RemoteUserRule")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> SetRemoteUserAccessRule(string id, [FromBody] RemoteUserAccessRule rule, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.SetRemoteUserAccessRuleAsync(id, rule, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend telling us the complete, current list of
+        /// per-remote-user overrides they've configured for our own local users.
+        /// Not AllowAnonymous - same reasoning as <see cref="ReceiveSharedUserUpdate"/>.
+        /// </summary>
+        [HttpPost("Friends/RemoteUserRules")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload)
+        {
+            _friends.ReceiveRemoteUserAccessRules(payload);
+            return Ok();
+        }
+
+        /// <summary>
         /// Admin-triggered: lists this server's own top-level libraries, for the
         /// per-friend sharing picker. Deliberately not filtered down to "real,
         /// non-federated" libraries - a library the plugin auto-provisions from
@@ -778,6 +835,40 @@ namespace Jellyfin.Plugin.Federation.Api
                 .ToList();
 
             return Ok(folders);
+        }
+
+        /// <summary>
+        /// Admin-triggered: searches this server's own local items by name, for the
+        /// per-remote-user "certain items" override picker (see
+        /// <see cref="SetRemoteUserAccessRule"/>) - there was no existing item
+        /// search/browse endpoint on this page to reuse, so this is a minimal one
+        /// purpose-built for that picker. Deliberately name-only and capped: this is
+        /// a quick "find the thing you're about to restrict", not a general browse
+        /// API.
+        /// </summary>
+        [HttpGet("SearchLocalItems")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SearchLocalItems([FromQuery] string? query, [FromQuery] int limit = 25)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return Ok(Array.Empty<object>());
+            }
+
+            var boundedLimit = Math.Clamp(limit, 1, 100);
+            var results = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
+            {
+                SearchTerm = query,
+                Limit = boundedLimit,
+                Recursive = true,
+                IsVirtualItem = false
+            });
+
+            var items = results
+                .Select(i => new { id = i.Id.ToString("N"), name = i.Name, type = i.GetType().Name, year = i.ProductionYear })
+                .ToList();
+
+            return Ok(items);
         }
 
         /// <summary>
@@ -1006,7 +1097,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string serverId,
             [FromQuery] string itemId,
             CancellationToken cancellationToken,
-            [FromQuery] bool audio = false)
+            [FromQuery] bool audio = false,
+            [FromQuery] string? requestingUserId = null)
         {
             var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
             if (server == null)
@@ -1019,8 +1111,128 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
-            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio).ConfigureAwait(false);
+            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio, requestingUserId).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        #endregion
+
+        #region Hidden Items (local suppression)
+        //
+        // A purely local, receiving-side "don't show me this" list - the opposite
+        // direction from per-friend sharing permissions (which gate what a friend can
+        // see of *this* server's own content). Hiding a federated item here never
+        // touches the cache and is never communicated to the friend server; they keep
+        // thinking they're sharing it normally. See
+        // Configuration.PluginConfiguration.HiddenFederatedItemIds and
+        // Services.FederationItemPersistenceService.ReconcileMappingAsync (the
+        // enforcement point) for the rest of the mechanism.
+
+        /// <summary>
+        /// Hides a federated item from this server's own local browsing/search/home.
+        /// Resolves the local item id (as shown on its detail page) to the stable
+        /// <see cref="Services.FederatedCacheEntry.Key"/> stamped on it as the
+        /// <c>FederationKey</c> provider id, records that key so the next
+        /// reconciliation pass never recreates it, and also deletes the item right
+        /// now rather than waiting for that pass - hiding something should feel
+        /// immediate, not "eventually, next sync". Only the local virtual item is
+        /// deleted; the underlying cache entry (and the friend's own copy) is
+        /// untouched, so unhiding it later just needs a fresh reconciliation pass to
+        /// bring it back.
+        /// </summary>
+        [HttpPost("HiddenItems/Hide")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult HideItem([FromBody] HideItemBody body)
+        {
+            if (!Guid.TryParse(body?.ItemId, out var itemGuid))
+            {
+                return BadRequest(new { success = false, message = "Invalid item id" });
+            }
+
+            var item = _libraryManager.GetItemById(itemGuid);
+            var key = FederationLibraryManager.GetFederationKey(item);
+            if (item == null || key == null)
+            {
+                return NotFound(new { success = false, message = "Not a federated item" });
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config != null)
+            {
+                config.HiddenFederatedItemIds ??= new List<string>();
+                if (!config.HiddenFederatedItemIds.Contains(key, StringComparer.OrdinalIgnoreCase))
+                {
+                    config.HiddenFederatedItemIds.Add(key);
+                    Plugin.Instance?.SaveConfiguration();
+                }
+            }
+
+            try
+            {
+                _libraryManager.DeleteItem(item, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = false });
+            }
+            catch (Exception ex)
+            {
+                // The hide list entry is already saved either way, so the next
+                // reconciliation pass will remove it even if this immediate delete
+                // failed for some reason - log and report success on that basis.
+                _logger.LogWarning(ex, "[Federation] Hid {Key} but could not delete the local item immediately; it will be removed on the next sync", key);
+            }
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Lists items currently on the local hide list, resolving each key back to a
+        /// display name/type from the cache (the underlying materialized item is
+        /// usually already deleted at this point) so the config page can show an
+        /// admin what they hid, not just an opaque key.
+        /// </summary>
+        [HttpGet("HiddenItems")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult<object> GetHiddenItems()
+        {
+            var config = Plugin.Instance?.Configuration;
+            var keys = config?.HiddenFederatedItemIds ?? new List<string>();
+
+            var items = keys.Select(key =>
+            {
+                var entry = _cache.GetEntryByKey(key);
+                return new
+                {
+                    key,
+                    name = entry?.Metadata.Name ?? "(no longer in cache)",
+                    itemType = entry?.ItemType,
+                    mappingName = entry?.MappingName
+                };
+            }).ToList();
+
+            return Ok(items);
+        }
+
+        /// <summary>
+        /// Removes an item from the local hide list. Does not recreate it directly -
+        /// that happens on the next reconciliation pass (a scheduled sync, or the
+        /// "Provision libraries"/"Refresh" actions already on this page), the same
+        /// way any other newly-visible entry would be picked up.
+        /// </summary>
+        [HttpPost("HiddenItems/Unhide")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult UnhideItem([FromBody] UnhideItemBody body)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.HiddenFederatedItemIds == null || string.IsNullOrEmpty(body?.Key))
+            {
+                return Ok(new { success = true });
+            }
+
+            var removed = config.HiddenFederatedItemIds.RemoveAll(k => string.Equals(k, body.Key, StringComparison.OrdinalIgnoreCase));
+            if (removed > 0)
+            {
+                Plugin.Instance?.SaveConfiguration();
+            }
+
+            return Ok(new { success = true });
         }
 
         #endregion
@@ -1266,6 +1478,16 @@ namespace Jellyfin.Plugin.Federation.Api
     public class DownloadItemBody
     {
         public string? ItemId { get; set; }
+    }
+
+    public class HideItemBody
+    {
+        public string? ItemId { get; set; }
+    }
+
+    public class UnhideItemBody
+    {
+        public string? Key { get; set; }
     }
 
     public class UpdateSharingBody

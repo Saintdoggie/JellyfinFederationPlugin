@@ -1,0 +1,32 @@
+# Federation Plugin - UI/feature work tracker
+
+## Already existed before this session (verified in code, no work needed)
+- [x] Download-to-server button on federated item detail page (Web/federation-badge.js, FederationDownloadService.cs)
+- [x] Friend add flow via server URL only, no raw API key copy/paste (FederationFriendService.cs friend-request handshake)
+- [x] Pools with star topology: 1:1 friend first, then add to pool (Pools/{poolId}/AddFriend) - not a forced mesh
+- [x] Per-friend sharing: whole library or specific local library folders (RemoteServer.ShareAllLibraries/SharedLibraryFolderIds)
+- [x] Embedded "whose server is this" indicator (corner badge on cards + pill on detail page, no Jellyfin tags) - Web/federation-badge.js
+
+## Done (2026-08-17, this session) - all verified: dotnet build 0 warnings/errors, 194/194 tests pass
+- [x] Per-remote-user + per-item sharing overrides ("block bob", library/item-level restriction), applies to 1:1
+      and pool friends alike. RemoteUserAccessRule model + header protocol (X-Federation-Remote-User-Id/Name) +
+      peer-pushed enforcement, "People on X's server" panel. Known gap: items whose media source was cached before
+      this landed aren't gated until next sync; browse-time hiding of restricted items is out of scope (playback-time
+      gating only).
+- [x] Fixed federated items missing from dashboard Now Playing/Continue Watching/Resume/Latest - root cause was an
+      empty shadow library folder never getting a physical Folder registered by Jellyfin's scanner (not a session-
+      reporting bug as originally hypothesized). Fixed via a .federation-keep marker file in LibraryProvisioningService.cs.
+- [x] Origin filter for library grids/search (floating "Origin filter" control, localStorage-persisted, reuses
+      existing FederatedIds map). Sort-by-origin skipped (jellyfin-web grid virtualization risk) - documented in code.
+- [x] Local hide-list for incoming federated items (receiving-side "Hide" chip on item detail page) - never
+      materializes hidden items locally, keyed on stable FederationKey so it survives migrations, Unhide list in
+      settings page. Outgoing/per-friend item hiding is the CertainItems mode above, not this.
+
+## After all of the above land and tests pass
+- [x] Verify full build + test suite green (dotnet in podman container, mcr.microsoft.com/dotnet/sdk:9.0)
+- [x] Bump plugin version in meta.json (0.0.53 -> 0.0.54), changelog already merged from all 4 agents in the existing voice
+- [ ] git add/commit
+- [ ] Confirm with user, then git push
+- [ ] Cut a release: build zip (Jellyfin.Plugin.Federation.dll + meta.json + logo.png + thumb.png, matches 0.0.53's
+      asset structure), gh release create with that zip at tag 0.0.54, MD5 checksum it, then a follow-up commit adding
+      the manifest.json catalog entry pointing at that release asset (matches "Add manifest.json entry for X.X.X" pattern)
