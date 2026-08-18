@@ -98,6 +98,36 @@
       '.federation-badge-hide[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
       '.federation-badge-hide[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
       '.federation-badge-hide .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}',
+      // Injected item in jellyfin-web's own "more actions" (⋮) menu, rather
+      // than a standalone pill fighting the title for space. Cloned from a
+      // real menu item so its base look already matches; this just adds a
+      // state color once busy/done/error, same states as the old pill.
+      '.federation-menu-download[data-state="busy"]{opacity:.7;pointer-events:none;}',
+      '.federation-menu-download[data-state="done"]{color:#7fd996 !important;}',
+      '.federation-menu-download[data-state="error"]{color:#f08a8a !important;}',
+      // Theme-adaptive surface tokens, used only by the elements below that
+      // float over ordinary page chrome (the toast and the origin filter).
+      // The corner badge and title/hide pills above are deliberately NOT
+      // themed - they overlay posters/backdrop images, not page background,
+      // so there is no "page theme" to match in the first place; a solid
+      // dark chip is the same reasoning Jellyfin's own played-checkmark and
+      // unwatched-count badges use, and stays legible over any poster
+      // regardless of which theme is active. These two, by contrast, sit
+      // over the theme's own surface, so they pull the theme's own color
+      // variables (falling back to the same dark palette if a theme
+      // doesn't define them, so a bare/incomplete theme never breaks this).
+      ':root{--fed-surface:var(--theme-body-background-color, #161a22);',
+      '--fed-text:var(--theme-body-text-color, var(--primary-text-color, #e4ebf5));',
+      '--fed-accent:var(--theme-primary-color, var(--primary-accent-color, #3c6bb3));}',
+      // Small toast for download progress once the menu (which triggered it)
+      // has already closed - same fixed-position-overlay approach as the
+      // origin filter control below, for the same reason: no jellyfin-web
+      // markup to reliably dock into.
+      '.federation-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;',
+      'padding:.6em 1.1em;border-radius:.5em;background:var(--fed-surface);border:1px solid var(--fed-accent);color:var(--fed-text);',
+      'font-size:13px;font-weight:600;box-shadow:0 4px 18px rgba(0,0,0,.5);display:flex;align-items:center;gap:.5em;}',
+      '.federation-toast[data-state="error"]{border-color:#a34a4a;color:#f5cccc;}',
+      '.federation-toast[data-state="done"]{border-color:#3c8a55;color:#c9f0d3;}',
       // Origin filter: a small floating control (see "Origin filter" section
       // below for why this is standalone rather than docked into jellyfin-web's
       // own filter dialog). Fixed bottom-right so it never depends on knowing
@@ -105,19 +135,19 @@
       // pages (grid, search results) and versions.
       '.federation-filter-fab{position:fixed;right:20px;bottom:20px;z-index:9999;',
       'display:flex;align-items:center;gap:.4em;padding:.55em .9em;border-radius:2em;cursor:pointer;',
-      'background:#1c3a66;color:#bcd8ff;border:1px solid #3c6bb3;box-shadow:0 2px 10px rgba(0,0,0,.4);',
+      'background:var(--fed-surface);color:var(--fed-accent);border:1px solid var(--fed-accent);box-shadow:0 2px 10px rgba(0,0,0,.4);',
       'font-size:13px;font-weight:600;user-select:none;}',
-      '.federation-filter-fab:hover{background:#25477a;}',
+      '.federation-filter-fab:hover{filter:brightness(1.25);}',
       '.federation-filter-fab svg{width:16px;height:16px;flex-shrink:0;}',
       '.federation-filter-fab[data-active="1"]{background:#2a5a3a;border-color:#4a9a63;color:#d3f5dc;}',
       '.federation-filter-fab.federation-filter-hidden-fab{display:none;}',
       '.federation-filter-panel{position:fixed;right:20px;bottom:70px;z-index:9999;min-width:220px;',
       'max-width:280px;max-height:60vh;overflow-y:auto;padding:.6em;border-radius:.6em;',
-      'background:#161a22;border:1px solid #3c6bb3;box-shadow:0 4px 18px rgba(0,0,0,.5);',
-      'color:#e4ebf5;font-size:13px;}',
+      'background:var(--fed-surface);border:1px solid var(--fed-accent);box-shadow:0 4px 18px rgba(0,0,0,.5);',
+      'color:var(--fed-text);font-size:13px;}',
       '.federation-filter-panel.federation-filter-hidden-panel{display:none;}',
       '.federation-filter-panel-title{font-weight:700;text-transform:uppercase;font-size:11px;',
-      'letter-spacing:.04em;color:#9cb6de;margin:.1em .3em .5em;}',
+      'letter-spacing:.04em;color:var(--fed-accent);margin:.1em .3em .5em;}',
       '.federation-filter-row{display:flex;align-items:center;gap:.5em;padding:.3em .3em;border-radius:.35em;}',
       '.federation-filter-row:hover{background:rgba(255,255,255,.06);}',
       '.federation-filter-row input{margin:0;flex-shrink:0;}',
@@ -222,7 +252,33 @@
     return null;
   }
 
-  function pollDownloadProgress(button, operationId) {
+  // Single toast element reused across a download's lifetime - the menu item
+  // that triggered it closes almost immediately (see closeActionMenu), so
+  // this is the only surface left to show progress on.
+  var toastEl = null;
+
+  function showToast(text, state) {
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.className = 'federation-toast';
+      document.body.appendChild(toastEl);
+    }
+
+    toastEl.setAttribute('data-state', state || 'busy');
+    toastEl.textContent = text;
+    toastEl.style.display = 'flex';
+  }
+
+  function hideToastAfter(ms) {
+    var el = toastEl;
+    setTimeout(function () {
+      if (el === toastEl) {
+        el.style.display = 'none';
+      }
+    }, ms);
+  }
+
+  function pollDownloadProgress(operationId) {
     var token = getToken();
     fetch('/Plugins/Federation/Download/Progress/' + operationId, {
       credentials: 'same-origin',
@@ -235,28 +291,26 @@
         }
 
         if (!data.isComplete) {
-          button.querySelector('span').textContent = 'Downloading ' + Math.round(data.percentComplete || 0) + '%';
-          setTimeout(function () { pollDownloadProgress(button, operationId); }, 1500);
+          showToast('Downloading ' + (data.itemName ? data.itemName + ' - ' : '') + Math.round(data.percentComplete || 0) + '%', 'busy');
+          setTimeout(function () { pollDownloadProgress(operationId); }, 1500);
           return;
         }
 
         if (data.success) {
-          button.setAttribute('data-state', 'done');
-          button.querySelector('span').textContent = 'Downloaded';
+          showToast('Downloaded ' + (data.itemName || 'item') + ' to this server', 'done');
         } else {
-          button.setAttribute('data-state', 'error');
-          button.querySelector('span').textContent = 'Failed';
-          button.title = data.status || 'Download failed';
+          showToast(data.status || 'Download failed', 'error');
         }
+
+        hideToastAfter(6000);
       })
       .catch(function () {
-        setTimeout(function () { pollDownloadProgress(button, operationId); }, 3000);
+        setTimeout(function () { pollDownloadProgress(operationId); }, 3000);
       });
   }
 
-  function startDownload(button, itemId) {
-    button.setAttribute('data-state', 'busy');
-    button.querySelector('span').textContent = 'Starting...';
+  function startDownload(itemId) {
+    showToast('Starting download...', 'busy');
 
     var token = getToken();
     fetch('/Plugins/Federation/Download', {
@@ -268,17 +322,16 @@
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.operationId) {
-          button.setAttribute('data-state', 'error');
-          button.querySelector('span').textContent = 'Failed';
-          button.title = (result.data && result.data.message) || 'Could not start download';
+          showToast((result.data && result.data.message) || 'Could not start download', 'error');
+          hideToastAfter(6000);
           return;
         }
 
-        pollDownloadProgress(button, result.data.operationId);
+        pollDownloadProgress(result.data.operationId);
       })
       .catch(function () {
-        button.setAttribute('data-state', 'error');
-        button.querySelector('span').textContent = 'Failed';
+        showToast('Could not start download', 'error');
+        hideToastAfter(6000);
       });
   }
 
@@ -290,7 +343,7 @@
   // PluginConfiguration.HiddenFederatedItemIds for the backend half.
   function startHide(button, itemId) {
     button.setAttribute('data-state', 'busy');
-    button.querySelector('span').textContent = 'Hiding...';
+    button.querySelector('.federation-badge-label').textContent = 'Hiding...';
 
     var token = getToken();
     fetch('/Plugins/Federation/HiddenItems/Hide', {
@@ -303,13 +356,13 @@
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.success) {
           button.setAttribute('data-state', 'error');
-          button.querySelector('span').textContent = 'Failed';
+          button.querySelector('.federation-badge-label').textContent = 'Failed';
           button.title = (result.data && result.data.message) || 'Could not hide this item';
           return;
         }
 
         button.setAttribute('data-state', 'done');
-        button.querySelector('span').textContent = 'Hidden';
+        button.querySelector('.federation-badge-label').textContent = 'Hidden';
 
         // The server already deleted the local item, so this page has
         // nothing left to show - stepping back is the same recovery the
@@ -324,7 +377,7 @@
       })
       .catch(function () {
         button.setAttribute('data-state', 'error');
-        button.querySelector('span').textContent = 'Failed';
+        button.querySelector('.federation-badge-label').textContent = 'Failed';
       });
   }
 
@@ -342,27 +395,21 @@
 
     var srv = federatedIds.get(id);
     var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
+    // Only the "streamed from" fact and the (destructive, local-only) Hide
+    // action live next to the title - Download moved into the native "more
+    // actions" (⋮) menu (see injectDownloadMenuItem below) since a big pill
+    // fighting a stylized show-logo title for space read as broken, not as
+    // an action bar.
     var pill = '<span class="federation-badge-pill" title="' + label.replace(/"/g, '&quot;') + '">'
       + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>'
-      + '<span class="federation-badge-download" data-state="idle" title="Save a local copy on this server">'
-      + '<span class="federation-badge-icon">' + DOWNLOAD_ICON_SVG + '</span><span>Download to server</span></span>'
       + '<span class="federation-badge-hide" data-state="idle" title="Hide this item from your local library (does not affect the friend sharing it)">'
-      + '<span class="federation-badge-icon">' + HIDE_ICON_SVG + '</span><span>Hide</span></span>';
+      + '<span class="federation-badge-icon">' + HIDE_ICON_SVG + '</span><span class="federation-badge-label">Hide</span></span>';
 
     var selectors = ['.nameContainer bdi', '.itemName-primary bdi', '.detailPagePrimaryContainer h1 bdi', 'h1 bdi'];
     for (var i = 0; i < selectors.length; i++) {
       var title = document.querySelector(selectors[i]);
       if (title && !title.querySelector('.federation-badge-pill')) {
         title.insertAdjacentHTML('afterbegin', pill);
-        var downloadBtn = title.querySelector('.federation-badge-download');
-        if (downloadBtn) {
-          downloadBtn.addEventListener('click', function () {
-            if (this.getAttribute('data-state') === 'idle') {
-              startDownload(this, rawId);
-            }
-          });
-        }
-
         var hideBtn = title.querySelector('.federation-badge-hide');
         if (hideBtn) {
           hideBtn.addEventListener('click', function () {
@@ -374,6 +421,127 @@
 
         return;
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Download-to-server menu item
+  //
+  // Injected into jellyfin-web's own "more actions" (⋮) menu on the detail
+  // page instead of a standalone pill, so it reads as one more action among
+  // Edit metadata/Refresh metadata/etc. rather than fighting the title for
+  // space. There is no jellyfin-web checkout to verify exact markup against
+  // (see the same caveat on the origin filter below), so rather than
+  // guessing class names, this clones a real menu item already in the open
+  // menu - its look (icon layout, hover/focus states, spacing) is copied
+  // exactly because it IS the real thing, just with the icon and label
+  // swapped, so it inherits whatever theme is active for free.
+  function findActionMenu() {
+    var candidates = document.querySelectorAll('[role="menu"], .actionsheet-not-fullscreen, .actionSheetScroller, .actionsheetScroller');
+    for (var i = 0; i < candidates.length; i++) {
+      // "Edit metadata"/"Refresh metadata" only appear in the detail page's
+      // own item context menu - this is what tells an ordinary "⋮" popup on
+      // some other page apart from the one we want to inject into.
+      if (/edit metadata|refresh metadata/i.test(candidates[i].textContent || '')) {
+        return candidates[i];
+      }
+    }
+
+    return null;
+  }
+
+  // Finds the element inside a cloned menu item that actually carries the
+  // visible label text, whatever tag jellyfin-web/MUI happens to use for it
+  // (span, p, div...) - the element with the most direct text of any
+  // descendant, found structurally rather than by a guessed class name.
+  function findDeepestTextElement(root) {
+    var best = null;
+    var bestLen = 0;
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var node = all[i];
+      var text = '';
+      for (var j = 0; j < node.childNodes.length; j++) {
+        if (node.childNodes[j].nodeType === 3) {
+          text += node.childNodes[j].textContent;
+        }
+      }
+
+      text = text.trim();
+      if (text && text.length > bestLen) {
+        best = node;
+        bestLen = text.length;
+      }
+    }
+
+    return best;
+  }
+
+  function closeActionMenu() {
+    // Escape closes both jellyfin-web's legacy actionsheet and a MUI Menu -
+    // simpler and more robust than hunting for a specific close button/
+    // backdrop element to click.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  }
+
+  function injectDownloadMenuItem() {
+    var menu = findActionMenu();
+    if (!menu || menu.querySelector('.federation-menu-download')) {
+      return;
+    }
+
+    var match = location.href.match(/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i);
+    if (!match || !federatedIds.has(normalizeId(match[0]))) {
+      return;
+    }
+
+    var rawId = match[0];
+    var items = menu.querySelectorAll('[role="menuitem"], li, button');
+    var template = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].textContent && items[i].textContent.trim()) {
+        template = items[i];
+        break;
+      }
+    }
+
+    if (!template) {
+      return;
+    }
+
+    try {
+      var clone = template.cloneNode(true);
+      clone.classList.add('federation-menu-download');
+      clone.removeAttribute('id');
+      clone.setAttribute('data-state', 'idle');
+
+      var iconEl = clone.querySelector('svg');
+      if (iconEl) {
+        iconEl.outerHTML = DOWNLOAD_ICON_SVG;
+      }
+
+      var textEl = findDeepestTextElement(clone);
+      if (textEl) {
+        textEl.textContent = 'Download to server';
+        textEl.classList.add('federation-badge-label');
+      }
+
+      clone.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (clone.getAttribute('data-state') !== 'idle') {
+          return;
+        }
+
+        clone.setAttribute('data-state', 'busy');
+        closeActionMenu();
+        startDownload(rawId);
+      }, true);
+
+      menu.appendChild(clone);
+    } catch (e) {
+      // Best-effort: a jellyfin-web markup change that breaks this should
+      // never take the rest of the badge script down with it.
     }
   }
 
@@ -396,8 +564,8 @@
   // reasoning that makes the corner/pill badges DOM overlays rather than a
   // jellyfin "tag".
   var FILTER_STORAGE_KEY = 'federationOriginFilter.hidden';
-  var LOCAL_ORIGIN_KEY = ' federation-local';
-  var UNKNOWN_ORIGIN_KEY = ' federation-unknown';
+  var LOCAL_ORIGIN_KEY = '\u0000federation-local';
+  var UNKNOWN_ORIGIN_KEY = '\u0000federation-unknown';
   var LOCAL_ORIGIN_LABEL = 'This server (local)';
   var UNKNOWN_ORIGIN_LABEL = 'Unknown server';
 
@@ -596,6 +764,7 @@
     injectStyle();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
+    injectDownloadMenuItem();
     ensureFilterControl();
     applyFilters();
     updateFilterControlVisibility();
