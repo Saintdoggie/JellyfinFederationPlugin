@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.57",
+        "changelog": "Added the ability to cancel a download in progress: click the \"Download to server\" pill again while it's downloading (it now shows a percentage and \"click to cancel\") to stop it - the partially-written file is deleted and the connection to the friend's server is closed immediately, rather than letting it run to completion in the background with no way to stop it. This also fixes a real gap: the download job previously ignored its cancellation token entirely, so there was no way to interrupt one even server-side.\n\nA failed or cancelled download now leaves the pill clickable again right away (labeled \"Failed - retry?\") instead of stuck in a dead-end state, so retrying doesn't require leaving and reopening the item's page.\n\nAlso, for anyone wondering: downloads already go directly from your friend's server to yours over a plain authenticated HTTP request - no relay, no third party, no cloud service in between. This release doesn't change that, just adds a way to stop one partway through.\n\n196 tests (up from 194).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.57/Jellyfin.Federation.zip",
+        "checksum": "c845c798fbbe20ef0372328b792f6393",
+        "timestamp": "2026-08-18T00:00:00Z"
+      },
+      {
         "version": "0.0.56",
         "changelog": "Reverted last release's attempt to move \"Download to server\" into jellyfin-web's own \"more actions\" (⋮) menu - cloning into that live popup ended up removing the rest of its options (Edit metadata, Edit images, Identify, etc.) for some users, which is a much worse outcome than a pill that just looked a little crowded. The native menu is untouched again.\n\nRemoved the floating \"Origin filter\" control entirely, per feedback that it wasn't wanted.\n\nDownload to server is back as its own pill next to Streamed-from/Hide, but redesigned to stop colliding with the title: it now renders on its own row directly below the title instead of jammed inline before it, so a stylized show-logo title has room and the pills read as a small action bar underneath rather than fighting the title for space.\n\nFixed download progress disappearing on refresh: the in-progress state is now saved (which item, which operation) so reloading the page - or coming back to the item later - resumes polling and restores the pill/toast instead of leaving no indication a download was ever running.\n\n194 tests (unchanged - this release is client-script only, no server-side logic changed).",
         "targetAbi": "10.11.0.0",
