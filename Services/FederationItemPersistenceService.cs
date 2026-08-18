@@ -472,6 +472,15 @@ namespace Jellyfin.Plugin.Federation.Services
                         changed = true;
                     }
 
+                    // One-time backfill for items created before real stream data was
+                    // tracked (see FederationLibraryManager.TryPersistMediaStreams) -
+                    // only when the item doesn't have any yet, so this doesn't re-save
+                    // on every single sync once it's already been backfilled.
+                    if (x.Item.GetMediaStreams().Count == 0)
+                    {
+                        _federationManager.TryPersistMediaStreams(x.Item, entry);
+                    }
+
                     // Only when no source has an enabled home does the title genuinely
                     // have nowhere to play from. Clearing the path leaves Jellyfin with
                     // a placeholder source and no Play button, which is the intended
