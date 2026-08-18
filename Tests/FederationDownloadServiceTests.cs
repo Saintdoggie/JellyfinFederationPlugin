@@ -133,4 +133,36 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.Contains("Already downloading", message);
         Assert.Null(operationId);
     }
+
+    [Fact]
+    public void CancelDownload_UnknownOperation_Fails()
+    {
+        var (success, message) = _service.CancelDownload(Guid.NewGuid().ToString());
+
+        Assert.False(success);
+        Assert.Contains("not found", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CancelDownload_KnownOperation_Succeeds()
+    {
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Cancel Me", Container = "mkv" }, 0, "Movie");
+
+        var (started, startMessage, operationId) = _service.StartDownload(itemId.ToString());
+        Assert.True(started, startMessage);
+
+        // The background task may already have finished (no HttpClient set up
+        // for "server-1", so it fails fast) by the time this runs - cancelling
+        // a still-running download and cancelling one that just finished are
+        // both a success from the caller's point of view, just worded
+        // differently, so only the outcome is asserted here.
+        var (success, message) = _service.CancelDownload(operationId!);
+        Assert.True(success, message);
+    }
 }
