@@ -110,28 +110,7 @@
       '.federation-badge-hide[data-state="busy"]{cursor:default;opacity:.85;}',
       '.federation-badge-hide[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
       '.federation-badge-hide[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
-      '.federation-badge-hide .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}',
-      // Theme-adaptive surface tokens, used only by the toast below, which
-      // floats over ordinary page chrome. The corner badge and title/hide/
-      // download pills above are deliberately NOT themed - they overlay
-      // posters/backdrop images, not page background, so there is no "page
-      // theme" to match in the first place; a solid dark chip is the same
-      // reasoning Jellyfin's own played-checkmark and unwatched-count badges
-      // use, and stays legible over any poster regardless of active theme.
-      // The toast, by contrast, sits over the theme's own surface, so it
-      // pulls the theme's own color variables (falling back to the same
-      // dark palette if a theme doesn't define them).
-      ':root{--fed-surface:var(--theme-body-background-color, #161a22);',
-      '--fed-text:var(--theme-body-text-color, var(--primary-text-color, #e4ebf5));',
-      '--fed-accent:var(--theme-primary-color, var(--primary-accent-color, #3c6bb3));}',
-      // Small toast for download progress that stays correct across a page
-      // refresh or navigating away mid-download (see resumeActiveDownloads) -
-      // the pill itself only exists while its item's detail page is open.
-      '.federation-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;',
-      'padding:.6em 1.1em;border-radius:.5em;background:var(--fed-surface);border:1px solid var(--fed-accent);color:var(--fed-text);',
-      'font-size:13px;font-weight:600;box-shadow:0 4px 18px rgba(0,0,0,.5);display:flex;align-items:center;gap:.5em;}',
-      '.federation-toast[data-state="error"]{border-color:#a34a4a;color:#f5cccc;}',
-      '.federation-toast[data-state="done"]{border-color:#3c8a55;color:#c9f0d3;}'
+      '.federation-badge-hide .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -391,31 +370,15 @@
     return null;
   }
 
-  // Single toast element reused across a download's lifetime - shows
-  // progress even when the pill itself isn't on screen (navigated away
-  // mid-download) or hasn't been re-created yet after a refresh.
-  var toastEl = null;
+  // A floating bottom-of-screen toast used to live here for download
+  // progress/completion. Removed per feedback: it read as this script
+  // editing jellyfin-web's own chrome, which wasn't wanted. Progress is
+  // already visible via the pill next to the title, the progress ring on
+  // the cover art, and the Downloads section on the settings page - these
+  // are now no-ops so every existing call site doesn't need to change.
+  function showToast() { /* intentionally no-op - see comment above */ }
 
-  function showToast(text, state) {
-    if (!toastEl) {
-      toastEl = document.createElement('div');
-      toastEl.className = 'federation-toast';
-      document.body.appendChild(toastEl);
-    }
-
-    toastEl.setAttribute('data-state', state || 'busy');
-    toastEl.textContent = text;
-    toastEl.style.display = 'flex';
-  }
-
-  function hideToastAfter(ms) {
-    var el = toastEl;
-    setTimeout(function () {
-      if (el === toastEl) {
-        el.style.display = 'none';
-      }
-    }, ms);
-  }
+  function hideToastAfter() { /* intentionally no-op - see comment above */ }
 
   // Persists in-flight downloads (itemId -> {operationId, itemName,
   // startedAt}) so a page refresh or navigating away mid-download doesn't
