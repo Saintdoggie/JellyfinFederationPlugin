@@ -99,6 +99,7 @@
                 #federationConfigPage .fed-progress-track { margin-top: 0.4em; height: 0.4em; border-radius: 0.3em; background: rgba(128,128,128,0.25); overflow: hidden; }
                 #federationConfigPage .fed-progress-fill { height: 100%; background: var(--theme-primary-color, var(--primary-accent-color, #00a4dc)); transition: width 0.4s ease; }
                 #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.3em 0.8em; font-size: 0.85em; }
+                #federationConfigPage .fed-download-path { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.55; margin-top: 0.15em; }
                 #federationConfigPage .fed-libgroup { margin: 0.9em 0; }
                 #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
                 #federationConfigPage .fed-librow {
@@ -2037,6 +2038,19 @@
                         return (mb >= 0.1 ? mb.toFixed(1) + ' MB/s' : Math.round(bytesPerSecond / 1024) + ' KB/s');
                     }
 
+                    function formatEta(bytesDownloaded, totalBytes, bytesPerSecond) {
+                        if (!bytesPerSecond || bytesPerSecond <= 0 || !totalBytes || totalBytes <= bytesDownloaded) {
+                            return '';
+                        }
+
+                        var secondsLeft = (totalBytes - bytesDownloaded) / bytesPerSecond;
+                        if (secondsLeft < 60) { return Math.ceil(secondsLeft) + 's left'; }
+                        var minutesLeft = secondsLeft / 60;
+                        if (minutesLeft < 60) { return Math.ceil(minutesLeft) + 'm left'; }
+                        var hoursLeft = minutesLeft / 60;
+                        return hoursLeft.toFixed(1) + 'h left';
+                    }
+
                     function renderDownloads(list) {
                         list = list || [];
                         var card = q('#fedDownloadsCard');
@@ -2054,10 +2068,14 @@
                             var pct = Math.round(d.percentComplete || 0);
                             var sizeInfo = d.totalBytes ? (formatBytes(d.bytesDownloaded) + ' / ' + formatBytes(d.totalBytes)) : formatBytes(d.bytesDownloaded);
                             var speed = formatSpeed(d.bytesPerSecond);
+                            var eta = formatEta(d.bytesDownloaded, d.totalBytes, d.bytesPerSecond);
                             var statusLine;
+                            var pathLine = d.destinationPath
+                                ? '<div class="fed-hint fed-download-path" title="' + escapeHtml(d.destinationPath) + '">' + escapeHtml(d.destinationPath) + '</div>'
+                                : '';
                             var cancelBtn = '';
                             if (!d.isComplete) {
-                                statusLine = sizeInfo + (speed ? ' — ' + speed : '') + ' — Downloading…';
+                                statusLine = sizeInfo + (speed ? ' — ' + speed : '') + (eta ? ' — ' + eta : '') + ' — Downloading…';
                                 cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
                             } else if (d.success) {
                                 statusLine = 'Downloaded — ' + formatBytes(d.bytesDownloaded);
@@ -2069,6 +2087,7 @@
                                 '<div class="fed-download-info">' +
                                     '<div class="fed-download-name">' + escapeHtml(d.itemName || 'Item') + '</div>' +
                                     '<div class="fed-hint">' + statusLine + '</div>' +
+                                    pathLine +
                                     (!d.isComplete ? '<div class="fed-progress-track"><div class="fed-progress-fill" style="width:' + pct + '%;"></div></div>' : '') +
                                 '</div>' +
                                 cancelBtn +

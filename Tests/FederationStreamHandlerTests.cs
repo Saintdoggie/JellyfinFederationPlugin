@@ -48,7 +48,7 @@ public class FederationStreamHandlerTests : IDisposable
             NullLogger<FederationLibraryManager>.Instance,
             Moq.Mock.Of<IRemoteServerClientFactory>(),
             cache,
-            bandwidthMonitor);
+            bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance);
         _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl);

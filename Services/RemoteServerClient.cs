@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -110,7 +111,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 var queryParams = new List<string>
                 {
                     "Recursive=true",
-                    "Fields=BasicSyncInfo,Path,MediaSources,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
+                    // MediaStreams here is what lets a materialized item carry real
+                    // codec/resolution/audio info without a live probe at play time -
+                    // see FederationLibraryManager.MaterializeItem's persistence of it.
+                    "Fields=BasicSyncInfo,Path,MediaSources,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
                     "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
                 };
 
@@ -836,6 +840,42 @@ namespace Jellyfin.Plugin.Federation.Services
             if (itemElement.TryGetProperty("Container", out var containerProp) && containerProp.ValueKind == JsonValueKind.String)
             {
                 item.Container = containerProp.GetString();
+            }
+
+            // The single biggest lever for federated playback actually direct-playing
+            // instead of always transcoding: without real per-stream codec/resolution/
+            // audio data, Jellyfin's own client-compatibility check has nothing to
+            // compare against and falls back to EnableRemoteContentProbe - a live
+            // ffprobe/ffmpeg probe against the remote through the WAN link, on every
+            // single play, before anything can start. This is already present in the
+            // same response (Fields=MediaStreams is requested alongside MediaSources
+            // above) - persisting it here (see FederationLibraryManager.MaterializeItem)
+            // removes the probe from the hot path entirely for the common case.
+            if (itemElement.TryGetProperty("MediaStreams", out var streamsProp) && streamsProp.ValueKind == JsonValueKind.Array)
+            {
+                try
+                {
+                    var streams = JsonSerializer.Deserialize<List<MediaStream>>(streamsProp.GetRawText(), JsonOpts);
+                    if (streams != null)
+                    {
+                        foreach (var stream in streams)
+                        {
+                            // Same reasoning as FederationMediaSourceProvider.FetchRemoteSourceAsync:
+                            // the remote's per-stream Path is a path on *its* filesystem,
+                            // meaningless (and needlessly disclosing) here.
+                            stream.Path = null;
+                        }
+
+                        item.MediaStreams = streams.ToArray();
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    // Non-fatal: the item still syncs, just without pre-populated
+                    // stream info - the existing EnableRemoteContentProbe fallback
+                    // still covers it, just slower.
+                    _logger.LogDebug(ex, "[Federation] Could not parse MediaStreams for {ItemName}; playback will fall back to a live probe", item.Name);
+                }
             }
 
             if (itemElement.TryGetProperty("Genres", out var genresProp) && genresProp.ValueKind == JsonValueKind.Array)

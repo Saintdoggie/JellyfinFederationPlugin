@@ -146,6 +146,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
                 var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
                 destinationPath = Path.Combine(downloadsRoot, fileName);
+                DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
                 DownloadProgressTracker.Update(operationId, "Downloading...");
                 var progress = new Progress<(long BytesRead, long? TotalBytes)>(

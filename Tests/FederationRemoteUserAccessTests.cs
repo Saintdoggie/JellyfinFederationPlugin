@@ -190,7 +190,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
         var clientFactory = new Mock<IRemoteServerClientFactory>();
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
-        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor);
+        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
         var userManager = new Mock<IUserManager>();
@@ -370,7 +370,7 @@ public class FederationStreamHandlerAccessControlTests : IDisposable
             NullLogger<FederationLibraryManager>.Instance,
             Moq.Mock.Of<IRemoteServerClientFactory>(),
             cache,
-            bandwidthMonitor);
+            bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance);
         _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl);

@@ -90,6 +90,18 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Records the on-disk path a download is being written to, once the download
+        /// service has resolved it.
+        /// </summary>
+        public static void SetDestinationPath(string operationId, string path)
+        {
+            if (_progress.TryGetValue(operationId, out var progress))
+            {
+                progress.DestinationPath = path;
+            }
+        }
+
+        /// <summary>
         /// Completes a download operation.
         /// </summary>
         public static void Complete(string operationId, bool success, string message)
@@ -169,6 +181,13 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? LocalItemId { get; set; }
 
         public string ItemName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the on-disk destination path this download is being written
+        /// to. Set once the download service resolves it (a moment after Start), so
+        /// null briefly at the very beginning.
+        /// </summary>
+        public string? DestinationPath { get; set; }
 
         public double PercentComplete { get; set; }
 

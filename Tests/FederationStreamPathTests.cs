@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Library;
@@ -35,6 +37,7 @@ public class FederationStreamPathTests : IDisposable
     private readonly FederationItemCache _cache;
     private readonly FederationLibraryManager _manager;
     private readonly WanBandwidthMonitor _bandwidthMonitor;
+    private readonly Mock<MediaBrowser.Controller.Persistence.IMediaStreamRepository> _mediaStreamRepository;
 
     public FederationStreamPathTests()
     {
@@ -55,12 +58,14 @@ public class FederationStreamPathTests : IDisposable
             .Returns((string path, Type type) => new Guid(MD5.HashData(Encoding.UTF8.GetBytes(path + "|" + type.FullName))));
 
         _bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
+        _mediaStreamRepository = new Mock<MediaBrowser.Controller.Persistence.IMediaStreamRepository>();
         _manager = new FederationLibraryManager(
             lm.Object,
             NullLogger<FederationLibraryManager>.Instance,
             Mock.Of<IRemoteServerClientFactory>(),
             _cache,
-            _bandwidthMonitor);
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
     }
 
     public void Dispose() => _plugin.Dispose();
@@ -80,7 +85,7 @@ public class FederationStreamPathTests : IDisposable
         return server;
     }
 
-    private FederatedCacheEntry AddEntry(string itemType, Guid remoteId, string? container = null)
+    private FederatedCacheEntry AddEntry(string itemType, Guid remoteId, string? container = null, MediaStream[]? mediaStreams = null)
     {
         _cache.UpsertRaw(
             "Movies",
@@ -91,7 +96,8 @@ public class FederationStreamPathTests : IDisposable
                 Id = remoteId,
                 Name = "Gran Turismo",
                 Type = Jellyfin.Data.Enums.BaseItemKind.Movie,
-                Container = container
+                Container = container,
+                MediaStreams = mediaStreams
             },
             0,
             itemType);
@@ -403,6 +409,46 @@ public class FederationStreamPathTests : IDisposable
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
         Assert.Contains("VideoBitrate=10000000", liveUrl);
+    }
+
+    [Fact]
+    public void RemoteMediaStreams_ArePersistedOnTheItem_SoPlaybackCanCertifyDirectPlayWithoutALiveProbe()
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off;
+        var remoteId = Guid.NewGuid();
+        var streams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Codec = "h264", Index = 0 },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Index = 1 }
+        };
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId, container: "mp4", mediaStreams: streams));
+
+        _mediaStreamRepository.Verify(
+            r => r.SaveMediaStreams(
+                item.Id,
+                It.Is<IReadOnlyList<MediaStream>>(s => s.Count == 2 && s[0].Codec == "h264" && s[1].Codec == "aac"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public void RemoteMediaStreams_AreNotPersisted_WhenTheUrlServesAWanCappedTranscodeInstead()
+    {
+        // The WAN-capped Direct URL serves a forced h264/aac/mp4 transcode of the
+        // source, not the raw file - saving the remote's real (often richer, e.g. 4K
+        // HEVC) stream data here would describe bytes the URL doesn't actually serve.
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 12;
+        var streams = new[] { new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Index = 0 } };
+
+        _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv", mediaStreams: streams));
+
+        _mediaStreamRepository.Verify(
+            r => r.SaveMediaStreams(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<MediaStream>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]

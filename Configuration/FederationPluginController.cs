@@ -1395,7 +1395,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 success = progress.Success,
                 bytesDownloaded = progress.BytesDownloaded,
                 totalBytes = progress.TotalBytes,
-                bytesPerSecond = progress.BytesPerSecond
+                bytesPerSecond = progress.BytesPerSecond,
+                destinationPath = progress.DestinationPath
             });
         }
 
@@ -1421,6 +1422,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 bytesDownloaded = d.BytesDownloaded,
                 totalBytes = d.TotalBytes,
                 bytesPerSecond = d.BytesPerSecond,
+                destinationPath = d.DestinationPath,
                 startTime = d.StartTime
             });
 
