@@ -88,6 +88,16 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
                 var html = reader.ReadToEnd();
+
+                // No caching headers were set here before, which left it up to each
+                // browser's own heuristics whether a re-visit re-fetched this page or
+                // served a stale copy from its HTTP cache - a real, previously-hit
+                // source of "I shipped a fix but it doesn't look like it's there"
+                // confusion (see WebClientInjector's own permission-bug history).
+                // Explicit no-store removes that ambiguity entirely: this page is
+                // small, admin-only, and always current when reloaded.
+                Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+                Response.Headers.Pragma = "no-cache";
                 return Content(html, "text/html; charset=utf-8");
             }
             catch (Exception ex)
@@ -253,6 +263,13 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
                 var js = reader.ReadToEnd();
+
+                // Same reasoning as GetConfigPage's no-store: this is loaded into
+                // every page of jellyfin-web via a plain <script src> with no
+                // cache-busting query param, so a browser is otherwise free to keep
+                // serving an old cached copy indefinitely after an upgrade.
+                Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+                Response.Headers.Pragma = "no-cache";
                 return Content(js, "application/javascript; charset=utf-8");
             }
             catch (Exception ex)
