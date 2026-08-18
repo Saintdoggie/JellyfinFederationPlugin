@@ -413,13 +413,6 @@ namespace Jellyfin.Plugin.Federation.Services
             if (server.StreamingMode == StreamingMode.Proxy)
             {
                 var localUrl = ResolveLocalServerUrl();
-                if (string.IsNullOrEmpty(localUrl))
-                {
-                    _logger.LogWarning(
-                        "[Federation] Server {Server} is in Proxy mode but no local server URL could be resolved; skipping source",
-                        server.Name);
-                    return null;
-                }
 
                 // The remote api_key stays server-side; clients only see this server.
                 var audioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
@@ -440,31 +433,27 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Resolves the base URL that Jellyfin's own transcoder will fetch the
-        /// proxied stream from. Deliberately prefers loopback: virtually every
+        /// proxied stream from. Always loopback, never <see cref="IFederationManager.GetLocalServerUrl"/>
+        /// (the public URL configured for peer handshakes): virtually every
         /// production setup runs Jellyfin behind a public reverse proxy or VPS
-        /// tunnel, so building the transcoder's ffmpeg input URL from the
-        /// incoming request host (previous behaviour) meant every byte of a
-        /// federated Proxy-mode stream hairpinned out through DNS, the CDN,
-        /// and back through the tunnel just to reach the same Jellyfin process
-        /// that spawned ffmpeg. That's what a 4K stream taking minutes to
-        /// start actually was. Since the URL returned here goes into
-        /// MediaSourceInfo.Path and is only consumed by the server-side
-        /// transcoder (federated Proxy streams are never client-direct-played -
-        /// clients always get HLS from Jellyfin), loopback is both correct
-        /// and dramatically faster than the public route.
+        /// tunnel, so building the transcoder's ffmpeg input URL from the public
+        /// host - or from the incoming request host, the even older behaviour -
+        /// meant every byte of a federated Proxy-mode stream hairpinned out
+        /// through DNS, the CDN, and back through the tunnel just to reach the
+        /// same Jellyfin process that spawned ffmpeg. That's what a 4K stream
+        /// taking minutes to start actually was, and it hit anyone with a
+        /// ServerUrl configured - which peer handshakes require, so effectively
+        /// everyone. Since the URL returned here goes into MediaSourceInfo.Path
+        /// and is only consumed by the server-side transcoder (federated Proxy
+        /// streams are never client-direct-played - clients always get HLS from
+        /// Jellyfin), loopback is both correct and dramatically faster than any
+        /// public route, with no override needed.
         ///
-        /// Order: explicit config override wins; otherwise loopback on the
-        /// port Kestrel accepted this very request on (so a non-default port
-        /// stays right); otherwise loopback on Jellyfin's default 8096.
+        /// Uses the port Kestrel accepted this very request on (so a non-default
+        /// port stays right) when available, otherwise Jellyfin's default 8096.
         /// </summary>
         private string ResolveLocalServerUrl()
         {
-            var configured = _federationManager.GetLocalServerUrl();
-            if (!string.IsNullOrEmpty(configured))
-            {
-                return configured;
-            }
-
             var context = _httpContextAccessor.HttpContext;
             var localPort = context?.Connection?.LocalPort;
             var port = localPort.HasValue && localPort.Value > 0 ? localPort.Value : 8096;
