@@ -315,6 +315,24 @@ namespace Jellyfin.Plugin.Federation.Services
                         SupportsProbing = true,
                         RequiresOpening = false,
                         RequiresClosing = false,
+
+                        // Without this, Jellyfin's transcoder defaults for an HTTP input
+                        // are -analyzeduration 200M -probesize 1G (see log:
+                        // "FFmpeg.DirectStream" command line). At a 15 Mbps 4K source
+                        // that had ffmpeg pulling ~370 MB through this proxy before it
+                        // would even start writing HLS segments - which is what "click
+                        // play, waits 5 minutes" actually is. We already have the
+                        // remote's authoritative stream list (see MediaStreams above),
+                        // so re-probing hundreds of megabytes of body just to rediscover
+                        // what we already told the transcoder is pure loss. 500 ms is
+                        // plenty for ffmpeg to sync on a keyframe when it has stream
+                        // info already, and drops startup from minutes to seconds.
+                        // When the remote didn't hand back streams (SupportsProbing
+                        // fallback path above) ffmpeg still succeeds - 500 ms is short
+                        // for probing an unknown file, but ffmpeg won't hard-fail on it,
+                        // and the alternative is the current five-minute wait.
+                        AnalyzeDurationMs = remote != null && remote.MediaStreams != null && remote.MediaStreams.Count > 0 ? 500 : (int?)null,
+
                         RunTimeTicks = remote?.RunTimeTicks ?? entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,
                         Type = i == primaryIndex ? MediaSourceType.Default : MediaSourceType.Grouping
                     });

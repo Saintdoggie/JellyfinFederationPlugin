@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.63",
-  "changelog": "Removed the floating download-progress toast that appeared at the bottom of the screen on every page - it read as this plugin editing jellyfin-web's own chrome, which wasn't the goal. Download progress is still visible everywhere it matters: the pill next to the title and the progress ring drawn on the cover art (both on the item's own page), and the Downloads section on the Federation settings page.\n\n198 tests (unchanged).",
+  "version": "0.0.64",
+  "changelog": "Fixed federated playback taking minutes to start. Jellyfin defaulted -analyzeduration 200M / -probesize 1G on the HTTP proxy stream, so ffmpeg pulled hundreds of megabytes through the tunnel before it would begin writing HLS segments even though the remote already told us every stream in the file. Setting AnalyzeDurationMs on the federated MediaSourceInfo drops that to a bounded probe when we have authoritative stream info in hand, cutting click-to-first-frame from minutes to seconds. Playback itself was already fine once started - only startup is affected.\n\nRedesigned the federated-item badges. The cloud glyph is now filled instead of an outline-with-up-arrow (which read like an upload icon), the source/download/hide chips size in real pixels instead of at .5em relative to the H1 title (which came out as tiny cramped ovals hanging off the page), and they now use the active Jellyfin theme accent color and typographic scale so they read as part of the page instead of pasted onto it. Adds a light-theme override so the outlined chip does not disappear on a white background.\n\n198 tests (unchanged).",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-18T00:00:00Z",
   "imageUrl": "thumb.png"
