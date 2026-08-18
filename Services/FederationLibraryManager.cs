@@ -490,6 +490,45 @@ namespace Jellyfin.Plugin.Federation.Services
             return itemType is "Movie" or "Episode" or "Video" or "MusicVideo" or "Audio";
         }
 
+        /// <summary>
+        /// Backfills real per-stream codec/resolution/audio data onto an item that
+        /// already exists (created before this was tracked, or synced before the
+        /// remote reported any) - the reconciliation loop's equivalent of the save in
+        /// <see cref="MaterializeItem"/>, for items that path doesn't run for since
+        /// they already exist. Same WAN-capped-Direct exclusion as MaterializeItem:
+        /// that URL serves a forced transcode of the source, not the raw file, so the
+        /// remote's real stream data would describe bytes the URL doesn't serve.
+        /// Returns true when it actually saved anything.
+        /// </summary>
+        public bool TryPersistMediaStreams(BaseItem item, FederatedCacheEntry entry)
+        {
+            if (entry.Metadata.MediaStreams is not { Length: > 0 } streams)
+            {
+                return false;
+            }
+
+            var primary = entry.GetPrimarySource();
+            var isWanCappedVideo = primary != null
+                && !IsAudioType(entry.ItemType)
+                && GetServer(primary.ServerId) is { StreamingMode: StreamingMode.Direct } capServer
+                && _bandwidthMonitor.GetEffectiveCapMbps(capServer) != null;
+            if (isWanCappedVideo)
+            {
+                return false;
+            }
+
+            try
+            {
+                _mediaStreamRepository.SaveMediaStreams(item.Id, streams, CancellationToken.None);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not backfill media streams for {Name}", item.Name);
+                return false;
+            }
+        }
+
         private static bool IsAudioType(string itemType) => itemType is "Audio";
 
         /// <summary>
