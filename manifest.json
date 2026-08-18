@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.61",
+        "changelog": "Backfills last release's MediaStreams fix onto items that already existed before it: previously only newly-synced items got real codec/resolution/audio data saved (existing items only ever had their stream URL and duration refreshed, not this), so anything already in your library would have kept probing/transcoding until it happened to be deleted and recreated. Reconciliation now does a one-time backfill for any federated item that doesn't have stream data yet - no full resync or re-add needed, it self-heals on the next scheduled sync.\n\n198 tests (unchanged).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.61/Jellyfin.Federation.zip",
+        "checksum": "60d938d013ee22b86fa800b8963bf44d",
+        "timestamp": "2026-08-18T00:00:00Z"
+      },
+      {
         "version": "0.0.60",
         "changelog": "Fixed the real cause of federated playback taking a long time to start. The remote's real per-stream data (video/audio codecs, resolution, channels) was never being saved on the local item - only the container - so Jellyfin's own compatibility check had nothing to compare against and fell back to a live probe through the proxy on every single play before anything could start, then very often transcoded even when the file would have played back directly. The sync now requests and saves the remote's real stream data (already available in the same response, no extra network calls needed), so Jellyfin can certify direct play immediately in the common case instead of probing over the WAN link first. Confirmed against this server's own logs: previously every federated title was being remuxed through ffmpeg before playback could begin, including files whose video and audio were already fully compatible.\n\nThe Downloads section now also shows the destination file path and an estimated time remaining for each active download, alongside the existing size/speed/progress bar.\n\n198 tests (up from 196).",
         "targetAbi": "10.11.0.0",
