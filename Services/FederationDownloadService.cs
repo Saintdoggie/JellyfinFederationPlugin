@@ -147,8 +147,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
                 destinationPath = Path.Combine(downloadsRoot, fileName);
 
-                DownloadProgressTracker.Update(operationId, 0, "Downloading...");
-                var progress = new Progress<double>(pct => DownloadProgressTracker.Update(operationId, pct, "Downloading..."));
+                DownloadProgressTracker.Update(operationId, "Downloading...");
+                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
+                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
 
                 await client.DownloadToFileAsync(source.RemoteItemId.ToString(), destinationPath, progress, cancellationToken).ConfigureAwait(false);
 
