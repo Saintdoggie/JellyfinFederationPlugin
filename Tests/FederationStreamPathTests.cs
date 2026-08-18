@@ -144,7 +144,7 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_ProxyMode_PointsAtThisServersOwnProxyEndpoint_AndIsNotMarkedAShortcut()
+    public void Movie_ProxyMode_PointsAtThisServersOwnLoopbackProxyEndpoint_AndIsNotMarkedAShortcut()
     {
         AddServer(StreamingMode.Proxy);
         _plugin.Configuration.ServerUrl = "https://my-server.example";
@@ -152,8 +152,12 @@ public class FederationStreamPathTests : IDisposable
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
+        // Proxy-mode streams are fetched by this server's own transcoder, never by a
+        // client directly, so the URL stamped here deliberately stays on loopback
+        // rather than the public ServerUrl - going out through a public host/VPS
+        // tunnel and back in to reach the same process is pure wasted latency.
         Assert.Equal(
-            $"https://my-server.example/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
             item.Path);
 
         // The remote api_key must never reach a client in Proxy mode.
@@ -165,18 +169,20 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_ProxyModeWithNoConfiguredServerUrl_DegradesToNoPath_RatherThanABrokenOne()
+    public void Movie_ProxyModeWithNoConfiguredServerUrl_StillGetsALoopbackPath()
     {
         AddServer(StreamingMode.Proxy);
         _plugin.Configuration.ServerUrl = string.Empty;
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
-        // A background sync has no incoming request to infer this server's own URL
-        // from. Emitting a relative or guessed URL would be worse than leaving the
-        // media source provider to supply a source at playback time, where an HTTP
-        // context does exist.
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // The internal transcoder-facing URL never depended on the public ServerUrl
+        // being configured, so an unconfigured ServerUrl (which still blocks peer
+        // handshakes) should no longer block Proxy playback from working.
+        Assert.Equal(
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            item.Path);
     }
 
     [Fact]

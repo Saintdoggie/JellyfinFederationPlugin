@@ -442,13 +442,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (server.StreamingMode == StreamingMode.Proxy)
             {
-                var localUrl = GetLocalServerUrl();
-                if (string.IsNullOrEmpty(localUrl))
-                {
-                    return null;
-                }
-
-                // The remote api_key stays server-side; clients only ever see this server.
+                // Loopback, not GetLocalServerUrl() (which is the public URL used
+                // for peer/federation handshakes). This URL is only ever fetched
+                // by the server-side transcoder: federated Proxy streams are
+                // fundamentally re-transcoded on this server before HLS is sent
+                // to the client, so clients never contact this URL directly.
+                // Using the public URL here meant every byte of a Proxy stream
+                // went out through DNS/CDN/tunnel and back to the same Jellyfin
+                // process - which on a VPS-fronted setup (i.e. essentially every
+                // production setup) is what turned 4K playback startup into
+                // minutes-long waits. Loopback stays inside the container.
+                var localUrl = GetInternalPlaybackBaseUrl();
                 var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
                 return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
             }
@@ -532,7 +536,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private static bool IsAudioType(string itemType) => itemType is "Audio";
 
         /// <summary>
-        /// Gets the configured local server URL (auto-detected or overridden).
+        /// Gets the public URL this server advertises to peers (federation
+        /// handshakes, peer callbacks). Returns config.ServerUrl or empty when
+        /// the admin has not set one - never a made-up loopback address, since
+        /// a peer cannot reach that.
         /// </summary>
         public string GetLocalServerUrl()
         {
@@ -543,6 +550,29 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return string.Empty;
+        }
+
+        /// <summary>
+        /// Base URL the server-side transcoder uses when fetching a Proxy-mode
+        /// federated stream from itself. Deliberately loopback and NOT the
+        /// public URL from <see cref="GetLocalServerUrl"/>: on a tunnel/VPS
+        /// setup (which is the common case), routing through the public host
+        /// makes every byte round-trip out through DNS/CDN/tunnel and back to
+        /// the same process, adding several seconds of latency and the full
+        /// tunnel RTT to playback startup. Clients never see this URL - it is
+        /// only consumed by the local ffmpeg process running inside the same
+        /// Jellyfin instance, which reaches itself fastest over loopback.
+        ///
+        /// Port is hardcoded to Jellyfin's default 8096 rather than detected, unlike
+        /// FederationMediaSourceProvider's equivalent: this runs during background
+        /// library sync, outside any HTTP request, so there is no live connection to
+        /// read an actual listening port from. Only relevant for the uncommon case of
+        /// a non-default Kestrel port, in which case the media source provider's
+        /// per-request URL (built at actual playback time) still wins.
+        /// </summary>
+        public string GetInternalPlaybackBaseUrl()
+        {
+            return "http://127.0.0.1:8096";
         }
 
         /// <summary>
