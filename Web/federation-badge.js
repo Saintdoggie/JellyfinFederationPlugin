@@ -75,15 +75,19 @@
       '.federation-badge-icon svg{width:100%;height:100%;display:block;}',
 
       // Corner overlay for gallery/grid cards. Top-left, since Jellyfin's own
-      // played-checkmark and unwatched-count badges live top-right/bottom-right.
-      // Uses the theme accent (falls back to a soft blue) - visible against
-      // arbitrary poster art without needing a translucent-black plate.
-      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;',
-      'background:var(--theme-primary-color,#00a4dc);color:#fff;',
+      // played-checkmark and unwatched-count badges (which use the theme
+      // accent color) live top-right/bottom-right. Deliberately NOT the theme
+      // accent - a matching-color blue disc top-left read as another "state"
+      // badge like the played checkmark rather than "info about where this
+      // item comes from". Dark chip with a light cloud is neutral, always
+      // legible over any poster art, and doesn't compete visually with
+      // Jellyfin's own colored state badges.
+      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:6px;',
+      'background:rgba(0,0,0,.72);color:#fff;',
       'display:flex;align-items:center;justify-content:center;',
       'z-index:3;pointer-events:none;',
       'box-shadow:0 1px 3px rgba(0,0,0,.55);}',
-      '.federation-badge-corner svg{width:13px;height:13px;}',
+      '.federation-badge-corner svg{width:13px;height:13px;opacity:.95;}',
 
       // Progress ring shown centered over a card/poster while an item is
       // actively being downloaded. Keeps its own dark backing plate since it

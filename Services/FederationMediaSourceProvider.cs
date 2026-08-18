@@ -316,23 +316,6 @@ namespace Jellyfin.Plugin.Federation.Services
                         RequiresOpening = false,
                         RequiresClosing = false,
 
-                        // Without this, Jellyfin's transcoder defaults for an HTTP input
-                        // are -analyzeduration 200M -probesize 1G (see log:
-                        // "FFmpeg.DirectStream" command line). At a 15 Mbps 4K source
-                        // that had ffmpeg pulling ~370 MB through this proxy before it
-                        // would even start writing HLS segments - which is what "click
-                        // play, waits 5 minutes" actually is. We already have the
-                        // remote's authoritative stream list (see MediaStreams above),
-                        // so re-probing hundreds of megabytes of body just to rediscover
-                        // what we already told the transcoder is pure loss. 500 ms is
-                        // plenty for ffmpeg to sync on a keyframe when it has stream
-                        // info already, and drops startup from minutes to seconds.
-                        // When the remote didn't hand back streams (SupportsProbing
-                        // fallback path above) ffmpeg still succeeds - 500 ms is short
-                        // for probing an unknown file, but ffmpeg won't hard-fail on it,
-                        // and the alternative is the current five-minute wait.
-                        AnalyzeDurationMs = remote != null && remote.MediaStreams != null && remote.MediaStreams.Count > 0 ? 500 : (int?)null,
-
                         RunTimeTicks = remote?.RunTimeTicks ?? entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,
                         Type = i == primaryIndex ? MediaSourceType.Default : MediaSourceType.Grouping
                     });
@@ -456,10 +439,23 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Resolves this server's public URL: an explicit override from config
-        /// when set, otherwise derived from the current incoming HTTP request
-        /// (PlaybackInfo is always an authenticated HTTP request), so it works
-        /// behind reverse proxies without manual configuration.
+        /// Resolves the base URL that Jellyfin's own transcoder will fetch the
+        /// proxied stream from. Deliberately prefers loopback: virtually every
+        /// production setup runs Jellyfin behind a public reverse proxy or VPS
+        /// tunnel, so building the transcoder's ffmpeg input URL from the
+        /// incoming request host (previous behaviour) meant every byte of a
+        /// federated Proxy-mode stream hairpinned out through DNS, the CDN,
+        /// and back through the tunnel just to reach the same Jellyfin process
+        /// that spawned ffmpeg. That's what a 4K stream taking minutes to
+        /// start actually was. Since the URL returned here goes into
+        /// MediaSourceInfo.Path and is only consumed by the server-side
+        /// transcoder (federated Proxy streams are never client-direct-played -
+        /// clients always get HLS from Jellyfin), loopback is both correct
+        /// and dramatically faster than the public route.
+        ///
+        /// Order: explicit config override wins; otherwise loopback on the
+        /// port Kestrel accepted this very request on (so a non-default port
+        /// stays right); otherwise loopback on Jellyfin's default 8096.
         /// </summary>
         private string ResolveLocalServerUrl()
         {
@@ -470,22 +466,9 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var context = _httpContextAccessor.HttpContext;
-            var request = context?.Request;
-            if (request == null)
-            {
-                return string.Empty;
-            }
-
-            var scheme = request.Scheme;
-            // Honour X-Forwarded-Proto when present (common behind reverse proxies).
-            var forwardedProto = request.Headers["X-Forwarded-Proto"].FirstOrDefault();
-            if (!string.IsNullOrEmpty(forwardedProto)
-                && (forwardedProto == Uri.UriSchemeHttp || forwardedProto == Uri.UriSchemeHttps))
-            {
-                scheme = forwardedProto;
-            }
-
-            return $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
+            var localPort = context?.Connection?.LocalPort;
+            var port = localPort.HasValue && localPort.Value > 0 ? localPort.Value : 8096;
+            return $"http://127.0.0.1:{port}";
         }
     }
 }
