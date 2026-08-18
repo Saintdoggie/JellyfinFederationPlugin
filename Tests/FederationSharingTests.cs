@@ -49,7 +49,7 @@ public class FederationSharingTests : IDisposable
         var clientFactory = new Mock<IRemoteServerClientFactory>();
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
-        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor);
+        var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
         _userManager = new Mock<IUserManager>();

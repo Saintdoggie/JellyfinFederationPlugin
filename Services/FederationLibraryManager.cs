@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
@@ -8,6 +9,8 @@ using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Persistence;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -24,6 +27,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
+        private readonly IMediaStreamRepository _mediaStreamRepository;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationLibraryManager"/> class.
@@ -33,13 +37,15 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationLibraryManager> logger,
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache,
-            WanBandwidthMonitor bandwidthMonitor)
+            WanBandwidthMonitor bandwidthMonitor,
+            IMediaStreamRepository mediaStreamRepository)
         {
             _libraryManager = libraryManager;
             _logger = logger;
             _clientFactory = clientFactory;
             _cache = cache;
             _bandwidthMonitor = bandwidthMonitor;
+            _mediaStreamRepository = mediaStreamRepository;
         }
 
         /// <summary>
@@ -130,10 +136,11 @@ namespace Jellyfin.Plugin.Federation.Services
             // file's real container. Stamping the raw container in that case would
             // mismatch what the URL actually serves, so it must still be checked here
             // even though streamUrl itself is no longer null for that case.
+            var isWanCappedVideo = false;
             if (streamUrl != null)
             {
                 var primaryForContainer = entry.GetPrimarySource();
-                var isWanCappedVideo = primaryForContainer != null
+                isWanCappedVideo = primaryForContainer != null
                     && !IsAudioType(entry.ItemType)
                     && GetServer(primaryForContainer.ServerId) is { StreamingMode: StreamingMode.Direct } capServer
                     && _bandwidthMonitor.GetEffectiveCapMbps(capServer) != null;
@@ -270,6 +277,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // Stable local id derived from cache key so the same virtual item survives refreshes.
             item.Id = _libraryManager.GetNewItemId(entry.FederationPath, item.GetType());
+
+            // Not saved for the WAN-capped-Direct case above: that URL serves a
+            // forced h264/aac/mp4 transcode of the source, not the raw file, so the
+            // remote's real (often much richer, e.g. 4K HEVC) stream data would
+            // describe bytes the URL doesn't actually serve. Falling back to
+            // EnableRemoteContentProbe there still works, it just costs the probe
+            // this is otherwise trying to avoid - an acceptable tradeoff for a
+            // narrower, already-slower-by-design path. Must run after item.Id is
+            // assigned above, since that's the key this is saved under.
+            if (!isWanCappedVideo && entry.Metadata.MediaStreams is { Length: > 0 } streams)
+            {
+                try
+                {
+                    _mediaStreamRepository.SaveMediaStreams(item.Id, streams, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not save media streams for {Name}; playback will fall back to a live probe", item.Name);
+                }
+            }
 
             // Explicit rather than relying on BaseItem's lazy default (Id.ToString("N"))
             // - Series.CreatePresentationUniqueKey() can diverge from that default when

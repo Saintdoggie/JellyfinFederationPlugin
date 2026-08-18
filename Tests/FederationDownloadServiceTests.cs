@@ -36,7 +36,7 @@ public class FederationDownloadServiceTests : IDisposable
         var clientFactory = new Mock<IRemoteServerClientFactory>();
         _cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
-        _federationManager = new FederationLibraryManager(_libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, _cache, bandwidthMonitor);
+        _federationManager = new FederationLibraryManager(_libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, _cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         _service = new FederationDownloadService(_libraryManager.Object, _federationManager, NullLogger<FederationDownloadService>.Instance);
     }

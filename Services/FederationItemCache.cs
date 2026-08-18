@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -633,6 +634,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
                 Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
                 Metadata.Container = remoteItem.Container ?? Metadata.Container;
+                Metadata.MediaStreams = remoteItem.MediaStreams ?? Metadata.MediaStreams;
                 Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
                 Metadata.IndexNumber = remoteItem.IndexNumber ?? Metadata.IndexNumber;
                 Metadata.ParentIndexNumber = remoteItem.ParentIndexNumber ?? Metadata.ParentIndexNumber;
@@ -720,6 +722,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// without first probing the remote URL.
         /// </summary>
         public string? Container { get; set; }
+
+        /// <summary>
+        /// Gets or sets the remote's real per-stream codec/resolution/audio/subtitle
+        /// data (video/audio/subtitle tracks), stamped onto the materialized item so
+        /// Jellyfin's own client-compatibility check can certify direct play without
+        /// falling back to a live probe over the WAN link on every play - see
+        /// FederationLibraryManager.MaterializeItem.
+        /// </summary>
+        public MediaStream[]? MediaStreams { get; set; }
 
         public string? SeriesName { get; set; }
 
