@@ -426,9 +426,28 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Builds the URL a federated item's media actually streams from, or null
-        /// when it can't be built (server gone/disabled, or Proxy mode with no
-        /// configured public URL - sync runs on a background task with no incoming
-        /// HTTP request to infer one from).
+        /// when it can't be built: server gone/disabled, Proxy mode with no
+        /// configured public URL (sync runs on a background task with no incoming
+        /// HTTP request to infer one from) - or, always, Direct mode.
+        /// <para>
+        /// Direct mode used to return a URL with the remote server's real,
+        /// long-lived api_key embedded directly in the query string. That URL was
+        /// then stamped onto the item's own static Path (see
+        /// <see cref="ResolvePlaybackUrl"/>/<see cref="MaterializeItem"/>) and handed
+        /// straight to the browser client for every play - meaning any logged-in
+        /// user on this server, not just its admin, could read the friend's real key
+        /// out of dev tools/network tab and use it directly against the friend's
+        /// server, far beyond what a single stream should have granted them. Direct
+        /// mode now always returns null here: there is no working, credential-
+        /// bearing URL to persist at sync time any more. The real, short-lived,
+        /// single-item-scoped playback URL is instead built live, per request, by
+        /// <see cref="FederationMediaSourceProvider.GetMediaSources"/> - minting a
+        /// fresh <c>FederationPlaybackTokenService</c> token from the remote server
+        /// for exactly the item being played, valid for a bounded window, useless
+        /// for anything else. This mirrors the Proxy branch's existing "no
+        /// configured public URL degrades to no path rather than a broken one"
+        /// pattern - same shape, now also true for Direct, for a different reason.
+        /// </para>
         /// </summary>
         /// <param name="itemType">Cache entry item type, e.g. "Movie" or "Audio".</param>
         /// <param name="src">The remote source to stream from.</param>
@@ -457,31 +476,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
             }
 
-            // Audio streams from a different endpoint than video; asking /Videos for a
-            // song does not reliably work.
-            var endpoint = IsAudioType(itemType) ? "Audio" : "Videos";
-            var baseUrl = $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream";
-            var apiKeyParam = $"api_key={Uri.EscapeDataString(server.ApiKey)}";
-
-            // A cap never applies to audio (already a fraction of any sensible video
-            // cap). For video, WanBandwidthMonitor decides: direct play (the original,
-            // and still default, behavior) whenever it can - same network, unknown, or
-            // a WAN link that measured generously fast - and only a real number once
-            // it has positively confirmed both that the link is WAN-only *and* what it
-            // can actually sustain.
-            var capMbps = IsAudioType(itemType) ? null : _bandwidthMonitor.GetEffectiveCapMbps(server);
-            if (capMbps == null)
-            {
-                return $"{baseUrl}?{apiKeyParam}&Static=true";
-            }
-
-            // Have the remote transcode down to the largest bitrate this link can
-            // sustain before this server ever pulls a byte, instead of pulling the raw
-            // (potentially 25+ Mbps for a 4K HDR release) source file across the
-            // internet only to immediately re-encode it.
-            var videoBitrateBps = capMbps.Value * 1_000_000L;
-            var heightParam = server.WanMaxHeight > 0 ? $"&MaxHeight={server.WanMaxHeight}" : string.Empty;
-            return $"{baseUrl}.mp4?{apiKeyParam}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
+            // Direct mode: see the security rationale on this method's own doc
+            // comment above. No URL is built (or persisted) here any more; a
+            // per-request, single-item, short-lived token URL is built live instead
+            // by FederationMediaSourceProvider.BuildPlaybackPathAsync.
+            return null;
         }
 
         /// <summary>
@@ -554,8 +553,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Base URL the server-side transcoder uses when fetching a Proxy-mode
-        /// federated stream from itself. Deliberately loopback and NOT the
-        /// public URL from <see cref="GetLocalServerUrl"/>: on a tunnel/VPS
+        /// federated stream from itself. Deliberately loopback by default and NOT
+        /// the public URL from <see cref="GetLocalServerUrl"/>: on a tunnel/VPS
         /// setup (which is the common case), routing through the public host
         /// makes every byte round-trip out through DNS/CDN/tunnel and back to
         /// the same process, adding several seconds of latency and the full
@@ -563,15 +562,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// only consumed by the local ffmpeg process running inside the same
         /// Jellyfin instance, which reaches itself fastest over loopback.
         ///
-        /// Port is hardcoded to Jellyfin's default 8096 rather than detected, unlike
+        /// An admin can override this via Configuration.InternalServerUrl (Advanced
+        /// settings on the plugin page) for the uncommon case where loopback isn't
+        /// actually reachable, or the Kestrel port isn't the default 8096. Port is
+        /// otherwise hardcoded to 8096 rather than detected, unlike
         /// FederationMediaSourceProvider's equivalent: this runs during background
         /// library sync, outside any HTTP request, so there is no live connection to
-        /// read an actual listening port from. Only relevant for the uncommon case of
-        /// a non-default Kestrel port, in which case the media source provider's
-        /// per-request URL (built at actual playback time) still wins.
+        /// read an actual listening port from.
         /// </summary>
         public string GetInternalPlaybackBaseUrl()
         {
+            var config = Plugin.Instance?.Configuration;
+            if (!string.IsNullOrEmpty(config?.InternalServerUrl))
+            {
+                return config.InternalServerUrl.TrimEnd('/');
+            }
+
             return "http://127.0.0.1:8096";
         }
 

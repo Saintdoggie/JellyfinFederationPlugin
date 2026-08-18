@@ -536,6 +536,56 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Requests a short-lived, single-item-scoped playback token from this remote
+        /// server, via its own <c>Plugins/Federation/PlaybackToken</c> endpoint -
+        /// the Direct-mode replacement for embedding the remote's real, long-lived
+        /// api_key directly in a URL handed to a browser client (see
+        /// <see cref="FederationMediaSourceProvider"/> and
+        /// <c>Api.FederationController.DirectStream</c>). Returns
+        /// <c>(null, null)</c> on any failure - network error, non-success status, or
+        /// a malformed response - matching the defensive pattern already used by
+        /// sibling methods like <see cref="GetSystemInfoAsync"/>/<see cref="TestConnectionAsync"/>;
+        /// never throws.
+        /// </summary>
+        /// <param name="remoteItemId">The item id on the remote server, formatted the same way callers already use elsewhere (e.g. <c>src.RemoteItemId:N</c>).</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        public async Task<(string? Token, DateTime? ExpiresUtc)> GetPlaybackTokenAsync(string remoteItemId, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var content = new StringContent(
+                    JsonSerializer.Serialize(new { ItemId = remoteItemId }),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+
+                var response = await _httpClient.PostAsync("/Plugins/Federation/PlaybackToken", content, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "[Federation] Could not obtain a playback token for item {ItemId} from {ServerName}: HTTP {StatusCode}",
+                        remoteItemId,
+                        _server.Name,
+                        (int)response.StatusCode);
+                    return (null, null);
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
+                if (string.IsNullOrEmpty(result?.Token))
+                {
+                    return (null, null);
+                }
+
+                return (result.Token, result.ExpiresUtc);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting playback token for item {ItemId} from remote server {ServerName}", remoteItemId, _server.Name);
+                return (null, null);
+            }
+        }
+
+        /// <summary>
         /// Builds a direct stream URL for a remote item (with embedded api_key).
         /// </summary>
         public string BuildDirectStreamUrl(string itemId)
@@ -1156,6 +1206,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets or sets error code.
         /// </summary>
         public string? ErrorCode { get; set; }
+    }
+
+    /// <summary>
+    /// Response to a <c>POST /Plugins/Federation/PlaybackToken</c> request. See
+    /// <see cref="RemoteServerClient.GetPlaybackTokenAsync"/>.
+    /// </summary>
+    public class PlaybackTokenResponse
+    {
+        /// <summary>Gets or sets the minted token.</summary>
+        public string? Token { get; set; }
+
+        /// <summary>Gets or sets when the token expires.</summary>
+        public DateTime? ExpiresUtc { get; set; }
     }
 
     /// <summary>

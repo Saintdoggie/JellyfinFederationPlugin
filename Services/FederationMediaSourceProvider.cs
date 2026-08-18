@@ -20,9 +20,12 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Provides multiple media sources for federated content: one per remote source
     /// so the user can pick which server to play from in the Jellyfin UI.
-    /// Honors each server's <see cref="StreamingMode"/>: Direct sources embed the
-    /// remote api_key (documented tradeoff); Proxy sources route through this
-    /// server so the remote key never reaches clients.
+    /// Honors each server's <see cref="StreamingMode"/>: Direct sources point at a
+    /// short-lived, single-item-scoped playback token minted from the remote (the
+    /// remote's real api_key is never sent to a client - see
+    /// <see cref="FederationLibraryManager.BuildPlaybackUrl"/> for the full
+    /// rationale); Proxy sources route through this server so the remote key never
+    /// leaves it either.
     /// </summary>
     public class FederationMediaSourceProvider : IMediaSourceProvider
     {
@@ -155,13 +158,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 // Each candidate source needs one remote HTTP round trip
-                // (FetchRemoteSourceAsync) to describe the actual file. Resolving
-                // every non-network field first and firing all the remote fetches
-                // together (instead of one `await` per source in a sequential loop)
-                // turns N sources' worth of serial round-trip latency on every single
-                // play into roughly one round trip's worth - the slowest source, not
-                // the sum of all of them.
-                var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string Path, string SourceName, bool IsWanCapped)>();
+                // (FetchRemoteSourceAsync) to describe the actual file, and - for a
+                // Direct-mode source - a second one to mint its playback token
+                // (BuildPlaybackPathAsync). Resolving every non-network field first
+                // and firing all the remote calls together (instead of one `await`
+                // per source in a sequential loop, and instead of minting tokens
+                // before ever starting the metadata fetches) turns what would
+                // otherwise be several serial round trips per play into roughly one
+                // round trip's worth - the slowest of them, not the sum of all.
+                var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName, bool IsWanCapped)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
                     if (staticSourceCoversPrimary && i == primaryIndex)
@@ -210,18 +215,6 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var path = BuildPlaybackPath(server, src, entry.ItemType, localUserId);
-                    if (path == null)
-                    {
-                        _logger.LogWarning(
-                            "[Federation] Debug GetMediaSources: {Name} source #{Index} on server {ServerName} ({StreamingMode}) produced a null playback path - skipping",
-                            item.Name,
-                            i,
-                            server.Name,
-                            server.StreamingMode);
-                        continue;
-                    }
-
                     var sourceName = entrySources.Length > 1
                         ? $"{server.Name}{(i == primaryIndex ? " (primary)" : string.Empty)}"
                         : server.Name;
@@ -241,7 +234,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         && entry.ItemType != "Audio"
                         && _federationManager.BandwidthMonitor.GetEffectiveCapMbps(server) != null;
 
-                    candidates.Add((i, src, server, path, sourceName, isWanCapped));
+                    candidates.Add((i, src, server, sourceName, isWanCapped));
                 }
 
                 // The remote's own view of each file. Without Container and
@@ -254,12 +247,38 @@ namespace Jellyfin.Plugin.Federation.Services
                 var fetchTasks = candidates.Select(c => c.IsWanCapped
                     ? Task.FromResult<MediaSourceInfo?>(null)
                     : FetchRemoteSourceAsync(c.Server, c.Src, localUserId, cancellationToken)).ToArray();
-                var remoteResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+
+                // Path-building (a token mint for a Direct-mode candidate, an
+                // effectively-synchronous local URL build for a Proxy-mode one) runs
+                // concurrently with the metadata fetches above, not serially before
+                // them - see the comment on `candidates` above. Both Task.WhenAll
+                // calls are issued back-to-back with no `await` between them so both
+                // sets of remote calls are already in flight before either is
+                // awaited.
+                var pathTasks = candidates.Select(c => BuildPlaybackPathAsync(c.Server, c.Src, entry.ItemType, localUserId)).ToArray();
+                var fetchWhenAll = Task.WhenAll(fetchTasks);
+                var pathWhenAll = Task.WhenAll(pathTasks);
+                await Task.WhenAll(fetchWhenAll, pathWhenAll).ConfigureAwait(false);
+
+                var remoteResults = fetchWhenAll.Result;
+                var paths = pathWhenAll.Result;
 
                 var sources = new List<MediaSourceInfo>();
                 for (int c = 0; c < candidates.Count; c++)
                 {
-                    var (i, src, server, path, sourceName, isWanCapped) = candidates[c];
+                    var (i, src, server, sourceName, isWanCapped) = candidates[c];
+                    var path = paths[c];
+                    if (path == null)
+                    {
+                        _logger.LogWarning(
+                            "[Federation] Debug GetMediaSources: {Name} source #{Index} on server {ServerName} ({StreamingMode}) produced a null playback path - skipping",
+                            item.Name,
+                            i,
+                            server.Name,
+                            server.StreamingMode);
+                        continue;
+                    }
+
                     var remote = remoteResults[c];
 
                     _logger.LogInformation(
@@ -408,7 +427,22 @@ namespace Jellyfin.Plugin.Federation.Services
             return Task.FromException<ILiveStream>(new NotSupportedException("Live stream opening is not supported for federated content"));
         }
 
-        private string? BuildPlaybackPath(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId)
+        /// <summary>
+        /// Builds the playback URL for one candidate source. The Proxy branch is
+        /// unchanged and fully synchronous internally (just now awaited trivially).
+        /// The Direct branch no longer embeds the remote server's real, long-lived
+        /// api_key: instead it mints a short-lived, single-item-scoped playback
+        /// token from the remote (one extra remote round trip, run concurrently
+        /// with the remote metadata fetch by the caller - see the comment on
+        /// `candidates` in <see cref="GetMediaSources"/>) and points at this
+        /// server's own token-gated <c>DirectStream</c> gateway on the remote. See
+        /// <see cref="FederationLibraryManager.BuildPlaybackUrl"/>'s doc comment for
+        /// the full security rationale. Returns null (same "skip this source"
+        /// degrade already used elsewhere in this method) when the server is
+        /// unreachable or the remote refuses to mint a token - never falls back to
+        /// embedding the raw key.
+        /// </summary>
+        private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
@@ -426,14 +460,30 @@ namespace Jellyfin.Plugin.Federation.Services
                 return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{requestingUserFlag}";
             }
 
-            // Same URL shape the item's own Path uses, so an alternate source behaves
-            // identically to the primary one.
-            return _federationManager.BuildPlaybackUrl(itemType, src);
+            var client = _federationManager.GetClient(src.ServerId);
+            if (client == null)
+            {
+                return null;
+            }
+
+            var (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N")).ConfigureAwait(false);
+            if (token == null)
+            {
+                _logger.LogWarning(
+                    "[Federation] Could not obtain a playback token from server {ServerName} for item {RemoteItemId}; this source will be skipped",
+                    server.Name,
+                    src.RemoteItemId);
+                return null;
+            }
+
+            var directAudioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
+            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}";
         }
 
         /// <summary>
         /// Resolves the base URL that Jellyfin's own transcoder will fetch the
-        /// proxied stream from. Always loopback, never <see cref="IFederationManager.GetLocalServerUrl"/>
+        /// proxied stream from. Always loopback (or the admin's InternalServerUrl
+        /// override), never <see cref="FederationLibraryManager.GetLocalServerUrl"/>
         /// (the public URL configured for peer handshakes): virtually every
         /// production setup runs Jellyfin behind a public reverse proxy or VPS
         /// tunnel, so building the transcoder's ffmpeg input URL from the public
@@ -447,13 +497,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// and is only consumed by the server-side transcoder (federated Proxy
         /// streams are never client-direct-played - clients always get HLS from
         /// Jellyfin), loopback is both correct and dramatically faster than any
-        /// public route, with no override needed.
+        /// public route.
         ///
-        /// Uses the port Kestrel accepted this very request on (so a non-default
-        /// port stays right) when available, otherwise Jellyfin's default 8096.
+        /// When Configuration.InternalServerUrl isn't set (the default), uses the
+        /// port Kestrel accepted this very request on (so a non-default port stays
+        /// right) when available, otherwise Jellyfin's default 8096 - the same
+        /// fallback FederationLibraryManager.GetInternalPlaybackBaseUrl() uses when
+        /// it can't detect a live port (background sync, no request in flight).
         /// </summary>
         private string ResolveLocalServerUrl()
         {
+            var configured = Plugin.Instance?.Configuration?.InternalServerUrl;
+            if (!string.IsNullOrEmpty(configured))
+            {
+                return configured.TrimEnd('/');
+            }
+
             var context = _httpContextAccessor.HttpContext;
             var localPort = context?.Connection?.LocalPort;
             var port = localPort.HasValue && localPort.Value > 0 ? localPort.Value : 8096;

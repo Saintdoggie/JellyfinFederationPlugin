@@ -263,6 +263,39 @@
                     display: flex; align-items: center; justify-content: space-between; gap: 0.6em;
                     padding: 0.25em 0;
                 }
+
+                /* Tab nav. Hand-rolled rather than jellyfin-web's own emby-tabs
+                   component: that component is wired to the SPA's own view router
+                   (tabbed dashboard pages register routes/controllers per tab), which
+                   this plugin page - a single static config-page HTML blob with no
+                   router integration - has no clean way to hook into. A plain
+                   underline tab row keeps the same visual language (accent-colored
+                   active indicator, same type scale) without depending on internals
+                   that could change out from under a single HTML file with no build
+                   step to catch breakage. */
+                #federationConfigPage .fed-tabs {
+                    display: flex; flex-wrap: wrap; gap: 0.2em;
+                    border-bottom: 1px solid var(--fed-border);
+                    margin: var(--fed-sp-4) 0 0;
+                }
+                #federationConfigPage .fed-tab-btn {
+                    background: transparent; border: none; cursor: pointer;
+                    color: inherit; opacity: 0.62;
+                    font-size: 0.98em; font-weight: 600; font-family: inherit;
+                    padding: 0.7em 0.9em 0.65em;
+                    margin-bottom: -1px;
+                    border-bottom: 2px solid transparent;
+                    transition: opacity 0.12s ease, border-color 0.12s ease;
+                }
+                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
+                #federationConfigPage .fed-tab-btn:focus-visible {
+                    outline: 2px solid var(--fed-accent); outline-offset: 2px; border-radius: var(--fed-r-sm);
+                }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active {
+                    opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent);
+                }
+                #federationConfigPage .fed-tabpanel { display: none; }
+                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
             </style>
 
             <div class="sectionTitleContainer flex align-items-center">
@@ -284,159 +317,193 @@
                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
             </div>
 
-            <div class="fed-card fed-card-hero" id="fedDownloadsCard" style="display:none;">
-                <h2 class="fed-step">Downloads</h2>
-                <p class="fed-step-desc">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
-                <div id="fedDownloadsList"></div>
+            <!--
+                Tabs split what used to be one long scroll (Downloads, Add a friend,
+                People, Pools, Libraries, Advanced, Hidden items, all stacked) into
+                grouped sections. The status strip above and the error/warning banners
+                further up stay outside every tab - they're relevant no matter which
+                tab is open, so hiding them behind a tab would bury a warning an admin
+                needs to see regardless of what they're doing.
+
+                #fedConfigForm still wraps Libraries+Advanced+Hidden items exactly as
+                before, just with .fed-tabpanel divs nested INSIDE it for visual
+                grouping - a hidden tab's inputs are still form descendants (submit
+                doesn't care about display:none), so the Save button keeps saving the
+                Advanced fields even while the Libraries tab is the one showing.
+            -->
+            <div class="fed-tabs" id="fedTabs" role="tablist">
+                <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
             </div>
 
-            <div class="fed-card fed-card-hero">
-                <h2 class="fed-step">Add a friend</h2>
-                <p class="fed-step-desc">
-                    Enter another Federation server's address and send a request. Once they accept, both servers add
-                    each other automatically — no API key to copy by hand.
-                </p>
-
-                <div class="fed-inline">
-                    <div class="fed-input-container">
-                        <label class="fed-label" for="fedFriendUrl">Friend's server address</label>
-                        <input type="text" id="fedFriendUrl" class="emby-input fed-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                    </div>
-                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+            <div class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
+                <div class="fed-card fed-card-hero" id="fedDownloadsCard" style="display:none;">
+                    <h2 class="fed-step">Downloads</h2>
+                    <p class="fed-step-desc">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
+                    <div id="fedDownloadsList"></div>
                 </div>
-                <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
 
-                <div id="fedFriendIncoming"></div>
-                <div id="fedFriendOutgoing"></div>
-            </div>
+                <div class="fed-card fed-card-hero">
+                    <h2 class="fed-step">Add a friend</h2>
+                    <p class="fed-step-desc">
+                        Enter another Federation server's address and send a request. Once they accept, both servers add
+                        each other automatically — no API key to copy by hand.
+                    </p>
 
-            <div class="fed-card fed-card-hero">
-                <h2 class="fed-step">People</h2>
-                <p class="fed-step-desc">
-                    Servers you're connected with. Manage a friend to control what they can see of your library, put
-                    them in a pool, or tweak connection settings.
-                </p>
-
-                <div id="fedFriendList"></div>
-            </div>
-
-            <div class="fed-card">
-                <h2 class="fed-step">Pools</h2>
-                <p class="fed-step-desc">
-                    A pool is a named group of Federation servers who all federate with every other member, not just you.
-                    Create a pool and invite servers into it - each invite still goes through the normal friend request,
-                    so every server's admin has to accept before it connects to anyone. To add a friend you're already
-                    connected to, use their entry under People above.
-                </p>
-
-                <div class="fed-inline">
-                    <div class="fed-input-container">
-                        <label class="fed-label" for="fedNewPoolName">New pool name</label>
-                        <input type="text" id="fedNewPoolName" class="emby-input fed-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                    <div class="fed-inline">
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedFriendUrl">Friend's server address</label>
+                            <input type="text" id="fedFriendUrl" class="emby-input fed-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
                     </div>
-                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-pool">Create pool</button>
-                </div>
-                <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
 
-                <div id="fedPoolList"></div>
+                    <div id="fedFriendIncoming"></div>
+                    <div id="fedFriendOutgoing"></div>
+                </div>
+
+                <div class="fed-card fed-card-hero">
+                    <h2 class="fed-step">People</h2>
+                    <p class="fed-step-desc">
+                        Servers you're connected with. Manage a friend to control what they can see of your library, put
+                        them in a pool, or tweak connection settings.
+                    </p>
+
+                    <div id="fedFriendList"></div>
+                </div>
+            </div>
+
+            <div class="fed-tabpanel" data-tab-panel="pools" role="tabpanel">
+                <div class="fed-card">
+                    <h2 class="fed-step">Pools</h2>
+                    <p class="fed-step-desc">
+                        A pool is a named group of Federation servers who all federate with every other member, not just you.
+                        Create a pool and invite servers into it - each invite still goes through the normal friend request,
+                        so every server's admin has to accept before it connects to anyone. To add a friend you're already
+                        connected to, use their entry under People above.
+                    </p>
+
+                    <div class="fed-inline">
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedNewPoolName">New pool name</label>
+                            <input type="text" id="fedNewPoolName" class="emby-input fed-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-pool">Create pool</button>
+                    </div>
+                    <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                    <div id="fedPoolList"></div>
+                </div>
             </div>
 
             <form id="fedConfigForm">
-                <div class="fed-card">
-                    <h2 class="fed-step">Libraries</h2>
-                    <p class="fed-step-desc">
-                        Each library you check appears on this server as a virtual library.
-                        Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
-                    </p>
+                <div class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
+                    <div class="fed-card">
+                        <h2 class="fed-step">Libraries</h2>
+                        <p class="fed-step-desc">
+                            Each library you check appears on this server as a virtual library.
+                            Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
+                        </p>
 
-                    <div id="fedLibraryPicker">
-                        <p class="fed-muted" id="fedPickerHint">Loading remote libraries…</p>
-                        <div id="fedPickerList"></div>
+                        <div id="fedLibraryPicker">
+                            <p class="fed-muted" id="fedPickerHint">Loading remote libraries…</p>
+                            <div id="fedPickerList"></div>
+                        </div>
+
+                        <details class="fed-details" id="fedCustomMappings">
+                            <summary>Custom virtual libraries (advanced)</summary>
+                            <div class="fed-details-body">
+                                <p class="fed-hint" style="margin-bottom:0.8em;">
+                                    Only needed if you want to hand-pick sources, merge libraries with different names, or tweak media types yourself.
+                                    These are never touched by the picker above.
+                                </p>
+                                <div id="fedMappingList"></div>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="add-mapping">Add custom library</button>
+                            </div>
+                        </details>
                     </div>
 
-                    <details class="fed-details" id="fedCustomMappings">
-                        <summary>Custom virtual libraries (advanced)</summary>
+                    <div class="fed-card">
+                        <p class="fed-hint" style="margin:0 0 0.9em;">This button saves your library selections and the advanced settings below. Sharing, pools and per-friend connection details above already save themselves as you edit them.</p>
+                        <div class="fed-savebar">
+                            <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
+                            <span class="fed-savemsg" id="fedSaveMsg"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
+                    <details class="fed-card fed-details" id="fedAdvancedSettings">
+                        <summary>Advanced settings</summary>
                         <div class="fed-details-body">
-                            <p class="fed-hint" style="margin-bottom:0.8em;">
-                                Only needed if you want to hand-pick sources, merge libraries with different names, or tweak media types yourself.
-                                These are never touched by the picker above.
+                            <div class="fed-input-container">
+                                <label class="fed-label" for="fedTxtServerUrl">This server's public URL (optional override)</label>
+                                <input type="text" id="fedTxtServerUrl" class="emby-input fed-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all. This is what friends and clients connect to — it's not used for this server's own Proxy streams, see below.</p>
+                            </div>
+                            <div class="fed-input-container">
+                                <label class="fed-label" for="fedTxtInternalUrl">This server's local address (optional override)</label>
+                                <input type="text" id="fedTxtInternalUrl" class="emby-input fed-input" placeholder="http://127.0.0.1:8096 (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fed-hint">Where this server's own transcoder fetches a Proxy-mode stream from — never the public URL above, since that would send every byte of a stream out through a reverse proxy/VPS/tunnel and back in just to reach itself. Leave blank; loopback is correct for virtually every setup. Only set this if 127.0.0.1 genuinely isn't reachable from where ffmpeg runs (e.g. Jellyfin split across containers without a shared network namespace) or Jellyfin listens on a non-default port.</p>
+                            </div>
+                            <div class="fed-input-container">
+                                <label class="fed-label" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
+                                <input type="text" id="fedTxtCachePath" class="emby-input fed-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            </div>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
+                            <p class="fed-hint" style="margin:-0.6em 0 0.8em;">
+                                When on: your friends can see who your other friends are, and this server automatically sends friend requests
+                                to friends of your friends it discovers that way (they still have to accept). Off by default - this is a bigger
+                                trust decision than a single direct friendship. Either way, a server only ever shares its own library, never
+                                content that was itself federated into it from somewhere else.
                             </p>
-                            <div id="fedMappingList"></div>
-                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="add-mapping">Add custom library</button>
+                            <div class="fed-input-container" style="margin-top:1em;">
+                                <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
+                                <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            </div>
+                            <div class="fed-input-container">
+                                <label class="fed-label" for="fedTxtRefreshHours">Refresh interval (hours)</label>
+                                <input type="number" id="fedTxtRefreshHours" class="emby-input fed-input" min="1" max="168" />
+                            </div>
+                            <p class="fed-hint">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
+
+                            <h3 style="margin:1.4em 0 0.4em;font-size:1em;">Diagnostics</h3>
+                            <div id="fedDiagnostics" class="fed-diagnostic"></div>
+                            <div style="margin-top:0.8em;">
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="provision">Provision libraries</button>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-all">Test all servers</button>
+                            </div>
+                            <div id="fedAdvancedStatus" class="fed-srvstatus" style="display:none;"></div>
+                        </div>
+                    </details>
+
+                    <!--
+                        Hidden Items: purely local, receiving-side suppression - the admin
+                        chose not to see something a friend is sharing (a worse rip they
+                        already own, unwanted clutter, ...), independent of the People
+                        panel's per-friend sharing permissions (which control what a
+                        friend can see of THIS server's own content - the opposite
+                        direction). See Configuration/FederationPluginController.cs's
+                        "Hidden Items" region and PluginConfiguration.HiddenFederatedItemIds.
+                    -->
+                    <details class="fed-card fed-details" id="fedHiddenItemsSection">
+                        <summary>Hidden items (<span id="fedHiddenItemsCount">0</span>)</summary>
+                        <div class="fed-details-body">
+                            <p class="fed-hint">
+                                Items you've hidden from your own local library using the "Hide" button on an item's detail
+                                page. This only affects what you see here - the friend sharing it is never notified and keeps
+                                sharing it normally. Unhiding an item does not bring it back immediately; it reappears on the
+                                next sync (or click "Provision libraries" above).
+                            </p>
+                            <div id="fedHiddenItemsList"></div>
                         </div>
                     </details>
                 </div>
-
-                <div class="fed-card">
-                    <p class="fed-hint" style="margin:0 0 0.9em;">This button saves your library selections and the advanced settings below. Sharing, pools and per-friend connection details above already save themselves as you edit them.</p>
-                    <div class="fed-savebar">
-                        <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
-                        <span class="fed-savemsg" id="fedSaveMsg"></span>
-                    </div>
-                </div>
-
-                <details class="fed-card fed-details" id="fedAdvancedSettings">
-                    <summary>Advanced settings</summary>
-                    <div class="fed-details-body">
-                        <div class="fed-input-container">
-                            <label class="fed-label" for="fedTxtServerUrl">This server's public URL (optional override)</label>
-                            <input type="text" id="fedTxtServerUrl" class="emby-input fed-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                            <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all.</p>
-                        </div>
-                        <div class="fed-input-container">
-                            <label class="fed-label" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
-                            <input type="text" id="fedTxtCachePath" class="emby-input fed-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                        </div>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
-                        <p class="fed-hint" style="margin:-0.6em 0 0.8em;">
-                            When on: your friends can see who your other friends are, and this server automatically sends friend requests
-                            to friends of your friends it discovers that way (they still have to accept). Off by default - this is a bigger
-                            trust decision than a single direct friendship. Either way, a server only ever shares its own library, never
-                            content that was itself federated into it from somewhere else.
-                        </p>
-                        <div class="fed-input-container" style="margin-top:1em;">
-                            <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
-                            <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                        </div>
-                        <div class="fed-input-container">
-                            <label class="fed-label" for="fedTxtRefreshHours">Refresh interval (hours)</label>
-                            <input type="number" id="fedTxtRefreshHours" class="emby-input fed-input" min="1" max="168" />
-                        </div>
-                        <p class="fed-hint">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
-
-                        <h3 style="margin:1.4em 0 0.4em;font-size:1em;">Diagnostics</h3>
-                        <div id="fedDiagnostics" class="fed-diagnostic"></div>
-                        <div style="margin-top:0.8em;">
-                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="provision">Provision libraries</button>
-                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-all">Test all servers</button>
-                        </div>
-                        <div id="fedAdvancedStatus" class="fed-srvstatus" style="display:none;"></div>
-                    </div>
-                </details>
-
-                <!--
-                    Hidden Items: purely local, receiving-side suppression - the admin
-                    chose not to see something a friend is sharing (a worse rip they
-                    already own, unwanted clutter, ...), independent of the People
-                    panel's per-friend sharing permissions (which control what a
-                    friend can see of THIS server's own content - the opposite
-                    direction). See Configuration/FederationPluginController.cs's
-                    "Hidden Items" region and PluginConfiguration.HiddenFederatedItemIds.
-                -->
-                <details class="fed-card fed-details" id="fedHiddenItemsSection">
-                    <summary>Hidden items (<span id="fedHiddenItemsCount">0</span>)</summary>
-                    <div class="fed-details-body">
-                        <p class="fed-hint">
-                            Items you've hidden from your own local library using the "Hide" button on an item's detail
-                            page. This only affects what you see here - the friend sharing it is never notified and keeps
-                            sharing it normally. Unhiding an item does not bring it back immediately; it reappears on the
-                            next sync (or click "Provision libraries" above).
-                        </p>
-                        <div id="fedHiddenItemsList"></div>
-                    </div>
-                </details>
             </form>
 
             <script type="text/javascript">
@@ -2254,6 +2321,7 @@
                             customMappings = currentConfig.LibraryMappings.filter(function (m) { return !m.AutoManaged; });
 
                             q('#fedTxtServerUrl').value = currentConfig.ServerUrl || '';
+                            q('#fedTxtInternalUrl').value = currentConfig.InternalServerUrl || '';
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
@@ -2284,6 +2352,7 @@
 
                         var config = {
                             ServerUrl: q('#fedTxtServerUrl').value.trim(),
+                            InternalServerUrl: q('#fedTxtInternalUrl').value.trim(),
                             CachePath: q('#fedTxtCachePath').value.trim(),
                             EnableDedup: q('#fedChkDedup').checked,
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
@@ -2328,6 +2397,30 @@
                         });
                     }
 
+                    /* ---------------- Tabs ---------------- */
+
+                    var TAB_NAMES = ['friends', 'pools', 'libraries', 'advanced'];
+                    var TAB_STORAGE_KEY = 'federationConfigActiveTab';
+
+                    function switchTab(tab) {
+                        if (TAB_NAMES.indexOf(tab) === -1) {
+                            tab = TAB_NAMES[0];
+                        }
+
+                        qa('.fed-tabpanel').forEach(function (panel) {
+                            panel.classList.toggle('fed-tabpanel-active', panel.getAttribute('data-tab-panel') === tab);
+                        });
+                        qa('.fed-tab-btn').forEach(function (btn) {
+                            var active = btn.getAttribute('data-tab') === tab;
+                            btn.classList.toggle('fed-tab-btn-active', active);
+                            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                        });
+
+                        try {
+                            localStorage.setItem(TAB_STORAGE_KEY, tab);
+                        } catch (e) { /* localStorage unavailable (private browsing, etc.) - tab still switches, just doesn't persist */ }
+                    }
+
                     /* ---------------- Wiring ---------------- */
 
                     function attachHandlers(page) {
@@ -2347,6 +2440,9 @@
                             var i = parseInt(t.getAttribute('data-i') || '0', 10);
                             var friendId = t.getAttribute('data-id');
                             switch (t.getAttribute('data-fed-action')) {
+                                case 'switch-tab':
+                                    switchTab(t.getAttribute('data-tab'));
+                                    break;
                                 case 'send-friend-request':
                                     sendFriendRequest();
                                     break;
@@ -2611,6 +2707,13 @@
                     function initPage(page) {
                         pageEl = page;
                         attachHandlers(page);
+
+                        var savedTab = null;
+                        try {
+                            savedTab = localStorage.getItem(TAB_STORAGE_KEY);
+                        } catch (e) { /* localStorage unavailable - default tab below */ }
+                        switchTab(savedTab || TAB_NAMES[0]);
+
                         loadFriendRequests();
                         loadPools();
                         loadConfiguration(false).then(function () {
