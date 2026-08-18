@@ -1375,8 +1375,39 @@ namespace Jellyfin.Plugin.Federation.Api
                 percentComplete = progress.PercentComplete,
                 status = progress.Status,
                 isComplete = progress.IsComplete,
-                success = progress.Success
+                success = progress.Success,
+                bytesDownloaded = progress.BytesDownloaded,
+                totalBytes = progress.TotalBytes,
+                bytesPerSecond = progress.BytesPerSecond
             });
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists every tracked download (active or recently
+        /// finished) - backs the dashboard's Downloads section and the
+        /// cover-art progress ring shown on cards site-wide via the client
+        /// badge script.
+        /// </summary>
+        [HttpGet("Downloads")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetDownloads()
+        {
+            var downloads = DownloadProgressTracker.GetAll().Select(d => new
+            {
+                operationId = d.OperationId,
+                localItemId = d.LocalItemId,
+                itemName = d.ItemName,
+                percentComplete = d.PercentComplete,
+                status = d.Status,
+                isComplete = d.IsComplete,
+                success = d.Success,
+                bytesDownloaded = d.BytesDownloaded,
+                totalBytes = d.TotalBytes,
+                bytesPerSecond = d.BytesPerSecond,
+                startTime = d.StartTime
+            });
+
+            return Ok(downloads);
         }
 
         /// <summary>

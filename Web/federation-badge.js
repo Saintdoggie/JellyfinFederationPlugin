@@ -66,6 +66,16 @@
       'color:rgba(255,255,255,.92);z-index:3;pointer-events:none;',
       'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.16);}',
       '.federation-badge-corner svg{width:12px;height:12px;}',
+      // Progress ring shown centered over a card's/poster's existing cover
+      // art while it's actively being downloaded - see the "Download
+      // progress ring" section below. Solid dark backing circle for the same
+      // reason as the corner badge above: it overlays arbitrary poster art,
+      // not page chrome, so it stays legible regardless of theme.
+      '.federation-download-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);',
+      'z-index:4;pointer-events:none;filter:drop-shadow(0 1px 4px rgba(0,0,0,.6));}',
+      '.federation-ring-bg{fill:rgba(10,12,16,.62);stroke:rgba(255,255,255,.18);stroke-width:1;}',
+      '.federation-ring-fg{fill:none;stroke:#6fb8ff;stroke-width:3;stroke-linecap:round;}',
+      '.federation-ring-text{fill:#fff;font-size:9px;font-weight:700;font-family:sans-serif;}',
       // Row of pills below the title, not inline before it - inline
       // collided badly with stylized show-logo titles (see badgeDetailPage).
       '.federation-badge-row{display:flex;flex-wrap:wrap;align-items:center;gap:.4em;margin:.4em 0 .6em;}',
@@ -186,6 +196,171 @@
     }
 
     el.setAttribute('data-federation-badge', '1');
+    updateDownloadRing(el, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Download progress ring
+  //
+  // A circular progress ring drawn centered over an item's existing cover art
+  // (the federated item already has real artwork - it's synced with full
+  // metadata, only its Path is a remote URL - so there's no separate "add to
+  // Jellyfin with cover art" step needed here, just an overlay on the card/
+  // poster that's already showing it) for every card matching an in-progress
+  // download, wherever that card currently appears (grid, search, home rows,
+  // the detail page's own poster) - not just the item whose detail page
+  // happens to be open, which is why this polls independently of
+  // pollDownloadProgress's own per-item loop.
+  var GUID_RE = /[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i;
+
+  // localItemId (normalized) -> download record, active downloads only.
+  var activeDownloadsByItem = new Map();
+
+  function formatSpeed(bytesPerSecond) {
+    if (!bytesPerSecond || bytesPerSecond <= 0) {
+      return '';
+    }
+
+    var mbPerSec = bytesPerSecond / (1024 * 1024);
+    if (mbPerSec >= 0.1) {
+      return mbPerSec.toFixed(1) + ' MB/s';
+    }
+
+    return Math.round(bytesPerSecond / 1024) + ' KB/s';
+  }
+
+  function ringSvg(pct, sizePx) {
+    var clamped = Math.max(0, Math.min(100, pct || 0));
+    return '<svg viewBox="0 0 36 36" width="' + sizePx + '" height="' + sizePx + '">'
+      + '<circle cx="18" cy="18" r="16" class="federation-ring-bg"></circle>'
+      + '<circle cx="18" cy="18" r="15.9155" class="federation-ring-fg" stroke-dasharray="' + clamped + ' 100" transform="rotate(-90 18 18)"></circle>'
+      + '<text x="18" y="20.5" text-anchor="middle" class="federation-ring-text">' + Math.round(clamped) + '%</text>'
+      + '</svg>';
+  }
+
+  function applyDownloadRing(container, pct, sizePx) {
+    if (window.getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative';
+    }
+
+    var ring = container.querySelector(':scope > .federation-download-ring');
+    if (!ring) {
+      ring = document.createElement('div');
+      ring.className = 'federation-download-ring';
+      container.appendChild(ring);
+    }
+
+    ring.innerHTML = ringSvg(pct, sizePx);
+  }
+
+  function removeDownloadRing(container) {
+    var ring = container.querySelector(':scope > .federation-download-ring');
+    if (ring) {
+      ring.remove();
+    }
+  }
+
+  // Applies/removes the ring on one grid/list card, from whatever is
+  // currently known (either the periodic list poll below, or a live percent
+  // passed straight from the detail page's own per-item poll).
+  function updateDownloadRing(el, id, pctOverride) {
+    if (typeof pctOverride === 'number') {
+      applyDownloadRing(el, pctOverride, 46);
+      return;
+    }
+
+    var dl = activeDownloadsByItem.get(id);
+    if (dl) {
+      applyDownloadRing(el, dl.percentComplete, 46);
+    } else {
+      removeDownloadRing(el);
+    }
+  }
+
+  // Re-applies ring state to every already-badged card on screen (badgeCard()
+  // itself only runs once per card, on first sight - see CARD_SELECTOR's
+  // :not([data-federation-badge]) - so a percentage that changes after that
+  // needs this separate sweep instead).
+  function refreshDownloadRingsOnCards() {
+    document.querySelectorAll('.card[data-federation-badge="1"],.listItem[data-federation-badge="1"]').forEach(function (el) {
+      updateDownloadRing(el, normalizeId(el.getAttribute('data-id')));
+    });
+  }
+
+  var DETAIL_POSTER_SELECTORS = [
+    '.detailImageContainer .cardImageContainer',
+    '.detailImageContainer img',
+    '.itemDetailImage',
+    '.detailPagePrimaryContainer .cardImageContainer',
+    '.detailPageImageContainer .cardImageContainer',
+    '.detailPageImageContainer'
+  ];
+
+  function findDetailPoster() {
+    for (var i = 0; i < DETAIL_POSTER_SELECTORS.length; i++) {
+      var el = document.querySelector(DETAIL_POSTER_SELECTORS[i]);
+      if (el) {
+        return el;
+      }
+    }
+
+    return null;
+  }
+
+  // Called two ways: with no args, from the periodic list poll/scan cycle
+  // (looks up whatever item the current URL is for); with (itemId, pct),
+  // directly from pollDownloadProgress's own tighter per-item loop, which
+  // already knows the exact percent without waiting for the next list poll.
+  function updateDetailPageRing(itemId, pct) {
+    var match = location.href.match(GUID_RE);
+    if (!match) {
+      return;
+    }
+
+    var poster = findDetailPoster();
+    if (!poster) {
+      return;
+    }
+
+    if (typeof pct === 'number') {
+      if (normalizeId(match[0]) !== normalizeId(itemId)) {
+        return;
+      }
+
+      applyDownloadRing(poster, pct, 96);
+      return;
+    }
+
+    var dl = activeDownloadsByItem.get(normalizeId(match[0]));
+    if (dl) {
+      applyDownloadRing(poster, dl.percentComplete, 96);
+    } else {
+      removeDownloadRing(poster);
+    }
+  }
+
+  function refreshDownloadsList() {
+    var token = getToken();
+    fetch('/Plugins/Federation/Downloads', {
+      credentials: 'same-origin',
+      headers: token ? { 'X-Emby-Token': token } : {}
+    })
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (list) {
+        var next = new Map();
+        (list || []).forEach(function (d) {
+          if (!d.isComplete && d.localItemId) {
+            next.set(normalizeId(d.localItemId), d);
+          }
+        });
+
+        activeDownloadsByItem = next;
+        refreshDownloadRingsOnCards();
+        updateDetailPageRing();
+      })
+      .catch(function () {
+        // Leave the previous set in place; try again on the next interval.
+      });
   }
 
   // Same token-resolution strategy as the admin config page: prefer the SPA's
@@ -308,20 +483,28 @@
 
           if (!data.isComplete) {
             var pct = Math.round(data.percentComplete || 0);
-            showToast('Downloading ' + (data.itemName ? data.itemName + ' - ' : '') + pct + '%', 'busy');
+            var speed = formatSpeed(data.bytesPerSecond);
+            showToast('Downloading ' + (data.itemName ? data.itemName + ' - ' : '') + pct + '%' + (speed ? ' (' + speed + ')' : ''), 'busy');
             if (liveButton) {
               liveButton.setAttribute('data-state', 'busy');
               liveButton.setAttribute('data-operation-id', operationId);
-              liveButton.querySelector('.federation-badge-label').textContent = pct + '%';
+              liveButton.querySelector('.federation-badge-label').textContent = pct + '%' + (speed ? ' - ' + speed : '');
               liveButton.title = 'Click to cancel';
             }
 
+            updateDetailPageRing(itemId, pct);
             setTimeout(poll, 1500);
             return;
           }
 
           delete pollingOperations[operationId];
           clearActiveDownload(itemId);
+          activeDownloadsByItem.delete(normalizeId(itemId));
+          refreshDownloadRingsOnCards();
+          var finishedPoster = findDetailPoster();
+          if (finishedPoster) {
+            removeDownloadRing(finishedPoster);
+          }
 
           if (data.success) {
             showToast('Downloaded ' + (data.itemName || 'item') + ' to this server', 'done');
@@ -567,6 +750,8 @@
     injectStyle();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
+    refreshDownloadRingsOnCards();
+    updateDetailPageRing();
   }
 
   var scheduled = false;
@@ -585,6 +770,9 @@
   refreshFederatedIds();
   setInterval(refreshFederatedIds, 5 * 60 * 1000);
   resumeActiveDownloads();
+
+  refreshDownloadsList();
+  setInterval(refreshDownloadsList, 3000);
 
   // jellyfin-web is a client-routed SPA (pushState navigation), which does
   // not reliably fire DOM mutations synchronously with a route change - this

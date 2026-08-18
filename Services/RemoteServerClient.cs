@@ -551,13 +551,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Downloads a remote item's whole media file straight to local disk. Separate
         /// from Proxy-mode streaming (<see cref="FederationStreamHandler"/>) - this is a
         /// one-shot server-side fetch-and-save, not a live client-facing relay, so it
-        /// has no Range/seek handling and reports coarse progress via bytes written.
+        /// has no Range/seek handling.
         /// </summary>
         /// <param name="itemId">The item id on the remote server.</param>
         /// <param name="destinationPath">Local file path to write to; overwritten if present.</param>
-        /// <param name="progress">Receives 0-100 as bytes arrive, when the remote reports Content-Length.</param>
+        /// <param name="progress">
+        /// Receives (bytes written so far, total bytes if the remote reported
+        /// Content-Length) after every chunk - byte counts rather than a bare
+        /// percentage so a caller can also derive transfer speed from consecutive
+        /// reports.
+        /// </param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task DownloadToFileAsync(string itemId, string destinationPath, IProgress<double>? progress, CancellationToken cancellationToken)
+        public async Task DownloadToFileAsync(string itemId, string destinationPath, IProgress<(long BytesRead, long? TotalBytes)>? progress, CancellationToken cancellationToken)
         {
             var url = BuildDirectStreamUrl(itemId);
             using var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -574,13 +579,10 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                 totalRead += read;
-                if (totalBytes.HasValue && totalBytes.Value > 0)
-                {
-                    progress?.Report(Math.Min(100.0, totalRead * 100.0 / totalBytes.Value));
-                }
+                progress?.Report((totalRead, totalBytes));
             }
 
-            progress?.Report(100.0);
+            progress?.Report((totalRead, totalBytes));
         }
 
         /// <summary>

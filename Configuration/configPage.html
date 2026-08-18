@@ -92,6 +92,13 @@
                 #federationConfigPage details.fed-details > summary:hover { opacity: 1; }
                 #federationConfigPage .fed-details-body { padding-top: 0.8em; }
                 #federationConfigPage .fed-savemsg-fade { transition: opacity 1.2s ease; }
+                #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.8em; padding: 0.6em 0; border-top: 1px solid rgba(255,255,255,0.08); }
+                #federationConfigPage .fed-download-row:first-child { border-top: none; }
+                #federationConfigPage .fed-download-info { flex: 1; min-width: 0; }
+                #federationConfigPage .fed-download-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                #federationConfigPage .fed-progress-track { margin-top: 0.4em; height: 0.4em; border-radius: 0.3em; background: rgba(255,255,255,0.1); overflow: hidden; }
+                #federationConfigPage .fed-progress-fill { height: 100%; background: #00a4dc; transition: width 0.4s ease; }
+                #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.3em 0.8em; font-size: 0.85em; }
                 #federationConfigPage .fed-libgroup { margin: 0.9em 0; }
                 #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
                 #federationConfigPage .fed-librow {
@@ -210,6 +217,12 @@
                 <div class="fed-stat"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div>
                 <div class="fed-spacer"></div>
                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
+            </div>
+
+            <div class="fed-card" id="fedDownloadsCard" style="display:none;">
+                <h2 class="fed-step">Downloads</h2>
+                <p class="fed-step-desc">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
+                <div id="fedDownloadsList"></div>
             </div>
 
             <div class="fed-card">
@@ -2008,6 +2021,68 @@
                         .catch(function () { /* diagnostics are best-effort */ });
                     }
 
+                    /* ---------------- Downloads ---------------- */
+
+                    function formatBytes(n) {
+                        if (!n && n !== 0) { return ''; }
+                        var units = ['B', 'KB', 'MB', 'GB'];
+                        var i = 0;
+                        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+                        return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+                    }
+
+                    function formatSpeed(bytesPerSecond) {
+                        if (!bytesPerSecond || bytesPerSecond <= 0) { return ''; }
+                        var mb = bytesPerSecond / (1024 * 1024);
+                        return (mb >= 0.1 ? mb.toFixed(1) + ' MB/s' : Math.round(bytesPerSecond / 1024) + ' KB/s');
+                    }
+
+                    function renderDownloads(list) {
+                        list = list || [];
+                        var card = q('#fedDownloadsCard');
+                        var listEl = q('#fedDownloadsList');
+                        if (!card || !listEl) { return; }
+
+                        if (list.length === 0) {
+                            card.style.display = 'none';
+                            listEl.innerHTML = '';
+                            return;
+                        }
+
+                        card.style.display = '';
+                        listEl.innerHTML = list.map(function (d) {
+                            var pct = Math.round(d.percentComplete || 0);
+                            var sizeInfo = d.totalBytes ? (formatBytes(d.bytesDownloaded) + ' / ' + formatBytes(d.totalBytes)) : formatBytes(d.bytesDownloaded);
+                            var speed = formatSpeed(d.bytesPerSecond);
+                            var statusLine;
+                            var cancelBtn = '';
+                            if (!d.isComplete) {
+                                statusLine = sizeInfo + (speed ? ' — ' + speed : '') + ' — Downloading…';
+                                cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
+                            } else if (d.success) {
+                                statusLine = 'Downloaded — ' + formatBytes(d.bytesDownloaded);
+                            } else {
+                                statusLine = escapeHtml(d.status || 'Failed');
+                            }
+
+                            return '<div class="fed-download-row">' +
+                                '<div class="fed-download-info">' +
+                                    '<div class="fed-download-name">' + escapeHtml(d.itemName || 'Item') + '</div>' +
+                                    '<div class="fed-hint">' + statusLine + '</div>' +
+                                    (!d.isComplete ? '<div class="fed-progress-track"><div class="fed-progress-fill" style="width:' + pct + '%;"></div></div>' : '') +
+                                '</div>' +
+                                cancelBtn +
+                            '</div>';
+                        }).join('');
+                    }
+
+                    function loadDownloads() {
+                        fedFetch('/Plugins/Federation/Downloads')
+                        .then(function (r) { return r.json(); })
+                        .then(function (list) { renderDownloads(list); })
+                        .catch(function () { /* downloads card is best-effort */ });
+                    }
+
                     /* ---------------- Hidden items ---------------- */
 
                     function renderHiddenItems(items) {
@@ -2312,6 +2387,16 @@
                                     })
                                     .catch(function (err) { showError('Refresh failed: ' + err.message); setSaveMsg('Refresh failed', true); });
                                     break;
+                                case 'cancel-download':
+                                    var cancelOpId = t.getAttribute('data-op-id');
+                                    if (cancelOpId) {
+                                        t.disabled = true;
+                                        t.textContent = 'Cancelling…';
+                                        fedFetch('/Plugins/Federation/Download/Cancel/' + cancelOpId, { method: 'POST' })
+                                        .then(function () { loadDownloads(); })
+                                        .catch(function () { loadDownloads(); });
+                                    }
+                                    break;
                                 case 'provision':
                                     setAdvancedStatus('Provisioning…', 'info');
                                     fedFetch('/Plugins/Federation/ProvisionLibraries', { method: 'POST' })
@@ -2438,6 +2523,8 @@
                         }
                     }
 
+                    var downloadsPollInterval = null;
+
                     function initPage(page) {
                         pageEl = page;
                         attachHandlers(page);
@@ -2446,6 +2533,13 @@
                         loadConfiguration(false).then(function () {
                             loadLibraryPicker();
                         });
+
+                        loadDownloads();
+                        if (downloadsPollInterval) {
+                            clearInterval(downloadsPollInterval);
+                        }
+
+                        downloadsPollInterval = setInterval(loadDownloads, 3000);
                     }
 
                     if (!window.__federationPageshowBound) {
