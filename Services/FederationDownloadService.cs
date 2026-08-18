@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -26,6 +27,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILibraryManager _libraryManager;
         private readonly FederationLibraryManager _federationManager;
         private readonly ILogger<FederationDownloadService> _logger;
+        private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationSources = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationDownloadService"/> class.
@@ -90,13 +92,39 @@ namespace Jellyfin.Plugin.Federation.Services
             var operationId = Guid.NewGuid().ToString();
             DownloadProgressTracker.Start(operationId, localItemId, entry.Metadata.Name);
 
-            _ = Task.Run(() => RunDownloadAsync(operationId, itemGuid, entry, source, CancellationToken.None));
+            var cts = new CancellationTokenSource();
+            _cancellationSources[operationId] = cts;
+
+            _ = Task.Run(() => RunDownloadAsync(operationId, itemGuid, entry, source, cts.Token));
 
             return (true, "Download started.", operationId);
         }
 
+        /// <summary>
+        /// Admin-triggered: cancels an in-progress download. No-ops (successfully)
+        /// if the operation already finished or was never known - cancelling
+        /// something that's already done isn't an error from the caller's side.
+        /// </summary>
+        public (bool Success, string Message) CancelDownload(string operationId)
+        {
+            if (_cancellationSources.TryGetValue(operationId, out var cts))
+            {
+                cts.Cancel();
+                return (true, "Cancelling...");
+            }
+
+            var progress = DownloadProgressTracker.Get(operationId);
+            if (progress == null)
+            {
+                return (false, "Download not found.");
+            }
+
+            return (true, "Already finished.");
+        }
+
         private async Task RunDownloadAsync(string operationId, Guid itemGuid, FederatedCacheEntry entry, FederatedSource source, CancellationToken cancellationToken)
         {
+            string? destinationPath = null;
             try
             {
                 var client = _federationManager.GetClient(source.ServerId);
@@ -117,7 +145,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
                 var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
-                var destinationPath = Path.Combine(downloadsRoot, fileName);
+                destinationPath = Path.Combine(downloadsRoot, fileName);
 
                 DownloadProgressTracker.Update(operationId, 0, "Downloading...");
                 var progress = new Progress<double>(pct => DownloadProgressTracker.Update(operationId, pct, "Downloading..."));
@@ -136,10 +164,44 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogInformation("[Federation] Downloaded {Name} to {Path}", entry.Metadata.Name, destinationPath);
                 DownloadProgressTracker.Complete(operationId, true, "Downloaded. It will appear as a local item after the next library scan.");
             }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("[Federation] Download cancelled for {Name}", entry.Metadata.Name);
+                DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
+                DeletePartialFile(destinationPath);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Download failed for {Name}", entry.Metadata.Name);
                 DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
+                DeletePartialFile(destinationPath);
+            }
+            finally
+            {
+                if (_cancellationSources.TryRemove(operationId, out var cts))
+                {
+                    cts.Dispose();
+                }
+            }
+        }
+
+        private void DeletePartialFile(string? path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not remove partially-downloaded file {Path}", path);
             }
         }
 

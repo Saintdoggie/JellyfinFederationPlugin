@@ -311,7 +311,9 @@
             showToast('Downloading ' + (data.itemName ? data.itemName + ' - ' : '') + pct + '%', 'busy');
             if (liveButton) {
               liveButton.setAttribute('data-state', 'busy');
+              liveButton.setAttribute('data-operation-id', operationId);
               liveButton.querySelector('.federation-badge-label').textContent = pct + '%';
+              liveButton.title = 'Click to cancel';
             }
 
             setTimeout(poll, 1500);
@@ -325,13 +327,16 @@
             showToast('Downloaded ' + (data.itemName || 'item') + ' to this server', 'done');
             if (liveButton) {
               liveButton.setAttribute('data-state', 'done');
+              liveButton.removeAttribute('data-operation-id');
               liveButton.querySelector('.federation-badge-label').textContent = 'Downloaded';
             }
           } else {
-            showToast(data.status || 'Download failed', 'error');
+            var cancelled = /cancel/i.test(data.status || '');
+            showToast(data.status || 'Download failed', cancelled ? 'busy' : 'error');
             if (liveButton) {
               liveButton.setAttribute('data-state', 'error');
-              liveButton.querySelector('.federation-badge-label').textContent = 'Failed';
+              liveButton.removeAttribute('data-operation-id');
+              liveButton.querySelector('.federation-badge-label').textContent = cancelled ? 'Download to server' : 'Failed - retry?';
               liveButton.title = data.status || 'Download failed';
             }
           }
@@ -344,6 +349,22 @@
     };
 
     poll();
+  }
+
+  function cancelDownload(button) {
+    var operationId = button.getAttribute('data-operation-id');
+    if (!operationId) {
+      return;
+    }
+
+    button.querySelector('.federation-badge-label').textContent = 'Cancelling...';
+
+    var token = getToken();
+    fetch('/Plugins/Federation/Download/Cancel/' + operationId, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: token ? { 'X-Emby-Token': token } : {}
+    }).catch(function () { /* the next progress poll tick reconciles state regardless */ });
   }
 
   function startDownload(button, itemId) {
@@ -363,19 +384,20 @@
         if (!result.ok || !result.data || !result.data.operationId) {
           var msg = (result.data && result.data.message) || 'Could not start download';
           button.setAttribute('data-state', 'error');
-          button.querySelector('.federation-badge-label').textContent = 'Failed';
+          button.querySelector('.federation-badge-label').textContent = 'Failed - retry?';
           button.title = msg;
           showToast(msg, 'error');
           hideToastAfter(6000);
           return;
         }
 
+        button.setAttribute('data-operation-id', result.data.operationId);
         setActiveDownload(itemId, result.data.operationId, '');
         pollDownloadProgress(itemId, result.data.operationId, button);
       })
       .catch(function () {
         button.setAttribute('data-state', 'error');
-        button.querySelector('.federation-badge-label').textContent = 'Failed';
+        button.querySelector('.federation-badge-label').textContent = 'Failed - retry?';
         showToast('Could not start download', 'error');
         hideToastAfter(6000);
       });
@@ -501,13 +523,18 @@
         var active = loadActiveDownloads()[rawId];
         if (active) {
           downloadBtn.setAttribute('data-state', 'busy');
+          downloadBtn.setAttribute('data-operation-id', active.operationId);
           downloadBtn.querySelector('.federation-badge-label').textContent = 'Downloading...';
+          downloadBtn.title = 'Click to cancel';
           pollDownloadProgress(rawId, active.operationId, downloadBtn);
         }
 
         downloadBtn.addEventListener('click', function () {
-          if (this.getAttribute('data-state') === 'idle') {
+          var state = this.getAttribute('data-state');
+          if (state === 'idle' || state === 'error') {
             startDownload(this, rawId);
+          } else if (state === 'busy') {
+            cancelDownload(this);
           }
         });
       }

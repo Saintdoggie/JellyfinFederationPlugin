@@ -1379,6 +1379,23 @@ namespace Jellyfin.Plugin.Federation.Api
             });
         }
 
+        /// <summary>
+        /// Admin-triggered: cancels an in-progress download started via
+        /// <see cref="StartDownload"/>. Deletes whatever was written so far.
+        /// </summary>
+        [HttpPost("Download/Cancel/{operationId}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult CancelDownload(string operationId)
+        {
+            var (success, message) = _downloadService.CancelDownload(operationId);
+            if (!success)
+            {
+                return NotFound(new { success, message });
+            }
+
+            return Ok(new { success, message });
+        }
+
         [HttpPost("TestAllServers")]
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> TestAllServers(CancellationToken cancellationToken)
