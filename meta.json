@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.62",
-  "changelog": "Redesigned the settings page's visual style: a consistent spacing/color/radius system now underlies every card, status pill, and alert banner instead of one-off values accumulated across many releases, and the four sections used most often - status, Downloads, Add a friend, and People - now visually stand out from the rarely-touched advanced/diagnostic sections. Collapsed sections got a proper disclosure-triangle indicator, focus states were added to the page's own custom interactive elements (Select all/Clear, collapsible section headers, checkbox rows), and layout now compresses gracefully in a narrower browser window instead of using fixed spacing. Purely visual - no endpoint, field, or behavior changed.\n\n198 tests (unchanged).",
+  "version": "0.0.63",
+  "changelog": "Removed the floating download-progress toast that appeared at the bottom of the screen on every page - it read as this plugin editing jellyfin-web's own chrome, which wasn't the goal. Download progress is still visible everywhere it matters: the pill next to the title and the progress ring drawn on the cover art (both on the item's own page), and the Downloads section on the Federation settings page.\n\n198 tests (unchanged).",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-18T00:00:00Z",
   "imageUrl": "thumb.png"
