@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.59",
+        "changelog": "Fixed the settings page (and the client badge script) potentially serving a stale cached copy after an upgrade: both were served with no caching headers at all, which left it up to each browser's own heuristics whether a revisit re-fetched them or served a stale cached copy - a real, previously-hit source of \"I shipped a fix but it doesn't look like it's there\" (see WebClientInjector's own permission-bug history this session). Both now send an explicit no-store, so an update is always visible on the next page load. This is very likely why the Downloads section added last release wasn't showing up for some admins even though the feature itself was working.\n\nThe Downloads section's progress bar now uses the active theme's own accent color (falling back to Jellyfin's default teal if a theme doesn't define one) instead of a fixed color, so it matches whatever theme is selected rather than always looking the same regardless of it.\n\n196 tests (unchanged).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.59/Jellyfin.Federation.zip",
+        "checksum": "2914420949786667b13b52571c8f9520",
+        "timestamp": "2026-08-18T00:00:00Z"
+      },
+      {
         "version": "0.0.58",
         "changelog": "Added a Downloads section to the Federation settings page: every download in progress (or recently finished) shows its progress bar, transfer speed, and a Cancel button, in one place instead of only being visible on the item's own detail page.\n\nAdded a circular progress ring drawn right over an item's cover art while it's downloading - on the poster in library grids, search results, and home rows, and on the detail page's own cover image - since the item already has its real artwork synced from the friend's server, this just overlays progress on what's already there. Updates live wherever that cover art currently appears, not just on the page you started the download from.\n\nDownload speed is now tracked and shown everywhere progress is shown (the pill, the toast, the new dashboard section, and the ring's percentage) - computed from actual bytes transferred, sampled about once a second so it reads as a stable number instead of jumping around.\n\n196 tests (unchanged - this release is UI/progress-reporting work, the download mechanism itself is unchanged: still a direct authenticated HTTP transfer from the friend's server to yours).",
         "targetAbi": "10.11.0.0",
