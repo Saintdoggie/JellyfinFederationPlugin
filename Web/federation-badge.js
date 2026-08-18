@@ -11,16 +11,14 @@
 
   var STYLE_ID = 'federation-badge-style';
 
-  // A cloud reads immediately as "this comes from somewhere else and is
-  // streamed", which is exactly the fact being conveyed. The previous node-graph
-  // glyph was consistently read as a generic "share" icon instead - it said
-  // nothing about where the file lives, which is the whole point.
+  // A solid cloud reads at any size as "this content lives elsewhere and is
+  // streamed" - the previous outlined cloud-with-an-up-arrow read more like
+  // "upload" than "streamed from somewhere else", which was the opposite of
+  // the fact being conveyed. Filled shape rather than stroked so the corner
+  // badge (12px) doesn't come out as a few faint hairlines over poster art.
   var ICON_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
-    '<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97 6 6 0 0 0-11.66-1.5A3.75 3.75 0 0 0 6.5 19z"></path>' +
-    '<path d="M12 11.5v5.5"></path>' +
-    '<path d="M9.75 14.25 12 11.5l2.25 2.75"></path>' +
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">' +
+    '<path d="M6.5 19h11a4.5 4.5 0 0 0 .5-8.97 6 6 0 0 0-11.66-1.5A3.75 3.75 0 0 0 6.5 19z"></path>' +
     '</svg>';
 
   // Small icon inline with text, used only on the detail page (a fixed,
@@ -30,10 +28,10 @@
 
   var DOWNLOAD_ICON_SVG =
     '<svg viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
     '<path d="M12 4v11"></path>' +
-    '<path d="M7.5 11.5 12 16l4.5-4.5"></path>' +
-    '<path d="M5 19.5h14"></path>' +
+    '<path d="M7 11l5 5 5-5"></path>' +
+    '<path d="M5 20h14"></path>' +
     '</svg>';
 
   // Eye-with-a-slash: the standard "hide this" glyph, distinct enough from the
@@ -54,63 +52,94 @@
 
     var style = document.createElement('style');
     style.id = STYLE_ID;
+    // Whole visual language reworked (0.0.64):
+    //   - font-size on the action pills was .5em relative to the surrounding
+    //     H1, which came out at about 10 px on a 20 px title - tiny, cramped,
+    //     and the reason the row read as "willy nilly" additions to the page
+    //     rather than part of it. Fixed to a real pixel size like every other
+    //     Jellyfin control.
+    //   - Chips now use Jellyfin's own theme variables (--theme-primary-color,
+    //     etc.) with sensible fallbacks, so they inherit whatever theme the
+    //     user is running instead of being a hard-coded blue/brown/red palette
+    //     that clashes with everything but the default dark theme.
+    //   - Neutral outlined chips for source-name and Hide (this is metadata,
+    //     not a call to action); a filled accent chip only for Download, which
+    //     is the actual action on the row.
+    //   - Corner badge: solid disc using the theme accent color, so the
+    //     "federated" mark reads at a glance even on a light-background poster
+    //     that swallowed the previous translucent-black disc.
     style.textContent = [
-      '.federation-badge-icon{display:inline-block;width:14px;height:14px;vertical-align:-2px;margin-right:.35em;opacity:.85;flex-shrink:0;}',
-      '.federation-badge-icon svg{width:100%;height:100%;}',
-      // Corner overlay for gallery/grid cards - stays visible while
-      // scrolling regardless of whether the card shows its title text at
-      // all. Top-left, since Jellyfin's own played-checkmark and
-      // unwatched-count badges live top-right/bottom-right.
-      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:21px;height:21px;border-radius:50%;',
-      'background:rgba(12,14,18,.72);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;',
-      'color:rgba(255,255,255,.92);z-index:3;pointer-events:none;',
-      'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.16);}',
-      '.federation-badge-corner svg{width:12px;height:12px;}',
-      // Progress ring shown centered over a card's/poster's existing cover
-      // art while it's actively being downloaded - see the "Download
-      // progress ring" section below. Solid dark backing circle for the same
-      // reason as the corner badge above: it overlays arbitrary poster art,
-      // not page chrome, so it stays legible regardless of theme.
+      // Inline icon next to text - sizes off the surrounding font-size so
+      // it stays proportional whatever container it lands in.
+      '.federation-badge-icon{display:inline-flex;width:1em;height:1em;margin-right:.3em;flex-shrink:0;align-items:center;justify-content:center;}',
+      '.federation-badge-icon svg{width:100%;height:100%;display:block;}',
+
+      // Corner overlay for gallery/grid cards. Top-left, since Jellyfin's own
+      // played-checkmark and unwatched-count badges live top-right/bottom-right.
+      // Uses the theme accent (falls back to a soft blue) - visible against
+      // arbitrary poster art without needing a translucent-black plate.
+      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;',
+      'background:var(--theme-primary-color,#00a4dc);color:#fff;',
+      'display:flex;align-items:center;justify-content:center;',
+      'z-index:3;pointer-events:none;',
+      'box-shadow:0 1px 3px rgba(0,0,0,.55);}',
+      '.federation-badge-corner svg{width:13px;height:13px;}',
+
+      // Progress ring shown centered over a card/poster while an item is
+      // actively being downloaded. Keeps its own dark backing plate since it
+      // overlays arbitrary poster art, not page chrome.
       '.federation-download-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);',
       'z-index:4;pointer-events:none;filter:drop-shadow(0 1px 4px rgba(0,0,0,.6));}',
-      '.federation-ring-bg{fill:rgba(10,12,16,.62);stroke:rgba(255,255,255,.18);stroke-width:1;}',
-      '.federation-ring-fg{fill:none;stroke:#6fb8ff;stroke-width:3;stroke-linecap:round;}',
-      '.federation-ring-text{fill:#fff;font-size:9px;font-weight:700;font-family:sans-serif;}',
-      // Row of pills below the title, not inline before it - inline
-      // collided badly with stylized show-logo titles (see badgeDetailPage).
-      '.federation-badge-row{display:flex;flex-wrap:wrap;align-items:center;gap:.4em;margin:.4em 0 .6em;}',
-      // Detail page: a labelled chip naming the server. An unlabelled glyph only
-      // says "not from here", which raises the question it should be answering.
-      // Solid-ish background (not just a tinted overlay) plus its own border and
-      // text color, so it reads at the same contrast on a light theme's white
-      // background as it does on a dark theme's near-black one - the colors here
-      // are the chip's own, not inherited from the page.
-      '.federation-badge-pill{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
-      'margin-right:.55em;padding:.2em .6em .2em .45em;border-radius:1em;font-size:.5em;',
-      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;',
-      'background:#1c3a66;color:#bcd8ff;border:1px solid #3c6bb3;}',
-      '.federation-badge-pill .federation-badge-icon{width:1.15em;height:1.15em;margin-right:0;opacity:1;}',
-      '.federation-badge-download{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
-      'margin-right:.55em;padding:.2em .6em .2em .5em;border-radius:1em;font-size:.5em;',
-      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;cursor:pointer;',
-      'background:#20304a;color:#dbe6f5;border:1px solid #4a5f80;}',
-      '.federation-badge-download:hover{background:#2a3f5f;}',
+      '.federation-ring-bg{fill:rgba(10,12,16,.66);stroke:rgba(255,255,255,.2);stroke-width:1;}',
+      '.federation-ring-fg{fill:none;stroke:var(--theme-primary-color,#00a4dc);stroke-width:3;stroke-linecap:round;}',
+      '.federation-ring-text{fill:#fff;font-size:9px;font-weight:700;font-family:inherit;}',
+
+      // Row of chips sits below the title. Fixed pixel font-size instead of
+      // .5em: the previous relative sizing shrank against big H1 titles into
+      // something that looked pasted on. gap is a bit larger so chips aren't
+      // touching each other.
+      '.federation-badge-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 14px;font-size:12px;line-height:1;}',
+
+      // Shared chip shape. Neutral outlined by default - reads as metadata,
+      // not a shouty call to action. Individual chip classes below tint it.
+      '.federation-badge-row > span{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;',
+      'padding:6px 12px;border-radius:999px;font-weight:600;letter-spacing:.03em;',
+      'text-transform:uppercase;white-space:nowrap;',
+      'background:rgba(255,255,255,.06);color:inherit;border:1px solid rgba(255,255,255,.16);',
+      'transition:background-color .15s ease,border-color .15s ease;}',
+
+      // Source pill - names the server. Slightly more prominent than pure
+      // outlined so it reads as the first thing in the row, but not clickable
+      // colored so nobody tries to press it. Uses the theme accent for its
+      // border/icon tint.
+      '.federation-badge-pill{color:var(--theme-primary-color,#00a4dc);',
+      'border-color:color-mix(in srgb,var(--theme-primary-color,#00a4dc) 45%,transparent) !important;',
+      'background:color-mix(in srgb,var(--theme-primary-color,#00a4dc) 10%,transparent) !important;}',
+
+      // Download - the one action chip on the row, filled in the theme accent
+      // so it visually invites a click.
+      '.federation-badge-download{cursor:pointer;color:#fff !important;',
+      'background:var(--theme-primary-color,#00a4dc) !important;border-color:transparent !important;}',
+      '.federation-badge-download:hover{filter:brightness(1.1);}',
       '.federation-badge-download[data-state="busy"]{cursor:default;opacity:.85;}',
-      '.federation-badge-download[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
-      '.federation-badge-download[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
-      '.federation-badge-download .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}',
-      // "Hide" chip - same shape/interaction as the download chip above (a
-      // clickable pill with an idle/busy/done/error state), but a distinct,
-      // neutral color so it doesn't read as another "save a copy" action.
-      '.federation-badge-hide{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;',
-      'margin-right:.55em;padding:.2em .6em .2em .5em;border-radius:1em;font-size:.5em;',
-      'font-weight:600;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;cursor:pointer;',
-      'background:#3a2a20;color:#f0ddc9;border:1px solid #806048;}',
-      '.federation-badge-hide:hover{background:#4a3626;}',
+      '.federation-badge-download[data-state="done"]{background:#2e8b57 !important;cursor:default;}',
+      '.federation-badge-download[data-state="error"]{background:#a83232 !important;}',
+
+      // Hide - the metadata-y neutral outlined chip, no fill, no accent -
+      // matches the default styling above.
+      '.federation-badge-hide{cursor:pointer;}',
+      '.federation-badge-hide:hover{background:rgba(255,255,255,.12) !important;border-color:rgba(255,255,255,.28) !important;}',
       '.federation-badge-hide[data-state="busy"]{cursor:default;opacity:.85;}',
-      '.federation-badge-hide[data-state="done"]{background:#1e4d2b;border-color:#3c8a55;color:#c9f0d3;cursor:default;}',
-      '.federation-badge-hide[data-state="error"]{background:#5a2323;border-color:#a34a4a;color:#f5cccc;}',
-      '.federation-badge-hide .federation-badge-icon{width:1.1em;height:1.1em;margin-right:0;opacity:1;}'
+      '.federation-badge-hide[data-state="done"]{background:#2e8b57 !important;border-color:transparent !important;color:#fff !important;cursor:default;}',
+      '.federation-badge-hide[data-state="error"]{background:#a83232 !important;border-color:transparent !important;color:#fff !important;}',
+
+      // Light-theme override - the outlined-on-transparent look above assumes
+      // a dark page background. Under Jellyfin's built-in light theme the
+      // white-alpha border/background disappear against a white page.
+      '@media (prefers-color-scheme:light){',
+      '.federation-badge-row > span{background:rgba(0,0,0,.04);border-color:rgba(0,0,0,.14);}',
+      '.federation-badge-hide:hover{background:rgba(0,0,0,.08) !important;border-color:rgba(0,0,0,.24) !important;}',
+      '}'
     ].join('');
     document.head.appendChild(style);
   }
