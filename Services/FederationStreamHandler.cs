@@ -126,10 +126,60 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var range = request.Headers["Range"].FirstOrDefault();
                 var url = BuildDirectStreamUrl(serverId, remoteItemId, isAudio);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
+                await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error proxying stream");
+                if (!response.HasStarted)
+                {
+                    response.StatusCode = StatusCodes.Status500InternalServerError;
+                }
+                else
+                {
+                    response.HttpContext.Abort();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Relays the byte stream for an already-authorized Direct-mode gateway
+        /// request (see <c>FederationController.DirectStream</c>): the controller has
+        /// already validated the caller's playback token and built the loopback URL
+        /// to this server's own native stream endpoint, so no server/access-control
+        /// lookup happens here - just the shared relay loop.
+        /// </summary>
+        public Task HandleDirectGatewayAsync(
+            string loopbackUrl,
+            HttpRequest request,
+            HttpResponse response,
+            CancellationToken cancellationToken)
+        {
+            return RelayAsync(loopbackUrl, request, response, cancellationToken);
+        }
+
+        /// <summary>
+        /// Shared relay core used by both <see cref="HandleProxyAsync"/> (Proxy mode,
+        /// fetching from a friend's remote server) and
+        /// <see cref="HandleDirectGatewayAsync"/> (Direct mode's token-gated gateway,
+        /// fetching from this server's own loopback). Streams <paramref name="url"/>'s
+        /// body through to <paramref name="response"/>, preserving Range/resume
+        /// semantics - see the inline comments below for the hard-won bugfix
+        /// rationale (content-length mismatches, range-resume correctness, Kestrel
+        /// abort semantics) this logic encodes.
+        /// </summary>
+        private async Task RelayAsync(
+            string url,
+            HttpRequest request,
+            HttpResponse response,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var range = request.Headers["Range"].FirstOrDefault();
                 var (rangeStartInit, rangeEnd) = ParseRange(range);
                 var rangeStart = rangeStartInit;
                 var headersSent = false;
@@ -252,8 +302,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         _logger.LogWarning(
                             ex,
-                            "[Federation] Proxy stream for item {ItemId} stalled/dropped at byte {Offset} (attempt {Attempt}/{Max}), retrying",
-                            remoteItemId,
+                            "[Federation] Relayed stream for {Url} stalled/dropped at byte {Offset} (attempt {Attempt}/{Max}), retrying",
+                            url,
                             rangeStart,
                             attempt,
                             MaxAttempts);
@@ -280,12 +330,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 // start, then stutters every ~20s" actually was. When nothing was
                 // sent yet, aborting is still safe: the client is already gone
                 // either way.
-                _logger.LogInformation("[Federation] Proxy stream cancelled by client");
+                _logger.LogInformation("[Federation] Relayed stream cancelled by client");
                 response.HttpContext.Abort();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Error proxying stream");
+                _logger.LogError(ex, "[Federation] Error relaying stream");
                 if (!response.HasStarted)
                 {
                     response.StatusCode = StatusCodes.Status500InternalServerError;

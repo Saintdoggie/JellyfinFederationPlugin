@@ -106,35 +106,35 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_DirectMode_GetsRemoteStreamUrlAsPath_SoTheSourceIsNotAPlaceholder()
+    public void Movie_DirectMode_NeverGetsAStaticStreamUrlAsPath_SoTheRealApiKeyNeverReachesAClient()
     {
-        // WanCapMode.Off: this test is about the historical placeholder-source bug,
-        // unrelated to WAN capping - Auto's default of never stamping a static Path
-        // (see the WanCapMode_* tests) would make item.Path null here regardless of
-        // whether this specific source needs capping, which isn't what this test
-        // means to exercise.
+        // Security fix: Direct mode used to stamp a URL with the remote server's
+        // real, long-lived api_key embedded in the query string directly onto the
+        // item's static Path - any logged-in user on this server, not just its
+        // admin, could read that key straight out of dev tools/network tab and use
+        // it directly against the friend's server. BuildPlaybackUrl now always
+        // returns null for Direct mode (see its doc comment), so no credential-
+        // bearing URL is ever persisted at sync time. The real, working, per-session
+        // URL - a short-lived, single-item-scoped playback token, not the raw key -
+        // is instead built live by FederationMediaSourceProvider.GetMediaSources on
+        // every actual PlaybackInfo request.
         var server = AddServer();
         server.WanCapMode = Configuration.WanCapMode.Off;
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
-        Assert.False(string.IsNullOrEmpty(item.Path));
-        Assert.Equal(
-            $"http://friend.example:8096/Videos/{remoteId:N}/stream?api_key=secret-key&Static=true",
-            item.Path);
-
-        // IsShortcut is deliberately never set: ProbeProvider.FetchShortcutInfo
-        // unconditionally does File.ReadAllLines(item.Path), expecting Path to be a
-        // real local .strm file rather than the URL itself, which throws on every
-        // metadata refresh (see the comment in FederationLibraryManager.MaterializeItem).
+        Assert.True(string.IsNullOrEmpty(item.Path));
         Assert.False(item.IsShortcut);
     }
 
     [Fact]
-    public void Movie_WithPath_ResolvesLocationTypeRemote()
+    public void Movie_ProxyMode_WithPath_ResolvesLocationTypeRemote()
     {
-        var server = AddServer();
-        server.WanCapMode = Configuration.WanCapMode.Off; // needs a stamped Path - see the comment on the Off test above
+        // Direct mode no longer stamps a static Path at all (see the test above), so
+        // this LocationType assertion - which needs a real http Path to exercise -
+        // is now covered against a Proxy-mode item instead.
+        AddServer(StreamingMode.Proxy);
+        _plugin.Configuration.ServerUrl = "https://my-server.example";
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
 
         // An http path resolves to Remote from BaseItem's own logic. A null path

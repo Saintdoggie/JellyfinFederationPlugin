@@ -7,6 +7,7 @@ using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -35,6 +36,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly ILibraryManager _libraryManager;
         private readonly IUserManager _userManager;
         private readonly FederationDownloadService _downloadService;
+        private readonly FederationPlaybackTokenService _playbackTokens;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -49,7 +51,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationFriendService friends,
             ILibraryManager libraryManager,
             IUserManager userManager,
-            FederationDownloadService downloadService)
+            FederationDownloadService downloadService,
+            FederationPlaybackTokenService playbackTokens)
         {
             _logger = logger;
             _syncService = syncService;
@@ -64,6 +67,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _friends = friends;
             _libraryManager = libraryManager;
             _downloadService = downloadService;
+            _playbackTokens = playbackTokens;
         }
 
         #region Configuration
@@ -1132,6 +1136,65 @@ namespace Jellyfin.Plugin.Federation.Api
             return new EmptyResult();
         }
 
+        /// <summary>
+        /// Server-to-server: a friend server asking us to mint a short-lived,
+        /// single-item-scoped playback token, so its own users can Direct-mode-play
+        /// an item of ours without ever seeing the real api_key we gave them. Not
+        /// AllowAnonymous (a friend's real api_key is required to call this) and not
+        /// RequiresElevation (this is a friend server calling on its own users'
+        /// behalf, not this server's own admin) - plain [Authorize], matching the
+        /// other genuine server-to-server endpoints in this file (e.g. Friends/List,
+        /// Friends/SharedUserUpdate).
+        /// </summary>
+        [HttpPost("PlaybackToken")]
+        [Authorize]
+        public IActionResult IssuePlaybackToken([FromBody] IssuePlaybackTokenRequest? request)
+        {
+            if (!Guid.TryParse(request?.ItemId, out var itemGuid))
+            {
+                return BadRequest(new { error = "Invalid item id" });
+            }
+
+            var token = _playbackTokens.Issue(itemGuid.ToString("N"));
+            return Ok(new { token, expiresUtc = DateTime.UtcNow.AddHours(24) });
+        }
+
+        /// <summary>
+        /// Direct-mode's token-gated relay gateway: a friend's client fetches media
+        /// straight from here rather than being handed this server's real api_key
+        /// (see <see cref="FederationPlaybackTokenService"/> and
+        /// <see cref="Services.FederationMediaSourceProvider"/> for the full
+        /// rationale). Anonymous for the same reason as <see cref="Stream"/> - media
+        /// players fetch media URLs without Jellyfin auth headers - but bounded to a
+        /// short-lived token minted for exactly this item, not a standing credential.
+        /// </summary>
+        [HttpGet("DirectStream/{itemId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> DirectStream(
+            string itemId,
+            [FromQuery] string token,
+            CancellationToken cancellationToken,
+            [FromQuery] bool audio = false)
+        {
+            if (!Guid.TryParse(itemId, out var itemGuid))
+            {
+                return BadRequest("Invalid item id");
+            }
+
+            if (!_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
+            var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
+            var endpoint = audio ? "Audio" : "Videos";
+            var loopbackUrl = $"{localUrl}/{endpoint}/{itemGuid:N}/stream?api_key={Uri.EscapeDataString(internalRelayKey)}&Static=true";
+
+            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken).ConfigureAwait(false);
+            return new EmptyResult();
+        }
+
         #endregion
 
         #region Hidden Items (local suppression)
@@ -1488,6 +1551,7 @@ namespace Jellyfin.Plugin.Federation.Api
             return new
             {
                 config.ServerUrl,
+                config.InternalServerUrl,
                 config.CachePath,
                 config.EnableDedup,
                 config.DedupProviderIds,
@@ -1543,6 +1607,11 @@ namespace Jellyfin.Plugin.Federation.Api
     }
 
     public class DownloadItemBody
+    {
+        public string? ItemId { get; set; }
+    }
+
+    public class IssuePlaybackTokenRequest
     {
         public string? ItemId { get; set; }
     }

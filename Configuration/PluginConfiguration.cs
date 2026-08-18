@@ -11,8 +11,39 @@ namespace Jellyfin.Plugin.Federation.Configuration
     {
         /// <summary>
         /// Gets or sets the local server's own reachable URL (auto-detected, overridable).
+        /// This is the PUBLIC address handed to peers for handshakes and Direct-mode
+        /// playback URLs - it is never used for this server's own Proxy-mode stream
+        /// fetches, see <see cref="InternalServerUrl"/>.
         /// </summary>
         public string ServerUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the base URL this server's own transcoder should use to fetch
+        /// a Proxy-mode federated stream from itself (see FederationLibraryManager's
+        /// GetInternalPlaybackBaseUrl and FederationMediaSourceProvider's
+        /// ResolveLocalServerUrl). Blank means "use loopback" - the correct default
+        /// for the overwhelming majority of installs, including every VPS/tunnel/
+        /// reverse-proxy setup, since that avoids ffmpeg fetching the stream back
+        /// through the public route just to reach itself. Only needs setting when
+        /// loopback genuinely isn't reachable from where ffmpeg runs - e.g. Jellyfin
+        /// running in a container without a shared network namespace with itself
+        /// (rare), or a non-default Kestrel port that can't be auto-detected during a
+        /// background sync (no live request to read the port from at that point).
+        /// </summary>
+        public string InternalServerUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets this server's own internal relay API key: a dedicated
+        /// Jellyfin ApiKey, auto-created on first use, that this server uses purely
+        /// server-side to fetch its own native <c>/Videos/{id}/stream</c> or
+        /// <c>/Audio/{id}/stream</c> endpoint over loopback when relaying a Direct-mode
+        /// federated stream on behalf of a friend server (see
+        /// <c>FederationController.DirectStream</c>). Never transmitted over the
+        /// network beyond localhost, never shown in any UI or API response - unlike
+        /// <see cref="ServerUrl"/>/<see cref="InternalServerUrl"/> above, this is a
+        /// secret and must be excluded from <c>FederationController.Sanitize</c>.
+        /// </summary>
+        public string InternalRelayApiKey { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or sets the path where the federation cache is persisted.

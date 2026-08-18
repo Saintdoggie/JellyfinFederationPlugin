@@ -78,6 +78,54 @@ namespace Jellyfin.Plugin.Federation.Services
             _libraryManager = libraryManager;
         }
 
+        // Guards check-then-create below against a race on first concurrent use
+        // (two Direct-mode plays landing on FederationController.DirectStream at
+        // almost the same instant, before Configuration.InternalRelayApiKey has been
+        // persisted yet). This service is registered Scoped (see
+        // PluginServiceRegistrator - it needs IAuthenticationManager, which Jellyfin
+        // registers scoped), so a new instance is constructed per request; the lock
+        // has to be static to actually serialize across those instances. In practice
+        // this happens at most once per server lifetime.
+        private static readonly SemaphoreSlim InternalRelayKeyLock = new(1, 1);
+
+        /// <summary>
+        /// Gets this server's own internal relay API key (see
+        /// <see cref="PluginConfiguration.InternalRelayApiKey"/>), creating and
+        /// persisting one on first use. Purely server-side plumbing: this key is
+        /// never sent to a friend server or exposed to any client, only used
+        /// locally to fetch this server's own native stream endpoint over loopback
+        /// when relaying a Direct-mode playback-token request.
+        /// </summary>
+        public async Task<string> GetOrCreateInternalRelayApiKeyAsync()
+        {
+            var config = Plugin.Instance!.Configuration;
+            if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
+            {
+                return config.InternalRelayApiKey;
+            }
+
+            await InternalRelayKeyLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Re-check: another request may have already created and persisted
+                // one while this one was waiting on the lock.
+                config = Plugin.Instance!.Configuration;
+                if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
+                {
+                    return config.InternalRelayApiKey;
+                }
+
+                var apiKey = await CreateApiKeyAsync("Federation internal relay").ConfigureAwait(false);
+                config.InternalRelayApiKey = apiKey;
+                Plugin.Instance.SaveConfiguration();
+                return apiKey;
+            }
+            finally
+            {
+                InternalRelayKeyLock.Release();
+            }
+        }
+
         /// <summary>
         /// Gets this server's persistent federation identity, generating and saving
         /// one on first use. Not part of the config's default property initializer:
