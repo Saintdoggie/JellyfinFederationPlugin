@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.58",
+        "changelog": "Added a Downloads section to the Federation settings page: every download in progress (or recently finished) shows its progress bar, transfer speed, and a Cancel button, in one place instead of only being visible on the item's own detail page.\n\nAdded a circular progress ring drawn right over an item's cover art while it's downloading - on the poster in library grids, search results, and home rows, and on the detail page's own cover image - since the item already has its real artwork synced from the friend's server, this just overlays progress on what's already there. Updates live wherever that cover art currently appears, not just on the page you started the download from.\n\nDownload speed is now tracked and shown everywhere progress is shown (the pill, the toast, the new dashboard section, and the ring's percentage) - computed from actual bytes transferred, sampled about once a second so it reads as a stable number instead of jumping around.\n\n196 tests (unchanged - this release is UI/progress-reporting work, the download mechanism itself is unchanged: still a direct authenticated HTTP transfer from the friend's server to yours).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.58/Jellyfin.Federation.zip",
+        "checksum": "fbfa40ff1b29f2bfcd25673c14bc0ae1",
+        "timestamp": "2026-08-18T00:00:00Z"
+      },
+      {
         "version": "0.0.57",
         "changelog": "Added the ability to cancel a download in progress: click the \"Download to server\" pill again while it's downloading (it now shows a percentage and \"click to cancel\") to stop it - the partially-written file is deleted and the connection to the friend's server is closed immediately, rather than letting it run to completion in the background with no way to stop it. This also fixes a real gap: the download job previously ignored its cancellation token entirely, so there was no way to interrupt one even server-side.\n\nA failed or cancelled download now leaves the pill clickable again right away (labeled \"Failed - retry?\") instead of stuck in a dead-end state, so retrying doesn't require leaving and reopening the item's page.\n\nAlso, for anyone wondering: downloads already go directly from your friend's server to yours over a plain authenticated HTTP request - no relay, no third party, no cloud service in between. This release doesn't change that, just adds a way to stop one partway through.\n\n196 tests (up from 194).",
         "targetAbi": "10.11.0.0",
