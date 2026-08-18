@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.61",
-  "changelog": "Backfills last release's MediaStreams fix onto items that already existed before it: previously only newly-synced items got real codec/resolution/audio data saved (existing items only ever had their stream URL and duration refreshed, not this), so anything already in your library would have kept probing/transcoding until it happened to be deleted and recreated. Reconciliation now does a one-time backfill for any federated item that doesn't have stream data yet - no full resync or re-add needed, it self-heals on the next scheduled sync.\n\n198 tests (unchanged).",
+  "version": "0.0.62",
+  "changelog": "Redesigned the settings page's visual style: a consistent spacing/color/radius system now underlies every card, status pill, and alert banner instead of one-off values accumulated across many releases, and the four sections used most often - status, Downloads, Add a friend, and People - now visually stand out from the rarely-touched advanced/diagnostic sections. Collapsed sections got a proper disclosure-triangle indicator, focus states were added to the page's own custom interactive elements (Select all/Clear, collapsible section headers, checkbox rows), and layout now compresses gracefully in a narrower browser window instead of using fixed spacing. Purely visual - no endpoint, field, or behavior changed.\n\n198 tests (unchanged).",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-08-18T00:00:00Z",
   "imageUrl": "thumb.png"
