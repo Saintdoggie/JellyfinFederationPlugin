@@ -154,19 +154,96 @@ public class RemoteServerClientPlaybackTests
         Assert.Equal(1, handler.UsersEndpointCallCount);
     }
 
+    /// <summary>
+    /// Regression test for the actual "friend's library won't sync" bug: GetItemsAsync
+    /// used to read _server.UserId directly and give up (returning null - "sync failed,
+    /// preserve cached data") whenever it was empty, with none of GetPlaybackInfoAsync's
+    /// admin-fallback resolution. Any friend who hadn't yet explicitly configured
+    /// per-friend sharing (which is what populates UserId) could never sync at all, even
+    /// though the config page's own tooltip already promised a fallback to "an
+    /// administrator account on their server".
+    /// </summary>
+    [Fact]
+    public async Task GetItemsAsync_MissingUserId_FallsBackToAdministrator_InsteadOfFailingSyncEntirely()
+    {
+        var usersJson = "[" +
+                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"non-admin\",\"Policy\":{\"IsAdministrator\":false}}," +
+                        "{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}" +
+                        "]";
+        var itemsJson = "{\"Items\":[{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}]}";
+
+        var handler = new FakeHttpMessageHandler(usersJson, "{}", itemsJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = "Remote",
+            Url = "http://fake.local",
+            ApiKey = "key",
+            UserId = string.Empty,
+            Enabled = true
+        };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetItemsAsync(cancellationToken: CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Single(result!);
+        Assert.Equal("A Movie", result[0].Name);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.ItemsUserId);
+        Assert.Equal(string.Empty, server.UserId);
+    }
+
+    /// <summary>
+    /// Same bug, GetItemAsync (single-item fetch) side.
+    /// </summary>
+    [Fact]
+    public async Task GetItemAsync_MissingUserId_FallsBackToAdministrator_InsteadOfFailingSyncEntirely()
+    {
+        var usersJson = "[{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}]";
+        var itemJson = "{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}";
+
+        var handler = new FakeHttpMessageHandler(usersJson, "{}", "{\"Items\":[]}", itemJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = "Remote",
+            Url = "http://fake.local",
+            ApiKey = "key",
+            UserId = string.Empty,
+            Enabled = true
+        };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetItemAsync("33333333-3333-3333-3333-333333333333", cancellationToken: CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("A Movie", result!.Name);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.ItemUserId);
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _usersJson;
         private readonly string _playbackJson;
+        private readonly string _itemsJson;
+        private readonly string _itemJson;
 
         public bool CalledUsersEndpoint { get; private set; }
         public int UsersEndpointCallCount { get; private set; }
         public string? PlaybackUserId { get; private set; }
+        public string? ItemsUserId { get; private set; }
+        public string? ItemUserId { get; private set; }
 
-        public FakeHttpMessageHandler(string usersJson, string playbackJson)
+        public FakeHttpMessageHandler(string usersJson, string playbackJson, string itemsJson = "{\"Items\":[]}", string itemJson = "{}")
         {
             _usersJson = usersJson;
             _playbackJson = playbackJson;
+            _itemsJson = itemsJson;
+            _itemJson = itemJson;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -190,6 +267,22 @@ public class RemoteServerClientPlaybackTests
                 }
 
                 return Task.FromResult(Json(_playbackJson));
+            }
+
+            // /Users/{id}/Items/{itemId} (single item) vs /Users/{id}/Items?... (list) -
+            // matched before the generic /Items/ list case since both contain "/Items".
+            var itemsMatch = System.Text.RegularExpressions.Regex.Match(path, "^/Users/([^/]+)/Items/([^/]+)$");
+            if (itemsMatch.Success)
+            {
+                ItemUserId = itemsMatch.Groups[1].Value;
+                return Task.FromResult(Json(_itemJson));
+            }
+
+            var listMatch = System.Text.RegularExpressions.Regex.Match(path, "^/Users/([^/]+)/Items$");
+            if (listMatch.Success)
+            {
+                ItemsUserId = listMatch.Groups[1].Value;
+                return Task.FromResult(Json(_itemsJson));
             }
 
             return Task.FromResult(Json("{\"Items\":[]}"));

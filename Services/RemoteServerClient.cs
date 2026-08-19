@@ -45,9 +45,14 @@ namespace Jellyfin.Plugin.Federation.Services
         // request, ...) - indistinguishable from an admin having configured it
         // themselves, and immune to an admin's later attempt to clear or change it.
         // Keyed by server id so this still skips the GetUsersAsync round trip on
-        // every subsequent play for the rest of this process's lifetime, without
-        // that persistence risk.
-        private static readonly ConcurrentDictionary<string, string> ResolvedPlaybackUserIdCache = new(StringComparer.OrdinalIgnoreCase);
+        // every subsequent call for the rest of this process's lifetime, without
+        // that persistence risk. Shared by every method that needs to act as some
+        // remote user (playback, browsing, syncing) - see ResolveActingUserIdAsync.
+        private static readonly ConcurrentDictionary<string, string> ResolvedActingUserIdCache = new(StringComparer.OrdinalIgnoreCase);
+
+        // Matches Plugin.Id in Plugin.cs - duplicated here rather than referenced
+        // directly so this client has no dependency on the Plugin singleton.
+        private static readonly Guid FederationPluginId = Guid.Parse("495feadb-d27f-46c3-bb9b-0732ae8926fa");
 
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
@@ -85,6 +90,69 @@ namespace Jellyfin.Plugin.Federation.Services
         public RemoteServer ServerConfig => _server;
 
         /// <summary>
+        /// Resolves which remote user id a request should act as: an explicit
+        /// argument wins, then the server's configured UserId, then a user
+        /// resolved automatically (preferring an administrator, so restricted
+        /// libraries/EnableMediaPlayback on a non-admin account don't silently
+        /// hide or block content) and cached for this process's lifetime so
+        /// only the first call per server pays the extra GetUsersAsync round
+        /// trip. Returns null only when the remote has no users at all (or is
+        /// unreachable) - callers must treat that as "cannot act on this
+        /// server right now" the same way they already treat other failures.
+        ///
+        /// Every caller that needs to act as some remote user (sync, browsing,
+        /// playback) should go through this rather than reading
+        /// <c>_server.UserId</c> directly - GetItemsAsync/GetItemAsync used to
+        /// skip this fallback entirely and just give up when UserId wasn't
+        /// configured, which is what silently broke syncing for any friend who
+        /// hadn't explicitly picked a restricted sharing account yet, even
+        /// though the config page's own tooltip already promised this exact
+        /// fallback ("otherwise falls back to an administrator account").
+        /// </summary>
+        private async Task<string?> ResolveActingUserIdAsync(string? explicitUserId, CancellationToken cancellationToken)
+        {
+            var userIdToUse = explicitUserId ?? _server.UserId;
+            if (!string.IsNullOrEmpty(userIdToUse))
+            {
+                return userIdToUse;
+            }
+
+            if (explicitUserId == null && ResolvedActingUserIdCache.TryGetValue(_server.Id, out var previouslyResolved))
+            {
+                return previouslyResolved;
+            }
+
+            _logger.LogWarning(
+                "[Federation] No UserId configured for remote server {ServerName}; resolving a user automatically",
+                _server.Name);
+
+            var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
+            var chosen = users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault();
+            userIdToUse = chosen?.Id;
+
+            if (explicitUserId == null && userIdToUse != null)
+            {
+                ResolvedActingUserIdCache[_server.Id] = userIdToUse;
+            }
+
+            if (chosen != null && !chosen.IsAdministrator)
+            {
+                _logger.LogWarning(
+                    "[Federation] No administrator account found on server {ServerName}; falling back to non-admin user {UserName} ({UserId}), which may be restricted from seeing some content",
+                    _server.Name,
+                    chosen.Name,
+                    chosen.Id);
+            }
+
+            if (userIdToUse == null)
+            {
+                _logger.LogWarning("[Federation] Could not resolve any user on remote server {ServerName}", _server.Name);
+            }
+
+            return userIdToUse;
+        }
+
+        /// <summary>
         /// Gets items from the remote server, including ProviderIds and People.
         /// Returns null when the request fails (callers must treat null as
         /// "sync failed" and preserve any existing cached data).
@@ -101,7 +169,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var userIdToUse = userId ?? _server.UserId;
+                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
                     _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
@@ -195,7 +263,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var userIdToUse = userId ?? _server.UserId;
+                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
                     _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
@@ -231,66 +299,15 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var userIdToUse = userId ?? _server.UserId;
-                bool fallbackToFirstUser = false;
-                if (string.IsNullOrEmpty(userIdToUse) && userId == null
-                    && ResolvedPlaybackUserIdCache.TryGetValue(_server.Id, out var previouslyResolved))
-                {
-                    userIdToUse = previouslyResolved;
-                    fallbackToFirstUser = true;
-                }
-
-                if (string.IsNullOrEmpty(userIdToUse))
-                {
-                    // PlaybackInfo is a per-user endpoint. When no user is stored on
-                    // the server config, fall back to a remote user so we can still read
-                    // stream details instead of failing playback outright. Prefer an
-                    // administrator: a non-admin user can be restricted to specific
-                    // libraries/folders (UserPolicy.EnabledFolders) or have
-                    // EnableMediaPlayback turned off entirely, and either one makes
-                    // PlaybackInfo come back empty for an otherwise-visible item -
-                    // "shows up but can't stream". An arbitrary first user risks hitting
-                    // exactly that; an admin has no such restriction by default.
-                    _logger.LogWarning(
-                        "[Federation] No UserId configured for remote server {ServerName}; resolving playback user automatically for item {ItemId}",
-                        _server.Name,
-                        itemId);
-
-                    var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
-                    var chosen = users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault();
-                    userIdToUse = chosen?.Id;
-                    fallbackToFirstUser = userIdToUse != null;
-
-                    if (userId == null && userIdToUse != null)
-                    {
-                        // Cached in-memory only (see ResolvedPlaybackUserIdCache) so
-                        // every future play of any item on this server skips this
-                        // GetUsersAsync round trip for the rest of this process's
-                        // lifetime, without ever touching the persisted config - an
-                        // admin who configures (or clears) UserId always wins,
-                        // immediately, not just after a restart.
-                        ResolvedPlaybackUserIdCache[_server.Id] = userIdToUse;
-                    }
-
-                    if (chosen != null && !chosen.IsAdministrator)
-                    {
-                        _logger.LogWarning(
-                            "[Federation] No administrator account found on server {ServerName}; falling back to non-admin user {UserName} ({UserId}), which may be restricted from playing some items",
-                            _server.Name,
-                            chosen.Name,
-                            chosen.Id);
-                    }
-
-                    if (chosen != null && chosen.Policy != null && !chosen.Policy.EnableMediaPlayback)
-                    {
-                        _logger.LogWarning(
-                            "[Federation] User {UserName} ({UserId}) on server {ServerName} has media playback disabled in their policy; PlaybackInfo for item {ItemId} will likely come back empty",
-                            chosen.Name,
-                            chosen.Id,
-                            _server.Name,
-                            itemId);
-                    }
-                }
+                // PlaybackInfo is a per-user endpoint, so this still needs to resolve
+                // *some* remote user even when nothing is configured - see
+                // ResolveActingUserIdAsync. Doing this via the shared helper (rather
+                // than this method's own former copy of the same fallback) means a
+                // UserId resolved once here is immediately reusable by sync/browsing
+                // calls too, and vice versa, instead of each maintaining its own
+                // separate cache entry for the same server.
+                var usedFallback = userId == null && string.IsNullOrEmpty(_server.UserId);
+                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
 
                 if (string.IsNullOrEmpty(userIdToUse))
                 {
@@ -301,7 +318,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                if (fallbackToFirstUser)
+                if (usedFallback)
+                {
+                    _logger.LogInformation(
+                        "[Federation] Resolved playback user {UserId} on server {ServerName} for item {ItemId} (no configured UserId)",
+                        userIdToUse,
+                        _server.Name,
+                        itemId);
+                }
                 {
                     _logger.LogInformation(
                         "[Federation] Resolved playback user {UserId} on server {ServerName} for item {ItemId} (no configured UserId)",
@@ -402,6 +426,48 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "Error getting system info from remote server {ServerName}", _server.Name);
                 return (null, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Gets the version of the Federation plugin installed on the remote
+        /// server, via Jellyfin's own <c>/Plugins</c> endpoint (not a Federation
+        /// endpoint - works even against a remote running a version too old to
+        /// have any given diagnostic route). Null if the plugin isn't installed
+        /// there, or the version can't be determined - most usefully surfaced by
+        /// <see cref="Api.FederationController.TestServer"/> so a version
+        /// mismatch (e.g. one side stuck on an old release with a since-fixed
+        /// sync bug) is visible before it turns into a confusing support report.
+        /// </summary>
+        public async Task<string?> GetRemoteFederationPluginVersionAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync("/Plugins", cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(content);
+                foreach (var plugin in doc.RootElement.EnumerateArray())
+                {
+                    if (plugin.TryGetProperty("Id", out var idProp)
+                        && Guid.TryParse(idProp.GetString(), out var id)
+                        && id == FederationPluginId
+                        && plugin.TryGetProperty("Version", out var versionProp))
+                    {
+                        return versionProp.GetString();
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error getting Federation plugin version from remote server {ServerName}", _server.Name);
+                return null;
             }
         }
 

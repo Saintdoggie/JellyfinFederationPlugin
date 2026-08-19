@@ -38,6 +38,52 @@ namespace Jellyfin.Plugin.Federation.Configuration
         }
 
         /// <summary>
+        /// True when a URL's host is a loopback or RFC 1918 private-range IP address
+        /// (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), or an IPv6
+        /// loopback/unique-local equivalent. Used to catch a server's own public URL
+        /// being auto-detected from a private-network request - e.g. an admin
+        /// managing Jellyfin over their LAN when accepting a friend request - which
+        /// silently hands a friend an address only reachable on that LAN. A hostname
+        /// (not a literal IP) is never flagged: DNS resolution isn't attempted here,
+        /// and a hostname pointing at a private IP is normally deliberate (split-horizon
+        /// DNS, VPN-only setups) rather than an accident.
+        /// </summary>
+        public static bool IsPrivateOrLoopbackHost(string? url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            if (!System.Net.IPAddress.TryParse(uri.Host, out var ip))
+            {
+                return false;
+            }
+
+            if (System.Net.IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                var b = ip.GetAddressBytes();
+                return b[0] == 10
+                    || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                    || (b[0] == 192 && b[1] == 168);
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                // fc00::/7 (unique local) and fe80::/10 (link-local).
+                var b = ip.GetAddressBytes();
+                return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80);
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Validates a full configuration, returning all problems found.
         /// </summary>
         public static IReadOnlyList<string> Validate(PluginConfiguration config)

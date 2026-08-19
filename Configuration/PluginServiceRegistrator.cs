@@ -1,8 +1,10 @@
+using Jellyfin.Plugin.Federation.Middleware;
 using Jellyfin.Plugin.Federation.Providers;
 using Jellyfin.Plugin.Federation.Services;
 using Jellyfin.Plugin.Federation.Tasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -43,6 +45,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
             serviceCollection.AddSingleton<FederationRefreshTask>();
             serviceCollection.AddSingleton<WebClientInjector>();
+
+            // Serve-time fallback for the file-write injection above: works even
+            // on read-only web-root filesystems, and self-heals immediately after
+            // a jellyfin-web upgrade replaces index.html. See BadgeScriptInjectionMiddleware.
+            serviceCollection.AddSingleton<IStartupFilter, FederationBadgeStartupFilter>();
+
             serviceCollection.AddHostedService<FederationEntryPoint>();
         }
     }
