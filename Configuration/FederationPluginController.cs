@@ -335,7 +335,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 cachePath = !string.IsNullOrEmpty(config.CachePath)
                     ? config.CachePath
                     : Plugin.Instance?.GetDefaultCachePath(),
-                lastRefresh = _federationManager.Cache.LastRefresh,
+                // Never refreshed comes back as DateTime.MinValue, not null - see the
+                // matching comment in GetStatus() above.
+                lastRefresh = _federationManager.Cache.LastRefresh == DateTime.MinValue
+                    ? (DateTime?)null
+                    : _federationManager.Cache.LastRefresh,
                 cacheEntries = _federationManager.Cache.Count,
                 autoProvisionLibraries = config.AutoProvisionLibraries,
                 enableDedup = config.EnableDedup,
@@ -406,6 +410,12 @@ namespace Jellyfin.Plugin.Federation.Api
                     userId = (users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault())?.Id;
                 }
 
+                // Surfaced so a version mismatch between friends (e.g. one side
+                // stuck on an old release with a since-fixed sync bug) is visible
+                // right on the test-connection result, instead of only showing up
+                // later as a confusing "sync isn't working" report.
+                var federationPluginVersion = await client.GetRemoteFederationPluginVersionAsync(cancellationToken).ConfigureAwait(false);
+
                 return Ok(new
                 {
                     success = true,
@@ -416,7 +426,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         version = systemInfo.Version,
                         operatingSystem = systemInfo.OperatingSystem,
                         serverId = systemInfo.Id,
-                        suggestedUserId = userId
+                        suggestedUserId = userId,
+                        federationPluginVersion
                     }
                 });
             }
@@ -1371,7 +1382,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 totalServers = config?.RemoteServers?.Count ?? 0,
                 activeServers = config?.RemoteServers?.Count(s => s.Enabled) ?? 0,
                 federatedItems = _federationManager.Cache.Count,
-                lastRefresh = _federationManager.Cache.LastRefresh,
+
+                // Never refreshed comes back as DateTime.MinValue, not null - null it
+                // here so the config page's "d.lastRefresh ? ... : 'Never'" check
+                // actually works instead of formatting 0001-01-01 into something like
+                // "12/31/1" (year 1, off by a day from the UTC->local conversion).
+                lastRefresh = _federationManager.Cache.LastRefresh == DateTime.MinValue
+                    ? (DateTime?)null
+                    : _federationManager.Cache.LastRefresh,
 
                 // Whether the last sync actually worked. Without this the page can
                 // only show counts, which look identical whether federation is

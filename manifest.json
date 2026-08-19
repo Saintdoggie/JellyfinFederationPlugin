@@ -8,6 +8,30 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.69",
+        "changelog": "Badge/hide/download UI (federation-badge.js) was missing entirely on some installs even when running a genuinely up-to-date plugin version, because the only way it got injected into jellyfin-web was a direct write to index.html on disk - silently failing, with just a warning-level log, on any read-only web-root filesystem (common in some Docker layouts). Added a second, serve-time injection path: a request-pipeline middleware that inserts the same script tag into the index.html response on every request, entirely in memory, with no disk write at all. Works regardless of filesystem permissions and self-heals immediately after a jellyfin-web upgrade replaces index.html, with no restart needed. The original file-write injection is kept as-is (still useful, no downside to leaving it), and both are now cleanly undone on uninstall.\n\nFixed a private-IP leak: this server's own auto-detected public URL (used when accepting/sending friend requests) could end up being a LAN or loopback address if the admin happened to be managing Jellyfin from inside their own network, silently handing a friend an address only reachable on that LAN - this was the root cause of at least one friend's library completely failing to sync. The auto-detected URL is now rejected if it's a literal private/loopback IP, falling back to the existing \"set your public URL under Advanced settings\" error instead of silently shipping a broken address.\n\nFixed \"Last refresh: 12/31/1\" showing instead of \"Never\" on the status strip and Diagnostics panel before the first sync ever completes.\n\nThe restricted-sharing setup (\"don't share my whole server\") required an admin to separately go create a dedicated Jellyfin user via Dashboard > Users first, with no link or indication of that from the Federation sharing panel itself, and no way to pick up that new user without reloading the whole page - added a direct link to Jellyfin's native Add User page and a \"Refresh list\" button next to the account picker.\n\nBackground startup sync (fires ~5s after server start) is now tied to server shutdown instead of running with an unconditional CancellationToken.None, and treats being canceled during shutdown as expected rather than logging it as an error - was a plausible cause of an ObjectDisposedException: IServiceProvider a user hit after an update, though it may also have been transient.\n\nThe \"Test\" button on a friend's server now also reports the Federation plugin version installed there (or that it's missing/undetected), so a version mismatch between two federated servers is visible immediately instead of only showing up later as a confusing sync failure.\n\n200 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.69/Jellyfin.Federation.zip",
+        "checksum": "77210279fa338e89ffcf0c9cf6881746",
+        "timestamp": "2026-08-19T17:00:00Z"
+      },
+      {
+        "version": "0.0.68",
+        "changelog": "Re-release of 0.0.67's fix (federated libraries silently failing to sync without explicit per-friend sharing configured) under a fresh version number. 0.0.67's asset was corrected after an initial stale-build mistake, but reinstalling under the same version string never actually applied even after confirmed real restarts - Jellyfin's installer appears to treat a version string as already-satisfied once attempted, regardless of whether the underlying bits ever matched. No code changes beyond the version bump.\n\n200 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.68/Jellyfin.Federation.zip",
+        "checksum": "1e903fb0f8ed3ac25e038300c30e6431",
+        "timestamp": "2026-08-19T15:45:00Z"
+      },
+      {
+        "version": "0.0.67",
+        "changelog": "Fixed federated libraries silently failing to sync for any friend who hadn't explicitly configured per-friend sharing yet (\"1 source(s) failed, cached data preserved\", 0 items refreshed). Every sync call needs some remote user id to browse as - that's inherent to Jellyfin's own per-user library API, not something this plugin can skip - but GetItemsAsync/GetItemAsync (the actual content-fetching calls sync uses) just gave up with a warning when no user id was configured, even though the config page's own tooltip already promised a fallback to \"an administrator account on their server\". That fallback existed for playback (GetPlaybackInfoAsync) and library listing (GetLibrariesAsync) already, just not for the two calls sync itself depends on. Sync now falls back the same way everywhere: prefer an admin account on the remote, cached in-memory per server so it's only resolved once.\n\n200 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.67/Jellyfin.Federation.zip",
+        "checksum": "cb1c3dc5490d5cac700e4549524410c0",
+        "timestamp": "2026-08-19T15:00:00Z"
+      },
+      {
         "version": "0.0.66",
         "changelog": "Fixed plugin updates silently not applying. The project file's AssemblyVersion/FileVersion were left hardcoded at 0.0.63 since that release, even though meta.json's version kept getting bumped (0.0.64, 0.0.65) - Jellyfin identifies a loaded plugin by its assembly's actual embedded version, not the folder name or meta.json, so every DLL shipped since 0.0.63 was invisible to Jellyfin as a real update. An admin could successfully install 0.0.64 or 0.0.65 and it would show as a new folder on disk, but after a restart Jellyfin kept loading and reporting it as version 0.0.63 - which is what \"the plugin won't update\" actually was. AssemblyVersion/FileVersion now stay in lockstep with the release version.\n\n198 tests.",
         "targetAbi": "10.11.0.0",

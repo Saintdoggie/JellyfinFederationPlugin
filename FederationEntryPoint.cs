@@ -24,6 +24,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly FederationSyncService _syncService;
         private readonly FederationItemPersistenceService _persistence;
         private readonly WebClientInjector _webClientInjector;
+        private readonly IHostApplicationLifetime _appLifetime;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -34,7 +35,8 @@ namespace Jellyfin.Plugin.Federation
             LibraryProvisioningService provisioning,
             FederationSyncService syncService,
             FederationItemPersistenceService persistence,
-            WebClientInjector webClientInjector)
+            WebClientInjector webClientInjector,
+            IHostApplicationLifetime appLifetime)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -42,6 +44,7 @@ namespace Jellyfin.Plugin.Federation
             _syncService = syncService;
             _persistence = persistence;
             _webClientInjector = webClientInjector;
+            _appLifetime = appLifetime;
         }
 
         /// <inheritdoc />
@@ -93,10 +96,14 @@ namespace Jellyfin.Plugin.Federation
                     try
                     {
                         // Brief delay to let Jellyfin finish its own startup sequence
-                        // before we start hitting remote servers.
-                        await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                        // before we start hitting remote servers. Tied to
+                        // ApplicationStopping so a fast shutdown/restart cancels
+                        // this task instead of letting it run past host teardown
+                        // and touch disposed DI-scoped services.
+                        var shutdownToken = _appLifetime.ApplicationStopping;
+                        await Task.Delay(TimeSpan.FromSeconds(5), shutdownToken).ConfigureAwait(false);
                         _logger.LogInformation("[Federation] Starting background startup sync");
-                        var result = await _syncService.SyncAllAsync(CancellationToken.None).ConfigureAwait(false);
+                        var result = await _syncService.SyncAllAsync(shutdownToken).ConfigureAwait(false);
                         if (result.Success)
                         {
                             _logger.LogInformation("[Federation] Startup sync complete: {Message}", result.Message);
@@ -105,6 +112,14 @@ namespace Jellyfin.Plugin.Federation
                         {
                             _logger.LogWarning("[Federation] Startup sync completed with issues: {Message}", result.Message);
                         }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogInformation("[Federation] Background startup sync canceled due to server shutdown");
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        _logger.LogInformation("[Federation] Background startup sync stopped: server is shutting down");
                     }
                     catch (Exception ex)
                     {

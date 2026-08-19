@@ -753,6 +753,14 @@
                         .catch(function () { return []; });
                     }
 
+                    function refreshLocalUsers() {
+                        // Bypasses localUsersCache: the whole point of this button
+                        // is to pick up a user the admin just created via the native
+                        // Add User page linked below, without a full reload.
+                        localUsersCache = null;
+                        loadLocalUsers();
+                    }
+
                     function renderSharingBlock(server) {
                         var pending = pendingSharing[server.Id] || {
                             ShareAll: server.ShareAllLibraries !== false,
@@ -767,13 +775,28 @@
 
                         html += '<div class="fedSharingLibs" data-id="' + escapeHtml(server.Id) + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.5em;">';
                         html += '<label class="fed-label">Restricted account (enforces what\'s below)</label>';
+                        html += '<div class="fed-inline" style="align-items:center;">';
+                        html += '<div class="fed-input-container" style="flex:1 1 16em;margin-bottom:0;">';
                         html += '<select class="emby-select fed-select fedSharingUser" data-id="' + escapeHtml(server.Id) + '">';
                         html += '<option value="">— choose an account —</option>';
                         (localUsersCache || []).forEach(function (u) {
                             html += '<option value="' + escapeHtml(u.id) + '"' + (pending.LocalUserId === u.id ? ' selected' : '') + '>' + escapeHtml(u.name) + '</option>';
                         });
                         html += '</select>';
-                        html += '<p class="fed-hint">Don\'t have one yet? Create a regular user for this friend under Dashboard → Users first (no password needed - it never logs in itself), then pick it here.</p>';
+                        html += '</div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-local-users">Refresh list</button>';
+                        html += '</div>';
+                        // Deliberately a link to Jellyfin's own native Add User page,
+                        // not a "create account" button this plugin drives itself:
+                        // IUserManager.CreateUserAsync is unreliable on this Jellyfin
+                        // build (see UpdateFriendSharingAsync's doc comment - it can
+                        // leave AuthenticationProviderId unset and crash inside
+                        // Jellyfin's own save with a NOT NULL constraint, a bug this
+                        // plugin cannot work around after the fact). Opens in a new
+                        // tab so this configuration page - and any unsaved edits on
+                        // it - stays put; "Refresh list" above re-fetches the account
+                        // list afterward without a full page reload.
+                        html += '<p class="fed-hint">Don\'t have one yet? <a href="' + escapeHtml(apiBase) + '/web/#/dashboard/users/add" target="_blank" rel="noopener">Create a regular user for this friend</a> (no password needed - it never logs in itself), then click "Refresh list" and pick it here.</p>';
 
                         html += '<label class="fed-label" style="margin-top:0.6em;">Libraries visible to that account</label>';
                         if (!localLibrariesCache) {
@@ -1444,7 +1467,11 @@
                         .then(function (res) {
                             if (res.success) {
                                 setServerDot(i, 'ok');
-                                setServerStatus(i, '<strong>Connected</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version), 'ok');
+                                var pluginVer = res.serverInfo.federationPluginVersion;
+                                var pluginVerText = pluginVer
+                                    ? ' &middot; Federation plugin v' + escapeHtml(pluginVer)
+                                    : ' &middot; Federation plugin not detected (old version, or not installed)';
+                                setServerStatus(i, '<strong>Connected</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version) + pluginVerText, 'ok');
                             } else {
                                 setServerDot(i, 'err');
                                 setServerStatus(i, 'Failed: ' + escapeHtml(res.message), 'err');
@@ -2484,6 +2511,9 @@
                                     break;
                                 case 'save-sharing':
                                     saveSharing(t.getAttribute('data-id'));
+                                    break;
+                                case 'refresh-local-users':
+                                    refreshLocalUsers();
                                     break;
                                 case 'block-friend':
                                     blockFriend(t.getAttribute('data-id'));
