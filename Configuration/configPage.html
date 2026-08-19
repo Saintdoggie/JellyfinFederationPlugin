@@ -482,6 +482,14 @@
                         </div>
                     </details>
 
+                    <div class="fed-card">
+                        <p class="fed-hint" style="margin:0 0 0.9em;">Saves the advanced settings above and your library selections on the Libraries tab together - it's the same save action either tab's button triggers.</p>
+                        <div class="fed-savebar">
+                            <button is="emby-button" type="submit" id="fedBtnSaveAdvanced" class="raised button-submit emby-button"><span>Save advanced settings</span></button>
+                            <span class="fed-savemsg" id="fedSaveMsgAdvanced"></span>
+                        </div>
+                    </div>
+
                     <!--
                         Hidden Items: purely local, receiving-side suppression - the admin
                         chose not to see something a friend is sharing (a worse rip they
@@ -662,13 +670,20 @@
                     }
 
                     function setSaveMsg(msg, isError) {
-                        var el = q('#fedSaveMsg');
-                        if (!el) {
-                            return;
-                        }
+                        // Two save buttons (Libraries tab, Advanced tab) trigger the exact
+                        // same form submit - written to both message spans so whichever
+                        // tab the admin actually saved from shows the result, since only
+                        // one tab panel is visible at a time.
+                        var className = 'fed-savemsg ' + (isError ? 'fed-savemsg-err' : (msg ? 'fed-savemsg-ok' : ''));
+                        ['#fedSaveMsg', '#fedSaveMsgAdvanced'].forEach(function (selector) {
+                            var el = q(selector);
+                            if (!el) {
+                                return;
+                            }
 
-                        el.textContent = msg;
-                        el.className = 'fed-savemsg ' + (isError ? 'fed-savemsg-err' : (msg ? 'fed-savemsg-ok' : ''));
+                            el.textContent = msg;
+                            el.className = className;
+                        });
                     }
 
                     function escapeHtml(s) {
