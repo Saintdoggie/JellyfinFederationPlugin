@@ -559,6 +559,22 @@
                     // by "<serverId>::<remoteUserId>".
                     var expandedUserRuleEditors = {};
 
+                    // Whether a friend's Advanced panel (sharing, per-user rules,
+                    // pools, connection details) is expanded, keyed by server.Id.
+                    // Collapsed by default: Manage only shows status + a single
+                    // toggle, so connecting a friend and looking at what's shared
+                    // isn't buried under four sub-panels every time.
+                    var expandedFriendAdvanced = {};
+
+                    // Ids of RemoteServers seen as of the last loadConfiguration()
+                    // call. Null until the first load completes - nothing is
+                    // "new" relative to a page that hasn't loaded once yet. Used
+                    // to detect a friend that just appeared (I accepted them, or
+                    // they accepted a request I sent earlier and I'm reloading)
+                    // so their libraries can be picked up automatically instead
+                    // of requiring a separate trip to the Libraries tab.
+                    var seenServerIds = null;
+
                     // In-progress edits for an open override editor, same key shape
                     // as expandedUserRuleEditors. Items is an array of {id, name} so
                     // the "certain items" picker can show what's already selected
@@ -1226,8 +1242,29 @@
                             + '</div>';
                     }
 
+                    // One-line summary of what a friend can see and any per-user
+                    // narrowing, shown next to the Advanced toggle so the common
+                    // question ("what are they sharing with me / am I sharing
+                    // everything with them") is answered without opening it.
+                    function friendSharingSummary(server) {
+                        var shareAll = server.ShareAllLibraries !== false;
+                        var folderCount = (server.SharedLibraryFolderIds || []).length;
+                        var ruleCount = (server.RemoteUserAccessRules || []).length;
+                        var parts = [];
+                        parts.push(shareAll
+                            ? 'Sharing everything with them'
+                            : (folderCount === 0
+                                ? 'Sharing nothing with them (blocked)'
+                                : 'Sharing ' + folderCount + ' librar' + (folderCount === 1 ? 'y' : 'ies') + ' with them'));
+                        if (ruleCount > 0) {
+                            parts.push(ruleCount + ' per-user rule' + (ruleCount === 1 ? '' : 's'));
+                        }
+
+                        return parts.join(' · ');
+                    }
+
                     function renderFriendAdvanced(server, i) {
-                        var html = '<details class="fed-details"><summary>Advanced</summary><div class="fed-details-body">';
+                        var html = '<details class="fed-details"><summary>Connection details</summary><div class="fed-details-body">';
                         html += '<div class="fed-inline">';
                         html += '<div class="fed-input-container"><label class="fed-label">Name</label>';
                         html += '<input type="text" class="emby-input fed-input fedSrvName" data-i="' + i + '" value="' + escapeHtml(server.Name) + '" /></div>';
@@ -1321,11 +1358,21 @@
                             html += '<div class="fed-srvstatus" id="fedSrvStatus' + i + '" style="display:none;"></div>';
 
                             if (isOpen) {
+                                var advOpen = expandedFriendAdvanced[server.Id] === true;
                                 html += '<div class="fed-friendpanel">';
-                                html += renderSharingBlock(server);
-                                html += renderRemoteUserAccessBlock(server);
-                                html += renderFriendPoolsBlock(server);
-                                html += renderFriendAdvanced(server, i);
+                                html += '<p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>';
+                                html += '<div>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="toggle-friend-advanced" data-id="' + escapeHtml(server.Id) + '">';
+                                html += (advOpen ? 'Hide advanced sharing & connection settings' : 'Advanced: sharing, permissions & connection settings');
+                                html += '</button>';
+                                html += '</div>';
+                                if (advOpen) {
+                                    html += renderSharingBlock(server);
+                                    html += renderRemoteUserAccessBlock(server);
+                                    html += renderFriendPoolsBlock(server);
+                                    html += renderFriendAdvanced(server, i);
+                                }
+
                                 html += '<div style="margin-top:0.9em;">';
                                 html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-friend" data-i="' + i + '">Remove / unfriend</button>';
                                 html += '</div>';
@@ -1509,6 +1556,11 @@
                         .catch(function (e) { showError('Remove failed: ' + e.message); });
                     }
 
+                    function toggleFriendAdvanced(serverId) {
+                        expandedFriendAdvanced[serverId] = !expandedFriendAdvanced[serverId];
+                        renderFriends();
+                    }
+
                     function toggleFriendPanel(i) {
                         var s = currentConfig.RemoteServers[i];
                         if (!s) {
@@ -1620,12 +1672,20 @@
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
-                            setFriendStatus(res.message, res.success ? 'ok' : 'err');
                             loadFriendRequests();
                             if (res.success) {
                                 loadPools();
-                                return loadConfiguration(true).then(function () { loadLibraryPicker(); });
+                                // loadConfiguration's own seenServerIds diff notices
+                                // this new server and pulls in all of its libraries
+                                // automatically - no separate trip to the Libraries
+                                // tab needed for the common case of wanting everything.
+                                setFriendStatus('Connected - pulling in their library now…', 'info');
+                                return loadConfiguration(true).then(function () {
+                                    setFriendStatus('Connected! Their content will appear shortly.', 'ok');
+                                });
                             }
+
+                            setFriendStatus(res.message, 'err');
                         })
                         .catch(function (e) { setFriendStatus('Failed: ' + e.message, 'err'); });
                     }
@@ -1793,7 +1853,7 @@
                         return info ? info.mediaType : null;
                     }
 
-                    function loadLibraryPicker() {
+                    function loadLibraryPicker(autoAdoptServerIds) {
                         var hint = q('#fedPickerHint');
                         var list = q('#fedPickerList');
                         if (!hint || !list) {
@@ -1852,6 +1912,15 @@
                                         });
                                     });
 
+                                    // A brand new friend (just accepted, or their
+                                    // earlier acceptance of a request I sent just
+                                    // showed up) gets all their libraries picked
+                                    // up automatically - see loadConfiguration's
+                                    // seenServerIds diff - so connecting someone
+                                    // is "type address, accept, done", not a
+                                    // second required trip to this tab.
+                                    var autoAdopt = !!(autoAdoptServerIds && autoAdoptServerIds.indexOf(srv.serverId) !== -1);
+
                                     pickerLibs.push({
                                         serverId: srv.serverId,
                                         serverName: srv.serverName,
@@ -1861,12 +1930,15 @@
                                         itemCount: lib.itemCount || 0,
                                         mediaType: selectedType || inferMediaType(lib.collectionType) || 'Video',
                                         knownType: !!inferMediaType(lib.collectionType),
-                                        selected: selected
+                                        selected: selected || autoAdopt
                                     });
                                 });
                             });
                             pickerLoaded = true;
                             renderPicker(errors);
+                            if (autoAdoptServerIds && autoAdoptServerIds.length > 0) {
+                                saveConfiguration();
+                            }
                         })
                         .catch(function (e) {
                             pickerLoaded = false;
@@ -2362,6 +2434,21 @@
                             if (!currentConfig.LibraryMappings) { currentConfig.LibraryMappings = []; }
                             customMappings = currentConfig.LibraryMappings.filter(function (m) { return !m.AutoManaged; });
 
+                            // A server id present now that wasn't on the last load is
+                            // a friend that just connected - either I accepted them
+                            // just now, or an earlier outgoing request of mine was
+                            // just accepted on their end. Diffed against seenServerIds
+                            // rather than checked once at accept-time so both
+                            // directions are covered by the same code path. Skipped
+                            // on the very first load (seenServerIds still null) -
+                            // nothing already-connected should be touched, only a
+                            // friend that shows up after the page is already open.
+                            var currentIds = currentConfig.RemoteServers.map(function (s) { return s.Id; });
+                            var newlyConnectedIds = seenServerIds === null
+                                ? []
+                                : currentIds.filter(function (id) { return seenServerIds.indexOf(id) === -1; });
+                            seenServerIds = currentIds;
+
                             q('#fedTxtServerUrl').value = currentConfig.ServerUrl || '';
                             q('#fedTxtInternalUrl').value = currentConfig.InternalServerUrl || '';
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
@@ -2376,6 +2463,10 @@
                             loadStatus();
                             loadDiagnostics();
                             loadHiddenItems();
+
+                            if (newlyConnectedIds.length > 0) {
+                                loadLibraryPicker(newlyConnectedIds);
+                            }
                         })
                         .catch(function (e) {
                             stopWatchdog();
@@ -2520,6 +2611,9 @@
                                     break;
                                 case 'manage-friend':
                                     toggleFriendPanel(i);
+                                    break;
+                                case 'toggle-friend-advanced':
+                                    toggleFriendAdvanced(t.getAttribute('data-id'));
                                     break;
                                 case 'remove-friend':
                                     removeFriend(i);

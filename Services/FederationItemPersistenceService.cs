@@ -502,18 +502,51 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, playable);
+                    // Mirrors FederationLibraryManager.ResolvePlaybackUrl's guard,
+                    // which only ever ran once, at creation. Reconciliation used to
+                    // call BuildPlaybackUrl unconditionally on every scheduled sync
+                    // for every EXISTING item - restamping the raw Direct-mode URL
+                    // (real, long-lived remote api_key and all) straight back onto
+                    // item.Path, and with it reopening the exact "per-remote-user
+                    // rule silently bypassed via the static Path" gap
+                    // ResolvePlaybackUrl exists to close - on literally the next
+                    // sync after an item was created with Path correctly left
+                    // blank. Confirmed as a real, reported bug, not a theoretical
+                    // one: any federated item survives long enough to be
+                    // reconciled at least once before anyone plays it.
+                    var playableServer = _federationManager.GetServer(playable.ServerId);
+                    var mustAvoidStaticPath = playableServer != null
+                        && (playableServer.StreamingMode == StreamingMode.Direct
+                            || (playableServer.FriendUserAccessRules != null && playableServer.FriendUserAccessRules.Count > 0));
 
-                    // A null here does NOT mean "disabled" - that case is handled
-                    // above. It means the URL cannot be built right now, which for
-                    // Proxy mode happens whenever this server's own address is unknown
-                    // (a background sync has no incoming request to infer one from).
-                    // Blanking a working path over a temporary inability to rebuild it
-                    // would take the whole library offline, so leave it alone.
-                    if (!string.IsNullOrEmpty(expected) && !string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
+                    if (mustAvoidStaticPath)
                     {
-                        x.Item.Path = expected;
-                        changed = true;
+                        // Blank rather than merely "don't restamp" so an item that
+                        // predates this fix - or whose server just gained its first
+                        // FriendUserAccessRules entry - self-heals on its next sync
+                        // instead of keeping an already-leaked/ungated URL around
+                        // indefinitely.
+                        if (!string.IsNullOrEmpty(x.Item.Path))
+                        {
+                            x.Item.Path = null;
+                            changed = true;
+                        }
+                    }
+                    else
+                    {
+                        var expected = _federationManager.BuildPlaybackUrl(entry.ItemType, playable);
+
+                        // A null here does NOT mean "disabled" - that case is handled
+                        // above. It means the URL cannot be built right now, which for
+                        // Proxy mode happens whenever this server's own address is unknown
+                        // (a background sync has no incoming request to infer one from).
+                        // Blanking a working path over a temporary inability to rebuild it
+                        // would take the whole library offline, so leave it alone.
+                        if (!string.IsNullOrEmpty(expected) && !string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
+                        {
+                            x.Item.Path = expected;
+                            changed = true;
+                        }
                     }
 
                     if (changed)
