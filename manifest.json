@@ -12,7 +12,7 @@
         "changelog": "Fixed federated libraries silently failing to sync for any friend who hadn't explicitly configured per-friend sharing yet (\"1 source(s) failed, cached data preserved\", 0 items refreshed). Every sync call needs some remote user id to browse as - that's inherent to Jellyfin's own per-user library API, not something this plugin can skip - but GetItemsAsync/GetItemAsync (the actual content-fetching calls sync uses) just gave up with a warning when no user id was configured, even though the config page's own tooltip already promised a fallback to \"an administrator account on their server\". That fallback existed for playback (GetPlaybackInfoAsync) and library listing (GetLibrariesAsync) already, just not for the two calls sync itself depends on. Sync now falls back the same way everywhere: prefer an admin account on the remote, cached in-memory per server so it's only resolved once.\n\n200 tests.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.67/Jellyfin.Federation.zip",
-        "checksum": "ee799149eb67ca8540d74bb61ce2b3e9",
+        "checksum": "cb1c3dc5490d5cac700e4549524410c0",
         "timestamp": "2026-08-19T15:00:00Z"
       },
       {
