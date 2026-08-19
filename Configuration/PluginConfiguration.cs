@@ -320,21 +320,48 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string Url { get; set; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the API key for authentication.
+        /// Gets or sets the federation token this friend minted for this server to
+        /// use calling them - sent as the <c>X-Federation-Token</c> header on every
+        /// server-to-server call to their <c>/Plugins/Federation/...</c> endpoints
+        /// (see <see cref="Services.FederationTokenAuth"/>). Despite the field name
+        /// (kept from before this became a custom token, to avoid an XML-shape
+        /// migration), this is <em>not</em> a real Jellyfin API key and cannot
+        /// authenticate against Jellyfin's own native REST API or satisfy
+        /// <c>[Authorize]</c>/<c>RequiresElevation</c> - it only means anything to
+        /// this plugin's own token-checking code. That is the whole point: a
+        /// leaked federation token can browse/stream whatever is actually shared
+        /// with this relationship and nothing else, unlike the real, full-admin-
+        /// equivalent API key this field held before.
         /// </summary>
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the API key this server minted for the friend to use
-        /// calling back in - the counterpart to <see cref="ApiKey"/> (theirs, for
-        /// calling them). Captured at handshake time so it can be revoked when
-        /// this friendship is removed (see <see cref="FederationFriendService"/>'s
-        /// unfriend handling) - without it, removing a friend only ever stopped
-        /// this server from pulling their content; they kept a live key and kept
-        /// pulling from this one indefinitely until they separately noticed and
-        /// removed it themselves.
+        /// Gets or sets the federation token this server minted for the friend to
+        /// use calling back in - the counterpart to <see cref="ApiKey"/> (theirs,
+        /// for calling them). Captured at handshake time. Revocation needs no
+        /// separate step: <see cref="Services.FederationTokenAuth"/> resolves an
+        /// incoming caller by scanning <see cref="PluginConfiguration.RemoteServers"/>
+        /// for a matching <see cref="IssuedApiKey"/>, so once this friend's
+        /// <see cref="RemoteServer"/> entry is deleted (see
+        /// <see cref="Services.FederationFriendService.NotifyAndRevokeOnUnfriendAsync"/>),
+        /// the token they were holding stops matching anything and is rejected on
+        /// their very next call - there is no external key store to keep in sync,
+        /// unlike the real Jellyfin API key this field held before.
         /// </summary>
         public string IssuedApiKey { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets this server's own local item ids (this plugin's own
+        /// federation-key item id space, not this friend's) that are never shared
+        /// with this friend, regardless of <see cref="ShareAllLibraries"/> or any
+        /// <see cref="RemoteUserAccessRule"/> - a blanket per-friend exclude list,
+        /// finer-grained than <see cref="SharedLibraryFolderIds"/>'s whole-library
+        /// granularity. Enforced directly by this plugin's own Peer/* endpoints
+        /// (see <see cref="Services.FederationPeerAccessService"/>), so unlike
+        /// <see cref="SharedLibraryFolderIds"/> this needs no dedicated local
+        /// Jellyfin account to enforce.
+        /// </summary>
+        public List<string> ExcludedItemIds { get; set; } = new List<string>();
 
         /// <summary>
         /// Gets or sets a value indicating whether this server is enabled.

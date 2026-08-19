@@ -177,16 +177,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var requestId = Guid.NewGuid().ToString();
-            string apiKey;
-            try
-            {
-                apiKey = await CreateApiKeyAsync($"Federation friend: {remoteUrl}").ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Federation] Failed to mint an API key for friend request to {Url}", remoteUrl);
-                return (false, "Could not create an API key on this server for your friend to use.");
-            }
+            var apiKey = FederationTokenAuth.GenerateToken();
 
             var payload = new FriendRequestPayload
             {
@@ -194,7 +185,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 FromServerUrl = localUrl,
                 FromServerName = _applicationHost.FriendlyName,
                 FromServerId = GetOrCreateLocalFederationId(),
-                ApiKeyForYou = apiKey
+                ApiKeyForYou = apiKey,
+                SupportsFederationToken = true
             };
 
             if (pool != null)
@@ -212,8 +204,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await SharedHttpClient.PostAsync($"{remoteUrl}/Plugins/Federation/Friends/Request", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    await RevokeApiKeyAsync(apiKey).ConfigureAwait(false);
-                    return (false, $"Friend request rejected by the remote server (HTTP {(int)response.StatusCode}). Check the address - is Federation installed there too?");
+                    return (false, $"Friend request rejected by the remote server (HTTP {(int)response.StatusCode}). Check the address - is Federation installed there too, and running a compatible version?");
                 }
 
                 var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -239,7 +230,6 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Failed to send friend request to {Url}", remoteUrl);
-                await RevokeApiKeyAsync(apiKey).ConfigureAwait(false);
                 return (false, $"Could not reach {remoteUrl}: {ex.Message}");
             }
         }
@@ -339,6 +329,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 return new FriendRequestResponse { Success = false, Message = "Malformed friend request." };
             }
 
+            // This server only ever exchanges scoped federation tokens now, never
+            // a real Jellyfin API key - a sender that doesn't declare support for
+            // that (an old plugin version) would otherwise have ApiKeyForYou
+            // treated as a federation token when it is actually a real,
+            // full-admin-equivalent key, or vice versa on the other side. Neither
+            // mixup is safe, so both sides simply need a compatible version -
+            // rejected here, loudly, rather than silently mishandled.
+            if (!payload.SupportsFederationToken)
+            {
+                return new FriendRequestResponse
+                {
+                    Success = false,
+                    Message = "This server requires a compatible Federation plugin version on both sides (scoped federation tokens). Please upgrade the Federation plugin and try again."
+                };
+            }
+
             var fromUrl = payload.FromServerUrl.TrimEnd('/');
 
             // Idempotent: a retry of the same request (e.g. the sender's original
@@ -414,16 +420,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Could not determine this server's own public URL. Set it under Advanced settings first.");
             }
 
-            string apiKey;
-            try
-            {
-                apiKey = await CreateApiKeyAsync($"Federation friend: {entry.RemoteServerName}").ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Federation] Failed to mint an API key accepting friend request from {Url}", entry.RemoteServerUrl);
-                return (false, "Could not create an API key on this server for your friend to use.");
-            }
+            var apiKey = FederationTokenAuth.GenerateToken();
 
             var payload = new FriendRequestPayload
             {
@@ -431,7 +428,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 FromServerUrl = localUrl,
                 FromServerName = _applicationHost.FriendlyName,
                 FromServerId = GetOrCreateLocalFederationId(),
-                ApiKeyForYou = apiKey
+                ApiKeyForYou = apiKey,
+                SupportsFederationToken = true
             };
 
             try
@@ -440,14 +438,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await SharedHttpClient.PostAsync($"{entry.RemoteServerUrl}/Plugins/Federation/Friends/Accept", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    await RevokeApiKeyAsync(apiKey).ConfigureAwait(false);
-                    return (false, $"Could not confirm with {entry.RemoteServerName} (HTTP {(int)response.StatusCode}). They may have cancelled the request, or are unreachable right now - try again shortly.");
+                    return (false, $"Could not confirm with {entry.RemoteServerName} (HTTP {(int)response.StatusCode}). They may have cancelled the request, are unreachable right now, or are running an incompatible Federation plugin version - try again shortly, or ask them to upgrade.");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Failed to confirm friend acceptance with {Url}", entry.RemoteServerUrl);
-                await RevokeApiKeyAsync(apiKey).ConfigureAwait(false);
                 return (false, $"Could not reach {entry.RemoteServerName}: {ex.Message}");
             }
 
@@ -801,36 +797,51 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Admin-triggered: cancels a friend request this server sent before the
-        /// other side responded, and revokes the key minted for it.
+        /// other side responded. The token minted for it needs no separate
+        /// revocation - see <see cref="Configuration.RemoteServer.IssuedApiKey"/>.
         /// </summary>
-        public async Task<(bool Success, string Message)> CancelOutgoingFriendRequestAsync(string requestId, CancellationToken cancellationToken)
+        public Task<(bool Success, string Message)> CancelOutgoingFriendRequestAsync(string requestId, CancellationToken cancellationToken)
         {
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingFriendRequests.FirstOrDefault(r => r.Id == requestId);
             if (entry == null)
             {
-                return (false, "Friend request not found.");
+                return Task.FromResult((false, "Friend request not found."));
             }
 
             config.OutgoingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
-            await RevokeApiKeyAsync(entry.ApiKey).ConfigureAwait(false);
 
-            return (true, "Friend request cancelled.");
+            return Task.FromResult((true, "Friend request cancelled."));
         }
 
         /// <summary>
         /// Handles the accept callback: the other server has accepted our earlier
-        /// outgoing request and is giving us a key to use pulling from them.
+        /// outgoing request and is giving us a token to use pulling from them.
+        /// Returns false when this should be rejected (see
+        /// <see cref="FriendRequestPayload.SupportsFederationToken"/>'s doc
+        /// comment) so <c>FederationController.ReceiveFriendAccept</c> can answer
+        /// with a non-2xx status - the accepting side's own
+        /// <see cref="AcceptFriendRequestAsync"/> already surfaces a clear error
+        /// to its admin on anything but success, so this is what actually stops
+        /// an incompatible acceptance from creating a broken friend entry here.
         /// </summary>
-        public void HandleAcceptCallback(FriendRequestPayload payload)
+        public bool HandleAcceptCallback(FriendRequestPayload payload)
         {
+            if (!payload.SupportsFederationToken)
+            {
+                _logger.LogWarning(
+                    "[Federation] Rejected an accept callback for request {RequestId}: the other side did not confirm scoped federation-token support (likely an incompatible/old plugin version)",
+                    payload.RequestId);
+                return false;
+            }
+
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingFriendRequests.FirstOrDefault(r => r.Id == payload.RequestId);
             if (entry == null)
             {
                 _logger.LogWarning("[Federation] Received an accept callback for an unknown/expired request {RequestId}", payload.RequestId);
-                return;
+                return false;
             }
 
             var memberName = string.IsNullOrEmpty(payload.FromServerName) ? entry.RemoteServerName : payload.FromServerName;
@@ -861,13 +872,16 @@ namespace Jellyfin.Plugin.Federation.Services
             config.OutgoingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
             _clientFactory.InvalidateAll();
+            return true;
         }
 
         /// <summary>
         /// Handles the reject callback: the other server declined our request.
-        /// Revokes the key we minted for them, since it's now useless.
+        /// The token we minted for them needs no separate revocation - see
+        /// <see cref="Configuration.RemoteServer.IssuedApiKey"/> - dropping the
+        /// now-unused <see cref="FriendRequest"/> entry is enough.
         /// </summary>
-        public async Task HandleRejectCallbackAsync(string requestId)
+        public void HandleRejectCallbackAsync(string requestId)
         {
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingFriendRequests.FirstOrDefault(r => r.Id == requestId);
@@ -878,7 +892,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
             config.OutgoingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
-            await RevokeApiKeyAsync(entry.ApiKey).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -1181,62 +1194,48 @@ namespace Jellyfin.Plugin.Federation.Services
             return match.AccessToken;
         }
 
-        private async Task RevokeApiKeyAsync(string accessToken)
-        {
-            if (string.IsNullOrEmpty(accessToken))
-            {
-                return;
-            }
-
-            try
-            {
-                await _authManager.DeleteApiKey(accessToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Failed to revoke an unused API key (non-fatal)");
-            }
-        }
-
         /// <summary>
         /// Best-effort tells <paramref name="server"/> that this friendship is
         /// being removed, so their side auto-removes it too instead of silently
         /// continuing to pull this server's content until an admin notices and
         /// manually unfriends back - previously removing a friend was entirely
         /// one-sided: nothing here ever reached the other side at all, so a real
-        /// unfriend needed both admins to separately click remove. Also revokes
-        /// <see cref="RemoteServer.IssuedApiKey"/> (the key this server minted for
-        /// them) regardless of whether the notification succeeds, so their access
-        /// is actually cut immediately even if they're offline or on a plugin
-        /// version too old to understand the notification.
+        /// unfriend needed both admins to separately click remove.
+        /// <see cref="RemoteServer.IssuedApiKey"/> (the token this server minted
+        /// for them) needs no separate revocation call - the caller is about to
+        /// delete this <see cref="RemoteServer"/> entry entirely, and
+        /// <see cref="FederationTokenAuth.ResolveCaller"/> only ever matches a
+        /// token against a currently-configured friend, so their access is cut
+        /// immediately the moment the entry is gone, even if they're offline or
+        /// on a plugin version too old to understand this notification.
         /// </summary>
         public async Task NotifyAndRevokeOnUnfriendAsync(RemoteServer server, CancellationToken cancellationToken)
         {
-            if (!string.IsNullOrEmpty(server.Url) && !string.IsNullOrEmpty(server.ApiKey))
+            if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
             {
-                try
-                {
-                    var payload = new UnfriendPayload { FromFederationId = GetOrCreateLocalFederationId() };
-                    using var response = await PostAuthenticatedAsync(
-                        $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/Unfriend",
-                        payload,
-                        server.ApiKey,
-                        cancellationToken).ConfigureAwait(false);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        _logger.LogWarning(
-                            "[Federation] Could not notify {Name} that this friendship was removed (HTTP {StatusCode}) - they will keep this server listed until they notice and remove it themselves",
-                            server.Name,
-                            (int)response.StatusCode);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[Federation] Could not notify {Name} that this friendship was removed (non-fatal)", server.Name);
-                }
+                return;
             }
 
-            await RevokeApiKeyAsync(server.IssuedApiKey).ConfigureAwait(false);
+            try
+            {
+                var payload = new UnfriendPayload { FromFederationId = GetOrCreateLocalFederationId() };
+                using var response = await PostAuthenticatedAsync(
+                    $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/Unfriend",
+                    payload,
+                    server.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "[Federation] Could not notify {Name} that this friendship was removed (HTTP {StatusCode}) - they will keep this server listed until they notice and remove it themselves",
+                        server.Name,
+                        (int)response.StatusCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not notify {Name} that this friendship was removed (non-fatal)", server.Name);
+            }
         }
 
         /// <summary>
@@ -1317,18 +1316,19 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// POSTs to an endpoint on an already-known friend's server that requires
-        /// an elevated session (<c>[Authorize(Policy = "RequiresElevation")]</c>) -
-        /// unlike the handshake endpoints (Friends/Request, Friends/Accept,
-        /// Friends/Reject), which are anonymous by necessity since no key exists
-        /// yet at that point. An API key alone satisfies that policy the same way
-        /// this server's own admin session does, so the friend's stored key is all
-        /// that is needed here - no per-user id.
+        /// POSTs to an endpoint on an already-known friend's server, authenticated
+        /// with the scoped federation token they issued this server (see
+        /// <see cref="FederationTokenAuth"/>) - unlike the handshake endpoints
+        /// (Friends/Request, Friends/Accept, Friends/Reject), which are anonymous
+        /// by necessity since no token exists yet at that point. Unlike the real
+        /// Jellyfin API key this used to send, this token satisfies nothing on
+        /// Jellyfin's own native auth - it only means anything to the friend's own
+        /// <see cref="FederationTokenAuth.ResolveCaller"/> check.
         /// </summary>
         private static async Task<HttpResponseMessage> PostAuthenticatedAsync(string url, object payload, string apiKey, CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent(payload) };
-            request.Headers.TryAddWithoutValidation("X-Emby-Token", apiKey);
+            request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, apiKey);
             return await SharedHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -1350,8 +1350,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets or sets the sender's persistent federation id.</summary>
         public string FromServerId { get; set; } = string.Empty;
 
-        /// <summary>Gets or sets the API key the sender minted for the recipient to use.</summary>
+        /// <summary>Gets or sets the federation token the sender minted for the recipient to use.</summary>
         public string ApiKeyForYou { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the sender's plugin understands
+        /// the scoped federation-token model (see <see cref="Configuration.RemoteServer.ApiKey"/>)
+        /// rather than the old real-Jellyfin-API-key exchange. Defaults false, so
+        /// an old plugin version's payload (which never sets this) is
+        /// unambiguously distinguishable from a new one's. A new-version server
+        /// receiving a request/accept without this set rejects it outright rather
+        /// than silently treating a real API key as a scoped token or vice versa -
+        /// see <see cref="FederationFriendService.ReceiveFriendRequestAsync"/> and
+        /// <see cref="FederationFriendService.HandleAcceptCallback"/>. Both sides
+        /// need a compatible plugin version; there is no dual-protocol fallback.
+        /// </summary>
+        public bool SupportsFederationToken { get; set; }
 
         /// <summary>
         /// Gets or sets the pool this request is introducing the recipient to, or

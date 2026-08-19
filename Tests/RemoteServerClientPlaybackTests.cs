@@ -6,184 +6,69 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
-using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
 
+/// <summary>
+/// Covers RemoteServerClient's playback/items/item calls under the scoped
+/// federation-token model: no remote user impersonation, no /Users round trip,
+/// no ResolveActingUserIdAsync fallback dance - every call goes straight to this
+/// plugin's own Peer/* endpoints on the remote, authenticated with the
+/// federation token alone. Supersedes the pre-token-model version of this file,
+/// which tested an admin-fallback user-resolution mechanism that no longer
+/// exists (the whole point of the new model is that nothing here impersonates
+/// any of the remote's own users any more).
+/// </summary>
 public class RemoteServerClientPlaybackTests
 {
-    /// <summary>
-    /// Regression test for the "Unable to find a valid media source to play" bug.
-    /// GetPlaybackInfoAsync used to return null when no UserId was configured on the
-    /// server, which left federated MediaSourceInfos without Container/MediaStreams
-    /// and made every source unplayable (PlaybackError.NO_MEDIA_ERROR). It should
-    /// now fall back to the remote's first user so stream details can still be read.
-    /// </summary>
     [Fact]
-    public async Task GetPlaybackInfoAsync_MissingUserId_FallsBackToFirstUser()
+    public async Task GetPlaybackInfoAsync_CallsPeerEndpoint_NoUserResolution()
     {
-        var usersJson = "[" +
-                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"user1\"}," +
-                        "{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"user2\"}" +
-                        "]";
         var playbackJson = "{\"PlaySessionId\":\"abc\",\"MediaSources\":[" +
                            "{\"Id\":\"src1\",\"Path\":\"http://remote/video\",\"Container\":\"mkv\"," +
                            "\"Size\":12345,\"Bitrate\":10000000}]}";
 
-        var handler = new FakeHttpMessageHandler(usersJson, playbackJson);
-        var httpClient = new HttpClient(handler)
-        {
-            BaseAddress = new Uri("http://fake.local")
-        };
+        var handler = new FakeHttpMessageHandler(playbackJson: playbackJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
 
-        // No UserId configured - the exact condition that previously broke playback.
-        var server = new RemoteServer
-        {
-            Id = "serverA",
-            Name = "Remote",
-            Url = "http://fake.local",
-            ApiKey = "key",
-            UserId = string.Empty,
-            Enabled = true
-        };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
-        var result = await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
+        var itemId = Guid.NewGuid().ToString("N");
+        var result = await client.GetPlaybackInfoAsync(itemId, cancellationToken: CancellationToken.None);
 
         Assert.NotNull(result);
         Assert.Single(result!.MediaSources!);
-        var source = result.MediaSources![0];
-        Assert.Equal("mkv", source.Container);
-        Assert.Equal(10000000, source.Bitrate);
-
-        // Confirm the fallback hit /Users first and then PlaybackInfo as the first
-        // user (11111111-…), NOT an empty configured UserId.
-        Assert.True(handler.CalledUsersEndpoint, "Expected the /Users endpoint to be queried for the fallback user");
-        Assert.Equal("11111111-1111-1111-1111-111111111111", handler.PlaybackUserId);
+        Assert.Equal("mkv", result.MediaSources![0].Container);
+        Assert.Equal($"/Plugins/Federation/Peer/PlaybackInfo/{itemId}", handler.LastRequestedPath);
+        Assert.False(handler.CalledAnyNativeUsersOrItemsEndpoint, "Must never call Jellyfin's native /Users or /Users/{id}/Items - only this plugin's own Peer/* routes.");
     }
 
-    /// <summary>
-    /// A restricted (non-admin) user can browse/sync an item fine yet be blocked from
-    /// PlaybackInfo for it (no library access, EnableMediaPlayback off) - "shows up but
-    /// can't stream". Auto-resolution should prefer an administrator over whichever user
-    /// happens to sort first, since admins aren't subject to those restrictions.
-    /// </summary>
     [Fact]
-    public async Task GetPlaybackInfoAsync_MissingUserId_PrefersAdministratorOverFirstUser()
+    public void GetPlaybackInfoAsync_SendsFederationTokenHeader_NotEmbyToken()
     {
-        var usersJson = "[" +
-                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"restricted-kid-profile\",\"Policy\":{\"IsAdministrator\":false}}," +
-                        "{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}" +
-                        "]";
-        var playbackJson = "{\"PlaySessionId\":\"abc\",\"MediaSources\":[" +
-                           "{\"Id\":\"src1\",\"Path\":\"http://remote/video\",\"Container\":\"mkv\"}]}";
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
 
-        var handler = new FakeHttpMessageHandler(usersJson, playbackJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
-
-        var server = new RemoteServer
-        {
-            // A distinct server id from the other test in this file: the resolved
-            // playback user is now cached in-memory keyed by server id only (see
-            // RemoteServerClient.ResolvedPlaybackUserIdCache), so sharing an id
-            // would let whichever test happens to run first poison this one with
-            // its own resolved user.
-            Id = "serverB",
-            Name = "Remote",
-            Url = "http://fake.local",
-            ApiKey = "key",
-            UserId = string.Empty,
-            Enabled = true
-        };
-        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
-
-        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
-
-        // The second user in the list is the admin; picking it over the first user
-        // is the whole point of the fix.
-        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.PlaybackUserId);
+        // CreateDefaultHttpClient (the code path that actually sets the header in
+        // production) is only exercised by the single-arg constructor - the
+        // shared-HttpClient constructor used everywhere else in this file
+        // bypasses it entirely, so this test targets that constructor
+        // specifically.
+        using var client = new RemoteServerClient(server, NullLogger.Instance);
+        Assert.Contains("federation-token", GetDefaultHeaderValues(client, FederationTokenAuth.Header));
+        Assert.Empty(GetDefaultHeaderValues(client, "X-Emby-Token"));
     }
 
-    /// <summary>
-    /// Regression test for an ultra-review finding: the resolved fallback user
-    /// used to be written straight onto <c>_server.UserId</c> - the same
-    /// <see cref="RemoteServer"/> instance <c>Plugin.Instance.Configuration</c>
-    /// holds - so it would get silently persisted to disk by the next unrelated
-    /// <c>SaveConfiguration()</c> call (adding a server, accepting a friend
-    /// request, ...), indistinguishable from an admin having configured it
-    /// themselves. The resolution must stay in-memory only while still skipping
-    /// the extra <c>/Users</c> round trip on a later call for the same server.
-    /// </summary>
     [Fact]
-    public async Task GetPlaybackInfoAsync_MissingUserId_ResolutionNeverWritesBackToServerConfig()
+    public async Task GetItemsAsync_CallsPeerEndpoint_NoUserResolution()
     {
-        var usersJson = "[" +
-                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"user1\"}" +
-                        "]";
-        var playbackJson = "{\"PlaySessionId\":\"abc\",\"MediaSources\":[" +
-                           "{\"Id\":\"src1\",\"Path\":\"http://remote/video\",\"Container\":\"mkv\"}]}";
-
-        var handler = new FakeHttpMessageHandler(usersJson, playbackJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
-
-        // A globally unique id: the in-memory resolution cache is a process-wide
-        // static keyed by server id, so a fixed id like "serverA" could collide
-        // with unrelated tests in this same run.
-        var server = new RemoteServer
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "Remote",
-            Url = "http://fake.local",
-            ApiKey = "key",
-            UserId = string.Empty,
-            Enabled = true
-        };
-        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
-
-        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
-        Assert.Equal(string.Empty, server.UserId);
-        Assert.Equal(1, handler.UsersEndpointCallCount);
-
-        // A second play on the same server must still skip the /Users round trip
-        // (the whole point of caching the resolution) without ever having written
-        // it onto the persisted config object.
-        await client.GetPlaybackInfoAsync(Guid.NewGuid().ToString("N"), cancellationToken: CancellationToken.None);
-        Assert.Equal(string.Empty, server.UserId);
-        Assert.Equal(1, handler.UsersEndpointCallCount);
-    }
-
-    /// <summary>
-    /// Regression test for the actual "friend's library won't sync" bug: GetItemsAsync
-    /// used to read _server.UserId directly and give up (returning null - "sync failed,
-    /// preserve cached data") whenever it was empty, with none of GetPlaybackInfoAsync's
-    /// admin-fallback resolution. Any friend who hadn't yet explicitly configured
-    /// per-friend sharing (which is what populates UserId) could never sync at all, even
-    /// though the config page's own tooltip already promised a fallback to "an
-    /// administrator account on their server".
-    /// </summary>
-    [Fact]
-    public async Task GetItemsAsync_MissingUserId_FallsBackToAdministrator_InsteadOfFailingSyncEntirely()
-    {
-        var usersJson = "[" +
-                        "{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"non-admin\",\"Policy\":{\"IsAdministrator\":false}}," +
-                        "{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}" +
-                        "]";
         var itemsJson = "{\"Items\":[{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}]}";
-
-        var handler = new FakeHttpMessageHandler(usersJson, "{}", itemsJson);
+        var handler = new FakeHttpMessageHandler(itemsJson: itemsJson);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
 
-        var server = new RemoteServer
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "Remote",
-            Url = "http://fake.local",
-            ApiKey = "key",
-            UserId = string.Empty,
-            Enabled = true
-        };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
         var result = await client.GetItemsAsync(cancellationToken: CancellationToken.None);
@@ -191,101 +76,200 @@ public class RemoteServerClientPlaybackTests
         Assert.NotNull(result);
         Assert.Single(result!);
         Assert.Equal("A Movie", result[0].Name);
-        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.ItemsUserId);
-        Assert.Equal(string.Empty, server.UserId);
+        Assert.Equal("/Plugins/Federation/Peer/Items", handler.LastRequestedPath);
+        Assert.False(handler.CalledAnyNativeUsersOrItemsEndpoint);
     }
 
-    /// <summary>
-    /// Same bug, GetItemAsync (single-item fetch) side.
-    /// </summary>
     [Fact]
-    public async Task GetItemAsync_MissingUserId_FallsBackToAdministrator_InsteadOfFailingSyncEntirely()
+    public async Task GetItemsAsync_ForwardsFilterParams()
     {
-        var usersJson = "[{\"Id\":\"22222222-2222-2222-2222-222222222222\",\"Name\":\"admin\",\"Policy\":{\"IsAdministrator\":true}}]";
-        var itemJson = "{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}";
+        var handler = new FakeHttpMessageHandler(itemsJson: "{\"Items\":[]}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
-        var handler = new FakeHttpMessageHandler(usersJson, "{}", "{\"Items\":[]}", itemJson);
+        await client.GetItemsAsync(mediaType: "Movie", parentId: "lib-1", startIndex: 10, limit: 5, cancellationToken: CancellationToken.None);
+
+        Assert.Contains("mediaType=Movie", handler.LastRequestedQuery);
+        Assert.Contains("parentId=lib-1", handler.LastRequestedQuery);
+        Assert.Contains("startIndex=10", handler.LastRequestedQuery);
+        Assert.Contains("limit=5", handler.LastRequestedQuery);
+    }
+
+    [Fact]
+    public async Task GetItemAsync_CallsPeerEndpoint_NoUserResolution()
+    {
+        var itemJson = "{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}";
+        var handler = new FakeHttpMessageHandler(itemJson: itemJson);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
 
-        var server = new RemoteServer
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "Remote",
-            Url = "http://fake.local",
-            ApiKey = "key",
-            UserId = string.Empty,
-            Enabled = true
-        };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
         var result = await client.GetItemAsync("33333333-3333-3333-3333-333333333333", cancellationToken: CancellationToken.None);
 
         Assert.NotNull(result);
         Assert.Equal("A Movie", result!.Name);
-        Assert.Equal("22222222-2222-2222-2222-222222222222", handler.ItemUserId);
+        Assert.Equal("/Plugins/Federation/Peer/Items/33333333-3333-3333-3333-333333333333", handler.LastRequestedPath);
+        Assert.False(handler.CalledAnyNativeUsersOrItemsEndpoint);
+    }
+
+    [Fact]
+    public async Task GetLibrariesAsync_CallsPeerEndpoint_NoUserResolution()
+    {
+        var librariesJson = "{\"Items\":[{\"Id\":\"lib-1\",\"Name\":\"Movies\",\"CollectionType\":\"movies\"}],\"TotalRecordCount\":1}";
+        var handler = new FakeHttpMessageHandler(librariesJson: librariesJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetLibrariesAsync(CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Single(result!);
+        Assert.Equal("Movies", result[0].Name);
+        Assert.Equal("/Plugins/Federation/Peer/Libraries", handler.LastRequestedPath);
+        Assert.False(handler.CalledAnyNativeUsersOrItemsEndpoint);
+    }
+
+    [Fact]
+    public async Task GetUsersAsync_CallsPeerUsersEndpoint_NotNativeUsers()
+    {
+        var usersJson = "[{\"Id\":\"11111111-1111-1111-1111-111111111111\",\"Name\":\"someone\",\"Policy\":{\"IsAdministrator\":true}}]";
+        var handler = new FakeHttpMessageHandler(usersJson: usersJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetUsersAsync(CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Single(result!);
+        Assert.True(result![0].IsAdministrator);
+        Assert.Equal("/Plugins/Federation/Peer/Users", handler.LastRequestedPath);
+    }
+
+    [Fact]
+    public async Task GetSystemInfoDetailedAsync_CallsPeerEndpoint_NotNativeSystemInfo()
+    {
+        var systemInfoJson = "{\"ServerName\":\"Remote\",\"Version\":\"10.11.0\",\"Id\":\"abc\",\"FederationPluginVersion\":\"0.0.70\"}";
+        var handler = new FakeHttpMessageHandler(systemInfoJson: systemInfoJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var (info, error) = await client.GetSystemInfoDetailedAsync(CancellationToken.None);
+
+        Assert.NotNull(info);
+        Assert.Null(error);
+        Assert.Equal("Remote", info!.ServerName);
+        Assert.Equal("/Plugins/Federation/Peer/SystemInfo", handler.LastRequestedPath);
+    }
+
+    [Fact]
+    public async Task GetSystemInfoDetailedAsync_Unauthorized_ReportsTokenProblem_NotJellyfinPermissions()
+    {
+        var handler = new FakeHttpMessageHandler(systemInfoStatusCode: HttpStatusCode.Unauthorized);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "stale-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var (info, error) = await client.GetSystemInfoDetailedAsync(CancellationToken.None);
+
+        Assert.Null(info);
+        Assert.Contains("federation token", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string[] GetDefaultHeaderValues(RemoteServerClient client, string headerName)
+    {
+        var field = typeof(RemoteServerClient).GetField("_httpClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var httpClient = (HttpClient)field!.GetValue(client)!;
+        return httpClient.DefaultRequestHeaders.TryGetValues(headerName, out var values) ? System.Linq.Enumerable.ToArray(values) : Array.Empty<string>();
     }
 
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
-        private readonly string _usersJson;
         private readonly string _playbackJson;
         private readonly string _itemsJson;
         private readonly string _itemJson;
+        private readonly string _librariesJson;
+        private readonly string _usersJson;
+        private readonly string _systemInfoJson;
+        private readonly HttpStatusCode _systemInfoStatusCode;
 
-        public bool CalledUsersEndpoint { get; private set; }
-        public int UsersEndpointCallCount { get; private set; }
-        public string? PlaybackUserId { get; private set; }
-        public string? ItemsUserId { get; private set; }
-        public string? ItemUserId { get; private set; }
+        public string? LastRequestedPath { get; private set; }
+        public string LastRequestedQuery { get; private set; } = string.Empty;
+        public bool CalledAnyNativeUsersOrItemsEndpoint { get; private set; }
 
-        public FakeHttpMessageHandler(string usersJson, string playbackJson, string itemsJson = "{\"Items\":[]}", string itemJson = "{}")
+        public FakeHttpMessageHandler(
+            string playbackJson = "{\"MediaSources\":[]}",
+            string itemsJson = "{\"Items\":[]}",
+            string itemJson = "{}",
+            string librariesJson = "{\"Items\":[]}",
+            string usersJson = "[]",
+            string systemInfoJson = "{}",
+            HttpStatusCode systemInfoStatusCode = HttpStatusCode.OK)
         {
-            _usersJson = usersJson;
             _playbackJson = playbackJson;
             _itemsJson = itemsJson;
             _itemJson = itemJson;
+            _librariesJson = librariesJson;
+            _usersJson = usersJson;
+            _systemInfoJson = systemInfoJson;
+            _systemInfoStatusCode = systemInfoStatusCode;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            LastRequestedPath = path;
+            LastRequestedQuery = request.RequestUri?.Query ?? string.Empty;
 
-            if (path.Equals("/Users", StringComparison.OrdinalIgnoreCase))
+            if (path.Equals("/Users", StringComparison.OrdinalIgnoreCase)
+                || System.Text.RegularExpressions.Regex.IsMatch(path, "^/Users/[^/]+/Items"))
             {
-                CalledUsersEndpoint = true;
-                UsersEndpointCallCount++;
-                return Task.FromResult(Json(_usersJson));
+                CalledAnyNativeUsersOrItemsEndpoint = true;
             }
 
-            if (path.Contains("PlaybackInfo", StringComparison.OrdinalIgnoreCase))
+            if (path.Equals("/Plugins/Federation/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/Plugins/Federation/Peer/PlaybackInfo/", StringComparison.OrdinalIgnoreCase))
             {
-                var query = request.RequestUri?.Query ?? string.Empty;
-                var idx = query.IndexOf("UserId=", StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
-                {
-                    PlaybackUserId = query.Substring(idx + "UserId=".Length);
-                }
-
                 return Task.FromResult(Json(_playbackJson));
             }
 
-            // /Users/{id}/Items/{itemId} (single item) vs /Users/{id}/Items?... (list) -
-            // matched before the generic /Items/ list case since both contain "/Items".
-            var itemsMatch = System.Text.RegularExpressions.Regex.Match(path, "^/Users/([^/]+)/Items/([^/]+)$");
-            if (itemsMatch.Success)
+            if (path.Equals("/Plugins/Federation/Peer/Items", StringComparison.OrdinalIgnoreCase))
             {
-                ItemUserId = itemsMatch.Groups[1].Value;
-                return Task.FromResult(Json(_itemJson));
-            }
-
-            var listMatch = System.Text.RegularExpressions.Regex.Match(path, "^/Users/([^/]+)/Items$");
-            if (listMatch.Success)
-            {
-                ItemsUserId = listMatch.Groups[1].Value;
                 return Task.FromResult(Json(_itemsJson));
             }
 
-            return Task.FromResult(Json("{\"Items\":[]}"));
+            if (path.StartsWith("/Plugins/Federation/Peer/Items/", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Json(_itemJson));
+            }
+
+            if (path.Equals("/Plugins/Federation/Peer/Libraries", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Json(_librariesJson));
+            }
+
+            if (path.Equals("/Plugins/Federation/Peer/Users", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Json(_usersJson));
+            }
+
+            if (path.Equals("/Plugins/Federation/Peer/SystemInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(_systemInfoStatusCode)
+                {
+                    Content = new StringContent(_systemInfoJson, Encoding.UTF8, "application/json")
+                });
+            }
+
+            return Task.FromResult(Json("{}"));
         }
 
         private static HttpResponseMessage Json(string body)

@@ -180,9 +180,9 @@ public class FederationSyncServiceTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var query = request.RequestUri?.Query ?? string.Empty;
-            var body = query.Contains("IncludeItemTypes=Series", StringComparison.OrdinalIgnoreCase)
+            var body = query.Contains("mediaType=Series", StringComparison.OrdinalIgnoreCase)
                 ? _seriesJson
-                : query.Contains("IncludeItemTypes=Episode", StringComparison.OrdinalIgnoreCase)
+                : query.Contains("mediaType=Episode", StringComparison.OrdinalIgnoreCase)
                     ? _episodeJson
                     : "{\"Items\":[],\"TotalRecordCount\":0}";
 

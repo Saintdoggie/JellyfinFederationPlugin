@@ -38,22 +38,6 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, (DateTime Expires, FederationPeerStatus Status)> PeerStatusCache = new();
         private static readonly TimeSpan PeerStatusCacheTtl = TimeSpan.FromSeconds(30);
 
-        // In-memory only, deliberately never written to _server.UserId: that field
-        // lives on the same RemoteServer instance Plugin.Instance.Configuration
-        // holds, so mutating it would get silently persisted to disk the next time
-        // anything calls SaveConfiguration() (adding a server, accepting a friend
-        // request, ...) - indistinguishable from an admin having configured it
-        // themselves, and immune to an admin's later attempt to clear or change it.
-        // Keyed by server id so this still skips the GetUsersAsync round trip on
-        // every subsequent call for the rest of this process's lifetime, without
-        // that persistence risk. Shared by every method that needs to act as some
-        // remote user (playback, browsing, syncing) - see ResolveActingUserIdAsync.
-        private static readonly ConcurrentDictionary<string, string> ResolvedActingUserIdCache = new(StringComparer.OrdinalIgnoreCase);
-
-        // Matches Plugin.Id in Plugin.cs - duplicated here rather than referenced
-        // directly so this client has no dependency on the Plugin singleton.
-        private static readonly Guid FederationPluginId = Guid.Parse("495feadb-d27f-46c3-bb9b-0732ae8926fa");
-
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -90,69 +74,6 @@ namespace Jellyfin.Plugin.Federation.Services
         public RemoteServer ServerConfig => _server;
 
         /// <summary>
-        /// Resolves which remote user id a request should act as: an explicit
-        /// argument wins, then the server's configured UserId, then a user
-        /// resolved automatically (preferring an administrator, so restricted
-        /// libraries/EnableMediaPlayback on a non-admin account don't silently
-        /// hide or block content) and cached for this process's lifetime so
-        /// only the first call per server pays the extra GetUsersAsync round
-        /// trip. Returns null only when the remote has no users at all (or is
-        /// unreachable) - callers must treat that as "cannot act on this
-        /// server right now" the same way they already treat other failures.
-        ///
-        /// Every caller that needs to act as some remote user (sync, browsing,
-        /// playback) should go through this rather than reading
-        /// <c>_server.UserId</c> directly - GetItemsAsync/GetItemAsync used to
-        /// skip this fallback entirely and just give up when UserId wasn't
-        /// configured, which is what silently broke syncing for any friend who
-        /// hadn't explicitly picked a restricted sharing account yet, even
-        /// though the config page's own tooltip already promised this exact
-        /// fallback ("otherwise falls back to an administrator account").
-        /// </summary>
-        private async Task<string?> ResolveActingUserIdAsync(string? explicitUserId, CancellationToken cancellationToken)
-        {
-            var userIdToUse = explicitUserId ?? _server.UserId;
-            if (!string.IsNullOrEmpty(userIdToUse))
-            {
-                return userIdToUse;
-            }
-
-            if (explicitUserId == null && ResolvedActingUserIdCache.TryGetValue(_server.Id, out var previouslyResolved))
-            {
-                return previouslyResolved;
-            }
-
-            _logger.LogWarning(
-                "[Federation] No UserId configured for remote server {ServerName}; resolving a user automatically",
-                _server.Name);
-
-            var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
-            var chosen = users?.FirstOrDefault(u => u.IsAdministrator) ?? users?.FirstOrDefault();
-            userIdToUse = chosen?.Id;
-
-            if (explicitUserId == null && userIdToUse != null)
-            {
-                ResolvedActingUserIdCache[_server.Id] = userIdToUse;
-            }
-
-            if (chosen != null && !chosen.IsAdministrator)
-            {
-                _logger.LogWarning(
-                    "[Federation] No administrator account found on server {ServerName}; falling back to non-admin user {UserName} ({UserId}), which may be restricted from seeing some content",
-                    _server.Name,
-                    chosen.Name,
-                    chosen.Id);
-            }
-
-            if (userIdToUse == null)
-            {
-                _logger.LogWarning("[Federation] Could not resolve any user on remote server {ServerName}", _server.Name);
-            }
-
-            return userIdToUse;
-        }
-
-        /// <summary>
         /// Gets items from the remote server, including ProviderIds and People.
         /// Returns null when the request fails (callers must treat null as
         /// "sync failed" and preserve any existing cached data).
@@ -169,44 +90,34 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(userIdToUse))
-                {
-                    _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
-                    return null;
-                }
-
-                var queryParams = new List<string>
-                {
-                    "Recursive=true",
-                    // MediaStreams here is what lets a materialized item carry real
-                    // codec/resolution/audio info without a live probe at play time -
-                    // see FederationLibraryManager.MaterializeItem's persistence of it.
-                    "Fields=BasicSyncInfo,Path,MediaSources,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
-                    "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
-                };
+                // userId is unused under the scoped-federation-token model: this
+                // server-to-server call no longer impersonates any of the
+                // remote's own users (see Peer/Items on the receiving side) -
+                // kept as a parameter only so existing call sites don't need
+                // updating, not because anything here still reads it.
+                var queryParams = new List<string>();
 
                 if (!string.IsNullOrEmpty(mediaType))
                 {
-                    queryParams.Add($"IncludeItemTypes={mediaType}");
+                    queryParams.Add($"mediaType={Uri.EscapeDataString(mediaType)}");
                 }
 
                 if (!string.IsNullOrEmpty(parentId))
                 {
-                    queryParams.Add($"ParentId={parentId}");
+                    queryParams.Add($"parentId={Uri.EscapeDataString(parentId)}");
                 }
 
                 if (startIndex.HasValue)
                 {
-                    queryParams.Add($"StartIndex={startIndex.Value}");
+                    queryParams.Add($"startIndex={startIndex.Value}");
                 }
 
                 if (limit.HasValue)
                 {
-                    queryParams.Add($"Limit={limit.Value}");
+                    queryParams.Add($"limit={limit.Value}");
                 }
 
-                var url = $"/Users/{userIdToUse}/Items?{string.Join("&", queryParams)}";
+                var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
 
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
 
@@ -263,14 +174,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(userIdToUse))
-                {
-                    _logger.LogWarning("No user ID specified for remote server {ServerName}", _server.Name);
-                    return null;
-                }
-
-                var url = $"/Users/{userIdToUse}/Items/{itemId}";
+                var url = $"/Plugins/Federation/Peer/Items/{itemId}";
                 _logger.LogDebug("Getting item {ItemId} from {ServerName}", itemId, _server.Name);
 
                 var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
@@ -299,50 +203,18 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                // PlaybackInfo is a per-user endpoint, so this still needs to resolve
-                // *some* remote user even when nothing is configured - see
-                // ResolveActingUserIdAsync. Doing this via the shared helper (rather
-                // than this method's own former copy of the same fallback) means a
-                // UserId resolved once here is immediately reusable by sync/browsing
-                // calls too, and vice versa, instead of each maintaining its own
-                // separate cache entry for the same server.
-                var usedFallback = userId == null && string.IsNullOrEmpty(_server.UserId);
-                var userIdToUse = await ResolveActingUserIdAsync(userId, cancellationToken).ConfigureAwait(false);
-
-                if (string.IsNullOrEmpty(userIdToUse))
-                {
-                    _logger.LogWarning(
-                        "[Federation] Could not resolve any user on remote server {ServerName}, so stream info for item {ItemId} cannot be read and playback will fail",
-                        _server.Name,
-                        itemId);
-                    return null;
-                }
-
-                if (usedFallback)
-                {
-                    _logger.LogInformation(
-                        "[Federation] Resolved playback user {UserId} on server {ServerName} for item {ItemId} (no configured UserId)",
-                        userIdToUse,
-                        _server.Name,
-                        itemId);
-                }
-                {
-                    _logger.LogInformation(
-                        "[Federation] Resolved playback user {UserId} on server {ServerName} for item {ItemId} (no configured UserId)",
-                        userIdToUse,
-                        _server.Name,
-                        itemId);
-                }
-
-                var cacheKey = $"{_server.Id}:{itemId}:{userIdToUse}";
+                // userId is unused under the scoped-federation-token model - kept
+                // as a parameter only for call-site compatibility. Peer/PlaybackInfo
+                // on the receiving side resolves its own internal user id itself.
+                var cacheKey = $"{_server.Id}:{itemId}";
                 if (PlaybackInfoCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
                 {
                     _logger.LogDebug("[Federation] Using cached playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
                     return cached.Response;
                 }
 
-                var url = $"/Items/{itemId}/PlaybackInfo?UserId={userIdToUse}";
-                _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName} as user {UserId}", itemId, _server.Name, userIdToUse);
+                var url = $"/Plugins/Federation/Peer/PlaybackInfo/{itemId}";
+                _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
 
                 var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
@@ -362,15 +234,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if ((playbackInfo?.MediaSources?.Count ?? 0) == 0)
                 {
-                    // The remote accepted the request but had nothing to offer this
-                    // user for this item - usually a permissions problem (wrong
-                    // library access, media playback disabled) rather than a network
-                    // or plugin failure. ErrorCode, when present, says why.
+                    // The remote accepted the request but had nothing to offer for
+                    // this item - usually a sharing-scope problem (excluded, not in
+                    // a shared library, blocked by a per-remote-user rule) rather
+                    // than a network or plugin failure. ErrorCode, when present,
+                    // says why.
                     _logger.LogWarning(
-                        "[Federation] Server {ServerName} returned zero media sources for item {ItemId} as user {UserId}; ErrorCode={ErrorCode}",
+                        "[Federation] Server {ServerName} returned zero media sources for item {ItemId}; ErrorCode={ErrorCode}",
                         _server.Name,
                         itemId,
-                        userIdToUse,
                         playbackInfo?.ErrorCode ?? "(none)");
                 }
 
@@ -394,25 +266,29 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Same request as <see cref="GetSystemInfoAsync"/>, but also returns a
-        /// human-readable reason on failure. <c>/System/Info</c> (unlike
-        /// <c>/System/Info/Public</c>, which <see cref="TestConnectionAsync"/> uses)
-        /// requires a valid, sufficiently-privileged API key - so "connected fine,
-        /// then this fails" almost always means a bad/missing/insufficiently-
-        /// privileged key, not a dead server. Only <see cref="Api.FederationController.TestServer"/>
-        /// needs that distinction surfaced to the person setting up the connection;
-        /// every other caller of <see cref="GetSystemInfoAsync"/> only needs success/failure.
+        /// human-readable reason on failure. Calls this plugin's own
+        /// <c>Peer/SystemInfo</c> - not Jellyfin's native <c>/System/Info</c>,
+        /// which required a real, sufficiently-privileged Jellyfin API key and
+        /// therefore rejects the scoped federation token this now sends - so
+        /// "connected fine, then this fails" now means a missing/invalid/revoked
+        /// federation token, or an old plugin version without this route, rather
+        /// than a Jellyfin permissions problem. Only
+        /// <see cref="Api.FederationController.TestServer"/> needs that
+        /// distinction surfaced to the person setting up the connection; every
+        /// other caller of <see cref="GetSystemInfoAsync"/> only needs
+        /// success/failure.
         /// </summary>
         public async Task<(SystemInfo? Info, string? Error)> GetSystemInfoDetailedAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var response = await _httpClient.GetAsync("/System/Info", cancellationToken).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/SystemInfo", cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     var reason = response.StatusCode switch
                     {
-                        System.Net.HttpStatusCode.Unauthorized => "the API key is invalid or missing",
-                        System.Net.HttpStatusCode.Forbidden => "the API key does not have permission to view system info (use an administrator account's key)",
+                        System.Net.HttpStatusCode.Unauthorized => "the federation token is invalid, missing, or was revoked (this friendship may have been removed on their side)",
+                        System.Net.HttpStatusCode.NotFound => "the server is running a Federation plugin version too old to support this - both sides need to be upgraded",
                         _ => $"the server returned {(int)response.StatusCode} {response.StatusCode}"
                     };
                     _logger.LogError("Error getting system info from remote server {ServerName}: {Reason}", _server.Name, reason);
@@ -431,10 +307,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Gets the version of the Federation plugin installed on the remote
-        /// server, via Jellyfin's own <c>/Plugins</c> endpoint (not a Federation
-        /// endpoint - works even against a remote running a version too old to
-        /// have any given diagnostic route). Null if the plugin isn't installed
-        /// there, or the version can't be determined - most usefully surfaced by
+        /// server, via <c>/Plugins/Federation/Config</c> - an anonymous, Federation-
+        /// owned route (not Jellyfin's native <c>/Plugins</c>, which - like
+        /// <c>/System/Info</c> - requires a real Jellyfin API key the scoped
+        /// federation token this plugin now uses cannot satisfy) that works even
+        /// against a remote running a version too old to have any other
+        /// diagnostic route, or with no federation token exchanged yet at all.
+        /// Null if the version can't be determined - most usefully surfaced by
         /// <see cref="Api.FederationController.TestServer"/> so a version
         /// mismatch (e.g. one side stuck on an old release with a since-fixed
         /// sync bug) is visible before it turns into a confusing support report.
@@ -443,7 +322,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var response = await _httpClient.GetAsync("/Plugins", cancellationToken).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/SystemInfo", cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return null;
@@ -451,18 +330,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
-                foreach (var plugin in doc.RootElement.EnumerateArray())
-                {
-                    if (plugin.TryGetProperty("Id", out var idProp)
-                        && Guid.TryParse(idProp.GetString(), out var id)
-                        && id == FederationPluginId
-                        && plugin.TryGetProperty("Version", out var versionProp))
-                    {
-                        return versionProp.GetString();
-                    }
-                }
-
-                return null;
+                return doc.RootElement.TryGetProperty("FederationPluginVersion", out var versionProp)
+                    ? versionProp.GetString()
+                    : null;
             }
             catch (Exception ex)
             {
@@ -472,13 +342,19 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Gets users from the remote server.
+        /// Gets this server's own local user accounts, via this plugin's
+        /// <c>Peer/Users</c> - not Jellyfin's native <c>/Users</c>, which the
+        /// scoped federation token cannot satisfy. The only remaining reason
+        /// anything needs this list under the new model is
+        /// <see cref="Api.FederationController.GetRemoteUsers"/>'s per-remote-user
+        /// rule picker; sync/browsing/playback no longer impersonate any of a
+        /// remote's users.
         /// </summary>
         public async Task<List<UserDto>?> GetUsersAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var response = await _httpClient.GetAsync("/Users", cancellationToken).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Users", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -492,30 +368,17 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Gets libraries (user views) from the remote server.
+        /// Gets libraries (shared with this server, per its sharing scope) from
+        /// the remote server, via this plugin's <c>Peer/Libraries</c> - not
+        /// Jellyfin's native <c>/Users/{id}/Views</c>, which the scoped
+        /// federation token cannot satisfy, and which would have needed a remote
+        /// user to impersonate under the old model anyway.
         /// </summary>
         public async Task<List<BaseItemDto>?> GetLibrariesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var userIdToUse = _server.UserId;
-                if (string.IsNullOrEmpty(userIdToUse))
-                {
-                    var users = await GetUsersAsync(cancellationToken).ConfigureAwait(false);
-                    if (users == null || users.Count == 0)
-                    {
-                        _logger.LogWarning("No users found on remote server {ServerName}", _server.Name);
-                        return null;
-                    }
-
-                    // Prefer an administrator: a restricted user's Views may omit
-                    // libraries they don't have access to, silently shrinking what
-                    // gets federated. See GetPlaybackInfoAsync for the same reasoning.
-                    userIdToUse = (users.FirstOrDefault(u => u.IsAdministrator) ?? users[0]).Id;
-                }
-
-                var url = $"/Users/{userIdToUse}/Views";
-                var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Libraries", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -1200,7 +1063,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 BaseAddress = new Uri(server.Url.TrimEnd('/')),
                 Timeout = TimeSpan.FromMinutes(5)
             };
-            client.DefaultRequestHeaders.Add("X-Emby-Token", server.ApiKey);
+
+            // server.ApiKey is a scoped federation token now, not a real Jellyfin
+            // API key - sent as X-Federation-Token, which only this plugin's own
+            // Peer/* endpoints (and the other server-to-server ones) understand.
+            // It deliberately does not satisfy Jellyfin's native X-Emby-Token
+            // auth at all - see FederationTokenAuth's own doc comment for why
+            // that is the entire point.
+            client.DefaultRequestHeaders.Add(FederationTokenAuth.Header, server.ApiKey);
             return client;
         }
 

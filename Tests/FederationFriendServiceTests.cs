@@ -203,13 +203,17 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SendFriendRequestAsync_Success_MintsKeyAndStoresOutgoingRequest()
+    public async Task SendFriendRequestAsync_Success_MintsTokenAndStoresOutgoingRequest()
     {
         var calls = 0;
+        FriendRequestPayload? sentPayload = null;
         UseFakeHttp(req =>
         {
             calls++;
             Assert.Equal("http://friend.example/Plugins/Federation/Friends/Request", req.RequestUri!.ToString());
+            sentPayload = System.Text.Json.JsonSerializer.Deserialize<FriendRequestPayload>(
+                req.Content!.ReadAsStringAsync().Result,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             return Json(HttpStatusCode.OK, new { success = true, serverName = "Friend Server" });
         });
 
@@ -221,11 +225,12 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Equal("http://friend.example", outgoing.RemoteServerUrl);
         Assert.Equal("Friend Server", outgoing.RemoteServerName);
         Assert.False(string.IsNullOrEmpty(outgoing.ApiKey));
-        Assert.Contains(_apiKeys, k => k.AccessToken == outgoing.ApiKey);
+        Assert.True(sentPayload?.SupportsFederationToken);
+        Assert.Equal(outgoing.ApiKey, sentPayload?.ApiKeyForYou);
     }
 
     [Fact]
-    public async Task SendFriendRequestAsync_RemoteRejects_RevokesTheMintedKey()
+    public async Task SendFriendRequestAsync_RemoteRejects_DoesNotStoreOutgoingRequest()
     {
         UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
 
@@ -233,7 +238,6 @@ public class FederationFriendServiceTests : IDisposable
 
         Assert.False(success);
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
-        Assert.Empty(_apiKeys);
     }
 
     [Fact]
@@ -264,7 +268,8 @@ public class FederationFriendServiceTests : IDisposable
             FromServerUrl = "http://sender.example",
             FromServerName = "Sender",
             FromServerId = "sender-id",
-            ApiKeyForYou = "key-from-sender"
+            ApiKeyForYou = "key-from-sender",
+            SupportsFederationToken = true
         };
 
         var result = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
@@ -287,7 +292,8 @@ public class FederationFriendServiceTests : IDisposable
             RequestId = "req-1",
             FromServerUrl = "http://sender.example",
             FromServerName = "Sender",
-            ApiKeyForYou = "key-from-sender"
+            ApiKeyForYou = "key-from-sender",
+            SupportsFederationToken = true
         };
 
         var result = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
@@ -295,6 +301,23 @@ public class FederationFriendServiceTests : IDisposable
         Assert.True(result.Success);
         var incoming = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
         Assert.False(incoming.Verified);
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_MissingFederationTokenSupport_Rejected()
+    {
+        var payload = new FriendRequestPayload
+        {
+            RequestId = "req-1",
+            FromServerUrl = "http://sender.example",
+            FromServerName = "Sender",
+            ApiKeyForYou = "key-from-sender"
+        };
+
+        var result = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Empty(_plugin.Configuration.IncomingFriendRequests);
     }
 
     [Fact]
@@ -334,7 +357,7 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task AcceptFriendRequestAsync_SenderUnreachable_DoesNotAddFriend_AndRevokesTheNewKey()
+    public async Task AcceptFriendRequestAsync_SenderUnreachable_DoesNotAddFriend()
     {
         _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest
         {
@@ -353,9 +376,6 @@ public class FederationFriendServiceTests : IDisposable
 
         // The incoming request is untouched so the admin can retry later.
         Assert.Single(_plugin.Configuration.IncomingFriendRequests);
-
-        // The key minted for the sender before the failed confirmation must not leak.
-        Assert.DoesNotContain(_apiKeys, k => k.AppName == "Federation friend: Sender");
     }
 
     [Fact]
@@ -371,16 +391,14 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task CancelOutgoingFriendRequestAsync_RemovesRequest_AndRevokesKey()
+    public async Task CancelOutgoingFriendRequestAsync_RemovesRequest()
     {
         _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", ApiKey = "key-1" });
-        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "key-1", DateCreated = DateTime.UtcNow });
 
         var (success, _) = await _service.CancelOutgoingFriendRequestAsync("req-1", CancellationToken.None);
 
         Assert.True(success);
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
-        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "key-1");
     }
 
     [Fact]
@@ -388,14 +406,16 @@ public class FederationFriendServiceTests : IDisposable
     {
         _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend" });
 
-        _service.HandleAcceptCallback(new FriendRequestPayload
+        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload
         {
             RequestId = "req-1",
             FromServerUrl = "http://friend.example",
             FromServerName = "Friend",
-            ApiKeyForYou = "key-from-friend"
+            ApiKeyForYou = "key-from-friend",
+            SupportsFederationToken = true
         });
 
+        Assert.True(accepted);
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
         var server = Assert.Single(_plugin.Configuration.RemoteServers);
         Assert.Equal("key-from-friend", server.ApiKey);
@@ -405,21 +425,37 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public void HandleAcceptCallback_UnknownRequestId_DoesNothing()
     {
-        _service.HandleAcceptCallback(new FriendRequestPayload { RequestId = "does-not-exist", ApiKeyForYou = "key" });
+        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload { RequestId = "does-not-exist", ApiKeyForYou = "key", SupportsFederationToken = true });
 
+        Assert.False(accepted);
         Assert.Empty(_plugin.Configuration.RemoteServers);
     }
 
     [Fact]
-    public async Task HandleRejectCallbackAsync_RemovesOutgoingRequest_AndRevokesTheKeyWeMinted()
+    public void HandleAcceptCallback_MissingFederationTokenSupport_Rejected()
+    {
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend" });
+
+        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = "req-1",
+            FromServerUrl = "http://friend.example",
+            ApiKeyForYou = "key-from-friend"
+        });
+
+        Assert.False(accepted);
+        Assert.Empty(_plugin.Configuration.RemoteServers);
+        Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+    }
+
+    [Fact]
+    public void HandleRejectCallbackAsync_RemovesOutgoingRequest()
     {
         _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", ApiKey = "key-1" });
-        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "key-1", DateCreated = DateTime.UtcNow });
 
-        await _service.HandleRejectCallbackAsync("req-1");
+        _service.HandleRejectCallbackAsync("req-1");
 
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
-        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "key-1");
     }
 
     [Fact]
@@ -442,7 +478,8 @@ public class FederationFriendServiceTests : IDisposable
             RequestId = "req-1",
             FromServerUrl = "http://friend.example",
             FromServerName = "Friend",
-            ApiKeyForYou = "key-from-friend"
+            ApiKeyForYou = "key-from-friend",
+            SupportsFederationToken = true
         });
 
         var server = Assert.Single(_plugin.Configuration.RemoteServers);
@@ -451,7 +488,7 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task NotifyAndRevokeOnUnfriendAsync_NotifiesFriend_AndRevokesIssuedKey_RegardlessOfNotifyOutcome()
+    public async Task NotifyAndRevokeOnUnfriendAsync_NotifiesFriend()
     {
         var posted = false;
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
@@ -460,29 +497,26 @@ public class FederationFriendServiceTests : IDisposable
             return new HttpResponseMessage(HttpStatusCode.OK);
         }));
 
-        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "issued-key", DateCreated = DateTime.UtcNow });
-        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-key", IssuedApiKey = "issued-key" };
+        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-token", IssuedApiKey = "issued-token" };
 
         await _service.NotifyAndRevokeOnUnfriendAsync(server, CancellationToken.None);
 
         Assert.True(posted);
-        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "issued-key");
     }
 
     [Fact]
-    public async Task NotifyAndRevokeOnUnfriendAsync_StillRevokesIssuedKey_WhenNotifyFails()
+    public async Task NotifyAndRevokeOnUnfriendAsync_NotifyFailure_DoesNotThrow()
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
 
-        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "issued-key", DateCreated = DateTime.UtcNow });
-        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-key", IssuedApiKey = "issued-key" };
+        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-token", IssuedApiKey = "issued-token" };
 
+        // Their access is cut the moment the caller deletes this RemoteServer
+        // entry (FederationTokenAuth only ever matches a token against a
+        // currently-configured friend) - this method's only remaining job is a
+        // best-effort notification, which must never throw even when it fails
+        // (offline, unreachable, or an old plugin version without this endpoint).
         await _service.NotifyAndRevokeOnUnfriendAsync(server, CancellationToken.None);
-
-        // Their access is cut immediately even if they never receive/act on the
-        // notification (offline, unreachable, or an old plugin version that
-        // doesn't have this endpoint).
-        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "issued-key");
     }
 
     [Fact]

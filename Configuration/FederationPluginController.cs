@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -37,6 +38,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly IUserManager _userManager;
         private readonly FederationDownloadService _downloadService;
         private readonly FederationPlaybackTokenService _playbackTokens;
+        private readonly FederationPeerAccessService _peerAccess;
+        private readonly IServerApplicationHost _applicationHost;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -52,7 +55,9 @@ namespace Jellyfin.Plugin.Federation.Api
             ILibraryManager libraryManager,
             IUserManager userManager,
             FederationDownloadService downloadService,
-            FederationPlaybackTokenService playbackTokens)
+            FederationPlaybackTokenService playbackTokens,
+            FederationPeerAccessService peerAccess,
+            IServerApplicationHost applicationHost)
         {
             _logger = logger;
             _syncService = syncService;
@@ -68,6 +73,24 @@ namespace Jellyfin.Plugin.Federation.Api
             _libraryManager = libraryManager;
             _downloadService = downloadService;
             _playbackTokens = playbackTokens;
+            _peerAccess = peerAccess;
+            _applicationHost = applicationHost;
+        }
+
+        /// <summary>
+        /// Reads <see cref="RemoteServerClient.RemoteUserIdHeader"/> from the
+        /// current request - which of the calling friend's own local users
+        /// triggered this call, if they sent it. Used by every Peer/* endpoint
+        /// (and <see cref="IssuePlaybackToken"/>) to evaluate a
+        /// <see cref="RemoteUserAccessRule"/> via <see cref="_peerAccess"/>; null
+        /// (evaluated as "no per-user rule applies, fall back to the caller's
+        /// whole-relationship scope") when the caller doesn't send it.
+        /// </summary>
+        private string? RequestingRemoteUserId()
+        {
+            return Request.Headers.TryGetValue(RemoteServerClient.RemoteUserIdHeader, out var values)
+                ? values.ToString()
+                : null;
         }
 
         #region Configuration
@@ -626,15 +649,18 @@ namespace Jellyfin.Plugin.Federation.Api
         /// now actually disconnects both.
         /// </summary>
         [HttpPost("Friends/Unfriend")]
-        [Authorize(Policy = "RequiresElevation")]
+        [AllowAnonymous]
         public async Task<IActionResult> ReceiveUnfriend([FromBody] UnfriendPayload? payload, CancellationToken cancellationToken)
         {
-            var server = _friends.FindByFederationId(payload?.FromFederationId);
+            // Authenticated (and identified) purely by the federation token
+            // itself, not by trusting payload.FromFederationId - a token only
+            // ever resolves to the RemoteServer entry it was actually issued to,
+            // so there is no way to unfriend anyone but the caller's own
+            // relationship with this server.
+            var server = FederationTokenAuth.ResolveCaller(Request);
             if (server == null)
             {
-                // Not an error worth surfacing to the caller: could be an already-
-                // removed friend, a retry, or a federation id we never matched.
-                return Ok(new { success = true });
+                return Unauthorized();
             }
 
             var config = Plugin.Instance!.Configuration;
@@ -760,15 +786,20 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Server-to-server: a friend asking (using the API key we gave them) who our
-        /// other friends are, for friends-of-friends discovery. Gated on
-        /// AllowFriendsOfFriends rather than AllowAnonymous - only an existing friend
-        /// (or this server's own admin) holds a key that passes RequiresElevation here.
+        /// Server-to-server: a friend asking (using the federation token we gave
+        /// them) who our other friends are, for friends-of-friends discovery.
+        /// Gated on AllowFriendsOfFriends and a valid federation token - see
+        /// <see cref="FederationTokenAuth"/>.
         /// </summary>
         [HttpGet("Friends/List")]
-        [Authorize(Policy = "RequiresElevation")]
+        [AllowAnonymous]
         public IActionResult GetFriendsList()
         {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
             var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
             if (!config.AllowFriendsOfFriends)
             {
@@ -796,14 +827,18 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>
         /// Server-to-server, anonymous: the other server has accepted our earlier
-        /// friend request and is handing us a key to use pulling from them.
+        /// friend request and is handing us a token to use pulling from them.
+        /// Returns 400 when <see cref="FederationFriendService.HandleAcceptCallback"/>
+        /// rejects it (unknown request, or the other side didn't confirm scoped
+        /// federation-token support) - the accepting side's own
+        /// <see cref="FederationFriendService.AcceptFriendRequestAsync"/> already
+        /// surfaces a clear error to its admin on anything but a 2xx response.
         /// </summary>
         [HttpPost("Friends/Accept")]
         [AllowAnonymous]
         public IActionResult ReceiveFriendAccept([FromBody] FriendRequestPayload payload)
         {
-            _friends.HandleAcceptCallback(payload);
-            return Ok();
+            return _friends.HandleAcceptCallback(payload) ? Ok() : BadRequest();
         }
 
         /// <summary>
@@ -811,9 +846,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/Reject")]
         [AllowAnonymous]
-        public async Task<IActionResult> ReceiveFriendReject([FromBody] FriendRejectPayload payload)
+        public IActionResult ReceiveFriendReject([FromBody] FriendRejectPayload payload)
         {
-            await _friends.HandleRejectCallbackAsync(payload?.RequestId ?? string.Empty).ConfigureAwait(false);
+            _friends.HandleRejectCallbackAsync(payload?.RequestId ?? string.Empty);
             return Ok();
         }
 
@@ -838,14 +873,18 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>
         /// Server-to-server: a friend we already share content with is telling us
-        /// which local user id to use when querying them from now on. Not
-        /// AllowAnonymous - only an existing friend's API key (or this server's own
-        /// admin) passes RequiresElevation, same reasoning as Friends/List.
+        /// which local user id to use when querying them from now on. Requires a
+        /// valid federation token - see <see cref="FederationTokenAuth"/>.
         /// </summary>
         [HttpPost("Friends/SharedUserUpdate")]
-        [Authorize(Policy = "RequiresElevation")]
+        [AllowAnonymous]
         public IActionResult ReceiveSharedUserUpdate([FromBody] SharedUserUpdatePayload payload)
         {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
             _friends.ReceiveSharedUserUpdate(payload);
             return Ok();
         }
@@ -869,12 +908,18 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <summary>
         /// Server-to-server: a friend telling us the complete, current list of
         /// per-remote-user overrides they've configured for our own local users.
-        /// Not AllowAnonymous - same reasoning as <see cref="ReceiveSharedUserUpdate"/>.
+        /// Requires a valid federation token - same reasoning as
+        /// <see cref="ReceiveSharedUserUpdate"/>.
         /// </summary>
         [HttpPost("Friends/RemoteUserRules")]
-        [Authorize(Policy = "RequiresElevation")]
+        [AllowAnonymous]
         public IActionResult ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload)
         {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
             _friends.ReceiveRemoteUserAccessRules(payload);
             return Ok();
         }
@@ -1185,20 +1230,33 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <summary>
         /// Server-to-server: a friend server asking us to mint a short-lived,
         /// single-item-scoped playback token, so its own users can Direct-mode-play
-        /// an item of ours without ever seeing the real api_key we gave them. Not
-        /// AllowAnonymous (a friend's real api_key is required to call this) and not
-        /// RequiresElevation (this is a friend server calling on its own users'
-        /// behalf, not this server's own admin) - plain [Authorize], matching the
-        /// other genuine server-to-server endpoints in this file (e.g. Friends/List,
-        /// Friends/SharedUserUpdate).
+        /// an item of ours without ever seeing this server's own real api_key.
+        /// Requires a valid federation token (see <see cref="FederationTokenAuth"/>)
+        /// - a friend server calling on its own users' behalf, not this server's
+        /// own admin. Also enforced here, not just in the Peer/* listing
+        /// endpoints: sharing scope/excludes/per-remote-user rules could change
+        /// between when a friend last synced this item and when it actually
+        /// presses play, and a token, once minted, is usable on its own without
+        /// going through those endpoints again.
         /// </summary>
         [HttpPost("PlaybackToken")]
-        [Authorize]
+        [AllowAnonymous]
         public IActionResult IssuePlaybackToken([FromBody] IssuePlaybackTokenRequest? request)
         {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
             if (!Guid.TryParse(request?.ItemId, out var itemGuid))
             {
                 return BadRequest(new { error = "Invalid item id" });
+            }
+
+            if (!_peerAccess.IsItemVisible(caller, RequestingRemoteUserId(), itemGuid))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
             }
 
             var token = _playbackTokens.Issue(itemGuid.ToString("N"));
@@ -1239,6 +1297,367 @@ namespace Jellyfin.Plugin.Federation.Api
 
             await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        #endregion
+
+        #region Peer data (replaces a friend calling Jellyfin's own native REST API)
+
+        // Used only for internal loopback JSON fetches below - separate from
+        // FederationStreamHandler's own byte-streaming client, which is tuned for
+        // relaying large media bodies, not small JSON responses.
+        private static readonly System.Net.Http.HttpClient InternalJsonHttpClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+
+        /// <summary>
+        /// Resolves which local user id this server's own internal loopback
+        /// fetches (below) should query as - preferring an administrator, so a
+        /// restricted account's own <c>EnabledFolders</c> never silently narrows
+        /// what this plugin considers "everything that exists" before its own
+        /// sharing-scope filtering ever runs. Reflection-based for the same
+        /// version-skew reason as <see cref="EnumerateLocalUsers"/>.
+        /// </summary>
+        private Guid? ResolveInternalQueryUserId()
+        {
+            object? admin = null;
+            object? first = null;
+            foreach (var u in EnumerateLocalUsers())
+            {
+                first ??= u;
+                if (IsAdministratorUser(u))
+                {
+                    admin = u;
+                    break;
+                }
+            }
+
+            var chosen = admin ?? first;
+            return chosen?.GetType().GetProperty("Id")?.GetValue(chosen) as Guid?;
+        }
+
+        private static bool IsAdministratorUser(object user)
+        {
+            var type = user.GetType();
+            if (type.GetProperty("IsAdministrator")?.GetValue(user) is bool direct)
+            {
+                return direct;
+            }
+
+            var policy = type.GetProperty("Policy")?.GetValue(user);
+            return policy?.GetType().GetProperty("IsAdministrator")?.GetValue(policy) is bool policyIsAdmin && policyIsAdmin;
+        }
+
+        /// <summary>
+        /// Fetches JSON from this server's own native REST API over loopback,
+        /// authenticated with <see cref="FederationFriendService.GetOrCreateInternalRelayApiKeyAsync"/> -
+        /// never exposed beyond this call. This plugin's own Peer/* endpoints use
+        /// this to get at the real, unfiltered data (exactly like
+        /// <c>DirectStream</c> already does for media bytes), then apply
+        /// <see cref="FederationPeerAccessService"/>'s filtering themselves before
+        /// anything reaches a friend - Jellyfin's native per-user permission
+        /// system plays no role in what a friend can see under this model.
+        /// </summary>
+        private async Task<System.Text.Json.Nodes.JsonObject?> FetchInternalJsonAsync(string path, CancellationToken cancellationToken)
+        {
+            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
+            var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
+            var separator = path.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+            var url = $"{localUrl}{path}{separator}api_key={Uri.EscapeDataString(internalRelayKey)}";
+
+            using var response = await InternalJsonHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/Users/{id}/Views</c> call
+        /// (<see cref="Services.RemoteServerClient.GetLibrariesAsync"/>): this
+        /// server's own top-level library folders, filtered to what
+        /// <paramref name="caller"/> (and, if sent, one of their own users) is
+        /// actually allowed to see. Same response shape as native Jellyfin's
+        /// Views endpoint so the client-side parser needs no changes.
+        /// </summary>
+        [HttpGet("Peer/Libraries")]
+        [AllowAnonymous]
+        public IActionResult GetPeerLibraries()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            var remoteUserId = RequestingRemoteUserId();
+            var items = _libraryManager.GetVirtualFolders()
+                .Where(f => _peerAccess.IsLibraryVisible(caller, remoteUserId, f.ItemId))
+                .Select(f => new
+                {
+                    Id = f.ItemId,
+                    f.Name,
+                    CollectionType = f.CollectionType?.ToString()
+                })
+                .ToList();
+
+            return Ok(new { Items = items, TotalRecordCount = items.Count });
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/Users/{id}/Items</c> call
+        /// (<see cref="Services.RemoteServerClient.GetItemsAsync"/>). Fetches the
+        /// real, unfiltered response from this server's own loopback, then drops
+        /// every item <paramref name="caller"/> is not allowed to see - excluded
+        /// items, anything outside their (or their specific remote user's) shared
+        /// scope - before returning it. <c>parentId</c> is one of this server's
+        /// own library folder ids (from <see cref="GetPeerLibraries"/>), so the
+        /// whole-library scope check uses it directly rather than resolving each
+        /// item's own top parent.
+        /// </summary>
+        [HttpGet("Peer/Items")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetPeerItems(
+            [FromQuery] string? mediaType,
+            [FromQuery] string? parentId,
+            [FromQuery] int? startIndex,
+            [FromQuery] int? limit,
+            CancellationToken cancellationToken)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            var userId = ResolveInternalQueryUserId();
+            if (userId == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
+            }
+
+            var queryParams = new List<string>
+            {
+                "Recursive=true",
+                "Fields=BasicSyncInfo,Path,MediaSources,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
+                "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
+            };
+            if (!string.IsNullOrEmpty(mediaType))
+            {
+                queryParams.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
+            }
+
+            if (!string.IsNullOrEmpty(parentId))
+            {
+                queryParams.Add($"ParentId={Uri.EscapeDataString(parentId)}");
+            }
+
+            if (startIndex.HasValue)
+            {
+                queryParams.Add($"StartIndex={startIndex.Value}");
+            }
+
+            if (limit.HasValue)
+            {
+                queryParams.Add($"Limit={limit.Value}");
+            }
+
+            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", queryParams)}", cancellationToken).ConfigureAwait(false);
+            if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            var remoteUserId = RequestingRemoteUserId();
+            var toRemove = new List<System.Text.Json.Nodes.JsonNode>();
+            foreach (var item in items)
+            {
+                if (item == null || !Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
+                    || !_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid, parentId))
+                {
+                    if (item != null)
+                    {
+                        toRemove.Add(item);
+                    }
+                }
+            }
+
+            foreach (var item in toRemove)
+            {
+                items.Remove(item);
+            }
+
+            json["TotalRecordCount"] = items.Count;
+            return new ContentResult
+            {
+                Content = json.ToJsonString(),
+                ContentType = "application/json",
+                StatusCode = StatusCodes.Status200OK
+            };
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/Users/{id}/Items/{itemId}</c> call
+        /// (<see cref="Services.RemoteServerClient.GetItemAsync"/>). Same
+        /// filtering as <see cref="GetPeerItems"/>, for exactly one item -
+        /// resolves the item's own top library folder itself since, unlike a
+        /// listing call, there is no already-known <c>parentId</c> to reuse.
+        /// </summary>
+        [HttpGet("Peer/Items/{itemId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetPeerItem(string itemId, CancellationToken cancellationToken)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (!Guid.TryParse(itemId, out var itemGuid))
+            {
+                return BadRequest();
+            }
+
+            if (!_peerAccess.IsItemVisible(caller, RequestingRemoteUserId(), itemGuid))
+            {
+                return NotFound();
+            }
+
+            var userId = ResolveInternalQueryUserId();
+            if (userId == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
+            }
+
+            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items/{itemGuid:N}", cancellationToken).ConfigureAwait(false);
+            if (json == null)
+            {
+                return NotFound();
+            }
+
+            return new ContentResult
+            {
+                Content = json.ToJsonString(),
+                ContentType = "application/json",
+                StatusCode = StatusCodes.Status200OK
+            };
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/Items/{id}/PlaybackInfo</c> call
+        /// (<see cref="Services.RemoteServerClient.GetPlaybackInfoAsync"/>).
+        /// Access is re-checked here even though a friend would normally have
+        /// already been filtered out of <see cref="GetPeerItems"/>/<see cref="GetPeerItem"/> -
+        /// sharing scope/excludes/rules can change between when a friend last
+        /// synced and when it actually asks how to play something.
+        /// </summary>
+        [HttpGet("Peer/PlaybackInfo/{itemId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetPeerPlaybackInfo(string itemId, CancellationToken cancellationToken)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (!Guid.TryParse(itemId, out var itemGuid))
+            {
+                return BadRequest();
+            }
+
+            if (!_peerAccess.IsItemVisible(caller, RequestingRemoteUserId(), itemGuid))
+            {
+                return NotFound();
+            }
+
+            var userId = ResolveInternalQueryUserId();
+            if (userId == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
+            }
+
+            var json = await FetchInternalJsonAsync($"/Items/{itemGuid:N}/PlaybackInfo?UserId={userId:N}", cancellationToken).ConfigureAwait(false);
+            if (json == null)
+            {
+                return NotFound();
+            }
+
+            return new ContentResult
+            {
+                Content = json.ToJsonString(),
+                ContentType = "application/json",
+                StatusCode = StatusCodes.Status200OK
+            };
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/Users</c> call
+        /// (<see cref="Services.RemoteServerClient.GetUsersAsync"/>): this
+        /// server's own local user accounts, so a friend's admin can pick one for
+        /// a <see cref="RemoteUserAccessRule"/> (see <c>GetRemoteUsers</c>) - the
+        /// only remaining reason anything needs this list under the new model,
+        /// since sync/playback no longer impersonates any of this server's users.
+        /// Same shape as native <c>/Users</c> (Id, Name, Policy.IsAdministrator)
+        /// so <see cref="Services.UserDto"/>'s existing deserialization needs no
+        /// changes.
+        /// </summary>
+        [HttpGet("Peer/Users")]
+        [AllowAnonymous]
+        public IActionResult GetPeerUsers()
+        {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
+            var users = new List<object>();
+            foreach (var u in EnumerateLocalUsers())
+            {
+                var t = u.GetType();
+                var id = t.GetProperty("Id")?.GetValue(u);
+                var name = t.GetProperty("Username")?.GetValue(u) as string;
+                if (id is Guid guid && name != null)
+                {
+                    users.Add(new { Id = guid.ToString("N"), Name = name, Policy = new { IsAdministrator = IsAdministratorUser(u) } });
+                }
+            }
+
+            return Ok(users);
+        }
+
+        /// <summary>
+        /// Replaces a friend's old native <c>/System/Info</c> call
+        /// (<see cref="Services.RemoteServerClient.GetSystemInfoDetailedAsync"/>),
+        /// used by the config page's "Test" button. <c>/System/Info/Public</c>
+        /// (already anonymous and harmless) still covers basic reachability
+        /// checks; this one needs a valid federation token instead of a real
+        /// admin-equivalent key, matching everything else under the new model.
+        /// </summary>
+        [HttpGet("Peer/SystemInfo")]
+        [AllowAnonymous]
+        public IActionResult GetPeerSystemInfo()
+        {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
+            var hostType = _applicationHost.GetType();
+            var version = hostType.GetProperty("ApplicationVersionString")?.GetValue(_applicationHost) as string
+                ?? hostType.GetProperty("ApplicationVersion")?.GetValue(_applicationHost)?.ToString()
+                ?? string.Empty;
+            var systemId = hostType.GetProperty("SystemId")?.GetValue(_applicationHost) as string ?? string.Empty;
+
+            return Ok(new
+            {
+                ServerName = _applicationHost.FriendlyName,
+                Version = version,
+                OperatingSystem = string.Empty,
+                Id = systemId,
+                FederationPluginVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+            });
         }
 
         #endregion
