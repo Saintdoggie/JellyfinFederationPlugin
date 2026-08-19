@@ -439,6 +439,28 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
+                // Same reasoning as the Direct-mode carve-out above, different
+                // hazard: a per-remote-user access override
+                // (RemoteAccessControlService.IsAllowed, keyed by which of *our*
+                // local users is asking) can only ever be evaluated per-request,
+                // but a stamped item.Path is one static value shared by every
+                // client that ever requests this item's detail page - Jellyfin
+                // serves that static source directly without calling this
+                // plugin's dynamic provider at all (see the "known gap" comment
+                // in FederationMediaSourceProvider.GetMediaSources). A friend who
+                // restricted one specific local user from this content would
+                // otherwise have that restriction silently bypassed for the
+                // primary source the moment it was reachable via Path instead of
+                // the provider - confirmed as a real, reported bug, not a
+                // theoretical one. Any FriendUserAccessRules at all means some
+                // local user needs individual gating on this server's content, so
+                // Path is left unstamped and every request is forced through the
+                // provider's IsAllowed check instead.
+                if (server != null && server.FriendUserAccessRules != null && server.FriendUserAccessRules.Count > 0)
+                {
+                    return null;
+                }
+
                 return BuildPlaybackUrl(entry.ItemType, primary);
             }
             catch (Exception ex)
