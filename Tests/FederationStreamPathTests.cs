@@ -190,9 +190,14 @@ public class FederationStreamPathTests : IDisposable
     {
         AddServer();
         var remoteId = Guid.NewGuid();
-        var item = _manager.MaterializeItem(AddEntry("Audio", remoteId));
+        var entry = AddEntry("Audio", remoteId);
+        _manager.MaterializeItem(entry);
 
-        Assert.Contains($"/Audio/{remoteId:N}/stream", item.Path);
+        // Direct mode never persists item.Path (see the security test above), so
+        // the endpoint-selection logic is exercised against the live URL builder
+        // instead - the decision itself is unrelated to the security fix.
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains($"/Audio/{remoteId:N}/stream", liveUrl);
     }
 
     [Theory]
@@ -235,8 +240,10 @@ public class FederationStreamPathTests : IDisposable
         var item = _manager.MaterializeItem(entry);
 
         Assert.Equal(Configuration.WanCapMode.Auto, server.WanCapMode);
-        Assert.Contains("Static=true", item.Path);
-        Assert.DoesNotContain("VideoBitrate", item.Path);
+        // Direct mode never persists item.Path (security fix - see the test above);
+        // the WAN-cap/raw-vs-capped decision is still exercised, via Container and
+        // the live URL builder.
+        Assert.True(string.IsNullOrEmpty(item.Path));
         Assert.Equal("mkv", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
@@ -251,11 +258,17 @@ public class FederationStreamPathTests : IDisposable
         server.WanCapMode = Configuration.WanCapMode.Off;
         server.WanMaxBitrateMbps = 12; // ignored in Off mode
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv"));
+        var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv");
+        var item = _manager.MaterializeItem(entry);
 
-        Assert.Contains("Static=true", item.Path);
-        Assert.DoesNotContain("VideoBitrate", item.Path);
+        // Direct mode never persists item.Path (security fix), so the raw-vs-capped
+        // decision is exercised via Container and the live URL builder instead.
+        Assert.True(string.IsNullOrEmpty(item.Path));
         Assert.Equal("mkv", item.Container);
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains("Static=true", liveUrl);
+        Assert.DoesNotContain("VideoBitrate", liveUrl);
     }
 
     [Fact]
@@ -270,19 +283,19 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", remoteId, container: "mkv");
         var item = _manager.MaterializeItem(entry);
 
-        // Manual is a fixed number, but an admin can edit it at any time, so the
-        // stamped Path can go stale if they do. That used to mean never stamping one
-        // at all - but a null Path makes Jellyfin's own static media source a
-        // Placeholder, which hides the Play button on the item's own detail page
-        // entirely (see the comment on ResolvePlaybackUrl). Stamped now, accepting
-        // that staleness: FederationMediaSourceProvider.GetMediaSources already
-        // detects a stale Path (it no longer matches a freshly built URL) and serves
-        // a corrected alternate source alongside it - a wrong bitrate until that
-        // self-heals, not an unplayable item.
+        // Manual is a fixed number, but an admin can edit it at any time, so a
+        // stamped Path could go stale if they do - which is one reason (on top of
+        // the security fix below) Direct mode never persists item.Path at all any
+        // more: FederationMediaSourceProvider.GetMediaSources builds a fresh,
+        // short-lived, single-item-scoped URL live on every request instead, so
+        // staleness cannot happen. And regardless of staleness, this URL carries
+        // the remote's real, long-lived api_key in its query string - it must never
+        // be written to item.Path, which Jellyfin serializes straight into a
+        // client-facing static media source.
         var expectedUrl =
             $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
                 + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080";
-        Assert.Equal(expectedUrl, item.Path);
+        Assert.True(string.IsNullOrEmpty(item.Path));
         // The URL forces h264/aac in an mp4 container regardless of the source
         // file's real one (mkv here) - Container must match what actually gets
         // served, not the remote's original file.
@@ -314,13 +327,16 @@ public class FederationStreamPathTests : IDisposable
         server.WanMaxBitrateMbps = 12;
 
         var remoteId = Guid.NewGuid();
-        var item = _manager.MaterializeItem(AddEntry("Audio", remoteId));
+        var entry = AddEntry("Audio", remoteId);
+        var item = _manager.MaterializeItem(entry);
 
-        // Audio is exempt from the "never stamp statically" rule too - a cap never
-        // applies to it in the first place, so there is nothing for it to go stale
-        // against.
-        Assert.Contains("Static=true", item.Path);
-        Assert.DoesNotContain("VideoBitrate", item.Path);
+        // Direct mode never persists item.Path (security fix), so the "cap never
+        // applies to audio" decision is exercised via the live URL builder instead.
+        Assert.True(string.IsNullOrEmpty(item.Path));
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains("Static=true", liveUrl);
+        Assert.DoesNotContain("VideoBitrate", liveUrl);
     }
 
     [Fact]
@@ -346,9 +362,15 @@ public class FederationStreamPathTests : IDisposable
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: true, measuredMbps: null);
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+        var entry = AddEntry("Movie", Guid.NewGuid());
+        var item = _manager.MaterializeItem(entry);
 
-        Assert.Contains("Static=true", item.Path);
+        // Direct mode never persists item.Path (security fix); the decision is
+        // exercised via the live URL builder instead.
+        Assert.True(string.IsNullOrEmpty(item.Path));
+
+        var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
+        Assert.Contains("Static=true", liveUrl);
     }
 
     [Fact]
@@ -360,12 +382,10 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid());
         var item = _manager.MaterializeItem(entry);
 
-        // Confirmed WAN's cap can still move (classification is permanent, but a
-        // fresh bandwidth measurement can still change the number), so this Path can
-        // go stale exactly like the Manual case above - stamped anyway, for the same
-        // reason: a null Path hides the Play button entirely, which is worse than an
-        // occasionally-stale bitrate that GetMediaSources already self-heals.
-        Assert.Contains("VideoBitrate=10000000", item.Path);
+        // Direct mode never persists item.Path (security fix - see the api_key test
+        // above); the WAN-cap decision is still exercised via Container and the
+        // live URL builder below.
+        Assert.True(string.IsNullOrEmpty(item.Path));
         Assert.Equal("mp4", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
