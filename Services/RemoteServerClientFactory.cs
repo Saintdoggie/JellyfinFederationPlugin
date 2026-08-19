@@ -103,7 +103,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 BaseAddress = new Uri(server.Url.TrimEnd('/')),
                 Timeout = TimeSpan.FromMinutes(5)
             };
-            client.DefaultRequestHeaders.Add("X-Emby-Token", server.ApiKey);
+
+            // server.ApiKey is a scoped federation token, not a real Jellyfin API
+            // key - see FederationTokenAuth. Must match RemoteServerClient's own
+            // CreateDefaultHttpClient exactly: this factory is the path actually
+            // used in production (RemoteServerClient's single-arg constructor is
+            // a fallback/test seam), so a mismatch here would silently send every
+            // real request with the wrong header while only directly-constructed
+            // RemoteServerClients worked.
+            client.DefaultRequestHeaders.Add(FederationTokenAuth.Header, server.ApiKey);
             return client;
         }
     }

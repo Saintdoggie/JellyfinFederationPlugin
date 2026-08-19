@@ -514,13 +514,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>
-        /// Builds a direct stream URL for a remote item (with embedded api_key).
-        /// </summary>
-        public string BuildDirectStreamUrl(string itemId)
-        {
-            return $"{_server.Url.TrimEnd('/')}/Videos/{itemId}/stream?api_key={Uri.EscapeDataString(_server.ApiKey)}&Static=true";
-        }
 
         // The shared per-server _httpClient (see RemoteServerClientFactory) has a
         // 5-minute Timeout, sized for metadata/PlaybackInfo calls - far too short for
@@ -547,7 +540,20 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="cancellationToken">Cancellation token.</param>
         public async Task DownloadToFileAsync(string itemId, string destinationPath, IProgress<(long BytesRead, long? TotalBytes)>? progress, CancellationToken cancellationToken)
         {
-            var url = BuildDirectStreamUrl(itemId);
+            // Same token-gated DirectStream gateway playback already uses
+            // (GetPlaybackTokenAsync) rather than a raw native /Videos/.../stream
+            // URL with server.ApiKey embedded - that URL used to carry a real,
+            // long-lived Jellyfin API key; under the federation-token model
+            // server.ApiKey no longer satisfies Jellyfin's own native auth at
+            // all, so this must go through the same short-lived, single-item-
+            // scoped token every other Direct-mode fetch uses.
+            var (token, _) = await GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+            if (token == null)
+            {
+                throw new InvalidOperationException($"Could not obtain a playback token from {_server.Name} to download item {itemId}.");
+            }
+
+            var url = $"{_server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}";
             using var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
