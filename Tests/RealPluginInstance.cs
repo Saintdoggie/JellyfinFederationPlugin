@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Jellyfin.Plugin.Federation.Configuration;
+using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Serialization;
@@ -39,7 +40,8 @@ internal sealed class RealPluginInstance : IDisposable
         xml.Setup(x => x.SerializeToFile(It.IsAny<object>(), It.IsAny<string>()));
 
         // Plugin's constructor sets the static Plugin.Instance itself.
-        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, new Mock<ILibraryManager>().Object);
+        var webClientInjector = new WebClientInjector(new FakeApplicationPaths(tempDir), NullLogger<WebClientInjector>.Instance);
+        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, new Mock<ILibraryManager>().Object, webClientInjector);
     }
 
     public PluginConfiguration Configuration => Plugin.Instance!.Configuration;

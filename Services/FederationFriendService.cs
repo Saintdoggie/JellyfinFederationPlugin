@@ -1177,7 +1177,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 scheme = forwardedProto;
             }
 
-            return $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
+            var derived = $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
+
+            // An admin managing Jellyfin from their own LAN (very common - even a
+            // publicly-tunnelled server's admin dashboard is usually opened over the
+            // LAN, not the public URL) means request.Host here is a private address.
+            // Silently sending that to a friend as "here's how to reach me" is what
+            // actually broke a real friend connection: the friend could never sync
+            // (or stream in Direct mode) from an address only reachable on this
+            // server's own network. Treated as "unresolvable" here so the existing
+            // caller-side failure path ("Could not determine this server's own public
+            // URL...") fires instead of silently poisoning the friend's config -
+            // exactly like the no-request-context case just above.
+            if (ConfigValidator.IsPrivateOrLoopbackHost(derived))
+            {
+                _logger.LogWarning(
+                    "[Federation] Auto-detected server URL {Url} is a private/loopback address - refusing to send it to a friend. Set 'This server's public URL' under Advanced settings.",
+                    derived);
+                return string.Empty;
+            }
+
+            return derived;
         }
 
         private static StringContent JsonContent(object payload)

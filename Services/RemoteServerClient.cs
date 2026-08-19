@@ -50,6 +50,10 @@ namespace Jellyfin.Plugin.Federation.Services
         // remote user (playback, browsing, syncing) - see ResolveActingUserIdAsync.
         private static readonly ConcurrentDictionary<string, string> ResolvedActingUserIdCache = new(StringComparer.OrdinalIgnoreCase);
 
+        // Matches Plugin.Id in Plugin.cs - duplicated here rather than referenced
+        // directly so this client has no dependency on the Plugin singleton.
+        private static readonly Guid FederationPluginId = Guid.Parse("495feadb-d27f-46c3-bb9b-0732ae8926fa");
+
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -422,6 +426,48 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "Error getting system info from remote server {ServerName}", _server.Name);
                 return (null, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Gets the version of the Federation plugin installed on the remote
+        /// server, via Jellyfin's own <c>/Plugins</c> endpoint (not a Federation
+        /// endpoint - works even against a remote running a version too old to
+        /// have any given diagnostic route). Null if the plugin isn't installed
+        /// there, or the version can't be determined - most usefully surfaced by
+        /// <see cref="Api.FederationController.TestServer"/> so a version
+        /// mismatch (e.g. one side stuck on an old release with a since-fixed
+        /// sync bug) is visible before it turns into a confusing support report.
+        /// </summary>
+        public async Task<string?> GetRemoteFederationPluginVersionAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync("/Plugins", cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(content);
+                foreach (var plugin in doc.RootElement.EnumerateArray())
+                {
+                    if (plugin.TryGetProperty("Id", out var idProp)
+                        && Guid.TryParse(idProp.GetString(), out var id)
+                        && id == FederationPluginId
+                        && plugin.TryGetProperty("Version", out var versionProp))
+                    {
+                        return versionProp.GetString();
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error getting Federation plugin version from remote server {ServerName}", _server.Name);
+                return null;
             }
         }
 

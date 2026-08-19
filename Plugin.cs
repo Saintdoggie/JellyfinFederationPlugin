@@ -21,6 +21,7 @@ namespace Jellyfin.Plugin.Federation
     {
         private readonly ILogger<Plugin> _logger;
         private readonly ILibraryManager _libraryManager;
+        private readonly WebClientInjector _webClientInjector;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Plugin"/> class.
@@ -29,11 +30,13 @@ namespace Jellyfin.Plugin.Federation
             IApplicationPaths applicationPaths,
             IXmlSerializer xmlSerializer,
             ILogger<Plugin> logger,
-            ILibraryManager libraryManager)
+            ILibraryManager libraryManager,
+            WebClientInjector webClientInjector)
             : base(applicationPaths, xmlSerializer)
         {
             _logger = logger;
             _libraryManager = libraryManager;
+            _webClientInjector = webClientInjector;
             Instance = this;
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
         }
@@ -121,6 +124,14 @@ namespace Jellyfin.Plugin.Federation
             {
                 _logger.LogError(ex, "[Federation] Plugin uninstall: failed to remove federated items; some virtual items may be left behind");
             }
+
+            // Undo WebClientInjector's file-write injection too, so uninstalling
+            // doesn't leave a <script> tag permanently baked into jellyfin-web
+            // pointing at a route (/Plugins/Federation/ClientScript) that no
+            // longer exists once this plugin is gone. The serve-time middleware
+            // injection needs no equivalent cleanup - it stops running the moment
+            // this plugin's assembly is unloaded.
+            _webClientInjector.RemoveBadgeScriptInjection();
 
             base.OnUninstalling();
         }

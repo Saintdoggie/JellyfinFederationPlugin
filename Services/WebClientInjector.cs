@@ -81,5 +81,46 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogWarning(ex, "[Federation] Could not inject badge script into index.html; the server-icon badge will not appear, everything else is unaffected");
             }
         }
+
+        /// <summary>
+        /// Removes the badge script tag from index.html, if present. Called from
+        /// <see cref="Plugin.OnUninstalling"/> so uninstalling this plugin doesn't
+        /// leave a &lt;script src="/Plugins/Federation/ClientScript"&gt; tag pointing
+        /// at a route that no longer exists permanently baked into jellyfin-web.
+        /// Never throws, for the same reason as <see cref="EnsureBadgeScriptInjected"/>:
+        /// a failure here (read-only filesystem, index.html already gone) must not
+        /// block the rest of uninstall.
+        /// </summary>
+        public void RemoveBadgeScriptInjection()
+        {
+            try
+            {
+                var webPath = _applicationPaths.WebPath;
+                if (string.IsNullOrEmpty(webPath))
+                {
+                    return;
+                }
+
+                var indexPath = Path.Combine(webPath, "index.html");
+                if (!File.Exists(indexPath))
+                {
+                    return;
+                }
+
+                var html = File.ReadAllText(indexPath);
+                if (!html.Contains(Marker, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                var updated = html.Replace(ScriptTag, string.Empty, StringComparison.Ordinal);
+                File.WriteAllText(indexPath, updated);
+                _logger.LogInformation("[Federation] Removed badge script tag from {Path}", indexPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not remove badge script from index.html on uninstall; a leftover <script> tag pointing at a now-missing route may remain");
+            }
+        }
     }
 }
