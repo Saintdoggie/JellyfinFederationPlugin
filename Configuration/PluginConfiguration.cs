@@ -325,6 +325,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
+        /// Gets or sets the API key this server minted for the friend to use
+        /// calling back in - the counterpart to <see cref="ApiKey"/> (theirs, for
+        /// calling them). Captured at handshake time so it can be revoked when
+        /// this friendship is removed (see <see cref="FederationFriendService"/>'s
+        /// unfriend handling) - without it, removing a friend only ever stopped
+        /// this server from pulling their content; they kept a live key and kept
+        /// pulling from this one indefinitely until they separately noticed and
+        /// removed it themselves.
+        /// </summary>
+        public string IssuedApiKey { get; set; } = string.Empty;
+
+        /// <summary>
         /// Gets or sets a value indicating whether this server is enabled.
         /// </summary>
         public bool Enabled { get; set; } = true;

@@ -422,6 +422,87 @@ public class FederationFriendServiceTests : IDisposable
         Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "key-1");
     }
 
+    [Fact]
+    public void HandleAcceptCallback_StoresTheKeyWeMinted_AsIssuedApiKey()
+    {
+        // The key minted for the friend when the outgoing request was first sent
+        // (FriendRequest.ApiKey) must survive onto the resulting RemoteServer as
+        // IssuedApiKey, so it can be revoked later if this friendship is removed -
+        // previously it was minted, sent, and then simply forgotten.
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest
+        {
+            Id = "req-1",
+            RemoteServerUrl = "http://friend.example",
+            RemoteServerName = "Friend",
+            ApiKey = "key-we-minted-for-them"
+        });
+
+        _service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = "req-1",
+            FromServerUrl = "http://friend.example",
+            FromServerName = "Friend",
+            ApiKeyForYou = "key-from-friend"
+        });
+
+        var server = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.Equal("key-from-friend", server.ApiKey);
+        Assert.Equal("key-we-minted-for-them", server.IssuedApiKey);
+    }
+
+    [Fact]
+    public async Task NotifyAndRevokeOnUnfriendAsync_NotifiesFriend_AndRevokesIssuedKey_RegardlessOfNotifyOutcome()
+    {
+        var posted = false;
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            posted = req.RequestUri!.ToString().EndsWith("/Plugins/Federation/Friends/Unfriend", StringComparison.Ordinal);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }));
+
+        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "issued-key", DateCreated = DateTime.UtcNow });
+        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-key", IssuedApiKey = "issued-key" };
+
+        await _service.NotifyAndRevokeOnUnfriendAsync(server, CancellationToken.None);
+
+        Assert.True(posted);
+        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "issued-key");
+    }
+
+    [Fact]
+    public async Task NotifyAndRevokeOnUnfriendAsync_StillRevokesIssuedKey_WhenNotifyFails()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+
+        _apiKeys.Add(new AuthenticationInfo { AppName = "x", AccessToken = "issued-key", DateCreated = DateTime.UtcNow });
+        var server = new RemoteServer { Url = "http://friend.example", ApiKey = "their-key", IssuedApiKey = "issued-key" };
+
+        await _service.NotifyAndRevokeOnUnfriendAsync(server, CancellationToken.None);
+
+        // Their access is cut immediately even if they never receive/act on the
+        // notification (offline, unreachable, or an old plugin version that
+        // doesn't have this endpoint).
+        Assert.DoesNotContain(_apiKeys, k => k.AccessToken == "issued-key");
+    }
+
+    [Fact]
+    public void FindByFederationId_MatchesOnFederationId_CaseInsensitive()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "s1", FederationId = "ABC-123" });
+
+        var found = _service.FindByFederationId("abc-123");
+
+        Assert.NotNull(found);
+        Assert.Equal("s1", found!.Id);
+    }
+
+    [Fact]
+    public void FindByFederationId_UnknownId_ReturnsNull()
+    {
+        Assert.Null(_service.FindByFederationId("does-not-exist"));
+        Assert.Null(_service.FindByFederationId(null));
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

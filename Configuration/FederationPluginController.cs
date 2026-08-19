@@ -605,10 +605,58 @@ namespace Jellyfin.Plugin.Federation.Api
                 return NotFound(new { error = "Server not found" });
             }
 
-            config!.RemoteServers!.Remove(server);
+            // Tell them first, while server.Url/ApiKey/IssuedApiKey are still
+            // whatever was configured - best-effort and never blocks the local
+            // removal below (see NotifyAndRevokeOnUnfriendAsync's own doc comment
+            // for why this exists: previously unfriending was entirely one-sided,
+            // and the other side kept pulling this server's content until an
+            // admin noticed and separately removed it themselves).
+            await _friends.NotifyAndRevokeOnUnfriendAsync(server, cancellationToken).ConfigureAwait(false);
 
-            // Drop this server's library sources and cached entries so no stale
-            // items keep pointing at a deleted server.
+            await RemoveServerLocallyAsync(server, config!, cancellationToken).ConfigureAwait(false);
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend telling us they removed this friendship on
+        /// their side (see <see cref="FederationFriendService.NotifyAndRevokeOnUnfriendAsync"/>).
+        /// Removes the matching local server entry the same way an admin-triggered
+        /// <see cref="DeleteServer"/> does, so a one-sided unfriend on either side
+        /// now actually disconnects both.
+        /// </summary>
+        [HttpPost("Friends/Unfriend")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ReceiveUnfriend([FromBody] UnfriendPayload? payload, CancellationToken cancellationToken)
+        {
+            var server = _friends.FindByFederationId(payload?.FromFederationId);
+            if (server == null)
+            {
+                // Not an error worth surfacing to the caller: could be an already-
+                // removed friend, a retry, or a federation id we never matched.
+                return Ok(new { success = true });
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            await RemoveServerLocallyAsync(server, config, cancellationToken).ConfigureAwait(false);
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Shared local-cleanup body for both an admin-triggered
+        /// <see cref="DeleteServer"/> and a friend-triggered
+        /// <see cref="ReceiveUnfriend"/>: drops this server from config, prunes its
+        /// library sources/cached entries and bandwidth-monitor state, and
+        /// reconciles every affected mapping immediately so its federated items
+        /// don't sit around pointing at a server no longer in config until
+        /// whatever sync happens to run next.
+        /// </summary>
+        private async Task RemoveServerLocallyAsync(RemoteServer server, PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            var id = server.Id;
+            config.RemoteServers!.Remove(server);
+
             var seen = new HashSet<Guid>();
             var affectedMappings = config.LibraryMappings ?? new List<LibraryMapping>();
             foreach (var mapping in affectedMappings)
@@ -619,19 +667,8 @@ namespace Jellyfin.Plugin.Federation.Api
 
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(id);
-
-            // Drops the deleted server's own cached network classification/bandwidth
-            // measurement (see WanBandwidthMonitor) - nothing references this id
-            // anymore, so nothing should keep holding state for it.
             _bandwidthMonitor.RemoveServer(id);
 
-            // Reconcile every affected mapping immediately rather than waiting for
-            // the next scheduled/triggered sync: the cache entries for this server's
-            // content are already gone above, so without this, its federated items
-            // would keep sitting in the library - now pointing at a server that no
-            // longer exists in config, unplayable - until whenever the next sync
-            // happens to run. This only touches the already-pruned local cache, no
-            // remote network calls, so it is cheap even though it runs inline.
             foreach (var mapping in affectedMappings.Where(m => m.Enabled))
             {
                 try
@@ -640,11 +677,9 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "[Federation] Post-delete reconciliation failed for {Name}; it will be retried on the next sync", mapping.LocalLibraryName);
+                    _logger.LogWarning(ex, "[Federation] Post-removal reconciliation failed for {Name}; it will be retried on the next sync", mapping.LocalLibraryName);
                 }
             }
-
-            return Ok(new { success = true });
         }
 
         #endregion

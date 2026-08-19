@@ -457,6 +457,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Name = entry.RemoteServerName,
                 Url = entry.RemoteServerUrl,
                 ApiKey = entry.ApiKey,
+                IssuedApiKey = apiKey,
                 FederationId = entry.RemoteServerId,
                 Enabled = true,
                 StreamingMode = StreamingMode.Direct
@@ -841,6 +842,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Name = memberName,
                 Url = memberUrl,
                 ApiKey = payload.ApiKeyForYou,
+                IssuedApiKey = entry.ApiKey,
                 FederationId = payload.FromServerId ?? string.Empty,
                 Enabled = true,
                 StreamingMode = StreamingMode.Direct
@@ -1197,6 +1199,67 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Best-effort tells <paramref name="server"/> that this friendship is
+        /// being removed, so their side auto-removes it too instead of silently
+        /// continuing to pull this server's content until an admin notices and
+        /// manually unfriends back - previously removing a friend was entirely
+        /// one-sided: nothing here ever reached the other side at all, so a real
+        /// unfriend needed both admins to separately click remove. Also revokes
+        /// <see cref="RemoteServer.IssuedApiKey"/> (the key this server minted for
+        /// them) regardless of whether the notification succeeds, so their access
+        /// is actually cut immediately even if they're offline or on a plugin
+        /// version too old to understand the notification.
+        /// </summary>
+        public async Task NotifyAndRevokeOnUnfriendAsync(RemoteServer server, CancellationToken cancellationToken)
+        {
+            if (!string.IsNullOrEmpty(server.Url) && !string.IsNullOrEmpty(server.ApiKey))
+            {
+                try
+                {
+                    var payload = new UnfriendPayload { FromFederationId = GetOrCreateLocalFederationId() };
+                    using var response = await PostAuthenticatedAsync(
+                        $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/Unfriend",
+                        payload,
+                        server.ApiKey,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogWarning(
+                            "[Federation] Could not notify {Name} that this friendship was removed (HTTP {StatusCode}) - they will keep this server listed until they notice and remove it themselves",
+                            server.Name,
+                            (int)response.StatusCode);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not notify {Name} that this friendship was removed (non-fatal)", server.Name);
+                }
+            }
+
+            await RevokeApiKeyAsync(server.IssuedApiKey).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Server-to-server: a friend is telling us they removed this friendship
+        /// on their side, so we should remove it here too rather than keep pulling
+        /// their content from a relationship they've already ended. Matched by
+        /// federation id, same as the other server-to-server notifications.
+        /// Returns the matching local server entry (for the caller to run the
+        /// same reconciliation/cache cleanup <c>DeleteServer</c> does), or null if
+        /// no matching friend was found.
+        /// </summary>
+        public RemoteServer? FindByFederationId(string? federationId)
+        {
+            if (string.IsNullOrEmpty(federationId))
+            {
+                return null;
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            return config.RemoteServers.FirstOrDefault(s => string.Equals(s.FederationId, federationId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
         /// Resolves this server's own public URL the same way
         /// <c>FederationMediaSourceProvider</c> does for Proxy streaming: an explicit
         /// config override when set, otherwise derived from the current incoming
@@ -1346,6 +1409,16 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the user id the recipient should now query as.</summary>
         public string UserId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Wire payload telling an already-known friend this friendship has been
+    /// removed on the sender's side.
+    /// </summary>
+    public class UnfriendPayload
+    {
+        /// <summary>Gets or sets the sender's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
     }
 
     /// <summary>
