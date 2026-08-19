@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.68",
+        "changelog": "Re-release of 0.0.67's fix (federated libraries silently failing to sync without explicit per-friend sharing configured) under a fresh version number. 0.0.67's asset was corrected after an initial stale-build mistake, but reinstalling under the same version string never actually applied even after confirmed real restarts - Jellyfin's installer appears to treat a version string as already-satisfied once attempted, regardless of whether the underlying bits ever matched. No code changes beyond the version bump.\n\n200 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.68/Jellyfin.Federation.zip",
+        "checksum": "1e903fb0f8ed3ac25e038300c30e6431",
+        "timestamp": "2026-08-19T15:45:00Z"
+      },
+      {
         "version": "0.0.67",
         "changelog": "Fixed federated libraries silently failing to sync for any friend who hadn't explicitly configured per-friend sharing yet (\"1 source(s) failed, cached data preserved\", 0 items refreshed). Every sync call needs some remote user id to browse as - that's inherent to Jellyfin's own per-user library API, not something this plugin can skip - but GetItemsAsync/GetItemAsync (the actual content-fetching calls sync uses) just gave up with a warning when no user id was configured, even though the config page's own tooltip already promised a fallback to \"an administrator account on their server\". That fallback existed for playback (GetPlaybackInfoAsync) and library listing (GetLibrariesAsync) already, just not for the two calls sync itself depends on. Sync now falls back the same way everywhere: prefer an admin account on the remote, cached in-memory per server so it's only resolved once.\n\n200 tests.",
         "targetAbi": "10.11.0.0",
