@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.67",
+        "changelog": "Fixed federated libraries silently failing to sync for any friend who hadn't explicitly configured per-friend sharing yet (\"1 source(s) failed, cached data preserved\", 0 items refreshed). Every sync call needs some remote user id to browse as - that's inherent to Jellyfin's own per-user library API, not something this plugin can skip - but GetItemsAsync/GetItemAsync (the actual content-fetching calls sync uses) just gave up with a warning when no user id was configured, even though the config page's own tooltip already promised a fallback to \"an administrator account on their server\". That fallback existed for playback (GetPlaybackInfoAsync) and library listing (GetLibrariesAsync) already, just not for the two calls sync itself depends on. Sync now falls back the same way everywhere: prefer an admin account on the remote, cached in-memory per server so it's only resolved once.\n\n200 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.67/Jellyfin.Federation.zip",
+        "checksum": "ee799149eb67ca8540d74bb61ce2b3e9",
+        "timestamp": "2026-08-19T15:00:00Z"
+      },
+      {
         "version": "0.0.66",
         "changelog": "Fixed plugin updates silently not applying. The project file's AssemblyVersion/FileVersion were left hardcoded at 0.0.63 since that release, even though meta.json's version kept getting bumped (0.0.64, 0.0.65) - Jellyfin identifies a loaded plugin by its assembly's actual embedded version, not the folder name or meta.json, so every DLL shipped since 0.0.63 was invisible to Jellyfin as a real update. An admin could successfully install 0.0.64 or 0.0.65 and it would show as a new folder on disk, but after a restart Jellyfin kept loading and reporting it as version 0.0.63 - which is what \"the plugin won't update\" actually was. AssemblyVersion/FileVersion now stay in lockstep with the release version.\n\n198 tests.",
         "targetAbi": "10.11.0.0",
