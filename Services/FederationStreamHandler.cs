@@ -42,6 +42,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationStreamHandler> _logger;
         private readonly FederationLibraryManager _federationManager;
         private readonly RemoteAccessControlService _accessControl;
+        private readonly IRemoteServerClientFactory _clientFactory;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
@@ -49,16 +50,25 @@ namespace Jellyfin.Plugin.Federation.Services
         public FederationStreamHandler(
             ILogger<FederationStreamHandler> logger,
             FederationLibraryManager federationManager,
-            RemoteAccessControlService accessControl)
+            RemoteAccessControlService accessControl,
+            IRemoteServerClientFactory clientFactory)
         {
             _logger = logger;
             _federationManager = federationManager;
+            _clientFactory = clientFactory;
             _accessControl = accessControl;
         }
 
         /// <summary>
-        /// Builds the server-side direct stream URL used when proxying (contains the
-        /// remote api_key; never sent to clients or written to logs).
+        /// Builds the server-side direct stream URL used when proxying: mints a
+        /// short-lived, single-item-scoped playback token from the remote (the
+        /// same token-gated <c>DirectStream</c> gateway Direct-mode playback
+        /// already uses - see <see cref="RemoteServerClient.GetPlaybackTokenAsync"/>)
+        /// rather than embedding the remote's federation token directly. A
+        /// federation token is not a real Jellyfin API key and would not
+        /// authenticate against the remote's native streaming endpoint at all
+        /// under the scoped-token model - never sent to clients or written to
+        /// logs either way.
         /// </summary>
         /// <param name="serverId">The remote server to stream from.</param>
         /// <param name="remoteItemId">The item id on that server.</param>
@@ -66,7 +76,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// True to use the remote's audio streaming endpoint. Songs do not stream
         /// reliably from /Videos, so the caller passes through which one it wants.
         /// </param>
-        public string BuildDirectStreamUrl(string serverId, string remoteItemId, bool isAudio = false)
+        public async Task<string> BuildDirectStreamUrlAsync(string serverId, string remoteItemId, bool isAudio, CancellationToken cancellationToken)
         {
             var server = _federationManager.GetServer(serverId);
             if (server == null)
@@ -74,8 +84,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException($"Server not found: {serverId}");
             }
 
-            var endpoint = isAudio ? "Audio" : "Videos";
-            return $"{server.Url.TrimEnd('/')}/{endpoint}/{remoteItemId}/stream?api_key={Uri.EscapeDataString(server.ApiKey)}&Static=true";
+            var client = _clientFactory.GetClient(server);
+            var (token, _) = await client.GetPlaybackTokenAsync(remoteItemId, cancellationToken).ConfigureAwait(false);
+            if (token == null)
+            {
+                throw new InvalidOperationException($"Could not obtain a playback token from {server.Name} for item {remoteItemId}.");
+            }
+
+            var audioFlag = isAudio ? "&audio=true" : string.Empty;
+            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
         }
 
         /// <summary>
@@ -126,7 +143,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var url = BuildDirectStreamUrl(serverId, remoteItemId, isAudio);
+                var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
                 await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);

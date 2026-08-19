@@ -373,7 +373,23 @@ public class FederationStreamHandlerAccessControlTests : IDisposable
             bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance);
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl);
+
+        // HandleProxyAsync mints a playback token from the remote before relaying
+        // for any request that isn't denied outright by the access-control check
+        // this class exercises - a fake token-issuing client stands in for that,
+        // separate from HttpClientOverride (which fakes the actual byte-relay
+        // fetch to the token-gated DirectStream URL).
+        var tokenClient = new RemoteServerClient(
+            new RemoteServer { Id = "serverA", Url = "http://friend.example:8096", ApiKey = "federation-token" },
+            NullLogger.Instance,
+            new HttpClient(new DelegatingFakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"token\":\"fake-playback-token\"}", System.Text.Encoding.UTF8, "application/json")
+            })) { BaseAddress = new Uri("http://friend.example:8096") });
+        var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
+
+        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object);
     }
 
     public void Dispose()
