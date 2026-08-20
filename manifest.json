@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.75",
+        "changelog": "Fixes a critical bug that could break an otherwise-healthy friend connection from a single unrelated settings save. IssuedApiKey (the federation token this server mints for a friend during the handshake, added in 0.0.70) was missing from the config-save endpoint's preserve-on-save list - every other post-handshake field (FederationId, sharing scope, excluded items, per-user rules) was already protected there, but this one wasn't. Since the config page never receives saved tokens back from the server (by design, so they're never exposed to the browser), any general settings save sent an empty value for it - and with nothing preserving the real one, it got silently wiped. Once wiped, that friend's every request comes back 401 (\"the federation token is invalid, missing, or was revoked\") - indistinguishable from a genuinely revoked or incompatible-version friend, even though nothing was actually wrong with the connection. Confirmed live: a single config save broke a freshly-established, fully-working handshake this same session. IssuedApiKey is now preserved exactly like every other server-internal field.\n\n214 tests (unchanged).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.75/Jellyfin.Federation.zip",
+        "checksum": "d9a012f26e67b765154a9c73435dbd5b",
+        "timestamp": "2026-08-20T15:45:00Z"
+      },
+      {
         "version": "0.0.74",
         "changelog": "Adds a second credential tier for streaming, on top of 0.0.70's federation token. The federation token proves \"this request is from friend X\" and covers browsing/admin-ish calls - it was never meant to authorize streaming alone, and never has: DirectStream/image gateway calls already required a separate, short-lived token minted per item. That per-item token only ever knew \"this item was requested\", not which of the friend's own users was actually watching, so a per-remote-user restriction could only be enforced from a self-reported header at browse time, not at the moment streaming is actually granted.\n\nNow, the moment one of a friend's users actually starts playing something, their server registers that specific user and gets back a session token scoped to them - checked against your per-remote-user rules right then (a fully blocked user never gets a session token at all), and re-checked per item on every single stream request after that. Falls back automatically to the old per-item token for a friend still on an older version, so nothing breaks for anyone not yet updated.\n\n214 tests (up from 210).",
         "targetAbi": "10.11.0.0",
