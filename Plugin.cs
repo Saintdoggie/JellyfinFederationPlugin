@@ -22,6 +22,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly ILogger<Plugin> _logger;
         private readonly ILibraryManager _libraryManager;
         private readonly WebClientInjector _webClientInjector;
+        private readonly LibraryProvisioningService _provisioning;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Plugin"/> class.
@@ -31,12 +32,14 @@ namespace Jellyfin.Plugin.Federation
             IXmlSerializer xmlSerializer,
             ILogger<Plugin> logger,
             ILibraryManager libraryManager,
-            WebClientInjector webClientInjector)
+            WebClientInjector webClientInjector,
+            LibraryProvisioningService provisioning)
             : base(applicationPaths, xmlSerializer)
         {
             _logger = logger;
             _libraryManager = libraryManager;
             _webClientInjector = webClientInjector;
+            _provisioning = provisioning;
             Instance = this;
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
         }
@@ -123,6 +126,31 @@ namespace Jellyfin.Plugin.Federation
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Plugin uninstall: failed to remove federated items; some virtual items may be left behind");
+            }
+
+            // Auto-provisioned libraries (and shadow media paths merged into a
+            // pre-existing user library) were never cleaned up here - only the
+            // items inside them were. LibraryProvisioningService.RemoveAllAsync
+            // already existed for exactly this ("used on uninstall / reset" per
+            // its own doc comment) but was never actually wired in, so Jellyfin
+            // was left holding a library definition pointing at this plugin's
+            // data-folder shadow path right up until Jellyfin's own post-uninstall
+            // cleanup deletes that folder out from under it - a library with a
+            // location that no longer exists on disk, which is what actually broke.
+            // OnUninstalling is synchronous (Jellyfin's own plugin-manager contract),
+            // so this blocks on the async call rather than leaving library cleanup
+            // to race the folder deletion that follows immediately after this method
+            // returns; safe to block here since this runs on the plugin manager's
+            // own background uninstall flow, not a request thread with a captured
+            // SynchronizationContext.
+            try
+            {
+                _provisioning.RemoveAllAsync().GetAwaiter().GetResult();
+                _logger.LogInformation("[Federation] Plugin uninstall: removed auto-provisioned libraries and detached shadow media paths");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Plugin uninstall: failed to remove provisioned libraries; Jellyfin may be left with a library pointing at a path this uninstall is about to delete");
             }
 
             // Undo WebClientInjector's file-write injection too, so uninstalling
