@@ -8,9 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller;
-using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Security;
-using MediaBrowser.Model.Users;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -52,8 +50,6 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IRemoteServerClientFactory _clientFactory;
-        private readonly IUserManager _userManager;
-        private readonly ILibraryManager _libraryManager;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationFriendService"/> class.
@@ -64,9 +60,7 @@ namespace Jellyfin.Plugin.Federation.Services
             IServerApplicationHost applicationHost,
             FederationLibraryManager federationManager,
             IHttpContextAccessor httpContextAccessor,
-            IRemoteServerClientFactory clientFactory,
-            IUserManager userManager,
-            ILibraryManager libraryManager)
+            IRemoteServerClientFactory clientFactory)
         {
             _logger = logger;
             _authManager = authManager;
@@ -74,8 +68,6 @@ namespace Jellyfin.Plugin.Federation.Services
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
             _clientFactory = clientFactory;
-            _userManager = userManager;
-            _libraryManager = libraryManager;
         }
 
         // Guards check-then-create below against a race on first concurrent use
@@ -736,7 +728,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Server-to-server: an existing friend added us to a pool we weren't
         /// already in, or has an updated roster for one we're already in. No accept
         /// step needed - the two servers are already connected, so this is purely
-        /// informational, same trust boundary as <see cref="ReceiveSharedUserUpdate"/>.
+        /// informational, same trust boundary as the rest of the friend system.
         /// </summary>
         public Task ReceivePoolNotice(PoolNoticePayload payload, CancellationToken cancellationToken)
         {
@@ -896,134 +888,39 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Admin-triggered: sets which of this server's own local libraries a
-        /// specific friend can see, enforced through an existing local Jellyfin
-        /// user the admin picks (create one under Dashboard -> Users first, the
-        /// same way you would restrict a family member's account) rather than one
-        /// this plugin creates itself. Jellyfin's own <c>IUserManager.CreateUserAsync</c>
-        /// was tried first and does not work reliably here - it can leave the new
-        /// user's <c>AuthenticationProviderId</c> unset and then fail its own save
-        /// with a NOT NULL constraint, before ever handing the created user back
-        /// to calling code to fix up. Since that happens inside Jellyfin's own
-        /// user-creation path, nothing this plugin does afterward can correct it;
-        /// reusing a user Jellyfin's own admin UI already created successfully
-        /// sidesteps the bug entirely. Pushes the result to the friend so their
-        /// plugin starts querying as the newly-scoped user.
+        /// specific friend can see, plus a per-friend list of specific items that
+        /// are never shared with them regardless of that scope. Purely local
+        /// state under the federation-token model - <see cref="FederationPeerAccessService"/>
+        /// enforces <see cref="RemoteServer.ShareAllLibraries"/>/
+        /// <see cref="RemoteServer.SharedLibraryFolderIds"/>/<see cref="RemoteServer.ExcludedItemIds"/>
+        /// itself, server-side, on every <c>Peer/*</c> request, so there is
+        /// nothing to notify the friend of and nothing that requires a Jellyfin
+        /// user account to enforce. (Previously this required picking a
+        /// dedicated local Jellyfin user and pushing a "query as this user now"
+        /// notice to the friend - that only made sense when a friend queried
+        /// Jellyfin's own native per-user REST API directly; friends no longer do
+        /// that at all. See the deleted <c>ApplySharePolicyAsync</c>/
+        /// <c>ReceiveSharedUserUpdate</c> for that history, in git blame.)
         /// </summary>
-        public async Task<(bool Success, string Message)> UpdateFriendSharingAsync(
+        public Task<(bool Success, string Message)> UpdateFriendSharingAsync(
             string remoteServerId,
             bool shareAll,
             List<string> folderIds,
-            string localUserId,
-            CancellationToken cancellationToken)
+            List<string>? excludedItemIds = null)
         {
             var config = Plugin.Instance!.Configuration;
             var server = config.RemoteServers.FirstOrDefault(s => s.Id == remoteServerId);
             if (server == null)
             {
-                return (false, "Friend not found.");
-            }
-
-            if (!shareAll)
-            {
-                if (string.IsNullOrEmpty(localUserId) || !Guid.TryParse(localUserId, out var parsedUserId))
-                {
-                    return (false, "Pick a local account to enforce this friend's restricted view - create one under Dashboard → Users first if you haven't already.");
-                }
-
-                if (_userManager.GetUserById(parsedUserId) == null)
-                {
-                    return (false, "That local account no longer exists.");
-                }
-
-                server.LocalShareUserId = localUserId;
+                return Task.FromResult((false, "Friend not found."));
             }
 
             server.ShareAllLibraries = shareAll;
             server.SharedLibraryFolderIds = folderIds ?? new List<string>();
-
-            Guid? shareUserId = null;
-            if (!shareAll)
-            {
-                try
-                {
-                    shareUserId = await ApplySharePolicyAsync(server, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "[Federation] Failed to apply a sharing policy to the restricted account for {Name}", server.Name);
-                    return (false, "Could not apply the restriction to that local account.");
-                }
-            }
-
+            server.ExcludedItemIds = excludedItemIds ?? new List<string>();
             Plugin.Instance.SaveConfiguration();
 
-            if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
-            {
-                return (true, "Sharing updated locally, but this friend has no address/key on file to notify.");
-            }
-
-            // "Share everything" needs no restricted account and nothing new to
-            // tell the friend - they already query using whatever UserId they were
-            // already configured with (typically an administrator), same as before
-            // per-friend sharing existed.
-            if (shareUserId == null)
-            {
-                return (true, "Sharing updated.");
-            }
-
-            try
-            {
-                var payload = new SharedUserUpdatePayload
-                {
-                    FromFederationId = GetOrCreateLocalFederationId(),
-                    UserId = shareUserId.Value.ToString("N")
-                };
-                using var response = await PostAuthenticatedAsync(
-                    $"{server.Url.TrimEnd('/')}/Plugins/Federation/Friends/SharedUserUpdate",
-                    payload,
-                    server.ApiKey,
-                    cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
-                {
-                    return (true, $"Sharing updated locally, but could not notify {server.Name} (HTTP {(int)response.StatusCode}) - they will keep using their old view until they resync.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Could not notify {Name} of an updated sharing scope (non-fatal)", server.Name);
-                return (true, $"Sharing updated locally, but could not reach {server.Name} - they will keep using their old view until they resync.");
-            }
-
-            return (true, "Sharing updated.");
-        }
-
-        /// <summary>
-        /// Server-to-server: a friend we already share content with is telling us
-        /// which local user id to use when querying them from now on - the
-        /// counterpart to <see cref="UpdateFriendSharingAsync"/> on their side.
-        /// Matched by federation id rather than URL/key, since those can change
-        /// without the friendship itself changing. Only ever narrows or changes
-        /// *our* view of *their* content; never touches what we share back.
-        /// </summary>
-        public void ReceiveSharedUserUpdate(SharedUserUpdatePayload payload)
-        {
-            if (payload == null || string.IsNullOrEmpty(payload.FromFederationId) || string.IsNullOrEmpty(payload.UserId))
-            {
-                return;
-            }
-
-            var config = Plugin.Instance!.Configuration;
-            var server = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
-            if (server == null)
-            {
-                _logger.LogWarning("[Federation] Received a sharing update from an unrecognized federation id {FederationId}", payload.FromFederationId);
-                return;
-            }
-
-            server.UserId = payload.UserId;
-            Plugin.Instance.SaveConfiguration();
-            _clientFactory.InvalidateAll();
-            _logger.LogInformation("[Federation] {Name} updated what they share with us", server.Name);
+            return Task.FromResult((true, "Sharing updated."));
         }
 
         /// <summary>
@@ -1100,7 +997,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// configured for our own local users - the counterpart to
         /// <see cref="SetRemoteUserAccessRuleAsync"/> on their side. Replaces (not
         /// merges) our stored copy, since the sender always pushes its full list.
-        /// Matched by federation id, same as <see cref="ReceiveSharedUserUpdate"/>.
+        /// Matched by federation id, same as <see cref="ReceivePoolNotice"/>.
         /// </summary>
         public void ReceiveRemoteUserAccessRules(RemoteUserAccessRulesPayload payload)
         {
@@ -1120,37 +1017,6 @@ namespace Jellyfin.Plugin.Federation.Services
             server.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
             Plugin.Instance.SaveConfiguration();
             _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", server.Name, server.FriendUserAccessRules.Count);
-        }
-
-        /// <summary>
-        /// Applies <see cref="RemoteServer.SharedLibraryFolderIds"/> to the admin-
-        /// picked local user's policy via Jellyfin's own EnabledFolders enforcement
-        /// - the same mechanism an admin would use by hand for e.g. a family
-        /// member's account, not anything this plugin polices itself. Enforcement
-        /// holds for the intended case of two cooperating Federation instances,
-        /// same trust boundary as the rest of the friend system - not a defense
-        /// against a key holder deliberately querying as a different, unrestricted
-        /// user of their own.
-        /// </summary>
-        private async Task<Guid> ApplySharePolicyAsync(RemoteServer server, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var userId = Guid.Parse(server.LocalShareUserId);
-
-            var policy = new UserPolicy
-            {
-                IsAdministrator = false,
-                EnableAllFolders = false,
-                EnabledFolders = server.SharedLibraryFolderIds
-                    .Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
-                    .Where(g => g != Guid.Empty)
-                    .ToArray(),
-                EnableMediaPlayback = true
-            };
-
-            await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
-            return userId;
         }
 
         private static bool AlreadyKnown(PluginConfiguration config, string url)
@@ -1411,19 +1277,6 @@ namespace Jellyfin.Plugin.Federation.Services
         public string RequestId { get; set; } = string.Empty;
     }
 
-    /// <summary>
-    /// Wire payload telling an existing friend which local user id to use when
-    /// querying this server from now on - see
-    /// <see cref="FederationFriendService.UpdateFriendSharingAsync"/>.
-    /// </summary>
-    public class SharedUserUpdatePayload
-    {
-        /// <summary>Gets or sets the sender's persistent federation id.</summary>
-        public string FromFederationId { get; set; } = string.Empty;
-
-        /// <summary>Gets or sets the user id the recipient should now query as.</summary>
-        public string UserId { get; set; } = string.Empty;
-    }
 
     /// <summary>
     /// Wire payload telling an already-known friend this friendship has been

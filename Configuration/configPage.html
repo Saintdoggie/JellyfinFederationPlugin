@@ -539,10 +539,6 @@
                     // once and cached.
                     var localLibrariesCache = null;
 
-                    // This server's own local Jellyfin users, for picking which
-                    // restricted account enforces a friend's sharing scope.
-                    var localUsersCache = null;
-
                     // Pending per-friend sharing selections, keyed by server.Id, so a
                     // checkbox toggle survives the re-render loadFriendRequests()/
                     // loadConfiguration() trigger elsewhere on the page without
@@ -588,6 +584,11 @@
                     // clicking a checkbox elsewhere) doesn't lose the search results
                     // already on screen.
                     var userRuleItemSearchResults = {};
+
+                    // Same idea as userRuleItemSearchResults, for the per-friend
+                    // "exclude specific items" picker in the sharing block - keyed
+                    // by server id (one exclude list per friend, not per their user).
+                    var excludedItemSearchResults = {};
 
                     var COLLECTION_TYPE_MAP = {
                         movies: { mediaType: 'Movie', label: 'Movies' },
@@ -754,34 +755,16 @@
                         .catch(function () { return []; });
                     }
 
-                    function loadLocalUsers() {
-                        if (localUsersCache) {
-                            return Promise.resolve(localUsersCache);
-                        }
-
-                        return fedFetch('/Plugins/Federation/LocalUsers')
-                        .then(function (r) { return r.json(); })
-                        .then(function (users) {
-                            localUsersCache = users || [];
-                            renderFriends();
-                            return localUsersCache;
-                        })
-                        .catch(function () { return []; });
-                    }
-
-                    function refreshLocalUsers() {
-                        // Bypasses localUsersCache: the whole point of this button
-                        // is to pick up a user the admin just created via the native
-                        // Add User page linked below, without a full reload.
-                        localUsersCache = null;
-                        loadLocalUsers();
-                    }
-
                     function renderSharingBlock(server) {
                         var pending = pendingSharing[server.Id] || {
                             ShareAll: server.ShareAllLibraries !== false,
                             FolderIds: (server.SharedLibraryFolderIds || []).slice(),
-                            LocalUserId: server.LocalShareUserId || ''
+                            // Loaded from saved config only as raw ids, so an
+                            // already-excluded item shows its id until re-picked or
+                            // re-searched - same tradeoff pendingUserRuleEdits makes
+                            // for RemoteUserAccessRule.ItemIds, for the same reason
+                            // (no second round trip just to look up names already known).
+                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; })
                         };
                         pendingSharing[server.Id] = pending;
 
@@ -789,32 +772,11 @@
                         html += '<h4 class="fed-subhead">What ' + escapeHtml(server.Name || server.Url) + ' can see of my library</h4>';
                         html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingAll" data-id="' + escapeHtml(server.Id) + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Share everything</label>';
 
+                        // Enforced entirely by this plugin's own code on every
+                        // request from this friend (see FederationPeerAccessService)
+                        // - no local Jellyfin account of any kind is involved.
                         html += '<div class="fedSharingLibs" data-id="' + escapeHtml(server.Id) + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.5em;">';
-                        html += '<label class="fed-label">Restricted account (enforces what\'s below)</label>';
-                        html += '<div class="fed-inline" style="align-items:center;">';
-                        html += '<div class="fed-input-container" style="flex:1 1 16em;margin-bottom:0;">';
-                        html += '<select class="emby-select fed-select fedSharingUser" data-id="' + escapeHtml(server.Id) + '">';
-                        html += '<option value="">— choose an account —</option>';
-                        (localUsersCache || []).forEach(function (u) {
-                            html += '<option value="' + escapeHtml(u.id) + '"' + (pending.LocalUserId === u.id ? ' selected' : '') + '>' + escapeHtml(u.name) + '</option>';
-                        });
-                        html += '</select>';
-                        html += '</div>';
-                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-local-users">Refresh list</button>';
-                        html += '</div>';
-                        // Deliberately a link to Jellyfin's own native Add User page,
-                        // not a "create account" button this plugin drives itself:
-                        // IUserManager.CreateUserAsync is unreliable on this Jellyfin
-                        // build (see UpdateFriendSharingAsync's doc comment - it can
-                        // leave AuthenticationProviderId unset and crash inside
-                        // Jellyfin's own save with a NOT NULL constraint, a bug this
-                        // plugin cannot work around after the fact). Opens in a new
-                        // tab so this configuration page - and any unsaved edits on
-                        // it - stays put; "Refresh list" above re-fetches the account
-                        // list afterward without a full page reload.
-                        html += '<p class="fed-hint">Don\'t have one yet? <a href="' + escapeHtml(apiBase) + '/web/#/dashboard/users/add" target="_blank" rel="noopener">Create a regular user for this friend</a> (no password needed - it never logs in itself), then click "Refresh list" and pick it here.</p>';
-
-                        html += '<label class="fed-label" style="margin-top:0.6em;">Libraries visible to that account</label>';
+                        html += '<label class="fed-label">Libraries visible to them</label>';
                         if (!localLibrariesCache) {
                             html += '<p class="fed-muted">Loading your libraries…</p>';
                         } else if (localLibrariesCache.length === 0) {
@@ -826,8 +788,40 @@
                             });
                         }
 
+                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend.</p>';
                         html += '</div>';
-                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend - enforced through the picked account\'s own library access, the same mechanism you\'d use to restrict a family member\'s login.</p>';
+
+                        html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
+                        html += '<div class="fed-inline">';
+                        html += '<div class="fed-input-container"><input type="text" class="emby-input fed-input fedExcludeItemSearch" data-id="' + escapeHtml(server.Id) + '" placeholder="Search your library by name…" /></div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="search-exclude-items" data-id="' + escapeHtml(server.Id) + '">Search</button>';
+                        html += '</div>';
+
+                        var excludeResults = excludedItemSearchResults[server.Id] || [];
+                        if (excludeResults.length > 0) {
+                            html += '<div class="fed-userrule-results">';
+                            excludeResults.forEach(function (it) {
+                                var already = pending.ExcludedItems.some(function (x) { return x.id === it.id; });
+                                html += '<div class="fed-userrule-result">';
+                                html += '<span>' + escapeHtml(it.name) + (it.year ? ' (' + it.year + ')' : '') + '</span>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="add-exclude-item" data-id="' + escapeHtml(server.Id) + '" data-item-id="' + escapeHtml(it.id) + '" data-item-name="' + escapeHtml(it.name) + '"' + (already ? ' disabled' : '') + '>' + (already ? 'Excluded' : 'Exclude') + '</button>';
+                                html += '</div>';
+                            });
+                            html += '</div>';
+                        }
+
+                        html += '<label class="fed-label" style="margin-top:0.6em;">Excluded (' + pending.ExcludedItems.length + ')</label>';
+                        if (pending.ExcludedItems.length === 0) {
+                            html += '<p class="fed-muted">Nothing excluded.</p>';
+                        } else {
+                            pending.ExcludedItems.forEach(function (it) {
+                                html += '<div class="fed-userrule-result">';
+                                html += '<span>' + escapeHtml(it.name) + '</span>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-exclude-item" data-id="' + escapeHtml(server.Id) + '" data-item-id="' + escapeHtml(it.id) + '">Remove</button>';
+                                html += '</div>';
+                            });
+                        }
+
                         html += '<div class="fed-inline" style="margin-top:0.5em;">';
                         html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="save-sharing" data-id="' + escapeHtml(server.Id) + '">Save sharing</button>';
                         html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="block-friend" data-id="' + escapeHtml(server.Id) + '">Block (share nothing)</button>';
@@ -854,11 +848,15 @@
                     }
 
                     function saveSharing(serverId) {
-                        var pending = pendingSharing[serverId] || { ShareAll: true, FolderIds: [], LocalUserId: '' };
+                        var pending = pendingSharing[serverId] || { ShareAll: true, FolderIds: [], ExcludedItems: [] };
                         setSharingStatus(serverId, 'Saving…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Sharing', {
                             method: 'POST',
-                            body: JSON.stringify({ ShareAll: pending.ShareAll, FolderIds: pending.FolderIds, LocalUserId: pending.LocalUserId })
+                            body: JSON.stringify({
+                                ShareAll: pending.ShareAll,
+                                FolderIds: pending.FolderIds,
+                                ExcludedItemIds: pending.ExcludedItems.map(function (it) { return it.id; })
+                            })
                         })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -872,8 +870,44 @@
 
                     function blockFriend(serverId) {
                         var existing = pendingSharing[serverId] || {};
-                        pendingSharing[serverId] = { ShareAll: false, FolderIds: [], LocalUserId: existing.LocalUserId || '' };
+                        pendingSharing[serverId] = { ShareAll: false, FolderIds: [], ExcludedItems: existing.ExcludedItems || [] };
                         saveSharing(serverId);
+                    }
+
+                    function searchExcludeItems(serverId) {
+                        var input = q('.fedExcludeItemSearch[data-id="' + serverId + '"]');
+                        var query = input ? input.value : '';
+                        if (!query) {
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/SearchLocalItems?query=' + encodeURIComponent(query))
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            excludedItemSearchResults[serverId] = res || [];
+                            renderFriends();
+                        })
+                        .catch(function () { excludedItemSearchResults[serverId] = []; renderFriends(); });
+                    }
+
+                    function addExcludeItem(serverId, itemId, itemName) {
+                        var pending = pendingSharing[serverId];
+                        if (!pending || pending.ExcludedItems.some(function (x) { return x.id === itemId; })) {
+                            return;
+                        }
+
+                        pending.ExcludedItems.push({ id: itemId, name: itemName });
+                        renderFriends();
+                    }
+
+                    function removeExcludeItem(serverId, itemId) {
+                        var pending = pendingSharing[serverId];
+                        if (!pending) {
+                            return;
+                        }
+
+                        pending.ExcludedItems = pending.ExcludedItems.filter(function (x) { return x.id !== itemId; });
+                        renderFriends();
                     }
 
                     /* ---------------- Per-remote-user access overrides ---------------- */
@@ -1250,6 +1284,7 @@
                         var shareAll = server.ShareAllLibraries !== false;
                         var folderCount = (server.SharedLibraryFolderIds || []).length;
                         var ruleCount = (server.RemoteUserAccessRules || []).length;
+                        var excludedCount = (server.ExcludedItemIds || []).length;
                         var parts = [];
                         parts.push(shareAll
                             ? 'Sharing everything with them'
@@ -1258,6 +1293,10 @@
                                 : 'Sharing ' + folderCount + ' librar' + (folderCount === 1 ? 'y' : 'ies') + ' with them'));
                         if (ruleCount > 0) {
                             parts.push(ruleCount + ' per-user rule' + (ruleCount === 1 ? '' : 's'));
+                        }
+
+                        if (excludedCount > 0) {
+                            parts.push(excludedCount + ' item' + (excludedCount === 1 ? '' : 's') + ' excluded');
                         }
 
                         return parts.join(' · ');
@@ -1383,7 +1422,6 @@
                         });
                         c.innerHTML = html;
                         loadLocalLibraries();
-                        loadLocalUsers();
                     }
 
                     function collectServer(i) {
@@ -2603,8 +2641,14 @@
                                 case 'save-sharing':
                                     saveSharing(t.getAttribute('data-id'));
                                     break;
-                                case 'refresh-local-users':
-                                    refreshLocalUsers();
+                                case 'search-exclude-items':
+                                    searchExcludeItems(t.getAttribute('data-id'));
+                                    break;
+                                case 'add-exclude-item':
+                                    addExcludeItem(t.getAttribute('data-id'), t.getAttribute('data-item-id'), t.getAttribute('data-item-name') || t.getAttribute('data-item-id'));
+                                    break;
+                                case 'remove-exclude-item':
+                                    removeExcludeItem(t.getAttribute('data-id'), t.getAttribute('data-item-id'));
                                     break;
                                 case 'block-friend':
                                     blockFriend(t.getAttribute('data-id'));
@@ -2785,14 +2829,6 @@
                                 }
 
                                 pendingSharing[lsid] = lp;
-                                return;
-                            }
-
-                            if (t.classList.contains('fedSharingUser')) {
-                                var usid = t.getAttribute('data-id');
-                                var up = pendingSharing[usid] || { ShareAll: false, FolderIds: [] };
-                                up.LocalUserId = t.value;
-                                pendingSharing[usid] = up;
                                 return;
                             }
 
