@@ -99,6 +99,64 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetOrRegisterUserSessionTokenAsync_RegistersAndReturnsToken()
+    {
+        var handler = new FakeHttpMessageHandler(registerUserSessionJson: "{\"token\":\"session-abc\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var token = await client.GetOrRegisterUserSessionTokenAsync("user-1", "Alice", CancellationToken.None);
+
+        Assert.Equal("session-abc", token);
+        Assert.Equal("/Plugins/Federation/RegisterUserSession", handler.LastRequestedPath);
+        Assert.Equal(1, handler.RegisterUserSessionCallCount);
+    }
+
+    [Fact]
+    public async Task GetOrRegisterUserSessionTokenAsync_CachesAcrossCalls_ForSameServerAndUser()
+    {
+        var handler = new FakeHttpMessageHandler(registerUserSessionJson: "{\"token\":\"session-abc\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-cache-test-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var first = await client.GetOrRegisterUserSessionTokenAsync("user-1", null, CancellationToken.None);
+        var second = await client.GetOrRegisterUserSessionTokenAsync("user-1", null, CancellationToken.None);
+
+        Assert.Equal("session-abc", first);
+        Assert.Equal("session-abc", second);
+        Assert.Equal(1, handler.RegisterUserSessionCallCount);
+    }
+
+    [Fact]
+    public async Task GetOrRegisterUserSessionTokenAsync_EmptyUserId_ReturnsNull_WithoutRequest()
+    {
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var token = await client.GetOrRegisterUserSessionTokenAsync(string.Empty, null, CancellationToken.None);
+
+        Assert.Null(token);
+        Assert.Equal(0, handler.RegisterUserSessionCallCount);
+    }
+
+    [Fact]
+    public async Task GetOrRegisterUserSessionTokenAsync_RejectedByRemote_ReturnsNull()
+    {
+        var handler = new FakeHttpMessageHandler(registerUserSessionStatusCode: HttpStatusCode.Forbidden);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-blocked-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var token = await client.GetOrRegisterUserSessionTokenAsync("blocked-user", null, CancellationToken.None);
+
+        Assert.Null(token);
+    }
+
+    [Fact]
     public async Task GetItemsAsync_CallsPeerEndpoint_NoUserResolution()
     {
         var itemsJson = "{\"Items\":[{\"Id\":\"33333333-3333-3333-3333-333333333333\",\"Name\":\"A Movie\"}]}";
@@ -239,11 +297,14 @@ public class RemoteServerClientPlaybackTests
         private readonly HttpStatusCode _systemInfoStatusCode;
 
         private readonly string _playbackTokenJson;
+        private readonly string _registerUserSessionJson;
+        private readonly HttpStatusCode _registerUserSessionStatusCode;
 
         public string? LastRequestedPath { get; private set; }
         public string LastRequestedQuery { get; private set; } = string.Empty;
         public bool CalledAnyNativeUsersOrItemsEndpoint { get; private set; }
         public string? LastRemoteUserIdHeader { get; private set; }
+        public int RegisterUserSessionCallCount { get; private set; }
 
         public FakeHttpMessageHandler(
             string playbackJson = "{\"MediaSources\":[]}",
@@ -253,7 +314,9 @@ public class RemoteServerClientPlaybackTests
             string usersJson = "[]",
             string systemInfoJson = "{}",
             HttpStatusCode systemInfoStatusCode = HttpStatusCode.OK,
-            string playbackTokenJson = "{\"token\":\"tok-123\"}")
+            string playbackTokenJson = "{\"token\":\"tok-123\"}",
+            string registerUserSessionJson = "{\"token\":\"session-tok-123\"}",
+            HttpStatusCode registerUserSessionStatusCode = HttpStatusCode.OK)
         {
             _playbackJson = playbackJson;
             _itemsJson = itemsJson;
@@ -263,6 +326,8 @@ public class RemoteServerClientPlaybackTests
             _systemInfoJson = systemInfoJson;
             _systemInfoStatusCode = systemInfoStatusCode;
             _playbackTokenJson = playbackTokenJson;
+            _registerUserSessionJson = registerUserSessionJson;
+            _registerUserSessionStatusCode = registerUserSessionStatusCode;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -283,6 +348,14 @@ public class RemoteServerClientPlaybackTests
             if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
             {
                 return Task.FromResult(Json(_playbackTokenJson));
+            }
+
+            if (path.Equals("/Plugins/Federation/RegisterUserSession", StringComparison.OrdinalIgnoreCase))
+            {
+                RegisterUserSessionCallCount++;
+                return Task.FromResult(_registerUserSessionStatusCode == HttpStatusCode.OK
+                    ? Json(_registerUserSessionJson)
+                    : new HttpResponseMessage(_registerUserSessionStatusCode));
             }
 
             if (path.Equals("/Plugins/Federation/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase)

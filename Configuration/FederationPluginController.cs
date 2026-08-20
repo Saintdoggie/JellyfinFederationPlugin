@@ -50,6 +50,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly IUserManager _userManager;
         private readonly FederationDownloadService _downloadService;
         private readonly FederationPlaybackTokenService _playbackTokens;
+        private readonly FederationUserSessionTokenService _userSessionTokens;
         private readonly FederationPeerAccessService _peerAccess;
         private readonly IServerApplicationHost _applicationHost;
 
@@ -68,6 +69,7 @@ namespace Jellyfin.Plugin.Federation.Api
             IUserManager userManager,
             FederationDownloadService downloadService,
             FederationPlaybackTokenService playbackTokens,
+            FederationUserSessionTokenService userSessionTokens,
             FederationPeerAccessService peerAccess,
             IServerApplicationHost applicationHost)
         {
@@ -85,6 +87,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _libraryManager = libraryManager;
             _downloadService = downloadService;
             _playbackTokens = playbackTokens;
+            _userSessionTokens = userSessionTokens;
             _peerAccess = peerAccess;
             _applicationHost = applicationHost;
         }
@@ -1258,6 +1261,87 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Server-to-server: a friend server registering one of its own local
+        /// users the moment that user actually starts playing something, in
+        /// exchange for a per-user streaming session token (see
+        /// <see cref="FederationUserSessionTokenService"/>). This is the second
+        /// credential tier alongside the federation token
+        /// (<see cref="FederationTokenAuth"/>): the federation token proves "this
+        /// is friend X" and is used for browsing/admin-ish calls, but is never
+        /// itself accepted by <see cref="DirectStream"/>/<see cref="DirectImage"/> -
+        /// only a session token minted here is. Requires a valid federation token
+        /// to call (a friend registering on its own users' behalf), same as
+        /// <see cref="IssuePlaybackToken"/>. A user this friend's admin has fully
+        /// blocked via a <see cref="RemoteUserAccessRule"/> is rejected at
+        /// registration time, before any session token is ever handed out for
+        /// them - later, per-item visibility is still re-checked at every actual
+        /// stream request, since a rule can change during a session's lifetime.
+        /// </summary>
+        [HttpPost("RegisterUserSession")]
+        [AllowAnonymous]
+        public IActionResult RegisterUserSession([FromBody] RegisterUserSessionRequest? request)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (string.IsNullOrWhiteSpace(request?.RemoteUserId))
+            {
+                return BadRequest(new { error = "Remote user id is required" });
+            }
+
+            // A Blocked rule denies everything regardless of item, so checking it
+            // against a synthetic empty item id here (rather than duplicating the
+            // rule lookup) rejects a fully-blocked user up front - anything less
+            // restrictive than Blocked still needs a real item to evaluate, so it
+            // is left to the per-stream IsItemVisible check instead of guessed at
+            // here.
+            if (!_peerAccess.IsItemVisible(caller, request.RemoteUserId, Guid.Empty)
+                && (caller.RemoteUserAccessRules?.Any(r =>
+                    string.Equals(r.RemoteUserId, request.RemoteUserId, StringComparison.OrdinalIgnoreCase)
+                    && r.Mode == RemoteUserAccessMode.Blocked) ?? false))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "This user is blocked by the server admin" });
+            }
+
+            var token = _userSessionTokens.Issue(caller.FederationId, request.RemoteUserId);
+            return Ok(new { token, expiresUtc = DateTime.UtcNow.AddHours(6) });
+        }
+
+        /// <summary>
+        /// Whether <paramref name="token"/> authorizes streaming <paramref name="itemGuid"/>
+        /// right now - either an item-scoped <see cref="FederationPlaybackTokenService"/>
+        /// token (the original, still-supported mechanism: mint-then-play, one
+        /// token per item), or a <see cref="FederationUserSessionTokenService"/>
+        /// per-user session token, re-checked against
+        /// <see cref="FederationPeerAccessService.IsItemVisible(Configuration.RemoteServer, string?, Guid)"/>
+        /// for this specific item at this specific moment - a session token only
+        /// proves "this user wasn't blocked when they started watching", not that
+        /// every item they might request with it stays visible for the session's
+        /// whole 6-hour lifetime.
+        /// </summary>
+        private bool IsStreamTokenAuthorized(string? token, Guid itemGuid)
+        {
+            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            {
+                return true;
+            }
+
+            if (_userSessionTokens.TryValidate(token, out var federationId, out var remoteUserId))
+            {
+                var server = _friends.FindByFederationId(federationId);
+                if (server != null && _peerAccess.IsItemVisible(server, remoteUserId, itemGuid))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Direct-mode's token-gated relay gateway: a friend's client fetches media
         /// straight from here rather than being handed this server's real api_key
         /// (see <see cref="FederationPlaybackTokenService"/> and
@@ -1279,7 +1363,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
-            if (!_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            if (!IsStreamTokenAuthorized(token, itemGuid))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -1325,7 +1409,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
-            if (!_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            if (!IsStreamTokenAuthorized(token, itemGuid))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -2127,6 +2211,18 @@ namespace Jellyfin.Plugin.Federation.Api
     public class IssuePlaybackTokenRequest
     {
         public string? ItemId { get; set; }
+    }
+
+    /// <summary>
+    /// Request body for <see cref="FederationController.RegisterUserSession"/>.
+    /// </summary>
+    public class RegisterUserSessionRequest
+    {
+        /// <summary>Gets or sets the calling friend's own local user id starting to play.</summary>
+        public string? RemoteUserId { get; set; }
+
+        /// <summary>Gets or sets the user's display name, for logging only.</summary>
+        public string? RemoteUserName { get; set; }
     }
 
     public class HideItemBody
