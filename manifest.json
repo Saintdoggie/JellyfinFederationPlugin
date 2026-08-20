@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.77",
+        "changelog": "Fixes a real Jellyfin admin-equivalent API key silently leaking on every unrelated Federation settings save. This server mints one internal API key for itself (InternalRelayApiKey) to relay Direct-mode streams locally over loopback - meant to be created once and reused forever. But the config-save endpoint's preserve-on-save list never protected it, so any general settings save wiped it back to empty; the next stream request then saw no key on file and minted a brand new real Jellyfin API key, abandoning the old one for good. Confirmed live: three of these orphaned in a single day of ordinary config saves, each showing up as an unexplained new entry under Dashboard > API Keys. InternalRelayApiKey is now preserved exactly like every other server-internal field, so it's minted once per server and never again.\n\n215 tests (unchanged).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.77/Jellyfin.Federation.zip",
+        "checksum": "60170c025b2c3e71aa505f8f0c93156a",
+        "timestamp": "2026-08-20T17:00:00Z"
+      },
+      {
         "version": "0.0.76",
         "changelog": "Fixes federated content sticking around forever after a friend is disconnected by any means other than the admin-triggered Remove button. Every prune of a server's cached items previously only ever ran as part of actively syncing that specific server, or an explicit admin delete - once a server was gone from config some other way (confirmed live this session: a raw config save that dropped a RemoteServers entry), nothing ever revisited its now-orphaned cache entries again, since the sync loop only iterates currently-configured servers. Thousands of items from a friend removed hours earlier were still sitting in the library. Every sync now sweeps cache entries for any server id no longer in config at all before reconciling, regardless of how it disappeared - so their content actually goes away on the very next sync instead of needing a full server reset.\n\n215 tests (up from 214).",
         "targetAbi": "10.11.0.0",
