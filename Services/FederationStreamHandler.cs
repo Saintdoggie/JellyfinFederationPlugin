@@ -93,7 +93,19 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var client = _clientFactory.GetClient(server);
-            var (token, _) = await client.GetPlaybackTokenAsync(remoteItemId, cancellationToken, requestingUserId).ConfigureAwait(false);
+
+            // Same preference as FederationMediaSourceProvider's Direct-mode
+            // branch: a per-user session token (registered once, reused for the
+            // rest of this user's session) over the item-scoped fallback.
+            var token = !string.IsNullOrEmpty(requestingUserId)
+                ? await client.GetOrRegisterUserSessionTokenAsync(requestingUserId, null, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            if (token == null)
+            {
+                (token, _) = await client.GetPlaybackTokenAsync(remoteItemId, cancellationToken, requestingUserId).ConfigureAwait(false);
+            }
+
             if (token == null)
             {
                 throw new InvalidOperationException($"Could not obtain a playback token from {server.Name} for item {remoteItemId}.");

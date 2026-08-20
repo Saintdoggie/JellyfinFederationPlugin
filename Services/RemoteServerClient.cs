@@ -38,6 +38,16 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, (DateTime Expires, FederationPeerStatus Status)> PeerStatusCache = new();
         private static readonly TimeSpan PeerStatusCacheTtl = TimeSpan.FromSeconds(30);
 
+        // Per-user streaming session tokens (see FederationUserSessionTokenService
+        // on the remote), keyed by "{serverId}:{localUserId}" so this client (which
+        // is constructed fresh per call - see IRemoteServerClientFactory) reuses an
+        // already-registered session instead of re-registering on every single
+        // play. Cached for less than the remote's own 6-hour token lifetime so a
+        // cached-but-about-to-expire entry is never handed out only to fail moments
+        // later.
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, string Token)> UserSessionTokenCache = new();
+        private static readonly TimeSpan UserSessionTokenCacheTtl = TimeSpan.FromHours(5);
+
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
@@ -544,6 +554,66 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>
+        /// Gets a cached per-user streaming session token (see
+        /// <see cref="Api.FederationController.RegisterUserSession"/>), registering
+        /// a fresh one if none is cached or the cached one is close to expiry.
+        /// Preferred over <see cref="GetPlaybackTokenAsync"/> for anything actually
+        /// initiated by a known local user: a session token is tied to that
+        /// specific, named user at registration time and re-checked per item at
+        /// stream time, rather than the federation token's shared,
+        /// whole-relationship scope. Falls back to null on any failure - callers
+        /// already know how to fall back to <see cref="GetPlaybackTokenAsync"/>'s
+        /// item-scoped mechanism when this returns null (an old-version friend
+        /// without this endpoint, a rejected/blocked user, or a transient error).
+        /// </summary>
+        public async Task<string?> GetOrRegisterUserSessionTokenAsync(string localUserId, string? localUserName, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(localUserId))
+            {
+                return null;
+            }
+
+            var cacheKey = $"{_server.Id}:{localUserId}";
+            if (UserSessionTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+            {
+                return cached.Token;
+            }
+
+            try
+            {
+                using var content = new StringContent(
+                    JsonSerializer.Serialize(new { RemoteUserId = localUserId, RemoteUserName = localUserName }),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+
+                var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug(
+                        "[Federation] Could not register a streaming session for user {UserId} with {ServerName}: HTTP {StatusCode}",
+                        localUserId,
+                        _server.Name,
+                        (int)response.StatusCode);
+                    return null;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
+                if (string.IsNullOrEmpty(result?.Token))
+                {
+                    return null;
+                }
+
+                UserSessionTokenCache[cacheKey] = (DateTime.UtcNow + UserSessionTokenCacheTtl, result.Token);
+                return result.Token;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Error registering a streaming session for user {UserId} with {ServerName}", localUserId, _server.Name);
+                return null;
+            }
+        }
 
         // The shared per-server _httpClient (see RemoteServerClientFactory) has a
         // 5-minute Timeout, sized for metadata/PlaybackInfo calls - far too short for

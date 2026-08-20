@@ -466,12 +466,26 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            // Forwarded so the remote's IssuePlaybackToken can check its own
-            // per-remote-user rule about this user at the moment it actually
-            // grants access - GetMediaSources' own IsAllowed check above only
-            // ever evaluates a locally-cached copy of that rule, which can go
-            // stale between when it was last pushed and this exact request.
-            var (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: default, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
+            // Prefer a per-user streaming session token (registered once when this
+            // user starts playing, reused for the rest of their session - see
+            // RemoteServerClient.GetOrRegisterUserSessionTokenAsync) over the
+            // item-scoped fallback: it is tied to this specific, named local user
+            // at registration time and re-checked per item at stream time, rather
+            // than the item token's more generic "this friend relationship, self-
+            // reported user header" scope. Falls back to the item-scoped token
+            // (which still forwards the same header for its own weaker check) for
+            // an old-version friend without the session endpoint, a rejected/
+            // blocked user, or any transient failure - never leaves the source
+            // unplayable just because the newer mechanism didn't work.
+            var token = localUserId.HasValue
+                ? await client.GetOrRegisterUserSessionTokenAsync(localUserId.Value.ToString("N"), null, default).ConfigureAwait(false)
+                : null;
+
+            if (token == null)
+            {
+                (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: default, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
+            }
+
             if (token == null)
             {
                 _logger.LogWarning(
