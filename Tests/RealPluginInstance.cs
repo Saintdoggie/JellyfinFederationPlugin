@@ -41,7 +41,9 @@ internal sealed class RealPluginInstance : IDisposable
 
         // Plugin's constructor sets the static Plugin.Instance itself.
         var webClientInjector = new WebClientInjector(new FakeApplicationPaths(tempDir), NullLogger<WebClientInjector>.Instance);
-        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, new Mock<ILibraryManager>().Object, webClientInjector);
+        var libraryManagerMock = new Mock<ILibraryManager>();
+        var provisioning = new LibraryProvisioningService(libraryManagerMock.Object, NullLogger<LibraryProvisioningService>.Instance);
+        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, libraryManagerMock.Object, webClientInjector, provisioning);
     }
 
     public PluginConfiguration Configuration => Plugin.Instance!.Configuration;

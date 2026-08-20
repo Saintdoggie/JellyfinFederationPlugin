@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.73",
+        "changelog": "Fixes uninstalling the plugin leaving Jellyfin with broken libraries. LibraryProvisioningService.RemoveAllAsync already existed specifically to remove auto-provisioned federation libraries (and detach federation media paths merged into a pre-existing user library) on uninstall - its own doc comment said so - but it was never actually called from Plugin.OnUninstalling, which only ever removed the federated items inside those libraries, not the library definitions themselves. Jellyfin's own post-uninstall cleanup then deletes this plugin's data folder - including the federation shadow folders those libraries pointed at - out from under a library definition that still referenced it, leaving a broken library pointing at a path that no longer exists. RemoveAllAsync is now actually called before that happens.\n\n210 tests (unchanged).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.73/Jellyfin.Federation.zip",
+        "checksum": "ac5b37be92f9afb24226b3076650a6b8",
+        "timestamp": "2026-08-20T15:00:00Z"
+      },
+      {
         "version": "0.0.72",
         "changelog": "Cleans up leftover \"API key\" terminology from before the federation-token rewrite, which was genuinely confusing: a couple of error messages still said \"API key is required\" when a friend's token wasn't on file yet, reading like this plugin still expected a manually-entered admin API key even though nothing in the UI has asked for one to be typed in since the rewrite - a token is only ever minted automatically during the friend-request handshake. Those messages now say so explicitly, and a stray \"keeps the remote API key server-side\" hint was corrected to say federation token.\n\nAlso removed the \"Remote server requires api_key for images\" checkbox from a friend's connection settings - it stopped doing anything as of 0.0.70 (images now always go through the token-gated image gateway, the same as video/audio), so leaving it in the UI as if it were still a real toggle was actively misleading.\n\n210 tests (unchanged - text/UI only, no behavior change).",
         "targetAbi": "10.11.0.0",
