@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.73",
-  "changelog": "Fixes uninstalling the plugin leaving Jellyfin with broken libraries. LibraryProvisioningService.RemoveAllAsync already existed specifically to remove auto-provisioned federation libraries (and detach federation media paths merged into a pre-existing user library) on uninstall - its own doc comment said so - but it was never actually called from Plugin.OnUninstalling, which only ever removed the federated items inside those libraries, not the library definitions themselves. Jellyfin's own post-uninstall cleanup then deletes this plugin's data folder - including the federation shadow folders those libraries pointed at - out from under a library definition that still referenced it, leaving a broken library pointing at a path that no longer exists. RemoveAllAsync is now actually called before that happens.\n\n210 tests (unchanged).",
+  "version": "0.0.74",
+  "changelog": "Adds a second credential tier for streaming, on top of 0.0.70's federation token. The federation token proves \"this request is from friend X\" and covers browsing/admin-ish calls - it was never meant to authorize streaming alone, and never has: DirectStream/image gateway calls already required a separate, short-lived token minted per item. That per-item token only ever knew \"this item was requested\", not which of the friend's own users was actually watching, so a per-remote-user restriction could only be enforced from a self-reported header at browse time, not at the moment streaming is actually granted.\n\nNow, the moment one of a friend's users actually starts playing something, their server registers that specific user and gets back a session token scoped to them - checked against your per-remote-user rules right then (a fully blocked user never gets a session token at all), and re-checked per item on every single stream request after that. Falls back automatically to the old per-item token for a friend still on an older version, so nothing breaks for anyone not yet updated.\n\n214 tests (up from 210).",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-20T15:00:00Z",
+  "timestamp": "2026-08-20T15:20:00Z",
   "imageUrl": "thumb.png"
 }
