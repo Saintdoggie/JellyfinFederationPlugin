@@ -87,16 +87,36 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return Enumerable.Empty<RemoteImageInfo>();
                 }
 
+                // Images used to hotlink straight to the remote's native
+                // /Items/{id}/Images/{type} endpoint, optionally with server.ApiKey
+                // appended as a raw api_key (RemoteServer.RequireApiKeyForImages).
+                // Under the federation-token model that key is no longer a real
+                // Jellyfin credential - it would just 401 for anyone with that
+                // option on, and was an unauthenticated hotlink to the friend's
+                // own native API for anyone without it. Every image now goes
+                // through the same token-gated Peer/Images gateway DirectStream
+                // already uses for video/audio: mint one short-lived,
+                // single-item-scoped token (reusing FederationPlaybackTokenService,
+                // which doesn't care what kind of media a token is used for) and
+                // reuse it across every image URL for this item, rather than
+                // minting one per image.
+                var itemId = primary.RemoteItemId.ToString();
+                var (imageToken, _) = await client.GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+                if (imageToken == null)
+                {
+                    _logger.LogWarning("[Federation] Could not obtain an image token from {ServerName} for {Name}; no images will be shown", server.Name, item.Name);
+                    return Enumerable.Empty<RemoteImageInfo>();
+                }
+
                 var images = new List<RemoteImageInfo>();
                 var baseUrl = server.Url.TrimEnd('/');
-                var itemId = primary.RemoteItemId.ToString();
-                var apiKeySuffix = server.RequireApiKeyForImages ? $"&api_key={Uri.EscapeDataString(server.ApiKey)}" : string.Empty;
+                var tokenParam = $"token={Uri.EscapeDataString(imageToken)}";
 
                 if (remoteItem.ImageTags?.ContainsKey(ImageType.Primary) == true)
                 {
                     images.Add(new RemoteImageInfo
                     {
-                        Url = $"{baseUrl}/Items/{itemId}/Images/{ImageType.Primary}?tag={remoteItem.ImageTags[ImageType.Primary]}{apiKeySuffix}",
+                        Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{ImageType.Primary}?{tokenParam}&tag={remoteItem.ImageTags[ImageType.Primary]}",
                         Type = ImageType.Primary,
                         ProviderName = Name
                     });
@@ -108,7 +128,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Items/{itemId}/Images/Backdrop/{i}?tag={remoteItem.BackdropImageTags[i]}{apiKeySuffix}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/Backdrop/{i}?{tokenParam}&tag={remoteItem.BackdropImageTags[i]}",
                             Type = ImageType.Backdrop,
                             ProviderName = Name
                         });
@@ -121,7 +141,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Items/{itemId}/Images/{imageType}?tag={remoteItem.ImageTags[imageType]}{apiKeySuffix}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{imageType}?{tokenParam}&tag={remoteItem.ImageTags[imageType]}",
                             Type = imageType,
                             ProviderName = Name
                         });
