@@ -24,6 +24,18 @@ namespace Jellyfin.Plugin.Federation.Api
     [Route("Plugins/Federation")]
     public class FederationController : ControllerBase
     {
+        /// <summary>
+        /// The first plugin version whose Peer/* endpoints accept a scoped
+        /// federation token instead of a real Jellyfin API key (see
+        /// <see cref="Services.FederationTokenAuth"/>). Used only to turn a
+        /// remote's reported plugin version into a human-readable reason in
+        /// <see cref="TestServer"/> - not part of the actual compatibility gate
+        /// itself, which is the <c>SupportsFederationToken</c> flag exchanged
+        /// live during the friend-request handshake
+        /// (see <see cref="Services.FederationFriendService"/>).
+        /// </summary>
+        private static readonly Version MinimumFederationTokenVersion = new(0, 0, 70);
+
         private readonly ILogger<FederationController> _logger;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
@@ -416,9 +428,32 @@ namespace Jellyfin.Plugin.Federation.Api
                 var (systemInfo, systemInfoError) = await client.GetSystemInfoDetailedAsync(cancellationToken).ConfigureAwait(false);
                 if (systemInfo == null)
                 {
-                    var message = systemInfoError != null
-                        ? $"Connected, but failed to get system info: {systemInfoError}"
-                        : "Connected but failed to get system info";
+                    // A friend still on a pre-federation-token plugin version has
+                    // no Peer/SystemInfo route at all - but Jellyfin's own routing
+                    // returns 401 for that (not 404, which GetSystemInfoDetailedAsync's
+                    // own reason-mapping assumed), so this looked identical to a
+                    // genuinely invalid/revoked token, confirmed live against a
+                    // real old-version friend. GetRemoteFederationPluginVersionAsync
+                    // uses a route that has existed since well before the
+                    // federation-token rewrite and works regardless of version or
+                    // token state, so it can tell the two apart here - the one
+                    // place a person setting up or diagnosing a connection
+                    // actually needs that distinction, not just success/failure.
+                    var remoteVersion = await client.GetRemoteFederationPluginVersionAsync(cancellationToken).ConfigureAwait(false);
+                    string message;
+                    if (!string.IsNullOrEmpty(remoteVersion)
+                        && Version.TryParse(remoteVersion, out var parsedVersion)
+                        && parsedVersion < MinimumFederationTokenVersion)
+                    {
+                        message = $"{server.Name} is running Federation v{remoteVersion}, which predates the federation-token security update in v{MinimumFederationTokenVersion} - both sides need to be on a compatible version to connect. Ask them to update the plugin.";
+                    }
+                    else
+                    {
+                        message = systemInfoError != null
+                            ? $"Connected, but failed to get system info: {systemInfoError}"
+                            : "Connected but failed to get system info";
+                    }
+
                     return Ok(new { success = false, message });
                 }
 
