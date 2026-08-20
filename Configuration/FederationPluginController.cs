@@ -204,6 +204,22 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
+
+                        // IssuedApiKey (the federation token this server minted for the
+                        // friend, added alongside the token-rewrite) was missing from
+                        // this list entirely - same "silently reset on every unrelated
+                        // save" class of bug this whole block exists to guard against,
+                        // except for a field where losing it is actively dangerous
+                        // rather than just annoying: once wiped, FederationTokenAuth.
+                        // ResolveCaller can never match this friend's incoming requests
+                        // again (it skips any entry with an empty IssuedApiKey), so every
+                        // Peer/* call and PlaybackToken/RegisterUserSession request they
+                        // ever make comes back 401 - indistinguishable from a genuinely
+                        // revoked/incompatible-version friend - until the whole
+                        // friendship is torn down and re-established from scratch.
+                        // Confirmed live: a single config save broke an otherwise-working
+                        // fresh handshake this same session.
+                        server.IssuedApiKey = oldServer.IssuedApiKey;
                     }
                 }
 
