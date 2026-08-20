@@ -1329,7 +1329,7 @@
                         // stuttering, which is exactly what Proxy's resumable relay exists
                         // to absorb.
                         html += '<p class="fed-hint">' + (server.StreamingMode === 1
-                            ? 'Relayed through this server, which retries dropped reads — steadier across the internet, tunnels and reverse proxies. Also keeps the remote API key server-side.'
+                            ? 'Relayed through this server, which retries dropped reads — steadier across the internet, tunnels and reverse proxies. Also keeps the remote federation token server-side.'
                             : 'The player pulls straight from the remote server. Lowest overhead on a LAN, but nothing retries a dropped read — over the internet this is what shows up as stuttering.')
                             + '</p></div>';
                         html += '<div class="fed-input-container"><label class="fed-label">Priority (lower = preferred)</label>';
@@ -1350,7 +1350,6 @@
                         html += '</div>';
                         html += '<p class="fed-muted">Only matters when this friend is Direct mode and reached over the internet (not the same local network) - direct play (the raw source file, best quality) is always used otherwise. <strong>Auto</strong> detects same-network vs. internet-only automatically and, only for a confirmed internet link, measures what it can actually sustain and caps to the largest bitrate that fits - never guesses, and stays uncapped until it has real evidence a cap is needed. <strong>Manual</strong> always caps to the fixed value below, useful to pin a known-good number. <strong>Off</strong> always streams the raw source file.</p>';
 
-                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvImgKey" data-i="' + i + '" ' + (server.RequireApiKeyForImages ? 'checked' : '') + ' /> Remote server requires api_key for images</label>';
                         html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled — sync and play from this friend</label>';
                         html += '</div></details>';
                         return html;
@@ -1445,7 +1444,6 @@
                         var ui = q('.fedSrvUser[data-i="' + i + '"]');
                         var m = q('.fedSrvMode[data-i="' + i + '"]');
                         var p = q('.fedSrvPri[data-i="' + i + '"]');
-                        var ik = q('.fedSrvImgKey[data-i="' + i + '"]');
                         var e = q('.fedSrvEnabled[data-i="' + i + '"]');
                         var wm = q('.fedSrvWanMode[data-i="' + i + '"]');
                         var wb = q('.fedSrvWanBitrate[data-i="' + i + '"]');
@@ -1455,7 +1453,6 @@
                         if (ui) { out.UserId = ui.value.trim(); }
                         if (m) { out.StreamingMode = parseInt(m.value, 10) || 0; }
                         if (p) { out.Priority = parseInt(p.value, 10) || 0; }
-                        if (ik) { out.RequireApiKeyForImages = ik.checked; }
                         if (e) { out.Enabled = e.checked; }
                         if (wm) { out.WanCapMode = parseInt(wm.value, 10) || 0; }
                         if (wb) { out.WanMaxBitrateMbps = parseInt(wb.value, 10) || 0; }
@@ -2856,7 +2853,7 @@
                                 return;
                             }
 
-                            var serverClasses = ['fedSrvName', 'fedSrvUrl', 'fedSrvUser', 'fedSrvMode', 'fedSrvPri', 'fedSrvImgKey', 'fedSrvEnabled', 'fedSrvWanMode', 'fedSrvWanBitrate', 'fedSrvWanHeight'];
+                            var serverClasses = ['fedSrvName', 'fedSrvUrl', 'fedSrvUser', 'fedSrvMode', 'fedSrvPri', 'fedSrvEnabled', 'fedSrvWanMode', 'fedSrvWanBitrate', 'fedSrvWanHeight'];
                             for (var n = 0; n < serverClasses.length; n++) {
                                 if (t.classList.contains(serverClasses[n])) {
                                     var si = parseInt(t.getAttribute('data-i') || '0', 10);
