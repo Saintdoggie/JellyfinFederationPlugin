@@ -398,18 +398,6 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> SharedLibraryFolderIds { get; set; } = new List<string>();
 
         /// <summary>
-        /// Gets or sets the id of the local, hidden, non-loginable Jellyfin user
-        /// created to enforce this friend's view of this server - its
-        /// <c>EnabledFolders</c> policy is kept in sync with
-        /// <see cref="ShareAllLibraries"/>/<see cref="SharedLibraryFolderIds"/>, and
-        /// its id is pushed to the friend so their plugin queries as this user
-        /// instead of an unrestricted one. Empty until sharing is first customized
-        /// away from "everything" - see
-        /// <see cref="Services.FederationFriendService.UpdateFriendSharingAsync"/>.
-        /// </summary>
-        public string LocalShareUserId { get; set; } = string.Empty;
-
-        /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
         /// </summary>
         public StreamingMode StreamingMode { get; set; } = StreamingMode.Direct;
@@ -470,9 +458,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// for individuals on this friend's server, narrowing what
         /// <see cref="ShareAllLibraries"/>/<see cref="SharedLibraryFolderIds"/>
         /// already exposes to them. Keyed by the friend's own local user id (fetched
-        /// via <c>GetRemoteUsers</c>, not this server's <see cref="LocalShareUserId"/>
-        /// hidden account, since every one of the friend's users shares that single
-        /// hidden account today). This is the admin-editable source of truth on this
+        /// via <c>GetRemoteUsers</c>). This is the admin-editable source of truth on this
         /// side; whenever it changes it is pushed to the friend so their plugin can
         /// enforce it against their own users - see
         /// <see cref="Services.FederationFriendService.SetRemoteUserAccessRuleAsync"/>
@@ -488,8 +474,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// configured here. Enforced locally against whichever of this server's own
         /// users is actually browsing/streaming content that originated from this
         /// friend - see <see cref="Services.RemoteAccessControlService"/>. Not
-        /// editable from this server's own admin UI (the friend owns it, same
-        /// asymmetry as <see cref="LocalShareUserId"/> vs <see cref="UserId"/>).
+        /// editable from this server's own admin UI - the friend owns it.
         /// </summary>
         public List<RemoteUserAccessRule> FriendUserAccessRules { get; set; } = new List<RemoteUserAccessRule>();
     }
@@ -537,8 +522,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
     /// <summary>
     /// One admin-configured override narrowing what a single individual login on a
-    /// friend's server (identified by <see cref="RemoteUserId"/>, not this server's
-    /// own <see cref="RemoteServer.LocalShareUserId"/> hidden account) is allowed to
+    /// friend's server (identified by <see cref="RemoteUserId"/>) is allowed to
     /// see, layered on top of that friend's existing server-level sharing scope. See
     /// <see cref="RemoteServer.RemoteUserAccessRules"/>.
     /// </summary>

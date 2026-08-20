@@ -71,9 +71,7 @@ public class FederationFriendServiceTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            _clientFactory.Object,
-            Mock.Of<IUserManager>(),
-            libraryManager.Object);
+            _clientFactory.Object);
     }
 
     public void Dispose()

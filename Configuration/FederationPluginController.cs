@@ -186,9 +186,9 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.FederationId = oldServer.FederationId;
                         server.ShareAllLibraries = oldServer.ShareAllLibraries;
                         server.SharedLibraryFolderIds = oldServer.SharedLibraryFolderIds;
-                        server.LocalShareUserId = oldServer.LocalShareUserId;
                         server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
+                        server.ExcludedItemIds = oldServer.ExcludedItemIds;
                     }
                 }
 
@@ -854,39 +854,21 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>
         /// Admin-triggered: sets which of this server's own libraries a specific
-        /// friend can see. Enforced via an existing local Jellyfin user the admin
-        /// picks, not anything the plugin polices itself - see
+        /// friend can see. Purely local state - <see cref="FederationPeerAccessService"/>
+        /// enforces it server-side on every <c>Peer/*</c> request, so there is
+        /// nothing to notify the friend of - see
         /// <see cref="FederationFriendService.UpdateFriendSharingAsync"/>.
         /// </summary>
         [HttpPost("Friends/{id}/Sharing")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> UpdateFriendSharing(string id, [FromBody] UpdateSharingBody body, CancellationToken cancellationToken)
+        public async Task<IActionResult> UpdateFriendSharing(string id, [FromBody] UpdateSharingBody body)
         {
             var (success, message) = await _friends.UpdateFriendSharingAsync(
                 id,
                 body?.ShareAll ?? true,
                 body?.FolderIds ?? new List<string>(),
-                body?.LocalUserId ?? string.Empty,
-                cancellationToken).ConfigureAwait(false);
+                body?.ExcludedItemIds ?? new List<string>()).ConfigureAwait(false);
             return Ok(new { success, message });
-        }
-
-        /// <summary>
-        /// Server-to-server: a friend we already share content with is telling us
-        /// which local user id to use when querying them from now on. Requires a
-        /// valid federation token - see <see cref="FederationTokenAuth"/>.
-        /// </summary>
-        [HttpPost("Friends/SharedUserUpdate")]
-        [AllowAnonymous]
-        public IActionResult ReceiveSharedUserUpdate([FromBody] SharedUserUpdatePayload payload)
-        {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
-            {
-                return Unauthorized();
-            }
-
-            _friends.ReceiveSharedUserUpdate(payload);
-            return Ok();
         }
 
         /// <summary>
@@ -908,8 +890,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <summary>
         /// Server-to-server: a friend telling us the complete, current list of
         /// per-remote-user overrides they've configured for our own local users.
-        /// Requires a valid federation token - same reasoning as
-        /// <see cref="ReceiveSharedUserUpdate"/>.
+        /// Requires a valid federation token - see <see cref="FederationTokenAuth"/>.
         /// </summary>
         [HttpPost("Friends/RemoteUserRules")]
         [AllowAnonymous]
@@ -984,32 +965,6 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Admin-triggered: lists this server's own local Jellyfin users, for
-        /// picking which restricted account enforces a friend's sharing scope -
-        /// see <see cref="FederationFriendService.UpdateFriendSharingAsync"/>. The
-        /// admin creates the account itself (Dashboard -> Users) so it goes
-        /// through Jellyfin's own working user-creation path.
-        /// </summary>
-        [HttpGet("LocalUsers")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult GetLocalUsers()
-        {
-            var users = new List<object>();
-            foreach (var u in EnumerateLocalUsers())
-            {
-                var t = u.GetType();
-                var id = t.GetProperty("Id")?.GetValue(u);
-                var name = t.GetProperty("Username")?.GetValue(u) as string;
-                if (id is Guid guid && name != null)
-                {
-                    users.Add(new { id = guid.ToString("N"), name });
-                }
-            }
-
-            return Ok(users);
-        }
-
-        /// <summary>
         /// Lists Jellyfin's own local users, entirely through reflection rather
         /// than a direct <c>_userManager.Users</c>/<c>GetUsers()</c> call. The
         /// member exposing this changed shape between the <c>Jellyfin.Controller</c>
@@ -1018,10 +973,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <c>GetUsers()</c> method, no property) - binding to either one directly
         /// throws <see cref="MissingMethodException"/> on whichever server doesn't
         /// have it. The element type (User) is itself defined in a versioned
-        /// assembly that differs the same way, so even a successful reflective
-        /// call is read back via reflection too (see GetLocalUsers above) rather
-        /// than cast to a compile-time type, which could throw its own
-        /// cross-version identity mismatch.
+        /// assembly that differs the same way, so every caller reads results back
+        /// through reflection too rather than casting to a compile-time type,
+        /// which could throw its own cross-version identity mismatch.
         /// </summary>
         private IEnumerable<object> EnumerateLocalUsers()
         {
@@ -2100,7 +2054,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
                 s.ShareAllLibraries,
                 s.SharedLibraryFolderIds,
-                s.LocalShareUserId
+                s.ExcludedItemIds
             };
         }
     }
@@ -2151,6 +2105,6 @@ namespace Jellyfin.Plugin.Federation.Api
 
         public List<string>? FolderIds { get; set; }
 
-        public string? LocalUserId { get; set; }
+        public List<string>? ExcludedItemIds { get; set; }
     }
 }

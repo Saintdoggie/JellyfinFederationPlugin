@@ -19,8 +19,8 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// <summary>
 /// Covers the per-remote-user access override feature: an admin narrowing what one
 /// specific individual login on a friend's server (identified by that friend's own
-/// local user id, not this server's shared <c>LocalShareUserId</c> hidden account)
-/// can see, on top of the friend's existing server-level sharing scope. Since
+/// local user id) can see, on top of the friend's existing server-level sharing
+/// scope. Since
 /// content pulled from a friend is fetched once, server-wide, under one shared
 /// hidden account, this friend has no way to tell which of *our* users is actually
 /// browsing/streaming at any moment - so enforcement has to happen on the consuming
@@ -193,7 +193,6 @@ public class FederationRemoteUserAccessPushTests : IDisposable
         var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
-        var userManager = new Mock<IUserManager>();
 
         _service = new FederationFriendService(
             NullLogger<FederationFriendService>.Instance,
@@ -201,9 +200,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            clientFactory.Object,
-            userManager.Object,
-            libraryManager.Object);
+            clientFactory.Object);
     }
 
     public void Dispose()
