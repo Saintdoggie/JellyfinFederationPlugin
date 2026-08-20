@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -59,6 +60,42 @@ public class RemoteServerClientPlaybackTests
         using var client = new RemoteServerClient(server, NullLogger.Instance);
         Assert.Contains("federation-token", GetDefaultHeaderValues(client, FederationTokenAuth.Header));
         Assert.Empty(GetDefaultHeaderValues(client, "X-Emby-Token"));
+    }
+
+    [Fact]
+    public async Task GetPlaybackTokenAsync_ForwardsLocalActingUserId_AsHeader()
+    {
+        // Without this header, the remote's IssuePlaybackToken has no way to
+        // know which of the caller's local users is actually requesting
+        // playback, so its own per-remote-user RemoteUserAccessRule check is
+        // structurally unable to restrict anyone at the moment it actually
+        // grants access - see GetPlaybackTokenAsync's own doc comment for the
+        // full story. This pins that the header is genuinely sent, not just
+        // documented.
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var userId = Guid.NewGuid().ToString("N");
+        var (token, _) = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None, localActingUserId: userId);
+
+        Assert.Equal("tok-123", token);
+        Assert.Equal("/Plugins/Federation/PlaybackToken", handler.LastRequestedPath);
+        Assert.Equal(userId, handler.LastRemoteUserIdHeader);
+    }
+
+    [Fact]
+    public async Task GetPlaybackTokenAsync_NoLocalActingUserId_SendsNoHeader()
+    {
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Null(handler.LastRemoteUserIdHeader);
     }
 
     [Fact]
@@ -201,9 +238,12 @@ public class RemoteServerClientPlaybackTests
         private readonly string _systemInfoJson;
         private readonly HttpStatusCode _systemInfoStatusCode;
 
+        private readonly string _playbackTokenJson;
+
         public string? LastRequestedPath { get; private set; }
         public string LastRequestedQuery { get; private set; } = string.Empty;
         public bool CalledAnyNativeUsersOrItemsEndpoint { get; private set; }
+        public string? LastRemoteUserIdHeader { get; private set; }
 
         public FakeHttpMessageHandler(
             string playbackJson = "{\"MediaSources\":[]}",
@@ -212,7 +252,8 @@ public class RemoteServerClientPlaybackTests
             string librariesJson = "{\"Items\":[]}",
             string usersJson = "[]",
             string systemInfoJson = "{}",
-            HttpStatusCode systemInfoStatusCode = HttpStatusCode.OK)
+            HttpStatusCode systemInfoStatusCode = HttpStatusCode.OK,
+            string playbackTokenJson = "{\"token\":\"tok-123\"}")
         {
             _playbackJson = playbackJson;
             _itemsJson = itemsJson;
@@ -221,6 +262,7 @@ public class RemoteServerClientPlaybackTests
             _usersJson = usersJson;
             _systemInfoJson = systemInfoJson;
             _systemInfoStatusCode = systemInfoStatusCode;
+            _playbackTokenJson = playbackTokenJson;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -228,11 +270,19 @@ public class RemoteServerClientPlaybackTests
             var path = request.RequestUri?.AbsolutePath ?? string.Empty;
             LastRequestedPath = path;
             LastRequestedQuery = request.RequestUri?.Query ?? string.Empty;
+            LastRemoteUserIdHeader = request.Headers.TryGetValues(RemoteServerClient.RemoteUserIdHeader, out var values)
+                ? values.FirstOrDefault()
+                : null;
 
             if (path.Equals("/Users", StringComparison.OrdinalIgnoreCase)
                 || System.Text.RegularExpressions.Regex.IsMatch(path, "^/Users/[^/]+/Items"))
             {
                 CalledAnyNativeUsersOrItemsEndpoint = true;
+            }
+
+            if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Json(_playbackTokenJson));
             }
 
             if (path.Equals("/Plugins/Federation/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase)

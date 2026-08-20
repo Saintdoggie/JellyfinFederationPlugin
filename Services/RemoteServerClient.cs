@@ -478,16 +478,46 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         /// <param name="remoteItemId">The item id on the remote server, formatted the same way callers already use elsewhere (e.g. <c>src.RemoteItemId:N</c>).</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task<(string? Token, DateTime? ExpiresUtc)> GetPlaybackTokenAsync(string remoteItemId, CancellationToken cancellationToken = default)
+        /// <param name="localActingUserId">
+        /// The local user whose own action (browsing/playback) triggered this
+        /// request, when known - attached as <see cref="RemoteUserIdHeader"/> so
+        /// the remote's <c>IssuePlaybackToken</c> can apply a per-remote-user
+        /// <see cref="RemoteUserAccessRule"/> at the moment it actually grants
+        /// access, not just when listing/browsing earlier. Without this, that
+        /// check always evaluated with no user identity at all and never
+        /// actually restricted anything at play time - the per-remote-user
+        /// re-check in <see cref="FederationStreamHandler.HandleProxyAsync"/> and
+        /// <see cref="FederationMediaSourceProvider.GetMediaSources"/> (against a
+        /// locally-cached copy of the *other* side's rule) is what has been doing
+        /// the real work; this closes the same gap on the token-minting side too.
+        /// </param>
+        /// <param name="localActingUserName">Cosmetic companion to <paramref name="localActingUserId"/>, see <see cref="RemoteUserNameHeader"/>.</param>
+        public async Task<(string? Token, DateTime? ExpiresUtc)> GetPlaybackTokenAsync(
+            string remoteItemId,
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
         {
             try
             {
-                using var content = new StringContent(
-                    JsonSerializer.Serialize(new { ItemId = remoteItemId }),
-                    System.Text.Encoding.UTF8,
-                    "application/json");
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { ItemId = remoteItemId }),
+                        System.Text.Encoding.UTF8,
+                        "application/json")
+                };
 
-                var response = await _httpClient.PostAsync("/Plugins/Federation/PlaybackToken", content, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(localActingUserId))
+                {
+                    request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+                    if (!string.IsNullOrEmpty(localActingUserName))
+                    {
+                        request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localActingUserName);
+                    }
+                }
+
+                var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning(

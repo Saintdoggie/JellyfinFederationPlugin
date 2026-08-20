@@ -76,7 +76,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// True to use the remote's audio streaming endpoint. Songs do not stream
         /// reliably from /Videos, so the caller passes through which one it wants.
         /// </param>
-        public async Task<string> BuildDirectStreamUrlAsync(string serverId, string remoteItemId, bool isAudio, CancellationToken cancellationToken)
+        /// <param name="requestingUserId">
+        /// The local user actually initiating this stream, when known - forwarded
+        /// to <see cref="RemoteServerClient.GetPlaybackTokenAsync"/> so the
+        /// remote's own per-remote-user rule about this user (if any) is checked
+        /// at the moment it mints the token, not just by this side's own earlier
+        /// (necessarily stale-tolerant) re-check against a cached copy of that
+        /// rule.
+        /// </param>
+        public async Task<string> BuildDirectStreamUrlAsync(string serverId, string remoteItemId, bool isAudio, CancellationToken cancellationToken, string? requestingUserId = null)
         {
             var server = _federationManager.GetServer(serverId);
             if (server == null)
@@ -85,7 +93,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var client = _clientFactory.GetClient(server);
-            var (token, _) = await client.GetPlaybackTokenAsync(remoteItemId, cancellationToken).ConfigureAwait(false);
+            var (token, _) = await client.GetPlaybackTokenAsync(remoteItemId, cancellationToken, requestingUserId).ConfigureAwait(false);
             if (token == null)
             {
                 throw new InvalidOperationException($"Could not obtain a playback token from {server.Name} for item {remoteItemId}.");
@@ -143,7 +151,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken).ConfigureAwait(false);
+                var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
                 await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);

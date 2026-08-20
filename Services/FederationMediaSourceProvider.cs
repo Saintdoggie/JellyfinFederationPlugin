@@ -466,7 +466,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            var (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N")).ConfigureAwait(false);
+            // Forwarded so the remote's IssuePlaybackToken can check its own
+            // per-remote-user rule about this user at the moment it actually
+            // grants access - GetMediaSources' own IsAllowed check above only
+            // ever evaluates a locally-cached copy of that rule, which can go
+            // stale between when it was last pushed and this exact request.
+            var (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: default, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
             if (token == null)
             {
                 _logger.LogWarning(
