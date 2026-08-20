@@ -1299,6 +1299,53 @@ namespace Jellyfin.Plugin.Federation.Api
             return new EmptyResult();
         }
 
+        /// <summary>
+        /// Image counterpart to <see cref="DirectStream"/>: a federated item's
+        /// images used to be hotlinked straight to a friend's native
+        /// <c>/Items/{id}/Images/{type}</c> endpoint (see
+        /// <see cref="Providers.FederationImageProvider"/>), with
+        /// <c>RemoteServer.RequireApiKeyForImages</c> optionally appending
+        /// <c>server.ApiKey</c> as a raw query-string api_key. Under the
+        /// federation-token model that key is no longer a real Jellyfin
+        /// credential at all, so that URL would just 401 for anyone with the
+        /// option on, and was an unnecessary leak for anyone without it (an
+        /// unauthenticated hotlink to a friend's own native API). Reuses the
+        /// same short-lived, single-item-scoped token
+        /// <see cref="FederationPlaybackTokenService"/> already mints for
+        /// Direct-mode video/audio - a browser &lt;img&gt; tag can't send a
+        /// custom header, so this has to be a query-string token, not
+        /// <see cref="FederationTokenAuth"/>'s header.
+        /// </summary>
+        [HttpGet("Peer/Images/{itemId}/{imageType}/{index?}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> DirectImage(
+            string itemId,
+            string imageType,
+            int? index,
+            [FromQuery] string token,
+            [FromQuery] string? tag,
+            CancellationToken cancellationToken)
+        {
+            if (!Guid.TryParse(itemId, out var itemGuid))
+            {
+                return BadRequest("Invalid item id");
+            }
+
+            if (!_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
+            var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
+            var indexSegment = index.HasValue ? $"/{index.Value}" : string.Empty;
+            var tagParam = string.IsNullOrEmpty(tag) ? string.Empty : $"&tag={Uri.EscapeDataString(tag)}";
+            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}?api_key={Uri.EscapeDataString(internalRelayKey)}{tagParam}";
+
+            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken).ConfigureAwait(false);
+            return new EmptyResult();
+        }
+
         #endregion
 
         #region Peer data (replaces a friend calling Jellyfin's own native REST API)
