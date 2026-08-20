@@ -125,6 +125,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
                 }
 
+                PruneOrphanedServerSources(mappings, config.RemoteServers ?? new List<RemoteServer>());
+
                 await RefreshWanBandwidthAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
 
                 // One-time migration: items created before 0.0.16 never had
@@ -277,6 +279,56 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 _syncLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Sweeps cache entries whose server id no longer appears in
+        /// <paramref name="remoteServers"/> at all - not merely disabled, but
+        /// entirely absent from config. Every other prune in this file only ever
+        /// runs as part of actively syncing a specific server (see
+        /// <see cref="RefreshMappingAsync"/>) or an explicit admin delete (see
+        /// <c>FederationController.DeleteServer</c>'s own call to
+        /// <see cref="FederationItemCache.PruneServerSources"/>); once a server is
+        /// removed from config by any other means, nothing ever revisits its
+        /// now-orphaned cache entries again, since the main sync loop below only
+        /// ever iterates <em>currently configured</em> servers - confirmed live as
+        /// a real bug: thousands of items from a friend removed hours earlier were
+        /// still sitting in the library because their source server was gone from
+        /// config but never gone from the cache. Reusing the existing
+        /// per-source-empty-set prune (same call <c>DeleteServer</c> already makes)
+        /// means the reconciliation pass immediately after this in
+        /// <see cref="SyncAllAsync"/> picks up the pruned cache state and deletes
+        /// the now-unbacked materialized items the same way any other stale item
+        /// already gets cleaned up - no separate deletion path needed.
+        /// </summary>
+        private void PruneOrphanedServerSources(IReadOnlyList<LibraryMapping> mappings, IReadOnlyList<RemoteServer> remoteServers)
+        {
+            var configuredServerIds = new HashSet<string>(remoteServers.Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+            var emptySeen = new HashSet<Guid>();
+
+            foreach (var mapping in mappings)
+            {
+                var orphanedServerIds = _cache.GetEntriesForMapping(mapping.LocalLibraryName)
+                    .SelectMany(e => e.GetSourcesSnapshot())
+                    .Select(s => s.ServerId)
+                    .Where(id => !string.IsNullOrEmpty(id) && !configuredServerIds.Contains(id))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var orphanedServerId in orphanedServerIds)
+                {
+                    var removed = _cache.PruneServerSources(mapping.LocalLibraryName, orphanedServerId, emptySeen);
+                    if (removed > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] Swept {Count} cache entr{Suffix} in {Name} left behind by server {ServerId}, which is no longer in config",
+                            removed,
+                            removed == 1 ? "y" : "ies",
+                            mapping.LocalLibraryName,
+                            orphanedServerId);
+                    }
+                }
             }
         }
 

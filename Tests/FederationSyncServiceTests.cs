@@ -166,6 +166,55 @@ public class FederationSyncServiceTests
         Assert.DoesNotContain(entries, e => e.ItemType == "Season");
     }
 
+    /// <summary>
+    /// Regression test for a bug confirmed live in production: every other prune
+    /// of a server's cache entries only ever runs as part of actively syncing
+    /// that specific server, or an explicit admin delete
+    /// (FederationController.DeleteServer's own call to PruneServerSources). Once
+    /// a server disappeared from config by any other means (a raw config save
+    /// that dropped a RemoteServers entry without going through DeleteServer, in
+    /// the incident this pins), its cache entries - and the materialized items
+    /// backed by them - were never revisited again: the main sync loop only ever
+    /// iterates currently-configured servers, so a fully-removed server's
+    /// leftovers just sat there forever, showing content from a friend that
+    /// wasn't even connected anymore. PruneOrphanedServerSources runs once at the
+    /// start of every SyncAllAsync specifically to catch this, regardless of how
+    /// the server disappeared.
+    /// </summary>
+    [Fact]
+    public void PruneOrphanedServerSources_RemovesEntries_ForServerNoLongerInConfig()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var lm = new Mock<ILibraryManager>();
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager);
+        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, bandwidthMonitor, new Mock<IServiceProvider>().Object);
+
+        // "gone-server" is not present in the RemoteServers list passed below - the
+        // scenario for a friend removed by any means, not just DeleteServer.
+        cache.UpsertRaw("Movies", "gone-server", Guid.NewGuid(), new MediaBrowser.Model.Dto.BaseItemDto { Name = "Orphaned Movie" }, 0, "Movie");
+        cache.UpsertRaw("Movies", "still-here", Guid.NewGuid(), new MediaBrowser.Model.Dto.BaseItemDto { Name = "Still Shared Movie" }, 0, "Movie");
+
+        var mappings = new List<LibraryMapping>
+        {
+            new LibraryMapping { LocalLibraryName = "Movies", MediaType = "Movie", Enabled = true }
+        };
+        var remoteServers = new List<RemoteServer>
+        {
+            new RemoteServer { Id = "still-here", Name = "Still Connected Friend", Enabled = true }
+        };
+
+        var method = typeof(FederationSyncService).GetMethod("PruneOrphanedServerSources", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        method!.Invoke(syncService, new object?[] { mappings, remoteServers });
+
+        var entries = cache.GetEntriesForMapping("Movies").ToList();
+        Assert.DoesNotContain(entries, e => e.Sources.Any(s => s.ServerId == "gone-server"));
+        Assert.Contains(entries, e => e.Sources.Any(s => s.ServerId == "still-here"));
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _seriesJson;

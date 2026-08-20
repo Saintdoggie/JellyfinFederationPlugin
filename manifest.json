@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.76",
+        "changelog": "Fixes federated content sticking around forever after a friend is disconnected by any means other than the admin-triggered Remove button. Every prune of a server's cached items previously only ever ran as part of actively syncing that specific server, or an explicit admin delete - once a server was gone from config some other way (confirmed live this session: a raw config save that dropped a RemoteServers entry), nothing ever revisited its now-orphaned cache entries again, since the sync loop only iterates currently-configured servers. Thousands of items from a friend removed hours earlier were still sitting in the library. Every sync now sweeps cache entries for any server id no longer in config at all before reconciling, regardless of how it disappeared - so their content actually goes away on the very next sync instead of needing a full server reset.\n\n215 tests (up from 214).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.76/Jellyfin.Federation.zip",
+        "checksum": "7cf1dc82a9c393367aa5098946c71e6d",
+        "timestamp": "2026-08-20T16:00:00Z"
+      },
+      {
         "version": "0.0.75",
         "changelog": "Fixes a critical bug that could break an otherwise-healthy friend connection from a single unrelated settings save. IssuedApiKey (the federation token this server mints for a friend during the handshake, added in 0.0.70) was missing from the config-save endpoint's preserve-on-save list - every other post-handshake field (FederationId, sharing scope, excluded items, per-user rules) was already protected there, but this one wasn't. Since the config page never receives saved tokens back from the server (by design, so they're never exposed to the browser), any general settings save sent an empty value for it - and with nothing preserving the real one, it got silently wiped. Once wiped, that friend's every request comes back 401 (\"the federation token is invalid, missing, or was revoked\") - indistinguishable from a genuinely revoked or incompatible-version friend, even though nothing was actually wrong with the connection. Confirmed live: a single config save broke a freshly-established, fully-working handshake this same session. IssuedApiKey is now preserved exactly like every other server-internal field.\n\n214 tests (unchanged).",
         "targetAbi": "10.11.0.0",
