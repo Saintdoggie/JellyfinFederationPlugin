@@ -262,6 +262,16 @@ namespace Jellyfin.Plugin.Federation.Api
                     // same class of field as the friend-request lists above.
                     config.Pools = existing.Pools;
 
+                    // This server's own real Jellyfin API key, minted once (see
+                    // FederationFriendService.GetOrCreateInternalRelayApiKeyAsync) and
+                    // used only locally, over loopback, to relay Direct-mode playback
+                    // requests. Never sent by the config page - without this, every
+                    // unrelated save wipes it back to empty, so the next relay request
+                    // treats it as never-created and mints a brand new real API key,
+                    // abandoning the old one for good. Confirmed live: three of these
+                    // orphaned in a single day of ordinary config saves.
+                    config.InternalRelayApiKey = existing.InternalRelayApiKey;
+
                     // Same class of field again: the hide list is managed exclusively
                     // through the HiddenItems/* endpoints (the item detail page's Hide
                     // chip, and Unhide in the config page's own Hidden Items section),
