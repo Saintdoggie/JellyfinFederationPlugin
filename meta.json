@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.71",
-  "changelog": "Fixes a confusing error from 0.0.70: testing a friend still on an old, pre-federation-token plugin version reported \"the federation token is invalid, missing, or was revoked\" - alarming and misleading, since it reads as this server's own connection breaking rather than what it actually is (the other side needs to update). Root cause: the version-mismatch detection this same release added to the Test button only ever ran after a successful connection, never on the failure path where it's actually needed - confirmed live against a real friend's server, which returns 401 (not 404) for a route an old plugin version simply doesn't have yet, identical to a genuinely revoked token from this client's point of view. The Test button now checks the remote's reported plugin version on failure too, and reports \"needs to update\" instead of \"token invalid\" when that's the real cause.\n\n210 tests (unchanged - this is a diagnostics-only fix, no behavior change to the token model itself).",
+  "version": "0.0.72",
+  "changelog": "Cleans up leftover \"API key\" terminology from before the federation-token rewrite, which was genuinely confusing: a couple of error messages still said \"API key is required\" when a friend's token wasn't on file yet, reading like this plugin still expected a manually-entered admin API key even though nothing in the UI has asked for one to be typed in since the rewrite - a token is only ever minted automatically during the friend-request handshake. Those messages now say so explicitly, and a stray \"keeps the remote API key server-side\" hint was corrected to say federation token.\n\nAlso removed the \"Remote server requires api_key for images\" checkbox from a friend's connection settings - it stopped doing anything as of 0.0.70 (images now always go through the token-gated image gateway, the same as video/audio), so leaving it in the UI as if it were still a real toggle was actively misleading.\n\n210 tests (unchanged - text/UI only, no behavior change).",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-20T14:10:00Z",
+  "timestamp": "2026-08-20T14:35:00Z",
   "imageUrl": "thumb.png"
 }

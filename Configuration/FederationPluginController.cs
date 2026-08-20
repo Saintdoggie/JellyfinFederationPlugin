@@ -396,8 +396,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { success = false, message = "Server URL is required" });
             }
 
-            // The config page never holds saved API keys; when testing an existing
-            // server with a blank key, fall back to the stored one.
+            // The config page never holds saved federation tokens; when testing
+            // an existing server with a blank one, fall back to the stored one.
             if (string.IsNullOrEmpty(server.ApiKey) && !string.IsNullOrEmpty(server.Id))
             {
                 var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
@@ -409,7 +409,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
             if (string.IsNullOrWhiteSpace(server.ApiKey))
             {
-                return BadRequest(new { success = false, message = "API key is required" });
+                // Never something an admin types in - a federation token is only
+                // ever minted automatically during the friend-request handshake.
+                // Reaching this means the handshake for this entry never actually
+                // completed (or its token was since revoked) - send/accept a
+                // friend request rather than editing this field by hand.
+                return BadRequest(new { success = false, message = "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically." });
             }
 
             if (!ConfigValidator.IsValidServerUrl(server.Url))
@@ -523,7 +528,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
             if (string.IsNullOrWhiteSpace(server.ApiKey))
             {
-                return BadRequest(new { success = false, message = "API key is required" });
+                return BadRequest(new { success = false, message = "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically." });
             }
 
             if (!ConfigValidator.IsValidServerUrl(server.Url))
