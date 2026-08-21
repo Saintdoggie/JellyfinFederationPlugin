@@ -30,11 +30,11 @@
     style.id = STYLE_ID;
     // Presentation matches jellyfin-web's own detail-page vocabulary rather
     // than drawing custom chrome: the source tag renders like one more muted
-    // entry in the itemMiscInfo line (year / runtime / resolution), and the
-    // Download / Hide controls are emby-button flat buttons appended to the
-    // native .mainDetailButtons row, so their shape, font, focus and hover
-    // states are the web client's own. The only rules here are the minimum
-    // needed to line an icon up with its label inside those buttons.
+    // entry in the itemMiscInfo line (year / runtime / resolution), and
+    // Download / Hide are entries in the native "..." action sheet, built
+    // from the exact same markup/classes jellyfin-web uses for its own
+    // entries (Refresh metadata, Delete, ...) so they're indistinguishable
+    // in shape, font, and hover/focus state.
     style.textContent = [
       // Corner overlay for gallery/grid cards. Top-left, since Jellyfin's own
       // played-checkmark and unwatched-count badges (which use the theme
@@ -67,14 +67,11 @@
       '.federation-source-tag{display:inline-flex;align-items:center;gap:.3em;opacity:.7;margin-left:.5em;vertical-align:middle;}',
       '.federation-source-tag svg{width:1em;height:1em;flex-shrink:0;}',
 
-      // Detail-page action buttons. Everything visual comes from
-      // emby-button/button-flat; these rules only put the material icon and
-      // the label on one centered line inside the button, and dim a disabled
-      // (busy/done) state the way the web client dims its own buttons.
-      '.federation-detail-btn{display:inline-flex;align-items:center;justify-content:center;gap:.35em;}',
-      '.federation-detail-btn .material-icons{font-size:1.35em;line-height:1;}',
-      '.federation-detail-btn[data-fed-state="busy"]{opacity:.65;}',
-      '.federation-detail-btn[data-fed-state="done"]{opacity:.65;pointer-events:none;}'
+      // Download/Hide entries injected into the native "..." action sheet
+      // (.actionSheetMenuItem) - no rules of our own needed beyond a disabled
+      // look while busy, since every other visual (icon, label, hover, focus)
+      // already comes from that class.
+      '.federation-actionsheet-item[data-fed-state="busy"]{opacity:.65;pointer-events:none;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -404,10 +401,14 @@
             return;
           }
 
-          // The button only exists while this exact item's detail page is
-          // still open - re-find it each tick rather than trusting the
-          // reference passed in, since badgeDetailPage() may have rebuilt it.
-          var liveButton = button || findDetailButton(itemId);
+          // The button only exists for as long as the "..." action sheet it
+          // was clicked from stays open (the sheet closes itself right after
+          // any click inside it) - null once that's gone, same as the
+          // resumeActiveDownloads() case, which never had a button to begin
+          // with. setButtonState() and the two callers below already guard
+          // against a null button; the poll keeps running regardless, since
+          // updateDetailPageRing() below is what actually shows progress.
+          var liveButton = button;
 
           if (!data.isComplete) {
             var pct = Math.round(data.percentComplete || 0);
@@ -564,43 +565,23 @@
   //   - The source server renders as a muted entry appended to the page's own
   //     itemMiscInfo line (the "2023 - TV-MA - 1080p" row), with the cloud
   //     glyph - same visual weight as the metadata around it, not a chip.
-  //   - Download and Hide render as emby-button flat buttons appended to the
-  //     page's own .mainDetailButtons row (beside Play etc.), so every visual
-  //     aspect of them is the web client's native button styling. Material
-  //     icon font spans match what those buttons use natively.
+  //   - Download and Hide are entries in the native "..." action sheet
+  //     (jellyfin-web's own more-commands menu: Refresh metadata, Delete,
+  //     ...), built from that menu's own .actionSheetMenuItem markup so they
+  //     read as two more native commands rather than custom chrome.
   // -------------------------------------------------------------------------
 
   function setButtonState(button, state, label, title) {
+    if (!button) {
+      return;
+    }
+
     button.setAttribute('data-fed-state', state);
     button.title = title || '';
     var text = button.querySelector('.federation-btn-label');
     if (text) {
       text.textContent = label;
     }
-  }
-
-  function findDetailButton(itemId) {
-    return document.querySelector('.federation-detail-btn[data-fed-item="' + itemId + '"]');
-  }
-
-  function makeDetailButton(itemId, iconName, label, title, onClick) {
-    var button = document.createElement('button', { is: 'emby-button' });
-    button.setAttribute('is', 'emby-button');
-    button.className = 'button-flat federation-detail-btn';
-    button.type = 'button';
-    button.title = title;
-    button.setAttribute('data-fed-item', itemId);
-    button.setAttribute('data-fed-state', 'idle');
-    button.innerHTML =
-      '<span class="material-icons" aria-hidden="true">' + iconName + '</span>' +
-      '<span class="federation-btn-label">' + label + '</span>';
-    button.addEventListener('click', function () {
-      var state = this.getAttribute('data-fed-state');
-      if (state === 'idle' || state === 'error') {
-        onClick(this);
-      }
-    });
-    return button;
   }
 
   function injectSourceTag(rawId, srv) {
@@ -628,88 +609,118 @@
     info.appendChild(tag);
   }
 
-  function injectDetailButtons(rawId) {
-    // Already injected for this item (badgeDetailPage re-runs on every scan).
-    if (findDetailButton(rawId)) {
-      return null;
-    }
+  // Builds one entry for jellyfin-web's own "..." action sheet, matching the
+  // exact markup its actionsheet component renders for its own commands
+  // (Refresh metadata, Delete, ...) - see actionSheetMenuItem/listItemBody/
+  // listItemBodyText in jellyfin-web's bundled actionsheet component. The
+  // sheet's own delegated click handler (bound on the sheet root, not on each
+  // item) walks up to the nearest .actionSheetMenuItem on any click inside it
+  // and closes the sheet right after - so this listener only has to run the
+  // command; closing is already handled for us.
+  function makeActionSheetItem(iconName, label, dataId, onClick) {
+    var button = document.createElement('button');
+    button.setAttribute('is', 'emby-button');
+    button.type = 'button';
+    button.className = 'listItem listItem-button actionSheetMenuItem federation-actionsheet-item';
+    button.setAttribute('data-id', dataId);
+    button.innerHTML =
+      '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons ' + iconName + '" aria-hidden="true"></span>' +
+      '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText federation-btn-label"></div></div>';
+    button.querySelector('.federation-btn-label').textContent = label;
+    button.addEventListener('click', function () { onClick(button); });
+    return button;
+  }
 
-    // Buttons live in the page's own action row when it exists; otherwise a
-    // minimal flex row right below the title keeps the same flat-button
-    // markup so it still reads native.
-    var host = document.querySelector('.mainDetailButtons') || document.querySelector('.detailButtons');
-    var createdRow = null;
-    if (!host) {
-      var nameContainer = document.querySelector('.nameContainer, .itemName-primary, .detailPagePrimaryContainer h1');
-      if (!nameContainer) {
-        return null;
+  // Waits for the actionsheet the "..." button just opened to render (there's
+  // no synchronous hook: jellyfin-web looks up the item and the current
+  // user's permissions, itself async, before calling into the actionsheet
+  // module), then adds Download/Hide to the top of it. Guards against
+  // double-injecting into the same open sheet since the more-commands click
+  // handler and this can both run more than once in edge cases.
+  function injectActionSheetItems(rawId) {
+    var attempts = 0;
+    function tryInject() {
+      var scroller = document.querySelector('.actionSheetScroller');
+      if (!scroller) {
+        attempts++;
+        if (attempts < 20) {
+          requestAnimationFrame(tryInject);
+        }
+
+        return;
       }
 
-      createdRow = document.createElement('div');
-      createdRow.className = 'mainDetailButtons federation-detail-row';
-      createdRow.style.display = 'flex';
-      createdRow.style.flexWrap = 'wrap';
-      createdRow.style.gap = '0';
-      createdRow.style.margin = '0.6em 0 0';
-      nameContainer.insertAdjacentElement('afterend', createdRow);
-      host = createdRow;
+      if (scroller.querySelector('.federation-actionsheet-item')) {
+        return;
+      }
+
+      var active = loadActiveDownloads()[rawId];
+      var downloadItem = makeActionSheetItem(
+        active ? 'cloud_off' : 'cloud_download',
+        active ? 'Cancel download' : 'Download',
+        'federation-download',
+        function (btn) {
+          if (active) {
+            cancelDownload(btn);
+          } else {
+            startDownload(btn, rawId);
+          }
+        });
+      if (active) {
+        downloadItem.setAttribute('data-operation-id', active.operationId);
+      }
+
+      var hideItem = makeActionSheetItem(
+        'visibility_off',
+        'Hide',
+        'federation-hide',
+        function (btn) { startHide(btn, rawId); });
+
+      scroller.insertBefore(hideItem, scroller.firstChild);
+      scroller.insertBefore(downloadItem, scroller.firstChild);
     }
 
-    var downloadButton = makeDetailButton(
-      rawId,
-      'cloud_download',
-      'Download',
-      'Save a local copy on this server',
-      function (btn) { startDownload(btn, rawId); });
+    requestAnimationFrame(tryInject);
+  }
 
-    // Clicking mid-download cancels: state handling routes through the same
-    // data-fed-state attribute the idle/error path checks.
-    downloadButton.addEventListener('click', function () {
-      if (this.getAttribute('data-fed-state') === 'busy') {
-        cancelDownload(this);
+  // jellyfin-web reuses the same itemDetails view instance (and so the same
+  // .btnMoreCommands element) across navigations between different items'
+  // detail pages, rather than recreating it per item - so the click listener
+  // below is bound exactly once and must read the CURRENT item id at click
+  // time, never one captured in its own closure, or the menu would keep
+  // acting on whichever federated item's page happened to bind it first.
+  var currentFederatedItemId = null;
+
+  function bindMoreCommandsMenu() {
+    var btn = document.querySelector('.btnMoreCommands');
+    if (!btn || btn.dataset.federationBound) {
+      return;
+    }
+
+    btn.dataset.federationBound = 'true';
+    btn.addEventListener('click', function () {
+      if (currentFederatedItemId) {
+        injectActionSheetItems(currentFederatedItemId);
       }
     });
-
-    var hideButton = makeDetailButton(
-      rawId,
-      'visibility_off',
-      'Hide',
-      'Hide this item from your local library (does not affect the friend sharing it)',
-      function (btn) { startHide(btn, rawId); });
-
-    host.appendChild(downloadButton);
-    host.appendChild(hideButton);
-    return { downloadButton: downloadButton, hideButton: hideButton };
   }
 
   function badgeDetailPage() {
     var match = location.href.match(/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i);
-    if (!match) {
+    var rawId = match ? match[0] : null;
+    var id = rawId ? normalizeId(rawId) : null;
+
+    if (!id || !federatedIds.has(id)) {
+      // Leaving a federated item's detail page (or never on one) - clear
+      // this so a stale id can't leak into the next click on a page whose
+      // item isn't federated at all.
+      currentFederatedItemId = null;
       return;
     }
 
-    var rawId = match[0];
-    var id = normalizeId(rawId);
-    if (!federatedIds.has(id)) {
-      return;
-    }
-
+    currentFederatedItemId = rawId;
     injectSourceTag(rawId, federatedIds.get(id));
-    var buttons = injectDetailButtons(rawId);
-    if (!buttons) {
-      return;
-    }
-
-    var downloadButton = buttons.downloadButton;
-
-    // Already downloading (survives a refresh) - reflect that instead of
-    // showing an idle button someone could click a second time.
-    var active = loadActiveDownloads()[rawId];
-    if (active) {
-      setButtonState(downloadButton, 'busy', 'Downloading', 'Click to cancel');
-      downloadButton.setAttribute('data-operation-id', active.operationId);
-      pollDownloadProgress(rawId, active.operationId, downloadButton);
-    }
+    bindMoreCommandsMenu();
   }
 
   // Only real poster cards. "[data-id]" alone also matches the action buttons

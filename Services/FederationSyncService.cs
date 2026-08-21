@@ -181,6 +181,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 // null-Path/Placeholder condition that hid their Play button forever.
                 var needsPlaceholderPathMigration = !config.MigratedPlaceholderPathV10;
 
+                // V11 rebuilds every streamable federated item so it picks up the
+                // remote's real container instead of a stale "mp4" forced by an
+                // older version of MaterializeItem (see MigratedContainerV11) - a
+                // wrong container makes Jellyfin's transcoder demux the wrong
+                // format entirely, which fails almost instantly and is why
+                // federated playback was looping forever on some items.
+                var needsContainerMigration = !config.MigratedContainerV11;
+
                 int totalItems = 0;
                 int failedSources = 0;
                 for (int i = 0; i < mappings.Count; i++)
@@ -198,7 +206,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration || needsContainerMigration).ConfigureAwait(false);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -238,9 +246,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogInformation("[Federation] One-time WAN-capped Placeholder-path migration complete");
                 }
 
+                if (needsContainerMigration)
+                {
+                    config.MigratedContainerV11 = true;
+                    _logger.LogInformation("[Federation] One-time container-fix (real remote container, not a stale forced \"mp4\") migration complete");
+                }
+
                 if (needsNestedMigration || needsSeasonIndexMigration || needsRemoteLocationMigration
                     || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration
-                    || needsPlaceholderPathMigration)
+                    || needsPlaceholderPathMigration || needsContainerMigration)
                 {
                     Plugin.Instance?.SaveConfiguration();
                 }
@@ -374,6 +388,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var needsStockTypeMigration = !config!.MigratedStockTypesV8;
                 var needsRemoveShortcutMigration = !config!.MigratedRemoveShortcutV9;
                 var needsPlaceholderPathMigration = !config!.MigratedPlaceholderPathV10;
+                var needsContainerMigration = !config!.MigratedContainerV11;
 
                 int total = 0;
                 int failedSources = 0;
@@ -388,7 +403,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         cancellationToken,
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
-                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration).ConfigureAwait(false);
+                        forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration || needsContainerMigration).ConfigureAwait(false);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);

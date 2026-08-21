@@ -255,6 +255,27 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool MigratedPlaceholderPathV10 { get; set; }
 
         /// <summary>
+        /// One-time migration: rebuilds every streamable federated item so it picks
+        /// up the remote's real container (see
+        /// <see cref="Services.FederationLibraryManager.MaterializeItem"/>, which now
+        /// always sets item.Container from the synced metadata). An older version
+        /// of that method forced item.Container = "mp4" for the WAN-capped
+        /// Direct-mode transcode URL regardless of the file's actual container - a
+        /// leftover from when that internal-only capped URL was (wrongly) treated as
+        /// client-facing. Every item persisted under that version keeps its wrong
+        /// "mp4" container forever, because reconciliation only creates and deletes
+        /// items, never updates them in place (same as V4-V10) - and a wrong
+        /// container is not a cosmetic mismatch: Jellyfin's transcoder forces ffmpeg
+        /// to demux the input as the item's stored container (e.g. "-f mp4" on what
+        /// is actually a Matroska file), which fails almost instantly (FFmpeg exit
+        /// code 183) and loops forever as the client keeps retrying playback -
+        /// confirmed live via a real container's ffmpeg logs and a direct SQLite
+        /// check of a stuck item's persisted Container. Item ids are unchanged;
+        /// local watch progress on rebuilt items is reset, as with prior rebuilds.
+        /// </summary>
+        public bool MigratedContainerV11 { get; set; }
+
+        /// <summary>
         /// Gets or sets the multi-server pools this server belongs to (owns or has
         /// joined). See <see cref="Services.FederationFriendService"/> for how a pool
         /// invite rides the same friend-request handshake as a direct friendship.
