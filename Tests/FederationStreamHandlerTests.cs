@@ -208,6 +208,61 @@ public class FederationStreamHandlerTests : IDisposable
         Assert.Equal(remoteBytes.Length, body.Length);
     }
 
+    [Fact]
+    public async Task RemoteRejectsCachedItemToken_RetryUsesFreshlyMintedToken()
+    {
+        // Companion to the test above, pinning the item-scoped token cache half
+        // of the recovery: the rejected token must actually be dropped from
+        // RemoteServerClient's cache, so the retry relay carries a DIFFERENT
+        // (freshly minted) token - not the cached dead one pulled straight back
+        // out. Without InvalidateItemPlaybackToken in the 401/403 path, the
+        // second relay would re-send "tok-stale", get 403 again, and playback
+        // would stay broken for the cache TTL after every remote restart.
+        var remoteBytes = Encoding.UTF8.GetBytes("recovered with fresh token");
+        var relayTokens = new System.Collections.Generic.List<string?>();
+
+        var mintCount = 0;
+        var tokenClient = new RemoteServerClient(
+            new RemoteServer { Id = "serverA", Url = "http://friend.example:8096", ApiKey = "federation-token" },
+            NullLogger.Instance,
+            new HttpClient(new FakeHandler(_ => Json("{\"token\":\"tok-stale-" + (++mintCount == 1 ? "1" : "2") + "\"}"))) { BaseAddress = new Uri("http://friend.example:8096") });
+        var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
+
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var federationManager = new FederationLibraryManager(
+            Moq.Mock.Of<MediaBrowser.Controller.Library.ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Moq.Mock.Of<IRemoteServerClientFactory>(),
+            cache,
+            new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Moq.Mock.Of<IRemoteServerClientFactory>()),
+            Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+
+        var handlerWithFreshClient = new FederationStreamHandler(
+            NullLogger<FederationStreamHandler>.Instance,
+            federationManager,
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance),
+            clientFactory.Object);
+
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            relayTokens.Add(System.Web.HttpUtility.ParseQueryString(req.RequestUri!.Query)["token"]);
+            return relayTokens.Count == 1
+                ? new HttpResponseMessage(HttpStatusCode.Forbidden)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(remoteBytes) };
+        }));
+
+        var (request, response, body) = MakeContext(null);
+
+        await handlerWithFreshClient.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, relayTokens.Count);
+        Assert.Equal("tok-stale-1", relayTokens[0]);
+        Assert.Equal("tok-stale-2", relayTokens[1]);
+        Assert.Equal(2, mintCount);
+        Assert.Equal(remoteBytes.Length, body.Length);
+    }
+
     private sealed class SpyRequestLifetimeFeature : IHttpRequestLifetimeFeature
     {
         public bool AbortCalled { get; private set; }

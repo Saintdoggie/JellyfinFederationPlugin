@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.81",
+        "changelog": "Fixes federated playback repeatedly failing during transcoding, and cuts playback-start latency. Root cause: item-scoped playback tokens were re-minted over a WAN round trip on every relay request - and a transcoded federated mp4 re-opens its input stream several times per second while ffmpeg probes/seeks, so each re-open paid two WAN round trips (token mint + range fetch). On a ~300ms remote that starved ffmpeg's input until it exited with code 183 and the player retried, forever. Tokens are now cached per server/item/user (dropped eagerly when the remote rejects one, so a remote restart still recovers on the very next request), and the remote PlaybackInfo cache went from 5 to 15 minutes. The injected web-client UI was also reworked to match jellyfin-web's own styling: the source server now renders as a muted entry in the item info line and Download/Hide are native flat buttons in the detail page's own action row, replacing the custom uppercase pill chips. 223 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.81/Jellyfin.Federation.zip",
+        "checksum": "7c352bda02cef8bb356a97dcc7153317",
+        "timestamp": "2026-08-21T03:00:00Z"
+      },
+      {
         "version": "0.0.80",
         "changelog": "Fixes the plugin reporting itself as v0.0.77 in the Jellyfin dashboard regardless of which version was actually installed. Root cause: the csproj's AssemblyVersion/FileVersion were left at 0.0.77 for the 0.0.78 and 0.0.79 releases - Jellyfin reads a plugin's displayed version from the compiled assembly, not from meta.json, so both releases shipped correct manifest metadata around a DLL that still self-identified as 0.0.77 internally. No functional change; this release only corrects the version stamp embedded in the build.\n\n220 tests.",
         "targetAbi": "10.11.0.0",

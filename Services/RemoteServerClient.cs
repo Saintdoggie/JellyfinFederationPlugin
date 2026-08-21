@@ -27,16 +27,15 @@ namespace Jellyfin.Plugin.Federation.Services
         // play of a federated item calls GetPlaybackInfoAsync, which is a live HTTP
         // round trip to the remote (plus the remote's own internal loopback hop to
         // its native PlaybackInfo endpoint - see Peer/PlaybackInfo on the receiving
-        // side). The 15s TTL this used to have meant nearly every press of "play"
-        // paid that full WAN round trip again, even though the container/codec/
-        // stream metadata it returns only changes when the remote rescans its
-        // library. Five minutes removes that round trip from the common case
-        // (browse-then-play, resume, player re-requesting PlaybackInfo seconds
-        // apart, seeking back into the same session) while staying short enough
-        // that a remote-side library rescan or sharing-scope change is picked up
-        // within minutes.
+        // side). A short TTL meant nearly every press of "play" paid that full WAN
+        // round trip again, even though the container/codec/stream metadata it
+        // returns only changes when the remote rescans its library. Fifteen
+        // minutes removes that round trip from the common case (browse-then-play,
+        // resume, player re-requesting PlaybackInfo seconds apart, seeking back
+        // into the same session) while staying short enough that a remote-side
+        // library rescan or sharing-scope change is picked up within minutes.
         private static readonly ConcurrentDictionary<string, (DateTime Expires, PlaybackInfoResponse Response)> PlaybackInfoCache = new();
-        private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromMinutes(15);
 
         // Same rationale as PlaybackInfoCache above (a client is constructed per
         // call, so this has to be static to survive between them). Keeps one sync
@@ -63,6 +62,30 @@ namespace Jellyfin.Plugin.Federation.Services
         // picks the faster path again within the hour.
         private static readonly ConcurrentDictionary<string, DateTime> SessionEndpointUnsupportedCache = new();
         private static readonly TimeSpan SessionEndpointUnsupportedTtl = TimeSpan.FromHours(1);
+
+        // Item-scoped playback tokens (see FederationPlaybackTokenService on the
+        // remote): minted once per (server, item, acting user) and honored by the
+        // remote for ~24 hours, but previously re-minted via a full WAN round trip
+        // on EVERY relay request. That cost once per play at worst in Direct-mode
+        // PlaybackInfo, but the local proxy gateway (the stamped static item.Path
+        // and therefore this server's own transcoder input URL) carries no
+        // requestingUserId - so the ffmpeg-driven seek/probe storm against a
+        // federated mp4 re-opened the input ~3x/second, paying a token-mint POST
+        // plus a range GET (two WAN round trips) per re-open. On a ~300ms-RTT
+        // remote that starved ffmpeg's input until it died with exit code 183 -
+        // "playback keeps failing". The token never leaves this server in that
+        // path, so caching it is as safe as the session-token cache above. Keyed
+        // including the acting user id because the remote applies its
+        // per-remote-user access rules at MINT time: a token minted under user
+        // A's rule check must not silently authorize user B.
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, string Token)> ItemPlaybackTokenCache = new();
+
+        // How much earlier than the remote's stated expiry a cached item token is
+        // dropped, so a token about to expire is never handed out only to fail
+        // moments later. Tokens without a usable expiry get a conservative
+        // default window.
+        private static readonly TimeSpan ItemTokenExpirySkew = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan ItemTokenDefaultTtl = TimeSpan.FromMinutes(30);
 
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
@@ -526,6 +549,16 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
+                // Cache check first - see ItemPlaybackTokenCache's doc comment for
+                // why this is the single biggest playback-start/throughput win for
+                // proxied federated streams (one mint per item per ~half hour
+                // instead of one per relay request, i.e. per player seek).
+                var cacheKey = $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}";
+                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+                {
+                    return (cached.Token, null);
+                }
+
                 using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
                 {
                     Content = new StringContent(
@@ -561,6 +594,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (null, null);
                 }
 
+                // Expire the cached entry a little before the remote's own expiry
+                // for the token (24h when stated); fall back to a conservative
+                // default when the remote didn't say. Rejected tokens are dropped
+                // eagerly by InvalidateItemPlaybackToken from the relay's 401/403
+                // recovery path, so a stale entry never outlives its first real
+                // failure.
+                var cachedUntil = result.ExpiresUtc.HasValue
+                    ? result.ExpiresUtc.Value - ItemTokenExpirySkew
+                    : DateTime.UtcNow + ItemTokenDefaultTtl;
+                if (cachedUntil <= DateTime.UtcNow)
+                {
+                    cachedUntil = DateTime.UtcNow + ItemTokenDefaultTtl;
+                }
+
+                ItemPlaybackTokenCache[cacheKey] = (cachedUntil, result.Token);
                 return (result.Token, result.ExpiresUtc);
             }
             catch (Exception ex)
@@ -662,6 +710,24 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Drops the cached item-scoped playback token for the given server+item
+        /// (+acting user, matching <see cref="GetPlaybackTokenAsync"/>'s cache key)
+        /// so the next call re-mints. Called from the relay's 401/403 recovery
+        /// path alongside <see cref="InvalidateUserSessionToken"/> - a cached item
+        /// token the remote just rejected (remote restart, unfriend mid-session)
+        /// must never be re-served by the retry.
+        /// </summary>
+        public static void InvalidateItemPlaybackToken(string serverId, string remoteItemId, string? localUserId)
+        {
+            if (string.IsNullOrEmpty(serverId) || string.IsNullOrEmpty(remoteItemId))
+            {
+                return;
+            }
+
+            ItemPlaybackTokenCache.TryRemove($"{serverId}:{remoteItemId}:{localUserId ?? string.Empty}", out _);
+        }
+
+        /// <summary>
         /// Drops every static cache entry keyed to a server id (playback info,
         /// peer status, session tokens, capability probes). Called when the server
         /// is removed from configuration so removal - and any later re-friend with
@@ -683,6 +749,11 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var key in UserSessionTokenCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
             {
                 UserSessionTokenCache.TryRemove(key, out _);
+            }
+
+            foreach (var key in ItemPlaybackTokenCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                ItemPlaybackTokenCache.TryRemove(key, out _);
             }
 
             PeerStatusCache.TryRemove(serverId, out _);

@@ -21,30 +21,6 @@
     '<path d="M6.5 19h11a4.5 4.5 0 0 0 .5-8.97 6 6 0 0 0-11.66-1.5A3.75 3.75 0 0 0 6.5 19z"></path>' +
     '</svg>';
 
-  // Small icon inline with text, used only on the detail page (a fixed,
-  // always-visible spot, unlike a gallery card that may be scrolled past in
-  // a fraction of a second with its text never even shown).
-  var INLINE_ICON_HTML = '<span class="federation-badge-icon">' + ICON_SVG + '</span>';
-
-  var DOWNLOAD_ICON_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
-    '<path d="M12 4v11"></path>' +
-    '<path d="M7 11l5 5 5-5"></path>' +
-    '<path d="M5 20h14"></path>' +
-    '</svg>';
-
-  // Eye-with-a-slash: the standard "hide this" glyph, distinct enough from the
-  // cloud (source) and download-tray (save-a-copy) icons beside it that all
-  // three read as different actions at a glance.
-  var HIDE_ICON_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
-    '<path d="M3 12s3.6-7 9-7c1.7 0 3.2.5 4.5 1.3M21 12s-3.6 7-9 7c-1.7 0-3.2-.5-4.5-1.3"></path>' +
-    '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>' +
-    '<path d="M3 3l18 18"></path>' +
-    '</svg>';
-
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) {
       return;
@@ -52,28 +28,14 @@
 
     var style = document.createElement('style');
     style.id = STYLE_ID;
-    // Whole visual language reworked (0.0.64):
-    //   - font-size on the action pills was .5em relative to the surrounding
-    //     H1, which came out at about 10 px on a 20 px title - tiny, cramped,
-    //     and the reason the row read as "willy nilly" additions to the page
-    //     rather than part of it. Fixed to a real pixel size like every other
-    //     Jellyfin control.
-    //   - Chips now use Jellyfin's own theme variables (--theme-primary-color,
-    //     etc.) with sensible fallbacks, so they inherit whatever theme the
-    //     user is running instead of being a hard-coded blue/brown/red palette
-    //     that clashes with everything but the default dark theme.
-    //   - Neutral outlined chips for source-name and Hide (this is metadata,
-    //     not a call to action); a filled accent chip only for Download, which
-    //     is the actual action on the row.
-    //   - Corner badge: solid disc using the theme accent color, so the
-    //     "federated" mark reads at a glance even on a light-background poster
-    //     that swallowed the previous translucent-black disc.
+    // Presentation matches jellyfin-web's own detail-page vocabulary rather
+    // than drawing custom chrome: the source tag renders like one more muted
+    // entry in the itemMiscInfo line (year / runtime / resolution), and the
+    // Download / Hide controls are emby-button flat buttons appended to the
+    // native .mainDetailButtons row, so their shape, font, focus and hover
+    // states are the web client's own. The only rules here are the minimum
+    // needed to line an icon up with its label inside those buttons.
     style.textContent = [
-      // Inline icon next to text - sizes off the surrounding font-size so
-      // it stays proportional whatever container it lands in.
-      '.federation-badge-icon{display:inline-flex;width:1em;height:1em;margin-right:.3em;flex-shrink:0;align-items:center;justify-content:center;}',
-      '.federation-badge-icon svg{width:100%;height:100%;display:block;}',
-
       // Corner overlay for gallery/grid cards. Top-left, since Jellyfin's own
       // played-checkmark and unwatched-count badges (which use the theme
       // accent color) live top-right/bottom-right. Deliberately NOT the theme
@@ -98,52 +60,21 @@
       '.federation-ring-fg{fill:none;stroke:var(--theme-primary-color,#00a4dc);stroke-width:3;stroke-linecap:round;}',
       '.federation-ring-text{fill:#fff;font-size:9px;font-weight:700;font-family:inherit;}',
 
-      // Row of chips sits below the title. Fixed pixel font-size instead of
-      // .5em: the previous relative sizing shrank against big H1 titles into
-      // something that looked pasted on. gap is a bit larger so chips aren't
-      // touching each other.
-      '.federation-badge-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 14px;font-size:12px;line-height:1;}',
+      // Source tag in the detail page's itemMiscInfo line: same muted text
+      // treatment as the year/runtime entries around it - no border, no fill,
+      // no uppercase. Inline svg sized off the surrounding font so it stays
+      // proportional.
+      '.federation-source-tag{display:inline-flex;align-items:center;gap:.3em;opacity:.7;margin-left:.5em;vertical-align:middle;}',
+      '.federation-source-tag svg{width:1em;height:1em;flex-shrink:0;}',
 
-      // Shared chip shape. Neutral outlined by default - reads as metadata,
-      // not a shouty call to action. Individual chip classes below tint it.
-      '.federation-badge-row > span{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;',
-      'padding:6px 12px;border-radius:999px;font-weight:600;letter-spacing:.03em;',
-      'text-transform:uppercase;white-space:nowrap;',
-      'background:rgba(255,255,255,.06);color:inherit;border:1px solid rgba(255,255,255,.16);',
-      'transition:background-color .15s ease,border-color .15s ease;}',
-
-      // Source pill - names the server. Slightly more prominent than pure
-      // outlined so it reads as the first thing in the row, but not clickable
-      // colored so nobody tries to press it. Uses the theme accent for its
-      // border/icon tint.
-      '.federation-badge-pill{color:var(--theme-primary-color,#00a4dc);',
-      'border-color:color-mix(in srgb,var(--theme-primary-color,#00a4dc) 45%,transparent) !important;',
-      'background:color-mix(in srgb,var(--theme-primary-color,#00a4dc) 10%,transparent) !important;}',
-
-      // Download - the one action chip on the row, filled in the theme accent
-      // so it visually invites a click.
-      '.federation-badge-download{cursor:pointer;color:#fff !important;',
-      'background:var(--theme-primary-color,#00a4dc) !important;border-color:transparent !important;}',
-      '.federation-badge-download:hover{filter:brightness(1.1);}',
-      '.federation-badge-download[data-state="busy"]{cursor:default;opacity:.85;}',
-      '.federation-badge-download[data-state="done"]{background:#2e8b57 !important;cursor:default;}',
-      '.federation-badge-download[data-state="error"]{background:#a83232 !important;}',
-
-      // Hide - the metadata-y neutral outlined chip, no fill, no accent -
-      // matches the default styling above.
-      '.federation-badge-hide{cursor:pointer;}',
-      '.federation-badge-hide:hover{background:rgba(255,255,255,.12) !important;border-color:rgba(255,255,255,.28) !important;}',
-      '.federation-badge-hide[data-state="busy"]{cursor:default;opacity:.85;}',
-      '.federation-badge-hide[data-state="done"]{background:#2e8b57 !important;border-color:transparent !important;color:#fff !important;cursor:default;}',
-      '.federation-badge-hide[data-state="error"]{background:#a83232 !important;border-color:transparent !important;color:#fff !important;}',
-
-      // Light-theme override - the outlined-on-transparent look above assumes
-      // a dark page background. Under Jellyfin's built-in light theme the
-      // white-alpha border/background disappear against a white page.
-      '@media (prefers-color-scheme:light){',
-      '.federation-badge-row > span{background:rgba(0,0,0,.04);border-color:rgba(0,0,0,.14);}',
-      '.federation-badge-hide:hover{background:rgba(0,0,0,.08) !important;border-color:rgba(0,0,0,.24) !important;}',
-      '}'
+      // Detail-page action buttons. Everything visual comes from
+      // emby-button/button-flat; these rules only put the material icon and
+      // the label on one centered line inside the button, and dim a disabled
+      // (busy/done) state the way the web client dims its own buttons.
+      '.federation-detail-btn{display:inline-flex;align-items:center;justify-content:center;gap:.35em;}',
+      '.federation-detail-btn .material-icons{font-size:1.35em;line-height:1;}',
+      '.federation-detail-btn[data-fed-state="busy"]{opacity:.65;}',
+      '.federation-detail-btn[data-fed-state="done"]{opacity:.65;pointer-events:none;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -406,9 +337,10 @@
   // A floating bottom-of-screen toast used to live here for download
   // progress/completion. Removed per feedback: it read as this script
   // editing jellyfin-web's own chrome, which wasn't wanted. Progress is
-  // already visible via the pill next to the title, the progress ring on
-  // the cover art, and the Downloads section on the settings page - these
-  // are now no-ops so every existing call site doesn't need to change.
+  // already visible via the button state next to the native action buttons,
+  // the progress ring on the cover art, and the Downloads section on the
+  // settings page - these are now no-ops so every existing call site doesn't
+  // need to change.
   function showToast() { /* intentionally no-op - see comment above */ }
 
   function hideToastAfter() { /* intentionally no-op - see comment above */ }
@@ -417,7 +349,7 @@
   // startedAt}) so a page refresh or navigating away mid-download doesn't
   // lose track of it - reloading the item's detail page (or just reloading
   // the current page, via resumeActiveDownloads at startup) picks the poll
-  // back up and restores the pill/toast state instead of silently going
+  // back up and restores the button/ring state instead of silently going
   // quiet, which otherwise looks identical to "did this actually start?".
   var ACTIVE_DOWNLOADS_KEY = 'federationActiveDownloads';
 
@@ -475,17 +407,13 @@
           // The button only exists while this exact item's detail page is
           // still open - re-find it each tick rather than trusting the
           // reference passed in, since badgeDetailPage() may have rebuilt it.
-          var liveButton = button;
+          var liveButton = button || findDetailButton(itemId);
 
           if (!data.isComplete) {
             var pct = Math.round(data.percentComplete || 0);
             var speed = formatSpeed(data.bytesPerSecond);
-            showToast('Downloading ' + (data.itemName ? data.itemName + ' - ' : '') + pct + '%' + (speed ? ' (' + speed + ')' : ''), 'busy');
             if (liveButton) {
-              liveButton.setAttribute('data-state', 'busy');
-              liveButton.setAttribute('data-operation-id', operationId);
-              liveButton.querySelector('.federation-badge-label').textContent = pct + '%' + (speed ? ' - ' + speed : '');
-              liveButton.title = 'Click to cancel';
+              setButtonState(liveButton, 'busy', pct + '%' + (speed ? ' ' + speed : ''), 'Downloading to this server');
             }
 
             updateDetailPageRing(itemId, pct);
@@ -503,24 +431,15 @@
           }
 
           if (data.success) {
-            showToast('Downloaded ' + (data.itemName || 'item') + ' to this server', 'done');
             if (liveButton) {
-              liveButton.setAttribute('data-state', 'done');
-              liveButton.removeAttribute('data-operation-id');
-              liveButton.querySelector('.federation-badge-label').textContent = 'Downloaded';
+              setButtonState(liveButton, 'done', 'Saved', 'A local copy now exists on this server');
             }
           } else {
             var cancelled = /cancel/i.test(data.status || '');
-            showToast(data.status || 'Download failed', cancelled ? 'busy' : 'error');
             if (liveButton) {
-              liveButton.setAttribute('data-state', 'error');
-              liveButton.removeAttribute('data-operation-id');
-              liveButton.querySelector('.federation-badge-label').textContent = cancelled ? 'Download to server' : 'Failed - retry?';
-              liveButton.title = data.status || 'Download failed';
+              setButtonState(liveButton, 'error', cancelled ? 'Download' : 'Download failed', data.status || 'Download failed');
             }
           }
-
-          hideToastAfter(6000);
         })
         .catch(function () {
           setTimeout(poll, 3000);
@@ -536,7 +455,7 @@
       return;
     }
 
-    button.querySelector('.federation-badge-label').textContent = 'Cancelling...';
+    setButtonState(button, 'busy', 'Cancelling', 'Cancelling download');
 
     var token = getToken();
     fetch('/Plugins/Federation/Download/Cancel/' + operationId, {
@@ -547,9 +466,7 @@
   }
 
   function startDownload(button, itemId) {
-    button.setAttribute('data-state', 'busy');
-    button.querySelector('.federation-badge-label').textContent = 'Starting...';
-    showToast('Starting download...', 'busy');
+    setButtonState(button, 'busy', 'Starting', 'Starting download');
 
     var token = getToken();
     fetch('/Plugins/Federation/Download', {
@@ -562,11 +479,7 @@
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.operationId) {
           var msg = (result.data && result.data.message) || 'Could not start download';
-          button.setAttribute('data-state', 'error');
-          button.querySelector('.federation-badge-label').textContent = 'Failed - retry?';
-          button.title = msg;
-          showToast(msg, 'error');
-          hideToastAfter(6000);
+          setButtonState(button, 'error', 'Download failed', msg);
           return;
         }
 
@@ -575,16 +488,13 @@
         pollDownloadProgress(itemId, result.data.operationId, button);
       })
       .catch(function () {
-        button.setAttribute('data-state', 'error');
-        button.querySelector('.federation-badge-label').textContent = 'Failed - retry?';
-        showToast('Could not start download', 'error');
-        hideToastAfter(6000);
+        setButtonState(button, 'error', 'Download failed', 'Could not start download');
       });
   }
 
-  // Called once at script init: resumes polling (and re-shows the toast)
-  // for any download that was still in progress when the page was last
-  // unloaded, so a refresh mid-download doesn't just silently drop it.
+  // Called once at script init: resumes polling for any download that was
+  // still in progress when the page was last unloaded, so a refresh
+  // mid-download doesn't just silently drop it.
   function resumeActiveDownloads() {
     var map = loadActiveDownloads();
     var now = Date.now();
@@ -614,8 +524,7 @@
   // Configuration/FederationPluginController.cs's "Hidden Items" region and
   // PluginConfiguration.HiddenFederatedItemIds for the backend half.
   function startHide(button, itemId) {
-    button.setAttribute('data-state', 'busy');
-    button.querySelector('.federation-badge-label').textContent = 'Hiding...';
+    setButtonState(button, 'busy', 'Hiding', 'Hiding this item');
 
     var token = getToken();
     fetch('/Plugins/Federation/HiddenItems/Hide', {
@@ -627,14 +536,11 @@
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.success) {
-          button.setAttribute('data-state', 'error');
-          button.querySelector('.federation-badge-label').textContent = 'Failed';
-          button.title = (result.data && result.data.message) || 'Could not hide this item';
+          setButtonState(button, 'error', 'Hide failed', (result.data && result.data.message) || 'Could not hide this item');
           return;
         }
 
-        button.setAttribute('data-state', 'done');
-        button.querySelector('.federation-badge-label').textContent = 'Hidden';
+        setButtonState(button, 'done', 'Hidden', 'Hidden from this library');
 
         // The server already deleted the local item, so this page has
         // nothing left to show - stepping back is the same recovery the
@@ -648,9 +554,132 @@
         }, 700);
       })
       .catch(function () {
-        button.setAttribute('data-state', 'error');
-        button.querySelector('.federation-badge-label').textContent = 'Failed';
+        setButtonState(button, 'error', 'Hide failed', 'Could not hide this item');
       });
+  }
+
+  // -------------------------------------------------------------------------
+  // Detail page: native-looking chrome only.
+  //
+  //   - The source server renders as a muted entry appended to the page's own
+  //     itemMiscInfo line (the "2023 - TV-MA - 1080p" row), with the cloud
+  //     glyph - same visual weight as the metadata around it, not a chip.
+  //   - Download and Hide render as emby-button flat buttons appended to the
+  //     page's own .mainDetailButtons row (beside Play etc.), so every visual
+  //     aspect of them is the web client's native button styling. Material
+  //     icon font spans match what those buttons use natively.
+  // -------------------------------------------------------------------------
+
+  function setButtonState(button, state, label, title) {
+    button.setAttribute('data-fed-state', state);
+    button.title = title || '';
+    var text = button.querySelector('.federation-btn-label');
+    if (text) {
+      text.textContent = label;
+    }
+  }
+
+  function findDetailButton(itemId) {
+    return document.querySelector('.federation-detail-btn[data-fed-item="' + itemId + '"]');
+  }
+
+  function makeDetailButton(itemId, iconName, label, title, onClick) {
+    var button = document.createElement('button', { is: 'emby-button' });
+    button.setAttribute('is', 'emby-button');
+    button.className = 'button-flat federation-detail-btn';
+    button.type = 'button';
+    button.title = title;
+    button.setAttribute('data-fed-item', itemId);
+    button.setAttribute('data-fed-state', 'idle');
+    button.innerHTML =
+      '<span class="material-icons" aria-hidden="true">' + iconName + '</span>' +
+      '<span class="federation-btn-label">' + label + '</span>';
+    button.addEventListener('click', function () {
+      var state = this.getAttribute('data-fed-state');
+      if (state === 'idle' || state === 'error') {
+        onClick(this);
+      }
+    });
+    return button;
+  }
+
+  function injectSourceTag(rawId, srv) {
+    var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
+    var name = srv || 'Another server';
+    var info = document.querySelector('.itemMiscInfo-primary') || document.querySelector('.itemMiscInfo');
+    if (!info) {
+      return;
+    }
+
+    // Remove a tag left over from a previous item before adding the current
+    // one (SPA navigation can keep the surrounding DOM).
+    var old = info.querySelector('.federation-source-tag');
+    if (old) {
+      old.remove();
+    }
+
+    var tag = document.createElement('span');
+    tag.className = 'federation-source-tag';
+    tag.title = label;
+    tag.innerHTML = ICON_SVG;
+    var text = document.createElement('span');
+    text.textContent = name;
+    tag.appendChild(text);
+    info.appendChild(tag);
+  }
+
+  function injectDetailButtons(rawId) {
+    // Already injected for this item (badgeDetailPage re-runs on every scan).
+    if (findDetailButton(rawId)) {
+      return null;
+    }
+
+    // Buttons live in the page's own action row when it exists; otherwise a
+    // minimal flex row right below the title keeps the same flat-button
+    // markup so it still reads native.
+    var host = document.querySelector('.mainDetailButtons') || document.querySelector('.detailButtons');
+    var createdRow = null;
+    if (!host) {
+      var nameContainer = document.querySelector('.nameContainer, .itemName-primary, .detailPagePrimaryContainer h1');
+      if (!nameContainer) {
+        return null;
+      }
+
+      createdRow = document.createElement('div');
+      createdRow.className = 'mainDetailButtons federation-detail-row';
+      createdRow.style.display = 'flex';
+      createdRow.style.flexWrap = 'wrap';
+      createdRow.style.gap = '0';
+      createdRow.style.margin = '0.6em 0 0';
+      nameContainer.insertAdjacentElement('afterend', createdRow);
+      host = createdRow;
+    }
+
+    var downloadButton = makeDetailButton(
+      rawId,
+      'cloud_download',
+      'Download',
+      'Save a local copy on this server',
+      function (btn) { startDownload(btn, rawId); });
+
+    // Clicking mid-download cancels: state handling routes through the same
+    // data-fed-state attribute the idle/error path checks.
+    downloadButton.addEventListener('click', function () {
+      if (this.getAttribute('data-fed-state') === 'busy') {
+        cancelDownload(this);
+      }
+    });
+
+    var hideButton = makeDetailButton(
+      rawId,
+      'visibility_off',
+      'Hide',
+      'Hide this item from your local library (does not affect the friend sharing it)',
+      function (btn) { startHide(btn, rawId); });
+
+    host.appendChild(downloadButton);
+    host.appendChild(hideButton);
+    return { downloadButton: downloadButton, hideButton: hideButton };
   }
 
   function badgeDetailPage() {
@@ -665,69 +694,21 @@
       return;
     }
 
-    var srv = federatedIds.get(id);
-    var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
-    // Rendered as its own row below the title (see insertAdjacentHTML
-    // 'afterend' on the title's container below) instead of inline before
-    // the title text - inline collided with stylized show-logo titles badly
-    // enough to look broken rather than like an action bar.
-    var pill = '<div class="federation-badge-row">'
-      + '<span class="federation-badge-pill" title="' + label.replace(/"/g, '&quot;') + '">'
-      + INLINE_ICON_HTML + '<span>' + (srv || 'Another server') + '</span></span>'
-      + '<span class="federation-badge-download" data-state="idle" title="Save a local copy on this server">'
-      + '<span class="federation-badge-icon">' + DOWNLOAD_ICON_SVG + '</span><span class="federation-badge-label">Download to server</span></span>'
-      + '<span class="federation-badge-hide" data-state="idle" title="Hide this item from your local library (does not affect the friend sharing it)">'
-      + '<span class="federation-badge-icon">' + HIDE_ICON_SVG + '</span><span class="federation-badge-label">Hide</span></span>'
-      + '</div>';
-
-    var selectors = ['.nameContainer bdi', '.itemName-primary bdi', '.detailPagePrimaryContainer h1 bdi', 'h1 bdi'];
-    for (var i = 0; i < selectors.length; i++) {
-      var title = document.querySelector(selectors[i]);
-      if (!title) {
-        continue;
-      }
-
-      var container = title.closest('.nameContainer, .itemName-primary, .detailPagePrimaryContainer') || title.parentElement;
-      if (container.nextElementSibling && container.nextElementSibling.classList && container.nextElementSibling.classList.contains('federation-badge-row')) {
-        return;
-      }
-
-      container.insertAdjacentHTML('afterend', pill);
-      var row = container.nextElementSibling;
-
-      var downloadBtn = row.querySelector('.federation-badge-download');
-      if (downloadBtn) {
-        // Already downloading (survives a refresh) - reflect that instead
-        // of showing an idle button someone could click a second time.
-        var active = loadActiveDownloads()[rawId];
-        if (active) {
-          downloadBtn.setAttribute('data-state', 'busy');
-          downloadBtn.setAttribute('data-operation-id', active.operationId);
-          downloadBtn.querySelector('.federation-badge-label').textContent = 'Downloading...';
-          downloadBtn.title = 'Click to cancel';
-          pollDownloadProgress(rawId, active.operationId, downloadBtn);
-        }
-
-        downloadBtn.addEventListener('click', function () {
-          var state = this.getAttribute('data-state');
-          if (state === 'idle' || state === 'error') {
-            startDownload(this, rawId);
-          } else if (state === 'busy') {
-            cancelDownload(this);
-          }
-        });
-      }
-
-      var hideBtn = row.querySelector('.federation-badge-hide');
-      if (hideBtn) {
-        hideBtn.addEventListener('click', function () {
-          if (this.getAttribute('data-state') === 'idle') {
-            startHide(this, rawId);
-          }
-        });
-      }
-
+    injectSourceTag(rawId, federatedIds.get(id));
+    var buttons = injectDetailButtons(rawId);
+    if (!buttons) {
       return;
+    }
+
+    var downloadButton = buttons.downloadButton;
+
+    // Already downloading (survives a refresh) - reflect that instead of
+    // showing an idle button someone could click a second time.
+    var active = loadActiveDownloads()[rawId];
+    if (active) {
+      setButtonState(downloadButton, 'busy', 'Downloading', 'Click to cancel');
+      downloadButton.setAttribute('data-operation-id', active.operationId);
+      pollDownloadProgress(rawId, active.operationId, downloadButton);
     }
   }
 
