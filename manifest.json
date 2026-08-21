@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.78",
+        "changelog": "Playback start speed and reliability: PlaybackInfo cache 15s->5min (removes a WAN round trip from nearly every play), play-path remote calls bounded at 20s, 256KB relay buffer, dead session tokens re-minted after a remote restart instead of breaking playback for up to 5 hours, and WAN bandwidth measurement fixed (it silently failed since the token rewrite, so bitrate caps stopped applying). Cleanup: deleting a library mapping now removes its items/library/cache, unfriend clears pool rosters and revokes playback tokens immediately, uninstall revokes the internal relay API key and deletes a custom-path cache file, plus a one-time sweep of relay keys orphaned by the pre-0.0.77 save bug. Settings page redesigned to match Jellyfin's native dashboard look. 219 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.78/Jellyfin.Federation.zip",
+        "checksum": "441b8ac9b44baaa456992adb7becbc11",
+        "timestamp": "2026-08-20T19:00:00Z"
+      },
+      {
         "version": "0.0.77",
         "changelog": "Fixes a real Jellyfin admin-equivalent API key silently leaking on every unrelated Federation settings save. This server mints one internal API key for itself (InternalRelayApiKey) to relay Direct-mode streams locally over loopback - meant to be created once and reused forever. But the config-save endpoint's preserve-on-save list never protected it, so any general settings save wiped it back to empty; the next stream request then saw no key on file and minted a brand new real Jellyfin API key, abandoning the old one for good. Confirmed live: three of these orphaned in a single day of ordinary config saves, each showing up as an unexplained new entry under Dashboard > API Keys. InternalRelayApiKey is now preserved exactly like every other server-internal field, so it's minted once per server and never again.\n\n215 tests (unchanged).",
         "targetAbi": "10.11.0.0",
