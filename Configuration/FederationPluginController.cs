@@ -1691,7 +1691,16 @@ namespace Jellyfin.Plugin.Federation.Api
             var queryParams = new List<string>
             {
                 "Recursive=true",
-                "Fields=BasicSyncInfo,Path,MediaSources,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
+                // MediaSources deliberately excluded: nothing on the sync path ever
+                // reads it (playback fetches media sources separately, per-item, from
+                // PlaybackInfo - see FederationMediaSourceProvider.FetchRemoteSourceAsync).
+                // It was pure dead weight on every page of every sync: on top of forcing
+                // Jellyfin to load one more related collection per item, requesting it
+                // alongside MediaStreams/People/Genres/Tags/Studios triggers EF Core's
+                // "multiple collection Include" query-splitting warning (no
+                // QuerySplittingBehavior configured), which is a real slow-query hit
+                // repeated on every 200-item page across every mapping, every sync.
+                "Fields=BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
                 "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
             };
             if (!string.IsNullOrEmpty(mediaType))
