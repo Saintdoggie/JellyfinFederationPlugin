@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.79",
+        "changelog": "Restores the missing Play button on federated items. jellyfin-web refuses to show Play for any item whose LocationType is 'Virtual' - exactly what an empty item.Path produces - and since the 0.0.70 token rewrite, Direct streaming mode (the default) stamped no Path, because the only Direct URL it could build carried the remote's credential and would have leaked it to every client. The static Path is now this server's own credential-free /Plugins/Federation/Stream proxy gateway for both streaming modes; existing items self-heal on the next sync. Per-remote-user access rules still honored (rule-gated servers keep no static Path). Container/MediaStreams metadata now matches the bytes clients actually receive. 220 tests.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.79/Jellyfin.Federation.zip",
+        "checksum": "d6f53e40a4d54de644c74d253074958b",
+        "timestamp": "2026-08-20T21:00:00Z"
+      },
+      {
         "version": "0.0.78",
         "changelog": "Playback start speed and reliability: PlaybackInfo cache 15s->5min (removes a WAN round trip from nearly every play), play-path remote calls bounded at 20s, 256KB relay buffer, dead session tokens re-minted after a remote restart instead of breaking playback for up to 5 hours, and WAN bandwidth measurement fixed (it silently failed since the token rewrite, so bitrate caps stopped applying). Cleanup: deleting a library mapping now removes its items/library/cache, unfriend clears pool rosters and revokes playback tokens immediately, uninstall revokes the internal relay API key and deletes a custom-path cache file, plus a one-time sweep of relay keys orphaned by the pre-0.0.77 save bug. Settings page redesigned to match Jellyfin's native dashboard look. 219 tests.",
         "targetAbi": "10.11.0.0",
