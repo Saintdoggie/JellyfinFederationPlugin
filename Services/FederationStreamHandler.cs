@@ -166,7 +166,26 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
-                await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+
+                // A rejected token is almost always the remote having restarted:
+                // both of its in-memory token stores were wiped, while this side
+                // still holds a cached session token for up to 5 hours - without
+                // this retry, every stream for that whole window died at exactly
+                // this point (the old code just passed the 403 through, and player
+                // retries re-sent the same dead token). Drop the cached token,
+                // mint a fresh one, and relay once more. A genuinely unauthorized
+                // request simply gets rejected a second time.
+                if (upstreamStatus is 401 or 403 && !response.HasStarted)
+                {
+                    RemoteServerClient.InvalidateUserSessionToken(serverId, requestingUserId);
+                    url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                    _logger.LogInformation(
+                        "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
+                        remoteItemId,
+                        server.Name);
+                    await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
@@ -189,26 +208,34 @@ namespace Jellyfin.Plugin.Federation.Services
         /// to this server's own native stream endpoint, so no server/access-control
         /// lookup happens here - just the shared relay loop.
         /// </summary>
-        public Task HandleDirectGatewayAsync(
+        public async Task HandleDirectGatewayAsync(
             string loopbackUrl,
             HttpRequest request,
             HttpResponse response,
             CancellationToken cancellationToken)
         {
-            return RelayAsync(loopbackUrl, request, response, cancellationToken);
+            await RelayAsync(loopbackUrl, request, response, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
         /// Shared relay core used by both <see cref="HandleProxyAsync"/> (Proxy mode,
-        /// fetching from a friend's remote server) and
-        /// <see cref="HandleDirectGatewayAsync"/> (Direct mode's token-gated gateway,
-        /// fetching from this server's own loopback). Streams <paramref name="url"/>'s
-        /// body through to <paramref name="response"/>, preserving Range/resume
-        /// semantics - see the inline comments below for the hard-won bugfix
-        /// rationale (content-length mismatches, range-resume correctness, Kestrel
-        /// abort semantics) this logic encodes.
+        /// fetching from a friend's remote server) and <see cref="HandleDirectGatewayAsync"/>
+        /// (Direct mode's token-gated gateway, fetching from this server's own
+        /// loopback). Streams <paramref name="url"/>'s body through to
+        /// <paramref name="response"/>, preserving Range/resume semantics - see the
+        /// inline comments below for the hard-won bugfix rationale (content-length
+        /// mismatches, range-resume correctness, Kestrel abort semantics) this logic
+        /// encodes.
+        /// <para>
+        /// Returns the upstream HTTP status code when the remote rejected the
+        /// request outright (before anything was relayed), null otherwise
+        /// (completed, aborted after headers, or retries exhausted). Callers use
+        /// the status to distinguish "rejected" (e.g. a stale token after a remote
+        /// restart - potentially recoverable with a re-minted token) from every
+        /// other outcome.
+        /// </para>
         /// </summary>
-        private async Task RelayAsync(
+        private async Task<int?> RelayAsync(
             string url,
             HttpRequest request,
             HttpResponse response,
@@ -220,7 +247,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 var (rangeStartInit, rangeEnd) = ParseRange(range);
                 var rangeStart = rangeStartInit;
                 var headersSent = false;
-                var buffer = new byte[81920];
+
+                // 256 KB: the relay is a pure copy loop, so a larger buffer means
+                // proportionally fewer await/syscall round trips per byte on the
+                // hot path of every federated stream - meaningful for 4K bitrates
+                // and seek-heavy HLS segment fetching through the two-hop chain.
+                var buffer = new byte[262144];
 
                 for (var attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
@@ -247,7 +279,7 @@ namespace Jellyfin.Plugin.Federation.Services
                                 response.StatusCode = (int)remoteResp.StatusCode;
                             }
 
-                            return;
+                            return (int)remoteResp.StatusCode;
                         }
 
                         // A resume (headers already sent, resuming from a non-zero
@@ -267,7 +299,7 @@ namespace Jellyfin.Plugin.Federation.Services
                                 || remoteResp.Content.Headers.ContentRange?.From != rangeStart))
                         {
                             response.HttpContext.Abort();
-                            return;
+                            return null;
                         }
 
                         if (!headersSent)
@@ -324,7 +356,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             if (read == 0)
                             {
-                                return;
+                                return null;
                             }
 
                             // No per-chunk FlushAsync: Kestrel already sends each
@@ -346,6 +378,9 @@ namespace Jellyfin.Plugin.Federation.Services
                             MaxAttempts);
                     }
                 }
+
+                // Retries exhausted without a clean upstream status to report.
+                return null;
             }
             catch (OperationCanceledException)
             {
@@ -369,6 +404,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // either way.
                 _logger.LogInformation("[Federation] Relayed stream cancelled by client");
                 response.HttpContext.Abort();
+                return null;
             }
             catch (Exception ex)
             {
@@ -384,6 +420,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     // promised Content-Length can never be fulfilled.
                     response.HttpContext.Abort();
                 }
+
+                return null;
             }
         }
 

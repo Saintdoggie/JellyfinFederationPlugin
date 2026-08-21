@@ -2,306 +2,195 @@
     <div data-role="content">
         <div class="content-primary">
             <style>
-                /* Plain text on this page (headings, hints, labels, card body copy)
-                   carries no emby-* class of its own and has no color set here
-                   either, on the assumption it would inherit Jellyfin's own theme
-                   text color from an ancestor element. On at least one real
-                   install that inheritance did not hold - text rendered with the
-                   browser's default black, illegible against the dashboard's dark
-                   background. Forced explicitly here as a fallback rather than left
-                   to inherit - but wrapped in :where() so it contributes ZERO
-                   specificity: an ID selector's normal specificity would otherwise
-                   outrank Jellyfin's own .emby-button/.emby-select/etc rules and
-                   silently override colors those elements had deliberately (e.g. a
-                   light-background button expecting dark text), which is exactly
-                   what happened the first time this was "fixed". With :where(), any
-                   more specific rule - Jellyfin's or this page's own - still wins;
-                   this only ever fills in the gap where nothing else set a color.
-                */
+                /* Plain text on this page (headings, hints, labels, roster rows) has no
+                   emby-* class carrying a colour of its own and relies on inheriting
+                   Jellyfin's theme text colour from an ancestor. On at least one real
+                   install that inheritance did not hold - text rendered browser-default
+                   black, illegible on the dark dashboard. Forced explicitly here, but
+                   wrapped in :where() so it contributes ZERO specificity: an ID
+                   selector's normal specificity would outrank Jellyfin's own
+                   .emby-button/.emby-select/etc rules and silently override colours
+                   those elements had deliberately set. With :where(), any more specific
+                   rule still wins; this only fills the gap where nothing else set one. */
                 :where(#federationConfigPage) { color: var(--theme-body-text-color, var(--primary-text-color, #eee)); }
 
-                /* Shared spacing/radius/color scale so cards, sub-cards and status
-                   strips read as one consistent system instead of one-off values
-                   accumulated over many edits. Accent colour follows the active
-                   Jellyfin theme, same fallback pattern already used by the
-                   downloads progress bar. */
+                /* Everything below fills gaps Jellyfin's own dashboard classes don't
+                   cover (tab row, roster rows, status callouts, progress). Structure,
+                   spacing and controls use jellyfin-web's native vocabulary
+                   (sectionTitle/fieldDescription/inputContainer/emby-input/emby-select/
+                   emby-checkbox/raised/button-submit/button-flat). Colours come from
+                   the active theme wherever possible; the only literals are semantic
+                   status hues (ok/err/warn) and neutral grey tints that read correctly
+                   on both dark and light themes. No shadows, gradients, animations or
+                   custom fonts. */
                 #federationConfigPage {
-                    --fed-sp-1: 0.35em;
-                    --fed-sp-2: 0.6em;
-                    --fed-sp-3: 1em;
-                    --fed-sp-4: 1.5em;
-                    --fed-sp-5: 2.2em;
-                    --fed-r-sm: 0.35em;
-                    --fed-r-md: 0.55em;
-                    --fed-r-lg: 0.85em;
                     --fed-accent: var(--theme-primary-color, var(--primary-accent-color, #00a4dc));
-                    --fed-border: rgba(130,130,140,0.22);
-                    --fed-border-soft: rgba(130,130,140,0.14);
-                    --fed-surface: rgba(130,130,140,0.06);
-                    --fed-surface-2: rgba(130,130,140,0.04);
-                    --fed-ok: #52b54b;
-                    --fed-ok-text: #7ed07e;
-                    --fed-err: #e34f4f;
-                    --fed-err-text: #ff8080;
-                    --fed-warn: #ffa844;
-                    --fed-warn-text: #ffc27a;
+                    --fed-border: rgba(128,128,128,0.30);
+                    --fed-border-soft: rgba(128,128,128,0.16);
+                    --fed-surface: rgba(128,128,128,0.08);
+                    --fed-ok: #3fa93b;
+                    --fed-ok-text: #4fbf4a;
+                    --fed-err: #d14848;
+                    --fed-err-text: #e06c6c;
+                    --fed-warn: #d18f2e;
+                    --fed-warn-text: #e0a04a;
                 }
 
-                /* Layout base mirroring jellyfin-web form styles; colors/borders come
-                   from the active theme via the emby-* classes. */
-                #federationConfigPage .fed-input,
-                #federationConfigPage .fed-select {
-                    display: block;
-                    margin: 0;
-                    padding: 0.5em 0.5em;
-                    font-size: 105%;
-                    font-family: inherit;
-                    font-weight: inherit;
-                    box-sizing: border-box;
-                    outline: none !important;
-                    width: 100%;
-                }
-                #federationConfigPage .fed-select { padding: 0.5em 1.9em 0.5em 0.5em; }
-                #federationConfigPage .fed-input-container { margin-bottom: var(--fed-sp-4); min-width: 0; }
-                #federationConfigPage .fed-label { display: block; opacity: 0.75; font-size: 0.85em; letter-spacing: 0.01em; margin-bottom: 0.3em; }
-                #federationConfigPage .fed-check { accent-color: var(--fed-accent); width: 1.15em; height: 1.15em; vertical-align: -0.25em; margin-right: 0.5em; flex-shrink: 0; }
-                #federationConfigPage .fed-check-label { display: flex; align-items: flex-start; margin: 0.55em 0; cursor: pointer; line-height: 1.4; }
-                #federationConfigPage .fed-check-label:focus-within { outline: 2px solid var(--fed-accent); outline-offset: 2px; border-radius: var(--fed-r-sm); }
-                #federationConfigPage .fed-hint { font-size: 0.85em; opacity: 0.65; line-height: 1.5; margin: 0.35em 0 0; }
+                /* Section rhythm (matches the dashboard's verticalSection spacing) */
+                #federationConfigPage .verticalSection { margin-bottom: 1.9em; }
 
-                /* Card system. .fed-card is the base rhythm every top-level section
-                   shares; .fed-card-hero marks the handful of sections an admin
-                   touches most often (status, downloads, add-friend, people) with a
-                   slightly stronger surface and a themed accent edge, so they read
-                   as more prominent than the rarely-touched advanced/diagnostic
-                   sections without needing separate one-off styling. */
-                #federationConfigPage .fed-card {
-                    background: var(--fed-surface);
-                    border: 1px solid var(--fed-border-soft);
-                    border-radius: var(--fed-r-lg);
-                    padding: clamp(1.1em, 1em + 0.6vw, 1.7em);
-                    margin: var(--fed-sp-4) 0;
-                }
-                #federationConfigPage .fed-card-hero {
-                    background: var(--fed-surface);
-                    border-color: var(--fed-border);
-                    box-shadow: inset 3px 0 0 0 var(--fed-accent);
-                }
-                #federationConfigPage details.fed-card.fed-details {
-                    background: transparent;
-                    border-color: var(--fed-border-soft);
-                    padding: 0.9em 1.3em;
-                }
-                #federationConfigPage h2.fed-step { margin: 0 0 0.25em; font-size: 1.3em; font-weight: 600; letter-spacing: -0.01em; }
-                #federationConfigPage h3.fed-substep { margin: 0 0 0.35em; font-size: 1.05em; font-weight: 600; }
-                #federationConfigPage h4.fed-subhead { margin: 0 0 0.4em; font-size: 0.92em; font-weight: 600; opacity: 0.85; }
-                #federationConfigPage .fed-step-desc { opacity: 0.7; font-size: 0.92em; line-height: 1.5; margin: 0 0 1.1em; max-width: 62em; }
-                #federationConfigPage .fed-statusstrip {
-                    display: flex; flex-wrap: wrap; align-items: center; gap: var(--fed-sp-3) var(--fed-sp-5);
-                    font-size: 0.95em;
-                }
-                #federationConfigPage .fed-statusstrip .fed-stat { display: flex; flex-direction: column; gap: 0.15em; }
-                #federationConfigPage .fed-statusstrip .fed-stat strong { font-size: 1.5em; font-weight: 700; line-height: 1.1; }
-                #federationConfigPage .fed-statusstrip .fed-stat span { opacity: 0.6; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; }
+                /* Status strip under the page title */
+                #federationConfigPage .fed-statusstrip { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9em 2.2em; }
+                #federationConfigPage .fed-stat strong { display: block; font-size: 1.45em; line-height: 1.15; }
+                #federationConfigPage .fed-stat span { opacity: 0.6; font-size: 0.76em; text-transform: uppercase; letter-spacing: 0.05em; }
                 #federationConfigPage .fed-spacer { flex: 1; }
+
+                /* Tab row. Same visual language as jellyfin-web's own emby-tabs
+                   (muted labels, accent underline on the active tab) without wiring
+                   into its SPA view router, which a single static plugin page has no
+                   clean way to hook into. */
+                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.1em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
+                #federationConfigPage .fed-tab-btn {
+                    background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+                    color: inherit; opacity: 0.62; font-family: inherit; font-size: inherit; font-weight: 600;
+                    margin: 0 0 -1px; padding: 0.65em 0.95em; cursor: pointer;
+                }
+                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent); }
+                #federationConfigPage .fed-tabpanel { display: none; }
+                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
+
+                /* Form scaffolding mirroring jellyfin-web's inputContainer/inputLabel
+                   rhythm - these rules style the fed-* equivalents the script renders
+                   dynamically so both halves of the page share one spacing scale. */
+                #federationConfigPage .fed-input-container { margin-bottom: 1.4em; min-width: 0; }
+                #federationConfigPage .fed-label { display: block; margin-bottom: 0.3em; opacity: 0.8; }
+                #federationConfigPage .fed-hint { font-size: 0.87em; opacity: 0.7; line-height: 1.5; margin: 0.35em 0 0; }
+                #federationConfigPage .fed-check-label { display: flex; align-items: flex-start; gap: 0.5em; margin: 0.55em 0; cursor: pointer; line-height: 1.4; }
+                #federationConfigPage .fed-muted { opacity: 0.6; }
+                #federationConfigPage .fed-inline { display: flex; flex-wrap: wrap; gap: 0 1.4em; align-items: flex-end; }
+                #federationConfigPage .fed-inline .fed-input-container { flex: 1 1 16em; margin-bottom: 0.9em; }
+                #federationConfigPage .fed-inline .emby-button { margin-bottom: 0.9em; }
+                #federationConfigPage .fed-grow { flex: 1 1 16em; min-width: 0; }
+
+                /* Callouts: load errors, disabled-friend warnings, sync health,
+                   per-action status lines. Left-edge accent + tinted background, the
+                   same callout pattern the dashboard itself uses. */
                 #federationConfigPage .fed-error {
-                    color: var(--fed-err-text); padding: 1em 1.2em; background: rgba(227,79,79,0.1);
-                    border: 1px solid rgba(227,79,79,0.35); border-left: 3px solid var(--fed-err);
-                    border-radius: var(--fed-r-md); margin: var(--fed-sp-3) 0;
+                    color: var(--fed-err-text); background: rgba(209,72,72,0.10);
+                    border: 1px solid rgba(209,72,72,0.35); border-left: 3px solid var(--fed-err);
+                    border-radius: 0.35em; padding: 0.9em 1.1em; margin: 0.9em 0;
                     white-space: pre-wrap; line-height: 1.5;
                 }
-                #federationConfigPage .fed-inline {
-                    display: flex; flex-wrap: wrap; gap: 0 var(--fed-sp-4); align-items: flex-end;
+                #federationConfigPage .fed-warnbar {
+                    background: rgba(209,143,46,0.12); border-left: 3px solid var(--fed-warn);
+                    border-radius: 0.35em; padding: 0.85em 1.05em; margin: 0 0 1em;
+                    line-height: 1.5; color: var(--fed-warn-text);
                 }
-                #federationConfigPage .fed-inline .fed-input-container { flex: 1 1 16em; margin-bottom: 0.85em; }
-                #federationConfigPage .fed-inline .emby-button { margin-bottom: 0.85em; }
+                #federationConfigPage .fed-synchealth { border-radius: 0.35em; padding: 0.75em 1.05em; margin: 0 0 1em; font-size: 0.94em; line-height: 1.5; }
+                #federationConfigPage .fed-synchealth-ok { background: rgba(63,169,59,0.10); border-left: 3px solid var(--fed-ok); }
+                #federationConfigPage .fed-synchealth-bad { background: rgba(209,72,72,0.10); border-left: 3px solid var(--fed-err); color: var(--fed-err-text); }
+                #federationConfigPage .fed-srvstatus { border-radius: 0.35em; padding: 0.6em 0.9em; margin: 0.6em 0; font-size: 0.92em; line-height: 1.45; }
+                #federationConfigPage .fed-srvstatus-ok { background: rgba(63,169,59,0.12); border-left: 3px solid var(--fed-ok); }
+                #federationConfigPage .fed-srvstatus-err { background: rgba(209,72,72,0.12); border-left: 3px solid var(--fed-err); color: var(--fed-err-text); }
+                #federationConfigPage .fed-srvstatus-info { background: var(--fed-surface); border-left: 3px solid var(--fed-accent); }
+
+                /* Roster rows: friends, friend requests, pools, hidden items */
                 #federationConfigPage .fed-server {
-                    border: 1px solid var(--fed-border);
-                    border-radius: var(--fed-r-md);
-                    margin: var(--fed-sp-3) 0;
-                    padding: 0.95em 1.15em;
-                    background: var(--fed-surface-2);
-                    transition: border-color 0.15s ease;
+                    background: var(--fed-surface); border: 1px solid var(--fed-border-soft);
+                    border-radius: 0.4em; padding: 0.85em 1em; margin: 0.7em 0;
                 }
                 #federationConfigPage .fed-server:first-child { margin-top: 0; }
-                #federationConfigPage .fed-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.7em; }
+                #federationConfigPage .fed-server-off { border-left: 3px solid var(--fed-warn); }
+                #federationConfigPage .fed-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6em; }
                 #federationConfigPage .fed-server-url { opacity: 0.55; font-size: 0.88em; }
-                #federationConfigPage .fed-dot { width: 0.65em; height: 0.65em; border-radius: 50%; background: #888; flex-shrink: 0; }
+                #federationConfigPage .fed-dot { width: 0.65em; height: 0.65em; border-radius: 50%; background: var(--fed-border); flex-shrink: 0; }
                 #federationConfigPage .fed-dot-ok { background: var(--fed-ok); }
                 #federationConfigPage .fed-dot-err { background: var(--fed-err); }
-                #federationConfigPage .fed-srvstatus { margin-top: 0.65em; padding: 0.65em 0.9em; border-radius: var(--fed-r-sm); font-size: 0.9em; line-height: 1.45; }
-                #federationConfigPage .fed-srvstatus-ok { background: rgba(82,181,75,0.15); border-left: 3px solid var(--fed-ok); }
-                #federationConfigPage .fed-srvstatus-err { background: rgba(227,79,79,0.12); border-left: 3px solid var(--fed-err); }
-                #federationConfigPage .fed-srvstatus-info { background: rgba(0,164,220,0.12); border-left: 3px solid var(--fed-accent); }
-                #federationConfigPage details.fed-details { margin-top: 0.7em; }
-                #federationConfigPage details.fed-details > summary {
-                    cursor: pointer; opacity: 0.78; font-size: 0.92em; font-weight: 600; padding: 0.35em 0; user-select: none;
-                    list-style: none; display: flex; align-items: center; gap: 0.5em;
+                #federationConfigPage .fed-offnote {
+                    margin-top: 0.65em; padding: 0.6em 0.85em; border-radius: 0.35em; font-size: 0.9em;
+                    background: rgba(209,143,46,0.12); color: var(--fed-warn-text);
                 }
-                #federationConfigPage details.fed-details > summary::-webkit-details-marker { display: none; }
-                #federationConfigPage details.fed-details > summary::before {
-                    content: '▸'; display: inline-block; font-size: 0.85em; opacity: 0.7;
-                    transition: transform 0.15s ease;
+                #federationConfigPage .fed-pill {
+                    font-size: 0.74em; letter-spacing: 0.04em; text-transform: uppercase;
+                    padding: 0.18em 0.6em; border: 1px solid var(--fed-border); border-radius: 1em;
+                    opacity: 0.85; white-space: nowrap;
                 }
-                #federationConfigPage details.fed-details[open] > summary::before { transform: rotate(90deg); }
-                #federationConfigPage details.fed-details > summary:hover { opacity: 1; }
-                #federationConfigPage details.fed-details > summary:focus-visible { outline: 2px solid var(--fed-accent); outline-offset: 3px; border-radius: var(--fed-r-sm); }
-                #federationConfigPage .fed-details-body { padding-top: 0.9em; }
-                #federationConfigPage .fed-savemsg-fade { transition: opacity 1.2s ease; }
+                #federationConfigPage .fed-pill-off { border-color: var(--fed-warn); color: var(--fed-warn-text); opacity: 1; }
+                #federationConfigPage .fed-pill-pool { border-color: var(--fed-accent); color: var(--fed-accent); margin: 0.2em 0.4em 0.2em 0; display: inline-block; }
+
+                /* Per-friend management panel: a plain toggled block one level below
+                   the friend row, with sharing and pools shown directly - only the
+                   genuinely secondary connection dials go in a details. */
+                #federationConfigPage .fed-friendpanel {
+                    margin-top: 1em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft);
+                    display: flex; flex-direction: column; gap: 0.9em;
+                }
+                #federationConfigPage .fed-subcard { background: var(--fed-surface); border: 1px solid var(--fed-border-soft); border-radius: 0.4em; padding: 0.9em 1em; }
+                #federationConfigPage h4.fed-subhead { margin: 0 0 0.4em; font-size: 0.95em; font-weight: 600; }
+                #federationConfigPage h3.fed-subhead { margin: 1.4em 0 0.5em; font-size: 1em; font-weight: 600; }
+                #federationConfigPage h3.fed-substep { margin: 1.2em 0 0.4em; font-size: 1.02em; font-weight: 600; }
+
+                /* Per-remote-user access overrides */
+                #federationConfigPage .fed-userrule-row { display: flex; align-items: center; gap: 0.7em; padding: 0.45em 0; border-bottom: 1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-userrule-row:last-of-type { border-bottom: none; }
+                #federationConfigPage .fed-userrule-row .fed-pill { margin-left: auto; }
+                #federationConfigPage .fed-userrule-editor {
+                    background: var(--fed-surface); border: 1px solid var(--fed-border-soft);
+                    border-radius: 0.35em; padding: 0.85em; margin: 0.45em 0 0.85em;
+                }
+                #federationConfigPage .fed-userrule-results { margin-top: 0.45em; max-height: 12em; overflow-y: auto; }
+                #federationConfigPage .fed-userrule-result { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; padding: 0.22em 0; }
+
+                /* Library picker */
+                #federationConfigPage .fed-libgroup { margin: 1em 0; }
+                #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
+                #federationConfigPage .fed-librow { display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap; padding: 0.45em 0.6em; border-radius: 0.3em; cursor: pointer; }
+                #federationConfigPage .fed-librow:hover { background: var(--fed-surface); }
+                #federationConfigPage .fed-libmeta { opacity: 0.55; font-size: 0.85em; }
+                #federationConfigPage .fed-libtype { width: auto; max-width: 12em; font-size: 0.9em; }
+                #federationConfigPage .fed-picker-actions { margin: 0.4em 0 0.8em; font-size: 0.92em; display: flex; gap: 1.2em; }
+                #federationConfigPage .fed-picker-actions a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
+                #federationConfigPage .fed-picker-actions a:hover,
+                #federationConfigPage .fed-picker-actions a:focus-visible { text-decoration: underline; }
+                #federationConfigPage .fed-liblist { max-height: 18em; overflow-y: auto; border: 1px solid var(--fed-border-soft); border-radius: 0.35em; padding: 0.75em; margin-top: 0.65em; }
+                #federationConfigPage .fed-selected { margin-top: 0.75em; padding: 0.7em 0.9em; background: rgba(63,169,59,0.10); border-radius: 0.35em; font-size: 0.9em; }
+                #federationConfigPage .fed-mapping { border: 1px solid var(--fed-border-soft); border-radius: 0.4em; margin: 1em 0; padding: 0.9em 1em; background: var(--fed-surface); }
+
+                /* Downloads */
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
                 #federationConfigPage .fed-download-row:first-child { border-top: none; }
                 #federationConfigPage .fed-download-info { flex: 1; min-width: 0; }
                 #federationConfigPage .fed-download-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-                #federationConfigPage .fed-progress-track { margin-top: 0.45em; height: 0.4em; border-radius: 0.3em; background: var(--fed-surface); overflow: hidden; }
-                #federationConfigPage .fed-progress-fill { height: 100%; background: var(--fed-accent); transition: width 0.4s ease; }
-                #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.3em 0.8em; font-size: 0.85em; }
                 #federationConfigPage .fed-download-path { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.55; margin-top: 0.2em; }
-                #federationConfigPage .fed-libgroup { margin: var(--fed-sp-3) 0; }
-                #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.35em; font-size: 0.95em; }
-                #federationConfigPage .fed-librow {
-                    display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap;
-                    padding: 0.5em 0.65em; border-radius: var(--fed-r-sm); cursor: pointer;
-                    transition: background 0.12s ease;
-                }
-                #federationConfigPage .fed-librow:hover { background: var(--fed-surface); }
-                #federationConfigPage .fed-librow:focus-within { background: var(--fed-surface); outline: 2px solid var(--fed-accent); outline-offset: -2px; }
-                #federationConfigPage .fed-libmeta { opacity: 0.55; font-size: 0.85em; }
-                #federationConfigPage .fed-libtype {
-                    max-width: 12em; font-size: 0.9em; padding: 0.2em 1.6em 0.2em 0.4em; width: auto;
-                }
-                #federationConfigPage .fed-picker-actions { margin: 0.5em 0 0.9em; font-size: 0.9em; display: flex; gap: 1.2em; }
-                #federationConfigPage .fed-picker-actions a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
-                #federationConfigPage .fed-picker-actions a:hover,
-                #federationConfigPage .fed-picker-actions a:focus-visible { text-decoration: underline; }
-                #federationConfigPage .fed-picker-actions a:focus-visible { outline: 2px solid var(--fed-accent); outline-offset: 3px; border-radius: 2px; }
-                #federationConfigPage .fed-mapping {
-                    border: 1px solid var(--fed-border); border-radius: var(--fed-r-md);
-                    margin: var(--fed-sp-3) 0; padding: 0.95em 1.15em; background: var(--fed-surface-2);
-                }
-                #federationConfigPage .fed-liblist {
-                    max-height: 18em; overflow-y: auto;
-                    border: 1px solid var(--fed-border); border-radius: var(--fed-r-sm); padding: 0.75em;
-                    margin-top: 0.65em;
-                }
-                #federationConfigPage .fed-selected {
-                    margin-top: 0.75em; padding: 0.75em 0.95em;
-                    background: rgba(82,181,75,0.1); border-radius: var(--fed-r-sm); font-size: 0.9em;
-                }
-                #federationConfigPage .fed-muted { opacity: 0.55; }
-                #federationConfigPage .fed-danger { color: var(--fed-err-text) !important; }
+                #federationConfigPage .fed-progress-track { margin-top: 0.45em; height: 0.4em; border-radius: 0.2em; background: var(--fed-surface); overflow: hidden; }
+                #federationConfigPage .fed-progress-fill { height: 100%; background: var(--fed-accent); }
+                #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.25em 0.7em; font-size: 0.85em; }
+
+                /* Save bars and misc */
                 #federationConfigPage .fed-savebar { display: flex; align-items: center; flex-wrap: wrap; gap: 1em; }
                 #federationConfigPage .fed-savebar .emby-button { margin: 0; }
                 #federationConfigPage .fed-savemsg { font-size: 0.95em; }
                 #federationConfigPage .fed-savemsg-ok { color: var(--fed-ok-text); }
                 #federationConfigPage .fed-savemsg-err { color: var(--fed-err-text); }
-                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: 0.8em; margin-top: 0.8em; }
-                #federationConfigPage .fed-diagnostic div { padding: 0.75em 0.95em; background: var(--fed-surface); border-radius: var(--fed-r-sm); }
-                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.8em; opacity: 0.65; margin-bottom: 0.3em; font-weight: 600; }
-                #federationConfigPage code { background: var(--fed-surface); padding: 0.15em 0.45em; border-radius: 0.3em; font-size: 0.9em; }
+                #federationConfigPage .fed-danger { color: var(--fed-err-text) !important; }
+                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: 0.7em; margin-top: 0.7em; }
+                #federationConfigPage .fed-diagnostic div { padding: 0.7em 0.9em; background: var(--fed-surface); border-radius: 0.35em; }
+                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.78em; opacity: 0.65; margin-bottom: 0.25em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+                #federationConfigPage code { background: var(--fed-surface); padding: 0.12em 0.4em; border-radius: 0.25em; font-size: 0.9em; }
 
-                /* A server that is switched off still lists its name, address and
-                   settings, so nothing about the card itself says "none of this is
-                   in effect". These states exist to make that unmissable - an off
-                   server silently explains an empty library, and that cost real
-                   debugging time. */
-                #federationConfigPage .fed-pill {
-                    font-size: 0.72em; letter-spacing: 0.04em; text-transform: uppercase;
-                    padding: 0.22em 0.6em; border-radius: 1em; font-weight: 600; white-space: nowrap;
-                }
-                #federationConfigPage .fed-pill-off { background: rgba(255,168,68,0.18); color: var(--fed-warn-text); }
-                #federationConfigPage .fed-pill-pool { background: rgba(0,164,220,0.18); color: #6cd2f2; margin: 0.2em 0.4em 0.2em 0; display: inline-block; }
-                #federationConfigPage .fed-server-off { border-left: 3px solid var(--fed-warn); }
-                #federationConfigPage .fed-offnote {
-                    margin-top: 0.65em; padding: 0.6em 0.85em; border-radius: var(--fed-r-sm); font-size: 0.9em;
-                    background: rgba(255,168,68,0.12); color: var(--fed-warn-text);
-                }
-                #federationConfigPage .fed-warnbar {
-                    margin-bottom: var(--fed-sp-3); padding: 0.85em 1.05em; border-radius: var(--fed-r-md);
-                    background: rgba(255,168,68,0.13); border-left: 3px solid var(--fed-warn); color: var(--fed-warn-text);
-                    line-height: 1.5;
-                }
-                #federationConfigPage .fed-warnbar strong { color: #ffd6a5; }
-                #federationConfigPage .fed-synchealth {
-                    margin-bottom: var(--fed-sp-3); padding: 0.75em 1.05em; border-radius: var(--fed-r-md); font-size: 0.92em; line-height: 1.5;
-                }
-                #federationConfigPage .fed-synchealth-ok {
-                    background: rgba(82,181,75,0.10); border-left: 3px solid var(--fed-ok); color: #a9dfa4;
-                }
-                #federationConfigPage .fed-synchealth-ok strong { color: #c6ecc2; }
-                #federationConfigPage .fed-synchealth-bad {
-                    background: rgba(227,79,79,0.10); border-left: 3px solid var(--fed-err); color: #ffb3b3;
-                }
-                #federationConfigPage .fed-synchealth-bad strong { color: #ffd0d0; }
-                #federationConfigPage .fed-synchealth .fed-hint { color: inherit; opacity: 0.75; }
-
-                /* Per-friend management panel: intentionally NOT another nested
-                   <details> - this used to be buried three disclosures deep
-                   (Connection details > Sharing > per-library checkboxes) and that
-                   was the whole problem. It's a plain toggled block, one level
-                   below the friend row, with sharing and pools shown directly -
-                   only the genuinely secondary connection dials go in a details. */
-                #federationConfigPage .fed-friendpanel {
-                    margin-top: var(--fed-sp-3); padding-top: var(--fed-sp-3); border-top: 1px solid var(--fed-border-soft);
-                    display: flex; flex-direction: column; gap: 0.9em;
-                }
-                #federationConfigPage .fed-subcard {
-                    background: var(--fed-surface-2); border: 1px solid var(--fed-border-soft);
-                    border-radius: var(--fed-r-md); padding: 0.95em 1.05em; margin-bottom: 0;
-                }
-                #federationConfigPage .fed-userrule-row {
-                    display: flex; align-items: center; gap: 0.7em; padding: 0.45em 0;
-                    border-bottom: 1px solid var(--fed-border-soft);
-                }
-                #federationConfigPage .fed-userrule-row:last-of-type { border-bottom: none; }
-                #federationConfigPage .fed-userrule-row .fed-pill { margin-left: auto; }
-                #federationConfigPage .fed-userrule-editor {
-                    background: var(--fed-surface); border: 1px solid var(--fed-border-soft);
-                    border-radius: var(--fed-r-sm); padding: 0.85em; margin: 0.45em 0 0.85em;
-                }
-                #federationConfigPage .fed-userrule-results { margin-top: 0.45em; max-height: 12em; overflow-y: auto; }
-                #federationConfigPage .fed-userrule-result {
-                    display: flex; align-items: center; justify-content: space-between; gap: 0.6em;
-                    padding: 0.25em 0;
-                }
-
-                /* Tab nav. Hand-rolled rather than jellyfin-web's own emby-tabs
-                   component: that component is wired to the SPA's own view router
-                   (tabbed dashboard pages register routes/controllers per tab), which
-                   this plugin page - a single static config-page HTML blob with no
-                   router integration - has no clean way to hook into. A plain
-                   underline tab row keeps the same visual language (accent-colored
-                   active indicator, same type scale) without depending on internals
-                   that could change out from under a single HTML file with no build
-                   step to catch breakage. */
-                #federationConfigPage .fed-tabs {
-                    display: flex; flex-wrap: wrap; gap: 0.2em;
-                    border-bottom: 1px solid var(--fed-border);
-                    margin: var(--fed-sp-4) 0 0;
-                }
-                #federationConfigPage .fed-tab-btn {
-                    background: transparent; border: none; cursor: pointer;
-                    color: inherit; opacity: 0.62;
-                    font-size: 0.98em; font-weight: 600; font-family: inherit;
-                    padding: 0.7em 0.9em 0.65em;
-                    margin-bottom: -1px;
-                    border-bottom: 2px solid transparent;
-                    transition: opacity 0.12s ease, border-color 0.12s ease;
-                }
-                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
-                #federationConfigPage .fed-tab-btn:focus-visible {
-                    outline: 2px solid var(--fed-accent); outline-offset: 2px; border-radius: var(--fed-r-sm);
-                }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active {
-                    opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent);
-                }
-                #federationConfigPage .fed-tabpanel { display: none; }
-                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
+                /* Disclosure blocks (custom mappings, advanced settings, hidden items).
+                   Native <details> marker kept - no custom chevron, no animation. */
+                #federationConfigPage details.fed-details { margin: 1em 0; }
+                #federationConfigPage details.fed-details > summary { cursor: pointer; font-weight: 600; padding: 0.35em 0; user-select: none; }
+                #federationConfigPage details.fed-details > summary:hover { opacity: 0.85; }
+                #federationConfigPage .fed-details-body { padding-top: 0.7em; }
             </style>
 
-            <div class="sectionTitleContainer flex align-items-center">
+            <div class="sectionTitleContainer">
                 <h2 class="sectionTitle">Federation</h2>
             </div>
-            <p class="fed-step-desc" style="margin-top:-0.4em;">
+            <p class="fieldDescription">
                 Watch libraries from other Jellyfin servers as if they were your own. Add a friend, pick what to share, save — that's it.
             </p>
 
@@ -309,7 +198,7 @@
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
 
-            <div class="fed-card fed-card-hero fed-statusstrip" id="fedStatusCard">
+            <div class="fed-statusstrip verticalSection" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
                 <div class="fed-stat"><strong id="fedStatItems">–</strong><span>items federated</span></div>
                 <div class="fed-stat"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div>
@@ -318,18 +207,17 @@
             </div>
 
             <!--
-                Tabs split what used to be one long scroll (Downloads, Add a friend,
-                People, Pools, Libraries, Advanced, Hidden items, all stacked) into
-                grouped sections. The status strip above and the error/warning banners
-                further up stay outside every tab - they're relevant no matter which
-                tab is open, so hiding them behind a tab would bury a warning an admin
-                needs to see regardless of what they're doing.
+                Tabs split what used to be one long scroll into Friends / Pools /
+                Libraries / Advanced. The status strip above and the error/warning
+                banners further up stay outside every tab - they're relevant no matter
+                which tab is open, so hiding them behind a tab would bury a warning an
+                admin needs to see regardless of what they're doing.
 
-                #fedConfigForm still wraps Libraries+Advanced+Hidden items exactly as
-                before, just with .fed-tabpanel divs nested INSIDE it for visual
-                grouping - a hidden tab's inputs are still form descendants (submit
-                doesn't care about display:none), so the Save button keeps saving the
-                Advanced fields even while the Libraries tab is the one showing.
+                #fedConfigForm still wraps Libraries+Advanced exactly as before, just
+                with .fed-tabpanel divs nested INSIDE it - a hidden tab's inputs are
+                still form descendants (submit doesn't care about display:none), so the
+                Save button keeps saving the Advanced fields even while the Libraries
+                tab is the one showing.
             -->
             <div class="fed-tabs" id="fedTabs" role="tablist">
                 <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
@@ -339,23 +227,23 @@
             </div>
 
             <div class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
-                <div class="fed-card fed-card-hero" id="fedDownloadsCard" style="display:none;">
-                    <h2 class="fed-step">Downloads</h2>
-                    <p class="fed-step-desc">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
+                <div class="verticalSection" id="fedDownloadsCard" style="display:none;">
+                    <h3 class="sectionTitle">Downloads</h3>
+                    <p class="fieldDescription">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
                     <div id="fedDownloadsList"></div>
                 </div>
 
-                <div class="fed-card fed-card-hero">
-                    <h2 class="fed-step">Add a friend</h2>
-                    <p class="fed-step-desc">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Add a friend</h3>
+                    <p class="fieldDescription">
                         Enter another Federation server's address and send a request. Once they accept, both servers add
                         each other automatically — no API key to copy by hand.
                     </p>
 
                     <div class="fed-inline">
-                        <div class="fed-input-container">
-                            <label class="fed-label" for="fedFriendUrl">Friend's server address</label>
-                            <input type="text" id="fedFriendUrl" class="emby-input fed-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedFriendUrl">Friend's server address</label>
+                            <input type="text" id="fedFriendUrl" class="emby-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
                         <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
                     </div>
@@ -365,9 +253,9 @@
                     <div id="fedFriendOutgoing"></div>
                 </div>
 
-                <div class="fed-card fed-card-hero">
-                    <h2 class="fed-step">People</h2>
-                    <p class="fed-step-desc">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">People</h3>
+                    <p class="fieldDescription">
                         Servers you're connected with. Manage a friend to control what they can see of your library, put
                         them in a pool, or tweak connection settings.
                     </p>
@@ -377,9 +265,9 @@
             </div>
 
             <div class="fed-tabpanel" data-tab-panel="pools" role="tabpanel">
-                <div class="fed-card">
-                    <h2 class="fed-step">Pools</h2>
-                    <p class="fed-step-desc">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Pools</h3>
+                    <p class="fieldDescription">
                         A pool is a named group of Federation servers who all federate with every other member, not just you.
                         Create a pool and invite servers into it - each invite still goes through the normal friend request,
                         so every server's admin has to accept before it connects to anyone. To add a friend you're already
@@ -387,9 +275,9 @@
                     </p>
 
                     <div class="fed-inline">
-                        <div class="fed-input-container">
-                            <label class="fed-label" for="fedNewPoolName">New pool name</label>
-                            <input type="text" id="fedNewPoolName" class="emby-input fed-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedNewPoolName">New pool name</label>
+                            <input type="text" id="fedNewPoolName" class="emby-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
                         <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-pool">Create pool</button>
                     </div>
@@ -401,22 +289,22 @@
 
             <form id="fedConfigForm">
                 <div class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
-                    <div class="fed-card">
-                        <h2 class="fed-step">Libraries</h2>
-                        <p class="fed-step-desc">
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Libraries</h3>
+                        <p class="fieldDescription">
                             Each library you check appears on this server as a virtual library.
                             Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
                         </p>
 
                         <div id="fedLibraryPicker">
-                            <p class="fed-muted" id="fedPickerHint">Loading remote libraries…</p>
+                            <p class="fieldDescription" id="fedPickerHint">Loading remote libraries…</p>
                             <div id="fedPickerList"></div>
                         </div>
 
                         <details class="fed-details" id="fedCustomMappings">
                             <summary>Custom virtual libraries (advanced)</summary>
                             <div class="fed-details-body">
-                                <p class="fed-hint" style="margin-bottom:0.8em;">
+                                <p class="fieldDescription">
                                     Only needed if you want to hand-pick sources, merge libraries with different names, or tweak media types yourself.
                                     These are never touched by the picker above.
                                 </p>
@@ -426,8 +314,8 @@
                         </details>
                     </div>
 
-                    <div class="fed-card">
-                        <p class="fed-hint" style="margin:0 0 0.9em;">This button saves your library selections and the advanced settings below. Sharing, pools and per-friend connection details above already save themselves as you edit them.</p>
+                    <div class="verticalSection">
+                        <p class="fieldDescription">This button saves your library selections and the advanced settings below. Sharing, pools and per-friend connection details above already save themselves as you edit them.</p>
                         <div class="fed-savebar">
                             <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
                             <span class="fed-savemsg" id="fedSaveMsg"></span>
@@ -436,45 +324,45 @@
                 </div>
 
                 <div class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
-                    <details class="fed-card fed-details" id="fedAdvancedSettings">
+                    <details class="fed-details" id="fedAdvancedSettings">
                         <summary>Advanced settings</summary>
                         <div class="fed-details-body">
-                            <div class="fed-input-container">
-                                <label class="fed-label" for="fedTxtServerUrl">This server's public URL (optional override)</label>
-                                <input type="text" id="fedTxtServerUrl" class="emby-input fed-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                <p class="fed-hint" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all. This is what friends and clients connect to — it's not used for this server's own Proxy streams, see below.</p>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtServerUrl">This server's public URL (optional override)</label>
+                                <input type="text" id="fedTxtServerUrl" class="emby-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fieldDescription" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all. This is what friends and clients connect to — it's not used for this server's own Proxy streams, see below.</p>
                             </div>
-                            <div class="fed-input-container">
-                                <label class="fed-label" for="fedTxtInternalUrl">This server's local address (optional override)</label>
-                                <input type="text" id="fedTxtInternalUrl" class="emby-input fed-input" placeholder="http://127.0.0.1:8096 (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                <p class="fed-hint">Where this server's own transcoder fetches a Proxy-mode stream from — never the public URL above, since that would send every byte of a stream out through a reverse proxy/VPS/tunnel and back in just to reach itself. Leave blank; loopback is correct for virtually every setup. Only set this if 127.0.0.1 genuinely isn't reachable from where ffmpeg runs (e.g. Jellyfin split across containers without a shared network namespace) or Jellyfin listens on a non-default port.</p>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtInternalUrl">This server's local address (optional override)</label>
+                                <input type="text" id="fedTxtInternalUrl" class="emby-input" placeholder="http://127.0.0.1:8096 (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fieldDescription">Where this server's own transcoder fetches a Proxy-mode stream from — never the public URL above, since that would send every byte of a stream out through a reverse proxy/VPS/tunnel and back in just to reach itself. Leave blank; loopback is correct for virtually every setup. Only set this if 127.0.0.1 genuinely isn't reachable from where ffmpeg runs (e.g. Jellyfin split across containers without a shared network namespace) or Jellyfin listens on a non-default port.</p>
                             </div>
-                            <div class="fed-input-container">
-                                <label class="fed-label" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
-                                <input type="text" id="fedTxtCachePath" class="emby-input fed-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
+                                <input type="text" id="fedTxtCachePath" class="emby-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
-                            <p class="fed-hint" style="margin:-0.6em 0 0.8em;">
+                            <p class="fieldDescription">
                                 When on: your friends can see who your other friends are, and this server automatically sends friend requests
                                 to friends of your friends it discovers that way (they still have to accept). Off by default - this is a bigger
                                 trust decision than a single direct friendship. Either way, a server only ever shares its own library, never
                                 content that was itself federated into it from somewhere else.
                             </p>
-                            <div class="fed-input-container" style="margin-top:1em;">
-                                <label class="fed-label" for="fedTxtDedupIds">Provider IDs used for merging</label>
-                                <input type="text" id="fedTxtDedupIds" class="emby-input fed-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtDedupIds">Provider IDs used for merging</label>
+                                <input type="text" id="fedTxtDedupIds" class="emby-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
-                            <div class="fed-input-container">
-                                <label class="fed-label" for="fedTxtRefreshHours">Refresh interval (hours)</label>
-                                <input type="number" id="fedTxtRefreshHours" class="emby-input fed-input" min="1" max="168" />
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtRefreshHours">Refresh interval (hours)</label>
+                                <input type="number" id="fedTxtRefreshHours" class="emby-input" min="1" max="168" />
                             </div>
-                            <p class="fed-hint">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
+                            <p class="fieldDescription">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
 
-                            <h3 style="margin:1.4em 0 0.4em;font-size:1em;">Diagnostics</h3>
+                            <h3 class="fed-subhead">Diagnostics</h3>
                             <div id="fedDiagnostics" class="fed-diagnostic"></div>
-                            <div style="margin-top:0.8em;">
+                            <div>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="provision">Provision libraries</button>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-all">Test all servers</button>
                             </div>
@@ -482,8 +370,8 @@
                         </div>
                     </details>
 
-                    <div class="fed-card">
-                        <p class="fed-hint" style="margin:0 0 0.9em;">Saves the advanced settings above and your library selections on the Libraries tab together - it's the same save action either tab's button triggers.</p>
+                    <div class="verticalSection">
+                        <p class="fieldDescription">Saves the advanced settings above and your library selections on the Libraries tab together - it's the same save action either tab's button triggers.</p>
                         <div class="fed-savebar">
                             <button is="emby-button" type="submit" id="fedBtnSaveAdvanced" class="raised button-submit emby-button"><span>Save advanced settings</span></button>
                             <span class="fed-savemsg" id="fedSaveMsgAdvanced"></span>
@@ -499,10 +387,10 @@
                         direction). See Configuration/FederationPluginController.cs's
                         "Hidden Items" region and PluginConfiguration.HiddenFederatedItemIds.
                     -->
-                    <details class="fed-card fed-details" id="fedHiddenItemsSection">
+                    <details class="fed-details" id="fedHiddenItemsSection">
                         <summary>Hidden items (<span id="fedHiddenItemsCount">0</span>)</summary>
                         <div class="fed-details-body">
-                            <p class="fed-hint">
+                            <p class="fieldDescription">
                                 Items you've hidden from your own local library using the "Hide" button on an item's detail
                                 page. This only affects what you see here - the friend sharing it is never notified and keeps
                                 sharing it normally. Unhiding an item does not bring it back immediately; it reappears on the
@@ -1726,6 +1614,10 @@
                     }
 
                     function rejectFriendRequest(id) {
+                        if (!window.confirm('Reject this friend request?')) {
+                            return;
+                        }
+
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Reject', { method: 'POST' })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -1736,6 +1628,10 @@
                     }
 
                     function cancelFriendRequest(id) {
+                        if (!window.confirm('Cancel this outgoing friend request?')) {
+                            return;
+                        }
+
                         fedFetch('/Plugins/Federation/Friends/Outgoing/' + encodeURIComponent(id), { method: 'DELETE' })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -1867,6 +1763,11 @@
                     }
 
                     function leavePool(poolId) {
+                        var pool = (currentPools || []).filter(function (p) { return p.Id === poolId; })[0];
+                        if (!window.confirm('Leave "' + ((pool && pool.Name) || 'this pool') + '"?')) {
+                            return;
+                        }
+
                         fedFetch('/Plugins/Federation/Pools/' + encodeURIComponent(poolId), { method: 'DELETE' })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -2273,7 +2174,7 @@
                                 // "0/1" in the same neutral styling as every other stat
                                 // reads like a count, not like a fault. Colour it when
                                 // servers exist but none of them are live.
-                                se.style.color = ((d.totalServers || 0) > 0 && (d.activeServers || 0) === 0) ? '#ffb14d' : '';
+                                se.style.color = ((d.totalServers || 0) > 0 && (d.activeServers || 0) === 0) ? 'var(--fed-warn-text)' : '';
                             }
 
                             if (ie) { ie.textContent = (d.federatedItems || 0).toLocaleString(); }
@@ -2724,6 +2625,10 @@
                                     renderMappings();
                                     break;
                                 case 'remove-mapping':
+                                    if (!window.confirm('Remove this custom library?')) {
+                                        break;
+                                    }
+
                                     collectMappings();
                                     customMappings.splice(i, 1);
                                     renderMappings();

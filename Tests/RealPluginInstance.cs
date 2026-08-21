@@ -5,6 +5,7 @@ using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -43,7 +44,11 @@ internal sealed class RealPluginInstance : IDisposable
         var webClientInjector = new WebClientInjector(new FakeApplicationPaths(tempDir), NullLogger<WebClientInjector>.Instance);
         var libraryManagerMock = new Mock<ILibraryManager>();
         var provisioning = new LibraryProvisioningService(libraryManagerMock.Object, NullLogger<LibraryProvisioningService>.Instance);
-        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, libraryManagerMock.Object, webClientInjector, provisioning);
+
+        // Empty provider: tests never trigger OnUninstalling's scope-resolved
+        // cleanup, and an empty scope simply resolves nothing there.
+        using var serviceProvider = new ServiceCollection().BuildServiceProvider();
+        _ = new Plugin(new FakeApplicationPaths(tempDir), xml.Object, NullLogger<Plugin>.Instance, libraryManagerMock.Object, webClientInjector, provisioning, serviceProvider);
     }
 
     public PluginConfiguration Configuration => Plugin.Instance!.Configuration;

@@ -25,12 +25,18 @@ namespace Jellyfin.Plugin.Federation.Services
         // RemoteServerClientFactory), so this cache is static/shared rather than an
         // instance field - otherwise it would never survive between calls. Every
         // play of a federated item calls GetPlaybackInfoAsync, which is a live HTTP
-        // round trip to the remote; a short TTL absorbs the common case of a client
-        // re-requesting playback info seconds apart (multiple sources for the same
-        // item, a player re-checking on resume) without going stale for an actual
-        // viewing session.
+        // round trip to the remote (plus the remote's own internal loopback hop to
+        // its native PlaybackInfo endpoint - see Peer/PlaybackInfo on the receiving
+        // side). The 15s TTL this used to have meant nearly every press of "play"
+        // paid that full WAN round trip again, even though the container/codec/
+        // stream metadata it returns only changes when the remote rescans its
+        // library. Five minutes removes that round trip from the common case
+        // (browse-then-play, resume, player re-requesting PlaybackInfo seconds
+        // apart, seeking back into the same session) while staying short enough
+        // that a remote-side library rescan or sharing-scope change is picked up
+        // within minutes.
         private static readonly ConcurrentDictionary<string, (DateTime Expires, PlaybackInfoResponse Response)> PlaybackInfoCache = new();
-        private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromSeconds(15);
+        private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromMinutes(5);
 
         // Same rationale as PlaybackInfoCache above (a client is constructed per
         // call, so this has to be static to survive between them). Keeps one sync
@@ -47,6 +53,16 @@ namespace Jellyfin.Plugin.Federation.Services
         // later.
         private static readonly ConcurrentDictionary<string, (DateTime Expires, string Token)> UserSessionTokenCache = new();
         private static readonly TimeSpan UserSessionTokenCacheTtl = TimeSpan.FromHours(5);
+
+        // A 404 from RegisterUserSession means the remote runs an older plugin
+        // version that simply doesn't have that endpoint. Remember it briefly so
+        // every subsequent play doesn't burn a full WAN round trip on the doomed
+        // call before falling back to the item-scoped token - without this, a
+        // version-skewed friend cost one wasted round trip per play, serially in
+        // front of the fallback token mint. Short TTL so a remote that upgrades
+        // picks the faster path again within the hour.
+        private static readonly ConcurrentDictionary<string, DateTime> SessionEndpointUnsupportedCache = new();
+        private static readonly TimeSpan SessionEndpointUnsupportedTtl = TimeSpan.FromHours(1);
 
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
@@ -580,6 +596,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return cached.Token;
             }
 
+            // Known-old-version remote (a previous 404): skip straight to the
+            // caller's item-scoped fallback instead of paying a doomed round trip.
+            if (SessionEndpointUnsupportedCache.TryGetValue(_server.Id, out var unsupportedUntil) && unsupportedUntil > DateTime.UtcNow)
+            {
+                return null;
+            }
+
             try
             {
                 using var content = new StringContent(
@@ -590,6 +613,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
+                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        SessionEndpointUnsupportedCache[_server.Id] = DateTime.UtcNow + SessionEndpointUnsupportedTtl;
+                    }
+
                     _logger.LogDebug(
                         "[Federation] Could not register a streaming session for user {UserId} with {ServerName}: HTTP {StatusCode}",
                         localUserId,
@@ -613,6 +641,52 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogDebug(ex, "[Federation] Error registering a streaming session for user {UserId} with {ServerName}", localUserId, _server.Name);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Drops any cached streaming session token for the given server+user so
+        /// the next call re-registers. Called when a relayed stream is rejected
+        /// with 401/403 - the most common cause by far is the remote restarting
+        /// (its in-memory token stores were wiped) while this side's 5-hour cache
+        /// still hands out the dead token; without this, every stream attempt for
+        /// that window reuses the exact token the remote just rejected.
+        /// </summary>
+        public static void InvalidateUserSessionToken(string serverId, string? localUserId)
+        {
+            if (string.IsNullOrEmpty(localUserId))
+            {
+                return;
+            }
+
+            UserSessionTokenCache.TryRemove($"{serverId}:{localUserId}", out _);
+        }
+
+        /// <summary>
+        /// Drops every static cache entry keyed to a server id (playback info,
+        /// peer status, session tokens, capability probes). Called when the server
+        /// is removed from configuration so removal - and any later re-friend with
+        /// a fresh identity - never reuses or accumulates stale entries.
+        /// </summary>
+        public static void InvalidateServerCaches(string serverId)
+        {
+            if (string.IsNullOrEmpty(serverId))
+            {
+                return;
+            }
+
+            var prefix = serverId + ":";
+            foreach (var key in PlaybackInfoCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                PlaybackInfoCache.TryRemove(key, out _);
+            }
+
+            foreach (var key in UserSessionTokenCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                UserSessionTokenCache.TryRemove(key, out _);
+            }
+
+            PeerStatusCache.TryRemove(serverId, out _);
+            SessionEndpointUnsupportedCache.TryRemove(serverId, out _);
         }
 
         // The shared per-server _httpClient (see RemoteServerClientFactory) has a
@@ -821,7 +895,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
+
+                // Prefer this plugin's own token-authenticated Peer/BitrateTest
+                // route. The native /Playback/BitrateTest endpoint requires real
+                // Jellyfin auth, which the scoped federation token this client
+                // sends cannot satisfy - so ever since the token rewrite the
+                // native call has 401'd, the probe always failed, and WAN bitrate
+                // caps silently stopped being applied (clients then tried to
+                // direct-play bitrates their link can't carry - buffering). The
+                // native endpoint stays as a fallback for remotes running plugin
+                // versions too old to have the peer route.
+                var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    response.Dispose();
+                    response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
+                }
+
                 response.EnsureSuccessStatusCode();
                 var bytes = await response.Content.ReadAsByteArrayAsync(linkedCts.Token).ConfigureAwait(false);
                 stopwatch.Stop();
