@@ -70,6 +70,11 @@ namespace Jellyfin.Plugin.Federation.Services
             _clientFactory = clientFactory;
         }
 
+        // Name under which this plugin's single internal relay API key is
+        // registered in Jellyfin's key store - shared by creation, the
+        // once-per-process orphan sweep, and uninstall-time revocation.
+        internal const string InternalRelayKeyName = "Federation internal relay";
+
         // Guards check-then-create below against a race on first concurrent use
         // (two Direct-mode plays landing on FederationController.DirectStream at
         // almost the same instant, before Configuration.InternalRelayApiKey has been
@@ -79,6 +84,9 @@ namespace Jellyfin.Plugin.Federation.Services
         // has to be static to actually serialize across those instances. In practice
         // this happens at most once per server lifetime.
         private static readonly SemaphoreSlim InternalRelayKeyLock = new(1, 1);
+
+        // Once-per-process guard for the orphaned-key sweep below (0 = not run yet).
+        private static int _orphanKeySweepDone;
 
         /// <summary>
         /// Gets this server's own internal relay API key (see
@@ -93,6 +101,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var config = Plugin.Instance!.Configuration;
             if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
             {
+                await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
                 return config.InternalRelayApiKey;
             }
 
@@ -104,17 +113,71 @@ namespace Jellyfin.Plugin.Federation.Services
                 config = Plugin.Instance!.Configuration;
                 if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
                 {
+                    await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
                     return config.InternalRelayApiKey;
                 }
 
-                var apiKey = await CreateApiKeyAsync("Federation internal relay").ConfigureAwait(false);
+                var apiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
                 config.InternalRelayApiKey = apiKey;
                 Plugin.Instance.SaveConfiguration();
+                await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
                 return apiKey;
             }
             finally
             {
                 InternalRelayKeyLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Deletes every "Federation internal relay" API key other than the one
+        /// currently configured. Older plugin versions had a bug (fixed in 0.0.77)
+        /// that minted a fresh real admin-equivalent key on every config save and
+        /// abandoned the old one, so long-running servers may have several of
+        /// these standing in their key store. Runs at most once per process
+        /// (flag-guarded) off the natural first relay request, never on a timer.
+        /// </summary>
+        private async Task SweepOrphanedRelayKeysOnceAsync()
+        {
+            if (Interlocked.Exchange(ref _orphanKeySweepDone, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var current = Plugin.Instance?.Configuration?.InternalRelayApiKey;
+                var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
+                foreach (var key in keys.Where(k => string.Equals(k.AppName, InternalRelayKeyName, StringComparison.Ordinal)
+                                                    && !string.Equals(k.AccessToken, current, StringComparison.Ordinal)).ToList())
+                {
+                    await _authManager.DeleteApiKey(key.AccessToken).ConfigureAwait(false);
+                    _logger.LogInformation("[Federation] Deleted an orphaned '{KeyName}' API key left behind by an older plugin version", InternalRelayKeyName);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not sweep orphaned internal relay API keys (non-fatal)");
+            }
+        }
+
+        /// <summary>
+        /// Deletes every "Federation internal relay" API key from Jellyfin's key
+        /// store. Called on plugin uninstall: the key is a real, admin-equivalent
+        /// Jellyfin credential (the only one this plugin ever creates), and it
+        /// lives in Jellyfin's own key store rather than this plugin's config, so
+        /// without this it would survive the uninstall as a standing admin key
+        /// nobody remembers minting. Static because the plugin instance itself is
+        /// a singleton and must resolve the DI-scoped
+        /// <see cref="MediaBrowser.Controller.Security.IAuthenticationManager"/>
+        /// through a short-lived scope at uninstall time.
+        /// </summary>
+        internal static async Task RevokeInternalRelayApiKeysAsync(IAuthenticationManager authManager)
+        {
+            var keys = await authManager.GetApiKeys().ConfigureAwait(false);
+            foreach (var key in keys.Where(k => string.Equals(k.AppName, InternalRelayKeyName, StringComparison.Ordinal)).ToList())
+            {
+                await authManager.DeleteApiKey(key.AccessToken).ConfigureAwait(false);
             }
         }
 

@@ -28,20 +28,29 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
 
         /// <summary>
-        /// Mints a fresh token scoped to a single remote item id, valid for 24 hours.
+        /// Mints a fresh token scoped to a single remote item id and the friend
+        /// relationship it was minted through, valid for 24 hours. Binding the
+        /// friendship id means the token dies with the relationship: previously an
+        /// item token minted just before an unfriend kept working for up to 24
+        /// hours afterwards, because nothing at stream time ever re-resolved which
+        /// friend the minting call came from.
         /// </summary>
         /// <param name="remoteItemId">
         /// The remote item id this token authorizes streaming for. Compared against
         /// the same string format the caller uses everywhere else (e.g. <c>src.RemoteItemId:N</c>)
         /// so it is stored and matched consistently.
         /// </param>
+        /// <param name="federationId">
+        /// The calling friend's persistent federation id (<see cref="Configuration.RemoteServer.FederationId"/>),
+        /// used to re-resolve which friend this token belongs to at stream time.
+        /// </param>
         /// <returns>The newly minted token.</returns>
-        public string Issue(string remoteItemId)
+        public string Issue(string remoteItemId, string federationId)
         {
             Prune();
 
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-            _tokens[token] = new Entry(remoteItemId, DateTime.UtcNow + TokenLifetime);
+            _tokens[token] = new Entry(remoteItemId, federationId, DateTime.UtcNow + TokenLifetime);
             return token;
         }
 
@@ -49,10 +58,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Validates a token against the remote item id it is being used for. True
         /// only when the token exists, has not expired, and was minted for exactly
         /// this item (case-insensitive, matching the hex-string convention item ids
-        /// use elsewhere in this codebase).
+        /// use elsewhere in this codebase). The minting friendship id is returned
+        /// via <paramref name="federationId"/> - callers must additionally check
+        /// that the friendship still exists (see the controller's
+        /// <c>IsStreamTokenAuthorized</c>) so an unfriend revokes outstanding
+        /// tokens immediately rather than at expiry.
         /// </summary>
-        public bool TryValidate(string? token, string? remoteItemId)
+        public bool TryValidate(string? token, string? remoteItemId, out string? federationId)
         {
+            federationId = null;
             Prune();
 
             if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(remoteItemId))
@@ -71,6 +85,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
+            federationId = entry.FederationId;
             return string.Equals(entry.RemoteItemId, remoteItemId, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -88,6 +103,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private readonly record struct Entry(string RemoteItemId, DateTime ExpiresUtc);
+        private readonly record struct Entry(string RemoteItemId, string FederationId, DateTime ExpiresUtc);
     }
 }

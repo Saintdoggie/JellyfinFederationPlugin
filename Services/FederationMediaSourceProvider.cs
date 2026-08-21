@@ -244,9 +244,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 // back unplayable - which surfaces in clients as
                 // PlaybackError.NO_MEDIA_ERROR ("Unable to find a valid media
                 // source to play") even though a source was returned.
+                // Bound the whole remote batch phase. The shared per-server
+                // HttpClient allows 5 minutes for a legitimately slow library
+                // sync, which is far too long for a user sitting on "press
+                // play": one hung remote would otherwise stall PlaybackInfo -
+                // and therefore playback start - for up to that long. Twenty
+                // seconds is generous for the small JSON metadata GET and
+                // token-mint POST made here; every callee swallows its own
+                // exceptions (returning null = source skipped), so a timeout
+                // degrades to "this source isn't playable right now" instead of
+                // throwing out of the provider.
+                using var playPathCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                playPathCts.CancelAfter(TimeSpan.FromSeconds(20));
+
                 var fetchTasks = candidates.Select(c => c.IsWanCapped
                     ? Task.FromResult<MediaSourceInfo?>(null)
-                    : FetchRemoteSourceAsync(c.Server, c.Src, localUserId, cancellationToken)).ToArray();
+                    : FetchRemoteSourceAsync(c.Server, c.Src, localUserId, playPathCts.Token)).ToArray();
 
                 // Path-building (a token mint for a Direct-mode candidate, an
                 // effectively-synchronous local URL build for a Proxy-mode one) runs
@@ -255,7 +268,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // calls are issued back-to-back with no `await` between them so both
                 // sets of remote calls are already in flight before either is
                 // awaited.
-                var pathTasks = candidates.Select(c => BuildPlaybackPathAsync(c.Server, c.Src, entry.ItemType, localUserId)).ToArray();
+                var pathTasks = candidates.Select(c => BuildPlaybackPathAsync(c.Server, c.Src, entry.ItemType, localUserId, playPathCts.Token)).ToArray();
                 var fetchWhenAll = Task.WhenAll(fetchTasks);
                 var pathWhenAll = Task.WhenAll(pathTasks);
                 await Task.WhenAll(fetchWhenAll, pathWhenAll).ConfigureAwait(false);
@@ -442,7 +455,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// unreachable or the remote refuses to mint a token - never falls back to
         /// embedding the raw key.
         /// </summary>
-        private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId)
+        private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId, CancellationToken cancellationToken)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
@@ -478,12 +491,12 @@ namespace Jellyfin.Plugin.Federation.Services
             // blocked user, or any transient failure - never leaves the source
             // unplayable just because the newer mechanism didn't work.
             var token = localUserId.HasValue
-                ? await client.GetOrRegisterUserSessionTokenAsync(localUserId.Value.ToString("N"), null, default).ConfigureAwait(false)
+                ? await client.GetOrRegisterUserSessionTokenAsync(localUserId.Value.ToString("N"), null, cancellationToken).ConfigureAwait(false)
                 : null;
 
             if (token == null)
             {
-                (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: default, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
+                (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: cancellationToken, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
             }
 
             if (token == null)

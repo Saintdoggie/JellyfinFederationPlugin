@@ -277,7 +277,15 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private async Task RemoveLibraryAsync(string name)
+        /// <summary>
+        /// Removes (or, for a merged user library, detaches federation paths from)
+        /// the library for a mapping name. Only ever touches plugin-managed folders
+        /// - a library with no federation-owned locations is left alone. Internal
+        /// so the config controller can also clean up a mapping that was deleted
+        /// from configuration (not just disabled), which used to orphan the
+        /// library entirely.
+        /// </summary>
+        internal async Task RemoveLibraryAsync(string name)
         {
             var federationRoot = GetFederationRoot();
             if (string.IsNullOrEmpty(federationRoot))

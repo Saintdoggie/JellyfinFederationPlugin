@@ -290,6 +290,39 @@ namespace Jellyfin.Plugin.Federation.Api
                 Plugin.Instance?.UpdateConfiguration(config);
                 _clientFactory.InvalidateAll();
 
+                // A mapping deleted from config used to orphan everything it ever
+                // created, forever: its library folder, every virtual item in it,
+                // and all its cache entries - nothing ever looked at names that
+                // were no longer in the config (ClearMapping had no production
+                // caller at all). Clean them up here instead: clear the cache
+                // entries, reconcile (which deletes every persisted item whose
+                // cache entry is gone - see FederationItemPersistenceService),
+                // then remove/detach the provisioned library itself.
+                var removedMappingNames = (existing?.LibraryMappings ?? new List<LibraryMapping>())
+                    .Select(m => m.LocalLibraryName)
+                    .Except((config.LibraryMappings ?? new List<LibraryMapping>()).Select(m => m.LocalLibraryName), StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var removedName in removedMappingNames)
+                {
+                    try
+                    {
+                        _cache.ClearMapping(removedName);
+                        await _persistence.ReconcileMappingAsync(new LibraryMapping { LocalLibraryName = removedName }, cancellationToken).ConfigureAwait(false);
+                        await _provisioning.RemoveLibraryAsync(removedName).ConfigureAwait(false);
+                        _logger.LogInformation("[Federation] Removed library mapping {Name}: deleted its federated items and library", removedName);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Cleanup after removing mapping {Name} failed; leftovers will be retried on the next sync", removedName);
+                    }
+                }
+
+                if (removedMappingNames.Count > 0)
+                {
+                    await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
+                }
+
                 if (config.AutoProvisionLibraries)
                 {
                     await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);
@@ -759,6 +792,27 @@ namespace Jellyfin.Plugin.Federation.Api
                 mapping.RemoteLibrarySources?.RemoveAll(s => s.ServerId == id);
                 _cache.PruneServerSources(mapping.LocalLibraryName, id, seen);
             }
+
+            // Pool rosters kept removed friends as dead members until now - drop
+            // them so rosters (and the pool fan-out notices built from them) stop
+            // referencing a server that is no longer configured.
+            foreach (var pool in config.Pools ?? new List<FederationPool>())
+            {
+                var before = pool.Members.Count;
+                pool.Members.RemoveAll(m =>
+                    (!string.IsNullOrEmpty(server.FederationId) && string.Equals(m.FederationId, server.FederationId, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrEmpty(server.Url) && string.Equals(m.Url, server.Url, StringComparison.OrdinalIgnoreCase)));
+                if (pool.Members.Count != before)
+                {
+                    _logger.LogInformation("[Federation] Removed {ServerName} from pool {PoolName}", server.Name, pool.Name);
+                }
+            }
+
+            // Static per-server caches in RemoteServerClient (playback info, peer
+            // status, session tokens, capability probes) are keyed by server id -
+            // drop them so this removal (and any later re-friend with a fresh
+            // identity) never reuses stale entries.
+            RemoteServerClient.InvalidateServerCaches(id);
 
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(id);
@@ -1282,7 +1336,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            var token = _playbackTokens.Issue(itemGuid.ToString("N"));
+            var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId);
             return Ok(new { token, expiresUtc = DateTime.UtcNow.AddHours(24) });
         }
 
@@ -1350,9 +1404,15 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private bool IsStreamTokenAuthorized(string? token, Guid itemGuid)
         {
-            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N")))
+            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerFederationId))
             {
-                return true;
+                // The friendship that minted this token must still exist. An
+                // item-scoped token used to keep working for up to 24 hours after
+                // an unfriend/server removal because nothing here ever re-resolved
+                // which friend the mint came from - binding the federation id at
+                // mint time (see IssuePlaybackToken) makes removal revoke it
+                // instantly instead.
+                return _friends.FindByFederationId(ownerFederationId) != null;
             }
 
             if (_userSessionTokens.TryValidate(token, out var federationId, out var remoteUserId))
@@ -1522,6 +1582,46 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+        }
+
+        /// <summary>
+        /// Token-authenticated counterpart to Jellyfin's native
+        /// <c>/Playback/BitrateTest</c>: a friend measures its real download
+        /// throughput from this server so its <see cref="WanBandwidthMonitor"/> can
+        /// size a WAN bitrate cap from a measurement instead of a guess. The native
+        /// endpoint requires real Jellyfin auth (which a scoped federation token
+        /// cannot satisfy), so before this route existed the measurement always
+        /// failed post-token-rewrite and WAN caps silently stopped applying -
+        /// clients then attempted to direct-play bitrates the link couldn't carry
+        /// (constant buffering). Serves <paramref name="size"/> bytes of zeros from
+        /// a small reused buffer; the content is irrelevant, only the timing
+        /// matters.
+        /// </summary>
+        [HttpGet("Peer/BitrateTest")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerBitrateTest([FromQuery] int size, CancellationToken cancellationToken)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            var clamped = Math.Clamp(size, 1, 50_000_000);
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "application/octet-stream";
+            Response.ContentLength = clamped;
+
+            var chunk = new byte[64 * 1024];
+            var remaining = clamped;
+            while (remaining > 0)
+            {
+                var take = Math.Min(chunk.Length, remaining);
+                await Response.Body.WriteAsync(chunk.AsMemory(0, take), cancellationToken).ConfigureAwait(false);
+                remaining -= take;
+            }
+
+            return new EmptyResult();
         }
 
         /// <summary>

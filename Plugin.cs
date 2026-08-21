@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
@@ -8,8 +9,10 @@ using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
+using MediaBrowser.Controller.Security;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation
@@ -23,6 +26,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly ILibraryManager _libraryManager;
         private readonly WebClientInjector _webClientInjector;
         private readonly LibraryProvisioningService _provisioning;
+        private readonly IServiceProvider _serviceProvider;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Plugin"/> class.
@@ -33,13 +37,15 @@ namespace Jellyfin.Plugin.Federation
             ILogger<Plugin> logger,
             ILibraryManager libraryManager,
             WebClientInjector webClientInjector,
-            LibraryProvisioningService provisioning)
+            LibraryProvisioningService provisioning,
+            IServiceProvider serviceProvider)
             : base(applicationPaths, xmlSerializer)
         {
             _logger = logger;
             _libraryManager = libraryManager;
             _webClientInjector = webClientInjector;
             _provisioning = provisioning;
+            _serviceProvider = serviceProvider;
             Instance = this;
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
         }
@@ -160,6 +166,49 @@ namespace Jellyfin.Plugin.Federation
             // injection needs no equivalent cleanup - it stops running the moment
             // this plugin's assembly is unloaded.
             _webClientInjector.RemoveBadgeScriptInjection();
+
+            // The "Federation internal relay" key is a real, admin-equivalent
+            // Jellyfin API key - the only one this plugin ever creates. It lives
+            // in Jellyfin's own key store (not this plugin's config folder, which
+            // Jellyfin core deletes right after this method returns), so without
+            // this it would survive the uninstall as a standing admin credential
+            // nobody remembers minting. IAuthenticationManager is DI-scoped while
+            // this plugin instance is a singleton, so resolve it through a
+            // short-lived scope - the same pattern FederationSyncService uses for
+            // FederationFriendService.
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var authManager = scope.ServiceProvider.GetService(typeof(IAuthenticationManager)) as IAuthenticationManager;
+                if (authManager != null)
+                {
+                    FederationFriendService.RevokeInternalRelayApiKeysAsync(authManager).GetAwaiter().GetResult();
+                    _logger.LogInformation("[Federation] Plugin uninstall: revoked the internal relay API key(s)");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Plugin uninstall: could not revoke the internal relay API key; delete it manually under Dashboard > API Keys");
+            }
+
+            // A custom CachePath points outside the plugin data folder that
+            // Jellyfin core removes on its own after this - delete the cache file
+            // there too so uninstalling really does leave nothing behind.
+            try
+            {
+                var customCachePath = Configuration.CachePath;
+                if (!string.IsNullOrEmpty(customCachePath)
+                    && !string.Equals(customCachePath, GetDefaultCachePath(), StringComparison.OrdinalIgnoreCase)
+                    && File.Exists(customCachePath))
+                {
+                    File.Delete(customCachePath);
+                    _logger.LogInformation("[Federation] Plugin uninstall: deleted custom cache file {Path}", customCachePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Plugin uninstall: could not delete the custom cache file");
+            }
 
             base.OnUninstalling();
         }

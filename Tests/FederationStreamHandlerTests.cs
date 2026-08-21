@@ -179,6 +179,35 @@ public class FederationStreamHandlerTests : IDisposable
         Assert.True(lifetime.AbortCalled);
     }
 
+    [Fact]
+    public async Task RemoteRejectsCachedToken_RemintsAndRelaysAgain()
+    {
+        // The remote restarted and wiped its in-memory token stores, while this
+        // side still holds a token it considers valid: the first relay attempt
+        // comes back 403. The handler must drop the dead token, mint a fresh one,
+        // and relay once more - without this recovery every stream stayed broken
+        // for up to 5 hours (the session-token cache TTL) after each remote
+        // restart, with player retries re-sending the exact dead token.
+        var remoteBytes = Encoding.UTF8.GetBytes("recovered after re-mint");
+        var attempts = 0;
+
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+        {
+            attempts++;
+            return attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.Forbidden)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(remoteBytes) };
+        }));
+
+        var (request, response, body) = MakeContext(null);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(200, response.StatusCode);
+        Assert.Equal(remoteBytes.Length, body.Length);
+    }
+
     private sealed class SpyRequestLifetimeFeature : IHttpRequestLifetimeFeature
     {
         public bool AbortCalled { get; private set; }
