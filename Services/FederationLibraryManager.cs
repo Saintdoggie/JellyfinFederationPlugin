@@ -129,33 +129,20 @@ namespace Jellyfin.Plugin.Federation.Services
             // remote did not report one, the container is discovered by the
             // EnableRemoteContentProbe pass described above instead.
             //
-            // Deliberately independent of whether streamUrl above is non-null:
-            // Direct mode never persists a Path (see ResolvePlaybackUrl's security
-            // comment) even though its stream is genuinely playable and does have a
-            // real, decided container - gating this on streamUrl != null would have
-            // silently stopped stamping Container/MediaStreams for every Direct-mode
-            // item the moment that Path stopped being persisted, even though neither
-            // of those depends on a Path actually being written to disk. Gated
-            // instead on the server being resolvable and enabled, mirroring
-            // BuildPlaybackUrl's own "no server, no URL" guard.
+            // Deliberately independent of whether streamUrl above is non-null, and
+            // no longer WAN-cap aware: the capped Direct-mode transcode URL that
+            // used to force Container="mp4" here is internal-only (never served to
+            // any client - see BuildStaticPath/BuildPlaybackPathAsync), while every
+            // URL a client actually receives - the stamped proxy-gateway Path and
+            // the provider's token-gated DirectStream URL alike - serves the raw
+            // source file. The remote's real container describes those bytes.
             //
-            // WAN-capped Direct-mode video forces its URL to mp4/h264/aac
-            // (BuildPlaybackUrl) rather than the source file's real container.
-            // Stamping the raw container in that case would mismatch what the URL
-            // actually serves.
-            var isWanCappedVideo = false;
-            var primaryForContainer = IsStreamableType(entry.ItemType) ? entry.GetPrimarySource() : null;
-            if (primaryForContainer != null && GetServer(primaryForContainer.ServerId) is { Enabled: true } containerServer)
+            // Gated on the server being resolvable and enabled, mirroring
+            // BuildPlaybackUrl's own "no server, no URL" guard.
+            if (IsStreamableType(entry.ItemType) && entry.GetPrimarySource() is { } primaryForContainer
+                && GetServer(primaryForContainer.ServerId) is { Enabled: true })
             {
-                isWanCappedVideo = !IsAudioType(entry.ItemType)
-                    && containerServer.StreamingMode == StreamingMode.Direct
-                    && _bandwidthMonitor.GetEffectiveCapMbps(containerServer) != null;
-
-                if (isWanCappedVideo)
-                {
-                    item.Container = "mp4";
-                }
-                else if (!string.IsNullOrEmpty(entry.Metadata.Container))
+                if (!string.IsNullOrEmpty(entry.Metadata.Container))
                 {
                     item.Container = entry.Metadata.Container;
                 }
@@ -284,15 +271,15 @@ namespace Jellyfin.Plugin.Federation.Services
             // Stable local id derived from cache key so the same virtual item survives refreshes.
             item.Id = _libraryManager.GetNewItemId(entry.FederationPath, item.GetType());
 
-            // Not saved for the WAN-capped-Direct case above: that URL serves a
-            // forced h264/aac/mp4 transcode of the source, not the raw file, so the
-            // remote's real (often much richer, e.g. 4K HEVC) stream data would
-            // describe bytes the URL doesn't actually serve. Falling back to
-            // EnableRemoteContentProbe there still works, it just costs the probe
-            // this is otherwise trying to avoid - an acceptable tradeoff for a
-            // narrower, already-slower-by-design path. Must run after item.Id is
-            // assigned above, since that's the key this is saved under.
-            if (!isWanCappedVideo && entry.Metadata.MediaStreams is { Length: > 0 } streams)
+            // Persisted unconditionally now: the WAN-capped Direct transcode URL
+            // is internal-only (never served to a client), while every
+            // client-facing URL - the stamped proxy-gateway Path and the
+            // provider's token-gated DirectStream URL alike - serves the raw
+            // source file, so the remote's real stream data describes the bytes
+            // clients actually get, and direct play can be certified without a
+            // live probe. Must run after item.Id is assigned above, since that's
+            // the key this is saved under.
+            if (entry.Metadata.MediaStreams is { Length: > 0 } streams)
             {
                 try
                 {
@@ -386,82 +373,7 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 var primary = entry.GetPrimarySource();
-                if (primary == null)
-                {
-                    return null;
-                }
-
-                // Previously left Path null here for Direct mode with WanCapMode Auto
-                // or Manual, specifically to avoid freezing a URL that could go stale
-                // once WanBandwidthMonitor's classification/measurement changes
-                // (reconciliation never updates an existing item's Path in place).
-                // That traded a minor problem for a much worse one: with Path null,
-                // Jellyfin's own static media source comes back as
-                // MediaSourceType.Placeholder (see the comment on item.Path above -
-                // this is precisely the "no media here" case it warns about), and
-                // GetMediaSources.staticSourceCoversPrimary correctly resolves to
-                // false when Path is empty - so the item-detail endpoint
-                // (Users/{id}/Items/{itemId}, which embeds Jellyfin core's *static*
-                // source rather than calling this plugin's dynamic provider) surfaces
-                // that Placeholder to clients. jellyfin-web's Details page uses
-                // exactly that embedded source to decide whether to render the Play
-                // button at all, regardless of the SupportsDirectPlay/DirectStream/
-                // Transcoding flags on it - so every WAN-capped Direct-mode item was
-                // permanently unplayable from its own detail page, confirmed live
-                // (0.0.37 testing): "Placeholder"/"File" protocol/IsRemote=false on
-                // the embedded source despite a fully valid, correctly-capped source
-                // being available through PlaybackInfo the whole time.
-                //
-                // The staleness this was guarding against is already handled: when
-                // WanBandwidthMonitor's decision moves on and the stored Path no
-                // longer matches a freshly built URL, staticSourceCoversPrimary
-                // resolves to false and FederationMediaSourceProvider.GetMediaSources
-                // already logs a warning and serves a freshly built alternate source
-                // instead (see the comment above staticSourceCoversPrimary). Worst
-                // case a client ends up direct-playing the stale-but-still-valid
-                // cached URL until the item is recreated - a wrong bitrate, not an
-                // unplayable item. That is strictly better than no Play button.
-                //
-                // Security: Direct mode's BuildPlaybackUrl result carries the
-                // remote's real, long-lived api_key in its query string - see that
-                // method's doc comment. This is the one place that result could be
-                // stamped onto item.Path and handed straight to every client on
-                // every play, so it is the one place that is explicitly blocked:
-                // Direct mode never gets a persisted Path at all. The real,
-                // short-lived, single-item-scoped playback URL is instead built
-                // live, per request, by FederationMediaSourceProvider.GetMediaSources
-                // (BuildPlaybackPathAsync), which mints a fresh token from the
-                // remote for exactly the item being played. Proxy mode is unaffected
-                // - its URL already never contains server.ApiKey.
-                var server = GetServer(primary.ServerId);
-                if (server != null && server.StreamingMode == StreamingMode.Direct)
-                {
-                    return null;
-                }
-
-                // Same reasoning as the Direct-mode carve-out above, different
-                // hazard: a per-remote-user access override
-                // (RemoteAccessControlService.IsAllowed, keyed by which of *our*
-                // local users is asking) can only ever be evaluated per-request,
-                // but a stamped item.Path is one static value shared by every
-                // client that ever requests this item's detail page - Jellyfin
-                // serves that static source directly without calling this
-                // plugin's dynamic provider at all (see the "known gap" comment
-                // in FederationMediaSourceProvider.GetMediaSources). A friend who
-                // restricted one specific local user from this content would
-                // otherwise have that restriction silently bypassed for the
-                // primary source the moment it was reachable via Path instead of
-                // the provider - confirmed as a real, reported bug, not a
-                // theoretical one. Any FriendUserAccessRules at all means some
-                // local user needs individual gating on this server's content, so
-                // Path is left unstamped and every request is forced through the
-                // provider's IsAllowed check instead.
-                if (server != null && server.FriendUserAccessRules != null && server.FriendUserAccessRules.Count > 0)
-                {
-                    return null;
-                }
-
-                return BuildPlaybackUrl(entry.ItemType, primary);
+                return primary == null ? null : BuildStaticPath(entry.ItemType, primary);
             }
             catch (Exception ex)
             {
@@ -471,33 +383,93 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Builds the URL a federated item's media would stream from for a given
-        /// source, or null when it can't be built at all: server gone/disabled, or
-        /// Proxy mode with no configured public URL (sync runs on a background task
-        /// with no incoming HTTP request to infer one from).
+        /// The client-facing static Path this plugin stamps on a federated item:
+        /// this server's own <c>/Plugins/Federation/Stream</c> proxy gateway, for
+        /// both streaming modes. That endpoint is anonymous and secret-free (it
+        /// mints a short-lived remote token per request - see
+        /// <see cref="FederationStreamHandler.BuildDirectStreamUrlAsync"/>), so
+        /// unlike <see cref="BuildPlaybackUrl"/>'s Direct-mode output it is safe to
+        /// persist on <c>item.Path</c>, which Jellyfin serializes straight into
+        /// client-facing static media sources.
         /// <para>
-        /// For Direct mode this still builds the real, remote-api_key-bearing URL
+        /// Why a Path matters at all: Jellyfin resolves <c>LocationType</c> from
+        /// item.Path, and jellyfin-web's <c>canPlay()</c> hides the Play button for
+        /// any non-Program item with <c>LocationType === 'Virtual'</c> - i.e. an
+        /// empty Path. Direct mode used to return null here (token-security), which
+        /// left every Direct-mode item without a Play button anywhere in the web
+        /// client, regardless of the perfectly good source
+        /// <see cref="FederationMediaSourceProvider"/> serves through PlaybackInfo.
+        /// Routing the stamped URL through this server's proxy costs a relay hop
+        /// for the static source, but playback is only possible with a button.
+        /// </para>
+        /// <para>
+        /// Null (deliberately no static Path - the provider's per-request source
+        /// becomes the only path) when the server is missing/disabled, or when any
+        /// <see cref="RemoteServer.FriendUserAccessRules"/> exist: those are keyed
+        /// by which of *our* local users is asking, but a stamped item.Path is one
+        /// static value shared by every client, so persisting one would silently
+        /// bypass the per-user restriction for the primary source (a real, reported
+        /// bug this guard closes).
+        /// </para>
+        /// </summary>
+        public string? BuildStaticPath(string itemType, FederatedSource src)
+        {
+            var server = GetServer(src.ServerId);
+            if (server == null || !server.Enabled)
+            {
+                return null;
+            }
+
+            if (server.FriendUserAccessRules != null && server.FriendUserAccessRules.Count > 0)
+            {
+                return null;
+            }
+
+            return BuildProxyStreamUrl(itemType, src);
+        }
+
+        /// <summary>
+        /// Builds this server's own loopback proxy-gateway URL for a source (see
+        /// <see cref="BuildStaticPath"/>). Contains no credential of any kind.
+        /// </summary>
+        private string? BuildProxyStreamUrl(string itemType, FederatedSource src)
+        {
+            var server = GetServer(src.ServerId);
+            if (server == null || !server.Enabled)
+            {
+                return null;
+            }
+
+            // Loopback, not GetLocalServerUrl() (which is the public URL used
+            // for peer/federation handshakes). This URL is fetched by this
+            // server's own transcoder and by clients through this server's
+            // normal reverse-proxy/host setup - never a reason to hairpin out
+            // through DNS/CDN/tunnel and back to the same Jellyfin process,
+            // which on a VPS-fronted setup (i.e. essentially every production
+            // setup) is what turned 4K playback startup into minutes-long waits.
+            var localUrl = GetInternalPlaybackBaseUrl();
+            var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+        }
+
+        /// <summary>
+        /// Builds the URL a federated item's media would stream from for a given
+        /// source, or null when it can't be built at all: server gone/disabled.
+        /// <para>
+        /// For Proxy mode this is the same loopback proxy-gateway URL that
+        /// <see cref="BuildStaticPath"/> stamps on <c>item.Path</c>. For Direct
+        /// mode this still builds the real, federation-token-bearing remote URL
         /// (WAN-cap decision, container/codec/bitrate query params and all) - it is
         /// the source of truth for "what would this source actually serve" that
-        /// <see cref="MaterializeItem"/> uses to derive <c>Container</c> and the
-        /// WAN-capped/MediaStreams-persistence decision, and that
-        /// <see cref="FederationMediaSourceProvider.GetMediaSources"/> uses to detect
-        /// a stale stored Path. It is deliberately never handed to a client for
-        /// Direct mode, though: <see cref="ResolvePlaybackUrl"/> (used for
-        /// <c>item.Path</c>, which Jellyfin serializes straight into client-facing
-        /// static media sources) never persists this method's Direct-mode return
-        /// value - Direct mode's real, client-facing URL is instead a short-lived,
-        /// single-item-scoped playback token minted fresh per request by
-        /// <see cref="FederationMediaSourceProvider.GetMediaSources"/>/
-        /// <c>BuildPlaybackPathAsync</c>. That used to not be true: this method's
-        /// Direct-mode URL, api_key and all, was stamped directly onto the item's
-        /// static Path and handed straight to the browser client for every play -
-        /// meaning any logged-in user on this server, not just its admin, could read
-        /// the friend's real key out of dev tools/network tab and use it directly
-        /// against the friend's server, far beyond what a single stream should have
-        /// granted them. Callers that could put this return value in front of a
-        /// client (this file's own <see cref="ResolvePlaybackUrl"/> included) MUST
-        /// treat a Direct-mode result as internal-only.
+        /// <see cref="MaterializeItem"/> uses to derive <c>Container</c>, and it is
+        /// deliberately never handed to a client: <see cref="BuildStaticPath"/>
+        /// (used for <c>item.Path</c>, which Jellyfin serializes straight into
+        /// client-facing static media sources) routes Direct mode through this
+        /// server's secret-free proxy gateway instead, and
+        /// <see cref="FederationMediaSourceProvider.GetMediaSources"/> mints a
+        /// short-lived, single-item-scoped token URL per request for its own
+        /// sources. Callers that could put this return value in front of a client
+        /// MUST treat a Direct-mode result as internal-only.
         /// </para>
         /// </summary>
         /// <param name="itemType">Cache entry item type, e.g. "Movie" or "Audio".</param>
@@ -512,19 +484,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (server.StreamingMode == StreamingMode.Proxy)
             {
-                // Loopback, not GetLocalServerUrl() (which is the public URL used
-                // for peer/federation handshakes). This URL is only ever fetched
-                // by the server-side transcoder: federated Proxy streams are
-                // fundamentally re-transcoded on this server before HLS is sent
-                // to the client, so clients never contact this URL directly.
-                // Using the public URL here meant every byte of a Proxy stream
-                // went out through DNS/CDN/tunnel and back to the same Jellyfin
-                // process - which on a VPS-fronted setup (i.e. essentially every
-                // production setup) is what turned 4K playback startup into
-                // minutes-long waits. Loopback stays inside the container.
-                var localUrl = GetInternalPlaybackBaseUrl();
-                var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
-                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+                return BuildProxyStreamUrl(itemType, src);
             }
 
             // Direct mode: real URL, api_key and all - see this method's doc
@@ -571,24 +531,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// already exists (created before this was tracked, or synced before the
         /// remote reported any) - the reconciliation loop's equivalent of the save in
         /// <see cref="MaterializeItem"/>, for items that path doesn't run for since
-        /// they already exist. Same WAN-capped-Direct exclusion as MaterializeItem:
-        /// that URL serves a forced transcode of the source, not the raw file, so the
-        /// remote's real stream data would describe bytes the URL doesn't serve.
-        /// Returns true when it actually saved anything.
+        /// they already exist. No WAN-capped exclusion any more: the capped
+        /// transcode URL is internal-only, while every client-facing URL serves the
+        /// raw source file, so the remote's real stream data describes the bytes
+        /// clients actually get. Returns true when it actually saved anything.
         /// </summary>
         public bool TryPersistMediaStreams(BaseItem item, FederatedCacheEntry entry)
         {
             if (entry.Metadata.MediaStreams is not { Length: > 0 } streams)
-            {
-                return false;
-            }
-
-            var primary = entry.GetPrimarySource();
-            var isWanCappedVideo = primary != null
-                && !IsAudioType(entry.ItemType)
-                && GetServer(primary.ServerId) is { StreamingMode: StreamingMode.Direct } capServer
-                && _bandwidthMonitor.GetEffectiveCapMbps(capServer) != null;
-            if (isWanCappedVideo)
             {
                 return false;
             }

@@ -1,13 +1,15 @@
 # Known minor issues (deliberately not fixed this release)
 
-Bigger items were fixed in 0.0.78; these are smaller and set aside:
+Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
 
 1. **Version skew with old peers** — a friend running a pre-0.0.70 plugin can't use scoped tokens; handshake is rejected with an upgrade message rather than mixing protocols. Fix = both sides upgrade.
-2. **Item `Path` static source not per-user gated** — the primary source stamped on `item.Path` at sync time can't be re-gated per user at browse time (alternate sources are). Playback-time checks still apply. Known, documented in `FederationMediaSourceProvider`.
-3. **Disabled servers' deletions don't propagate while disabled** — sync skips disabled servers entirely; remote-side deletions appear only after re-enable + next sync (offline servers propagate on next successful sync).
-4. **`LeavePool` is reversible by the next pool notice** — leaving a pool doesn't notify members, and a subsequent roster fan-out re-adopts the membership.
-5. **`_remoteIndex` in `FederationItemCache` grows monotonically** — never swept on entry removal; in-process only, bounded by usage volume.
-6. **Vestigial config fields** — `RemoteServer.UserId` (unused under token model) and `RemoteServer.RequireApiKeyForImages` (superseded by token-gated `Peer/Images`).
-7. **Stale security comment** in `FederationLibraryManager.BuildPlaybackUrl` still says it "carries the remote's real api_key"; post-rewrite it carries a scoped federation token. Doc drift only.
+2. **No static Play button for rule-gated servers** — a server with per-remote-user access rules configured deliberately gets no stamped item.Path (a static Path is shared by every client and would bypass the per-user restriction), so those items still lack the web-client Play button. Playback itself works via PlaybackInfo. Trade-off documented in `FederationLibraryManager.BuildStaticPath`.
+3. **WAN bitrate caps are inert** — the capped transcode URL is internal-only (never served to a client since 0.0.70); measurement was fixed in 0.0.78 but no client-facing URL applies a cap. Clients on slow links direct-play the raw bitrate and may buffer.
+4. **Disabled servers' deletions don't propagate while disabled** — sync skips disabled servers entirely; remote-side deletions appear only after re-enable + next sync (offline servers propagate on next successful sync).
+5. **`LeavePool` is reversible by the next pool notice** — leaving a pool doesn't notify members, and a subsequent roster fan-out re-adopts the membership.
+6. **`_remoteIndex` in `FederationItemCache` grows monotonically** — never swept on entry removal; in-process only, bounded by usage volume.
+7. **Vestigial config fields** — `RemoteServer.UserId` (unused under token model) and `RemoteServer.RequireApiKeyForImages` (superseded by token-gated `Peer/Images`).
 8. **Resume points lost on item delete/recreate** — reconciliation dedup and migrations delete/recreate virtual items, wiping all users' watch progress on those items.
 9. **Federation tokens stored plaintext in config XML** — scoped and non-admin, but unencrypted at rest.
+10. **Deleting a local Jellyfin user leaves stale federation state** — per-user access rules pushed by friends (`FriendUserAccessRules`) and cached session tokens for that user are never swept (no user-deletion hook exists). Inert after deletion, but accumulates.
+11. **Direct-mode static source relays through this server** — the Play-button fix routes the stamped static Path through the local proxy gateway (a relay hop). Direct client→remote fetching is still available for the provider-emitted sources where applicable, but the default source relays.

@@ -106,33 +106,51 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_DirectMode_NeverGetsAStaticStreamUrlAsPath_SoTheRealApiKeyNeverReachesAClient()
+    public void Movie_DirectMode_GetsTheSecretFreeProxyUrlAsPath_SoThePlayButtonShowsAndNoCredentialLeaks()
     {
-        // Security fix: Direct mode used to stamp a URL with the remote server's
-        // real, long-lived api_key embedded in the query string directly onto the
-        // item's static Path - any logged-in user on this server, not just its
-        // admin, could read that key straight out of dev tools/network tab and use
-        // it directly against the friend's server. BuildPlaybackUrl now always
-        // returns null for Direct mode (see its doc comment), so no credential-
-        // bearing URL is ever persisted at sync time. The real, working, per-session
-        // URL - a short-lived, single-item-scoped playback token, not the raw key -
-        // is instead built live by FederationMediaSourceProvider.GetMediaSources on
-        // every actual PlaybackInfo request.
+        // jellyfin-web's canPlay() hides the Play button for any non-Program item
+        // with LocationType 'Virtual' - which is exactly what an empty item.Path
+        // resolves to. Direct mode used to stamp no Path at all (token-security:
+        // the only URL it could build carried the remote's credential), leaving
+        // every Direct-mode item permanently without a Play button. The fix: the
+        // static Path is now this server's own /Plugins/Federation/Stream proxy
+        // gateway - anonymous, credential-free, and valid for any streaming mode -
+        // so the button shows AND no credential ever reaches a client.
         var server = AddServer();
         server.WanCapMode = Configuration.WanCapMode.Off;
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        Assert.Equal(
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            item.Path);
+        Assert.DoesNotContain("secret-key", item.Path);
+        Assert.Equal(LocationType.Remote, item.LocationType);
         Assert.False(item.IsShortcut);
+    }
+
+    [Fact]
+    public void Movie_DirectMode_WithPerUserAccessRules_StillGetsNoStaticPath_SoRulesCannotBeBypassed()
+    {
+        // The one deliberate exception to the fix above: a server with
+        // FriendUserAccessRules gates content per local user, but a stamped
+        // item.Path is one static value shared by every client - persisting one
+        // would silently bypass the restriction for the primary source. These
+        // items rely on the provider's per-request source (no static Play button
+        // gap-free path exists for them).
+        var server = AddServer();
+        server.FriendUserAccessRules = new List<Configuration.RemoteUserAccessRule>
+        {
+            new() { RemoteUserId = Guid.NewGuid().ToString("N") }
+        };
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.True(string.IsNullOrEmpty(item.Path));
     }
 
     [Fact]
     public void Movie_ProxyMode_WithPath_ResolvesLocationTypeRemote()
     {
-        // Direct mode no longer stamps a static Path at all (see the test above), so
-        // this LocationType assertion - which needs a real http Path to exercise -
-        // is now covered against a Proxy-mode item instead.
         AddServer(StreamingMode.Proxy);
         _plugin.Configuration.ServerUrl = "https://my-server.example";
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
@@ -240,10 +258,10 @@ public class FederationStreamPathTests : IDisposable
         var item = _manager.MaterializeItem(entry);
 
         Assert.Equal(Configuration.WanCapMode.Auto, server.WanCapMode);
-        // Direct mode never persists item.Path (security fix - see the test above);
-        // the WAN-cap/raw-vs-capped decision is still exercised, via Container and
-        // the live URL builder.
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // Direct mode now stamps the secret-free proxy-gateway URL (see the Play
+        // button test above); the raw-vs-capped decision is exercised via the live
+        // URL builder below.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
         Assert.Equal("mkv", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
@@ -261,9 +279,9 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv");
         var item = _manager.MaterializeItem(entry);
 
-        // Direct mode never persists item.Path (security fix), so the raw-vs-capped
-        // decision is exercised via Container and the live URL builder instead.
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // Direct mode now stamps the proxy-gateway URL (Play button fix), so the
+        // raw-vs-capped decision is exercised via the live URL builder instead.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
         Assert.Equal("mkv", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
@@ -283,23 +301,24 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", remoteId, container: "mkv");
         var item = _manager.MaterializeItem(entry);
 
-        // Manual is a fixed number, but an admin can edit it at any time, so a
-        // stamped Path could go stale if they do - which is one reason (on top of
-        // the security fix below) Direct mode never persists item.Path at all any
-        // more: FederationMediaSourceProvider.GetMediaSources builds a fresh,
-        // short-lived, single-item-scoped URL live on every request instead, so
-        // staleness cannot happen. And regardless of staleness, this URL carries
-        // the remote's real, long-lived api_key in its query string - it must never
-        // be written to item.Path, which Jellyfin serializes straight into a
-        // client-facing static media source.
+        // Manual is a fixed number an admin can edit at any time - one reason the
+        // *stamped* Path is now the mode-independent, secret-free proxy gateway
+        // rather than this capped URL: FederationMediaSourceProvider builds a
+        // fresh, short-lived, single-item-scoped URL live on every request, so
+        // neither staleness nor credential exposure can happen. And regardless,
+        // this capped URL carries the remote's federation token in its query
+        // string - it must never be written to item.Path, which Jellyfin
+        // serializes straight into a client-facing static media source.
         var expectedUrl =
             $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
                 + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080";
-        Assert.True(string.IsNullOrEmpty(item.Path));
-        // The URL forces h264/aac in an mp4 container regardless of the source
-        // file's real one (mkv here) - Container must match what actually gets
-        // served, not the remote's original file.
-        Assert.Equal("mp4", item.Container);
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
+        Assert.DoesNotContain("secret-key", item.Path);
+        // Every client-facing URL (stamped proxy path and provider token URL
+        // alike) serves the raw source file - the capped transcode URL below is
+        // internal-only - so Container matches the remote's original file, not a
+        // forced mp4.
+        Assert.Equal("mkv", item.Container);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Equal(expectedUrl, liveUrl);
@@ -330,9 +349,10 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Audio", remoteId);
         var item = _manager.MaterializeItem(entry);
 
-        // Direct mode never persists item.Path (security fix), so the "cap never
-        // applies to audio" decision is exercised via the live URL builder instead.
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // Direct mode now stamps the proxy-gateway URL (Play button fix); the "cap
+        // never applies to audio" decision is exercised via the live URL builder.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
+        Assert.Contains("audio=true", item.Path);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Contains("Static=true", liveUrl);
@@ -365,9 +385,9 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid());
         var item = _manager.MaterializeItem(entry);
 
-        // Direct mode never persists item.Path (security fix); the decision is
-        // exercised via the live URL builder instead.
-        Assert.True(string.IsNullOrEmpty(item.Path));
+        // Direct mode now stamps the proxy-gateway URL (Play button fix); the
+        // decision is exercised via the live URL builder instead.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Contains("Static=true", liveUrl);
@@ -382,11 +402,9 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid());
         var item = _manager.MaterializeItem(entry);
 
-        // Direct mode never persists item.Path (security fix - see the api_key test
-        // above); the WAN-cap decision is still exercised via Container and the
-        // live URL builder below.
-        Assert.True(string.IsNullOrEmpty(item.Path));
-        Assert.Equal("mp4", item.Container);
+        // Direct mode now stamps the proxy-gateway URL (Play button fix); the
+        // WAN-cap decision is still exercised via the live URL builder below.
+        Assert.Contains("/Plugins/Federation/Stream", item.Path);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
         Assert.Contains("VideoBitrate=10000000", liveUrl);
@@ -460,11 +478,13 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void RemoteMediaStreams_AreNotPersisted_WhenTheUrlServesAWanCappedTranscodeInstead()
+    public void RemoteMediaStreams_ArePersistedEvenWhenWanCapped_BecauseClientUrlsServeTheRawFile()
     {
-        // The WAN-capped Direct URL serves a forced h264/aac/mp4 transcode of the
-        // source, not the raw file - saving the remote's real (often richer, e.g. 4K
-        // HEVC) stream data here would describe bytes the URL doesn't actually serve.
+        // The WAN-capped Direct URL (a forced h264/aac/mp4 transcode) is
+        // internal-only - never served to any client. Every client-facing URL -
+        // the stamped proxy-gateway Path and the provider's token-gated
+        // DirectStream URL alike - serves the raw source file, so the remote's
+        // real stream data correctly describes the bytes clients actually get.
         var server = AddServer();
         server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
@@ -473,8 +493,8 @@ public class FederationStreamPathTests : IDisposable
         _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv", mediaStreams: streams));
 
         _mediaStreamRepository.Verify(
-            r => r.SaveMediaStreams(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<MediaStream>>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+            r => r.SaveMediaStreams(It.IsAny<Guid>(), It.Is<IReadOnlyList<MediaStream>>(s => s.Count == 1 && s[0].Codec == "hevc"), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
