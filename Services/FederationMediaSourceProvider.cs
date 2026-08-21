@@ -144,9 +144,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 var primarySource = primaryIndex >= 0 && primaryIndex < entrySources.Length
                     ? entrySources[primaryIndex]
                     : null;
+
+                // What the primary source's stamped static Path *should* look like
+                // right now. Both modes stamp the local proxy-gateway URL (see
+                // FederationLibraryManager.BuildStaticPath) - for Proxy mode that
+                // is exactly BuildPlaybackUrl's output; for Direct mode
+                // BuildPlaybackUrl builds an internal-only token-bearing remote
+                // URL instead, so the proxy form is built here directly (against
+                // this request's actual port, same as BuildPlaybackPathAsync's
+                // Proxy branch). A base/port mismatch between stamp time and
+                // request time just resolves to "not covered" - the provider then
+                // emits its own fresh source in addition, which is the safe
+                // fallback, never a broken one.
                 var currentPrimaryUrl = primarySource == null
                     ? null
-                    : _federationManager.BuildPlaybackUrl(entry.ItemType, primarySource);
+                    : (_federationManager.GetServer(primarySource.ServerId)?.StreamingMode == StreamingMode.Direct
+                        ? BuildProxyUrl(primarySource, entry.ItemType == "Audio")
+                        : _federationManager.BuildPlaybackUrl(entry.ItemType, primarySource));
                 var staticSourceCoversPrimary = !string.IsNullOrEmpty(item.Path)
                     && string.Equals(item.Path, currentPrimaryUrl, StringComparison.Ordinal);
 
@@ -166,7 +180,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // before ever starting the metadata fetches) turns what would
                 // otherwise be several serial round trips per play into roughly one
                 // round trip's worth - the slowest of them, not the sum of all.
-                var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName, bool IsWanCapped)>();
+                var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
                     if (staticSourceCoversPrimary && i == primaryIndex)
@@ -219,22 +233,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         ? $"{server.Name}{(i == primaryIndex ? " (primary)" : string.Empty)}"
                         : server.Name;
 
-                    // Whether this server's Direct-mode stream to this item is
-                    // currently a WanBandwidthMonitor-capped transcode rather than the
-                    // raw source file (see BuildPlaybackPath/BuildPlaybackUrl). When it
-                    // is, the remote's own PlaybackInfo response fetched below
-                    // describes the *original* file - the wrong container, codecs, and
-                    // bitrate for what this URL actually serves. Reporting that here
-                    // would certify direct play against bytes that do not match, so
-                    // it is skipped entirely (also saving a remote round-trip) in
-                    // favor of the existing "remote didn't hand back info" fallback
-                    // below: SupportsProbing = true lets the transcoder discover the
-                    // real, capped stream's actual characteristics itself.
-                    var isWanCapped = server.StreamingMode == StreamingMode.Direct
-                        && entry.ItemType != "Audio"
-                        && _federationManager.BandwidthMonitor.GetEffectiveCapMbps(server) != null;
-
-                    candidates.Add((i, src, server, sourceName, isWanCapped));
+                    candidates.Add((i, src, server, sourceName));
                 }
 
                 // The remote's own view of each file. Without Container and
@@ -257,9 +256,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var playPathCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 playPathCts.CancelAfter(TimeSpan.FromSeconds(20));
 
-                var fetchTasks = candidates.Select(c => c.IsWanCapped
-                    ? Task.FromResult<MediaSourceInfo?>(null)
-                    : FetchRemoteSourceAsync(c.Server, c.Src, localUserId, playPathCts.Token)).ToArray();
+                var fetchTasks = candidates.Select(c => FetchRemoteSourceAsync(c.Server, c.Src, localUserId, playPathCts.Token)).ToArray();
 
                 // Path-building (a token mint for a Direct-mode candidate, an
                 // effectively-synchronous local URL build for a Proxy-mode one) runs
@@ -279,7 +276,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var sources = new List<MediaSourceInfo>();
                 for (int c = 0; c < candidates.Count; c++)
                 {
-                    var (i, src, server, sourceName, isWanCapped) = candidates[c];
+                    var (i, src, server, sourceName) = candidates[c];
                     var path = paths[c];
                     if (path == null)
                     {
@@ -322,10 +319,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         // (several smart-TV webviews), which would needlessly block
                         // Proxy-mode playback that this server is perfectly able to serve.
                         IsRemote = server.StreamingMode == StreamingMode.Direct,
-                        // "mp4" for a capped stream matches exactly what
-                        // BuildPlaybackUrl requests (VideoCodec=h264&AudioCodec=aac)
-                        // for one - not a guess.
-                        Container = isWanCapped ? "mp4" : remote?.Container,
+                        Container = remote?.Container,
                         Size = remote?.Size,
                         Bitrate = remote?.Bitrate,
                         MediaStreams = remote?.MediaStreams ?? new List<MediaStream>(),
@@ -455,14 +449,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// unreachable or the remote refuses to mint a token - never falls back to
         /// embedding the raw key.
         /// </summary>
+        /// <summary>
+        /// Builds this server's proxy-gateway URL for a source, against the port
+        /// this very request arrived on (see <see cref="ResolveLocalServerUrl"/>).
+        /// Same shape <see cref="FederationLibraryManager.BuildStaticPath"/> stamps
+        /// on item.Path at sync time; used to detect a stale/covering static source
+        /// and as the actual Path of Proxy-mode provider sources.
+        /// </summary>
+        private string BuildProxyUrl(FederatedSource src, bool isAudio)
+        {
+            var localUrl = ResolveLocalServerUrl();
+            var audioFlag = isAudio ? "&audio=true" : string.Empty;
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+        }
+
         private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId, CancellationToken cancellationToken)
         {
             if (server.StreamingMode == StreamingMode.Proxy)
             {
-                var localUrl = ResolveLocalServerUrl();
-
                 // The remote api_key stays server-side; clients only see this server.
-                var audioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
                 // Redundant with the access check already applied in GetMediaSources
                 // above (which decides whether to emit this source at all) - carried
                 // along anyway so FederationController.Stream can re-check it itself
@@ -470,7 +475,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // outlives the session it was minted for (bookmarked, cached by a
                 // client, replayed later after the admin tightens the rule).
                 var requestingUserFlag = localUserId.HasValue ? $"&requestingUserId={localUserId.Value:N}" : string.Empty;
-                return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{requestingUserFlag}";
+                return BuildProxyUrl(src, itemType == "Audio") + requestingUserFlag;
             }
 
             var client = _federationManager.GetClient(src.ServerId);
