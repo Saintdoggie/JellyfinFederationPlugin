@@ -99,6 +99,56 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetPlaybackTokenAsync_CachesAcrossCalls_ForSameServerItemAndUser()
+    {
+        // The relay/proxy path re-requests a token on every player seek/probe
+        // re-open (several times per second during federated mp4 playback) - see
+        // ItemPlaybackTokenCache's doc comment. Without caching, each of those
+        // paid a full WAN round trip and starved the transcoder's input until
+        // ffmpeg died with exit code 183.
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-tokcache-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var first = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        var second = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        var third = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None, localActingUserId: "user-1");
+
+        Assert.Equal("tok-123", first.Token);
+        Assert.Equal("tok-123", second.Token);
+        Assert.Equal("tok-123", third.Token);
+        // Two mints, not three: the no-user pair shares one cache entry and the
+        // user-scoped call mints its own (per-user rules apply at mint time on
+        // the remote, so a user-scoped mint must not be reused for no-user and
+        // vice versa).
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
+    public async Task GetPlaybackTokenAsync_InvalidateItemPlaybackToken_ForcesRemint()
+    {
+        // A token the remote just rejected (remote restarted, friendship removed)
+        // must be dropped on demand so the relay's 401/403 recovery path can get
+        // a fresh one instead of pulling the dead token back out of the cache.
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-tokinv-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        RemoteServerClient.InvalidateItemPlaybackToken(server.Id, "item-1", null);
+        await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+
+        // Invalidation keyed to a different item/user must not disturb this one.
+        RemoteServerClient.InvalidateItemPlaybackToken(server.Id, "item-other", null);
+        await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
     public async Task GetOrRegisterUserSessionTokenAsync_RegistersAndReturnsToken()
     {
         var handler = new FakeHttpMessageHandler(registerUserSessionJson: "{\"token\":\"session-abc\"}");
@@ -305,6 +355,7 @@ public class RemoteServerClientPlaybackTests
         public bool CalledAnyNativeUsersOrItemsEndpoint { get; private set; }
         public string? LastRemoteUserIdHeader { get; private set; }
         public int RegisterUserSessionCallCount { get; private set; }
+        public int PlaybackTokenCallCount { get; private set; }
 
         public FakeHttpMessageHandler(
             string playbackJson = "{\"MediaSources\":[]}",
@@ -347,6 +398,7 @@ public class RemoteServerClientPlaybackTests
 
             if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
             {
+                PlaybackTokenCallCount++;
                 return Task.FromResult(Json(_playbackTokenJson));
             }
 

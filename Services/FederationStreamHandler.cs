@@ -179,6 +179,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (upstreamStatus is 401 or 403 && !response.HasStarted)
                 {
                     RemoteServerClient.InvalidateUserSessionToken(serverId, requestingUserId);
+                    // The dead token may equally have come from the item-scoped
+                    // token cache (this is the common case for the no-user proxy
+                    // gateway URL the transcoder fetches) - drop that too, or the
+                    // retry below would pull the exact rejected token straight
+                    // back out of the cache and fail identically forever.
+                    RemoteServerClient.InvalidateItemPlaybackToken(serverId, remoteItemId, requestingUserId);
                     url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                     _logger.LogInformation(
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
