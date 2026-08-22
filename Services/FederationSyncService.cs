@@ -673,6 +673,14 @@ namespace Jellyfin.Plugin.Federation.Services
                             continue;
                         }
 
+                        // Receiving-side incoming filter (types, rating ceiling, blocked
+                        // tags/genres). Blocks before upsert so the item never lands
+                        // in the cache at all — cheaper than materializing then hiding.
+                        if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem))
+                        {
+                            continue;
+                        }
+
                         if (UpsertRemoteItem(mapping, remoteItem, server, config, seen))
                         {
                             seen.Add(remoteItem.Id);

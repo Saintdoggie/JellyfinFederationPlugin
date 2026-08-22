@@ -119,6 +119,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 return true;
             }
 
+            // Per-user rating ceiling applies even when Mode is AllLibraries (no
+            // library/item restriction): a parent can still allow a kid to browse
+            // "all shared libraries" but block adult-rated titles.
+            if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
+            {
+                var item = _libraryManager.GetItemById(itemId);
+                var rating = item?.OfficialRating;
+                if (!string.IsNullOrWhiteSpace(rating)
+                    && !IncomingContentFilterService.IsWithinRatingCeiling(rating!, rule.MaxAllowedRating))
+                {
+                    return false;
+                }
+            }
+
             return rule.Mode switch
             {
                 RemoteUserAccessMode.Blocked => false,
@@ -128,6 +142,36 @@ namespace Jellyfin.Plugin.Federation.Services
                 RemoteUserAccessMode.CertainItems => rule.ItemIds.Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)),
                 _ => true
             };
+        }
+
+        /// <summary>
+        /// Whether a specific remote user may download (server-side fetch) items
+        /// from this server. Separate from <see cref="IsItemVisible"/> which
+        /// gates browsing/streaming — a user may be allowed to stream but not
+        /// download. Anonymous / no-rule users inherit the friend-level and
+        /// global gates only.
+        /// </summary>
+        public bool IsDownloadAllowedForRemoteUser(RemoteServer caller, string? remoteUserId)
+        {
+            if (string.IsNullOrWhiteSpace(remoteUserId))
+            {
+                // Friend-level gate still applies; per-user gate is skipped when
+                // there is no user identity (e.g. background sync).
+                return caller.AllowDownloads;
+            }
+
+            if (!caller.AllowDownloads)
+            {
+                return false;
+            }
+
+            var rule = FindRule(caller, remoteUserId);
+            if (rule != null && !rule.AllowDownload)
+            {
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>

@@ -204,6 +204,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
+                        server.AllowDownloads = oldServer.AllowDownloads;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -279,6 +280,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     // never sent as part of the main Save form - without this, saving
                     // any unrelated setting would silently un-hide everything.
                     config.HiddenFederatedItemIds = existing.HiddenFederatedItemIds;
+                    config.IncomingFilter = existing.IncomingFilter ?? new IncomingContentFilter();
+                    config.MigratedIncomingFilterV12 = existing.MigratedIncomingFilterV12;
                 }
 
                 // DedupProviderIds is a free-form comma-separated text field on the
@@ -1943,6 +1946,52 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        #region Incoming content filters (Catalog)
+
+        [HttpGet("IncomingFilter")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetIncomingFilter()
+        {
+            var f = Plugin.Instance?.Configuration?.IncomingFilter ?? new IncomingContentFilter();
+            return Ok(f);
+        }
+
+        [HttpPost("IncomingFilter")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetIncomingFilter([FromBody] IncomingContentFilter body)
+        {
+            var config = Plugin.Instance!.Configuration;
+            config.IncomingFilter = body ?? new IncomingContentFilter();
+            // Normalise lists to trimmed, non-empty entries
+            config.IncomingFilter.AllowedItemTypes = (config.IncomingFilter.AllowedItemTypes ?? new List<string>())
+                .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            config.IncomingFilter.BlockedTags = (config.IncomingFilter.BlockedTags ?? new List<string>())
+                .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            config.IncomingFilter.BlockedGenres = (config.IncomingFilter.BlockedGenres ?? new List<string>())
+                .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            config.IncomingFilter.MaxAllowedRating = (config.IncomingFilter.MaxAllowedRating ?? string.Empty).Trim();
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Incoming filters saved." });
+        }
+
+        [HttpPost("Friends/{id}/DownloadAccess")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendDownloadAccess(string id, [FromBody] DownloadAccessBody body)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            server.AllowDownloads = body?.AllowDownloads ?? true;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Download access updated." });
+        }
+
+        #endregion
+
         #region Hidden Items (local suppression)
         //
         // A purely local, receiving-side "don't show me this" list - the opposite
@@ -2311,6 +2360,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.AutoProvisionLibraries,
                 config.AllowFriendsOfFriends,
                 config.RefreshIntervalHours,
+                config.IncomingFilter,
+                config.MigratedIncomingFilterV12,
                 RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(SanitizeServer).ToList(),
                 config.LibraryMappings
             };
@@ -2334,7 +2385,28 @@ namespace Jellyfin.Plugin.Federation.Api
                 HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
                 s.ShareAllLibraries,
                 s.SharedLibraryFolderIds,
-                s.ExcludedItemIds
+                s.ExcludedItemIds,
+                s.AllowDownloads,
+                RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
+                {
+                    r.RemoteUserId,
+                    r.RemoteUserName,
+                    Mode = (int)r.Mode,
+                    r.LibraryFolderIds,
+                    r.ItemIds,
+                    r.MaxAllowedRating,
+                    r.AllowDownload
+                }).ToList(),
+                FriendUserAccessRules = (s.FriendUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
+                {
+                    r.RemoteUserId,
+                    r.RemoteUserName,
+                    Mode = (int)r.Mode,
+                    r.LibraryFolderIds,
+                    r.ItemIds,
+                    r.MaxAllowedRating,
+                    r.AllowDownload
+                }).ToList()
             };
         }
     }
@@ -2398,5 +2470,10 @@ namespace Jellyfin.Plugin.Federation.Api
         public List<string>? FolderIds { get; set; }
 
         public List<string>? ExcludedItemIds { get; set; }
+    }
+
+    public class DownloadAccessBody
+    {
+        public bool AllowDownloads { get; set; } = true;
     }
 }
