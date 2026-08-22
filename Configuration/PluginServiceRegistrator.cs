@@ -53,6 +53,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
             // a jellyfin-web upgrade replaces index.html. See BadgeScriptInjectionMiddleware.
             serviceCollection.AddSingleton<IStartupFilter, FederationBadgeStartupFilter>();
 
+            // Workaround for a Jellyfin server bug where /web/ConfigurationPage
+            // (DashboardController.FileStreamResult) returns corrupted gzip/br bodies
+            // (ERR_CONTENT_DECODING_FAILED) while the same HTML served as a ContentResult
+            // compresses correctly — see ConfigurationPageCompressionFixMiddleware.
+            serviceCollection.AddSingleton<IStartupFilter, ConfigurationPageCompressionFixStartupFilter>();
+
             serviceCollection.AddHostedService<FederationEntryPoint>();
         }
     }
