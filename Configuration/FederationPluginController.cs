@@ -247,6 +247,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     // affected federated item on the very next sync.
                     config.MigratedRemoveShortcutV9 = existing.MigratedRemoveShortcutV9;
                     config.MigratedPlaceholderPathV10 = existing.MigratedPlaceholderPathV10;
+                    config.MigratedContainerV11 = existing.MigratedContainerV11;
 
                     // Friend state and this server's identity are likewise server-
                     // internal - the config page never sends them, so without this
@@ -278,6 +279,26 @@ namespace Jellyfin.Plugin.Federation.Api
                     // never sent as part of the main Save form - without this, saving
                     // any unrelated setting would silently un-hide everything.
                     config.HiddenFederatedItemIds = existing.HiddenFederatedItemIds;
+                }
+
+                // DedupProviderIds is a free-form comma-separated text field on the
+                // Advanced tab. Without normalisation, repeated saves with the default
+                // "imdb,tmdb,tvdb" value grew to 84 entries (28× the default) on at
+                // least one live install, because the list was never de-duplicated and
+                // the raw user input was saved verbatim each time. Normalise here so
+                // any existing bloat is cleaned on the very next save, and future
+                // saves cannot re-introduce it.
+                if (config.DedupProviderIds != null)
+                {
+                    config.DedupProviderIds = config.DedupProviderIds
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Select(s => s.Trim().ToLowerInvariant())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (config.DedupProviderIds.Count == 0)
+                    {
+                        config.DedupProviderIds = new List<string> { "imdb", "tmdb", "tvdb" };
+                    }
                 }
 
                 var errors = ConfigValidator.Validate(config);

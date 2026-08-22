@@ -1,209 +1,383 @@
 <div id="federationConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
     <div data-role="content">
         <div class="content-primary">
-            <style>
-                /* Plain text on this page (headings, hints, labels, roster rows) has no
-                   emby-* class carrying a colour of its own and relies on inheriting
-                   Jellyfin's theme text colour from an ancestor. On at least one real
-                   install that inheritance did not hold - text rendered browser-default
-                   black, illegible on the dark dashboard. Forced explicitly here, but
-                   wrapped in :where() so it contributes ZERO specificity: an ID
-                   selector's normal specificity would outrank Jellyfin's own
-                   .emby-button/.emby-select/etc rules and silently override colours
-                   those elements had deliberately set. With :where(), any more specific
-                   rule still wins; this only fills the gap where nothing else set one. */
+                        <style>
                 :where(#federationConfigPage) { color: var(--theme-body-text-color, var(--primary-text-color, #eee)); }
 
-                /* Everything below fills gaps Jellyfin's own dashboard classes don't
-                   cover (tab row, roster rows, status callouts, progress). Structure,
-                   spacing and controls use jellyfin-web's native vocabulary
-                   (sectionTitle/fieldDescription/inputContainer/emby-input/emby-select/
-                   emby-checkbox/raised/button-submit/button-flat). Colours come from
-                   the active theme wherever possible; the only literals are semantic
-                   status hues (ok/err/warn) and neutral grey tints that read correctly
-                   on both dark and light themes. No shadows, gradients, animations or
-                   custom fonts. */
                 #federationConfigPage {
                     --fed-accent: var(--theme-primary-color, var(--primary-accent-color, #00a4dc));
-                    --fed-border: rgba(128,128,128,0.30);
-                    --fed-border-soft: rgba(128,128,128,0.16);
-                    --fed-surface: rgba(128,128,128,0.08);
-                    --fed-ok: #3fa93b;
-                    --fed-ok-text: #4fbf4a;
-                    --fed-err: #d14848;
+                    --fed-accent-strong: #0092c7;
+                    --fed-accent-soft: rgba(0,164,220,0.10);
+                    --fed-accent-soft2: rgba(0,164,220,0.06);
+                    --fed-border: rgba(128,128,128,0.22);
+                    --fed-border-strong: rgba(128,128,128,0.32);
+                    --fed-border-soft: rgba(128,128,128,0.13);
+                    --fed-surface: rgba(128,128,128,0.07);
+                    --fed-surface-hover: rgba(128,128,128,0.11);
+                    --fed-surface-raised: rgba(255,255,255,0.02);
+                    --fed-ok: #2fb344;
+                    --fed-ok-soft: rgba(47,179,68,0.10);
+                    --fed-ok-text: #3fbf4a;
+                    --fed-err: #e05252;
+                    --fed-err-soft: rgba(224,72,72,0.09);
                     --fed-err-text: #e06c6c;
-                    --fed-warn: #d18f2e;
+                    --fed-warn: #d9901a;
+                    --fed-warn-soft: rgba(217,144,26,0.11);
                     --fed-warn-text: #e0a04a;
+                    --fed-radius: 0.75em;
+                    --fed-radius-lg: 1em;
+                    --fed-radius-pill: 999px;
+                    --fed-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+                    --fed-shadow-hover: 0 4px 20px rgba(0,0,0,0.09), 0 2px 8px rgba(0,0,0,0.05);
                 }
 
-                /* Section rhythm (matches the dashboard's verticalSection spacing) */
-                #federationConfigPage .verticalSection { margin-bottom: 1.9em; }
+                /* Page chrome */
+                #federationConfigPage .content-primary { max-width: 860px; }
+                #federationConfigPage .verticalSection { margin-bottom: 1.6em; }
 
-                /* Status strip under the page title */
-                #federationConfigPage .fed-statusstrip { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9em 2.2em; }
-                #federationConfigPage .fed-stat strong { display: block; font-size: 1.45em; line-height: 1.15; }
-                #federationConfigPage .fed-stat span { opacity: 0.6; font-size: 0.76em; text-transform: uppercase; letter-spacing: 0.05em; }
-                #federationConfigPage .fed-spacer { flex: 1; }
+                /* Hero */
+                #federationConfigPage .fed-hero {
+                    display: flex; gap: 1.2em; align-items: flex-start;
+                    background: linear-gradient(135deg, var(--fed-accent-soft), var(--fed-accent-soft2));
+                    border: 1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius-lg);
+                    padding: 1.45em 1.6em;
+                    margin: 0 0 1.4em;
+                    position: relative; overflow: hidden;
+                    box-shadow: var(--fed-shadow);
+                }
+                #federationConfigPage .fed-hero::before {
+                    content:""; position:absolute; top:0; left:0; right:0; height:3px;
+                    background: linear-gradient(90deg, var(--fed-accent), #7c5cff, var(--fed-accent));
+                    opacity: 0.95;
+                }
+                #federationConfigPage .fed-hero-icon {
+                    width: 3.35em; height: 3.35em; border-radius: 0.95em;
+                    background: var(--fed-accent); color: #fff;
+                    display:flex; align-items:center; justify-content:center;
+                    flex-shrink:0; box-shadow: 0 6px 18px rgba(0,164,220,0.30);
+                    margin-top: 0.15em;
+                }
+                #federationConfigPage .fed-hero-icon .material-icons { font-size: 1.75em; }
+                #federationConfigPage .fed-hero-text { flex:1; min-width:0; }
+                #federationConfigPage .fed-hero-title {
+                    margin:0; font-size: 1.65em; font-weight: 800; letter-spacing: -0.025em; line-height:1.15;
+                }
+                #federationConfigPage .fed-hero-desc {
+                    margin: 0.45em 0 0; opacity:0.75; line-height:1.55; font-size:0.97em; max-width: 36em;
+                }
+                #federationConfigPage .fed-hero-badge {
+                    display:inline-flex; align-items:center; gap:0.38em;
+                    margin-top:0.75em; padding:0.32em 0.7em;
+                    background: rgba(0,164,220,0.12); color: var(--fed-accent);
+                    border:1px solid rgba(0,164,220,0.18);
+                    border-radius: var(--fed-radius-pill);
+                    font-size:0.78em; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;
+                }
+                #federationConfigPage .fed-hero-badge .material-icons { font-size:1.15em; }
 
-                /* Tab row. Same visual language as jellyfin-web's own emby-tabs
-                   (muted labels, accent underline on the active tab) without wiring
-                   into its SPA view router, which a single static plugin page has no
-                   clean way to hook into. */
-                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.1em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
+                /* How it works strip (only when no friends, shown via JS) */
+                #federationConfigPage .fed-onboarding {
+                    display:grid; grid-template-columns: repeat(3,1fr); gap:1em;
+                    margin: 0 0 1.6em;
+                }
+                #federationConfigPage .fed-step {
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius); padding:1.1em 1.1em 1em;
+                    text-align:center; position:relative;
+                }
+                #federationConfigPage .fed-step-num {
+                    width:2.1em; height:2.1em; border-radius:50%;
+                    background: var(--fed-accent); color:#fff; font-weight:800; font-size:0.92em;
+                    display:inline-flex; align-items:center; justify-content:center; margin-bottom:0.65em;
+                    box-shadow: 0 3px 10px rgba(0,164,220,0.25);
+                }
+                #federationConfigPage .fed-step strong { display:block; font-size:0.98em; margin-bottom:0.25em; }
+                #federationConfigPage .fed-step span { font-size:0.86em; opacity:0.68; line-height:1.45; display:block; }
+                @media (max-width: 640px) { #federationConfigPage .fed-onboarding { grid-template-columns:1fr; } }
+
+                /* Status cards */
+                #federationConfigPage .fed-statusstrip {
+                    display:grid; grid-template-columns: repeat(3,1fr); gap:0.9em;
+                    margin-bottom: 0;
+                }
+                #federationConfigPage .fed-stat {
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius); padding:1em 1.15em;
+                    display:flex; align-items:center; gap:0.85em;
+                    transition: border-color .16s, box-shadow .16s, transform .16s;
+                }
+                #federationConfigPage .fed-stat:hover { border-color: var(--fed-border); box-shadow: var(--fed-shadow); transform: translateY(-1px); }
+                #federationConfigPage .fed-stat-icon {
+                    width:2.35em; height:2.35em; border-radius:0.7em;
+                    background: var(--fed-accent-soft); color: var(--fed-accent);
+                    display:flex; align-items:center; justify-content:center; flex-shrink:0;
+                }
+                #federationConfigPage .fed-stat-icon .material-icons { font-size:1.28em; }
+                #federationConfigPage .fed-stat-text { display:flex; flex-direction:column; min-width:0; }
+                #federationConfigPage .fed-stat strong { font-size:1.55em; line-height:1; font-weight:800; letter-spacing:-0.02em; }
+                #federationConfigPage .fed-stat span { opacity:0.62; font-size:0.70em; font-weight:700; text-transform:uppercase; letter-spacing:0.07em; margin-top:0.28em; }
+                #federationConfigPage .fed-spacer { flex:1; }
+                #federationConfigPage #fedStatusCard .emby-button { border-radius: var(--fed-radius-pill); }
+                @media (max-width: 640px) { #federationConfigPage .fed-statusstrip { grid-template-columns:1fr; } #federationConfigPage #fedStatusCard .fed-spacer { display:none; } }
+
+                /* Tabs - pill segmented control */
+                #federationConfigPage .fed-tabs {
+                    display:inline-flex; flex-wrap:wrap; gap:0.22em;
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius-pill); padding:0.32em;
+                    margin: 0 0 1.7em; box-shadow: inset 0 1px 2px rgba(0,0,0,0.04);
+                    max-width: 100%;
+                }
                 #federationConfigPage .fed-tab-btn {
-                    background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-                    color: inherit; opacity: 0.62; font-family: inherit; font-size: inherit; font-weight: 600;
-                    margin: 0 0 -1px; padding: 0.65em 0.95em; cursor: pointer;
+                    background: transparent; border:0; border-radius: var(--fed-radius-pill);
+                    color: inherit; opacity:0.70; font-family: inherit; font-size:0.92em; font-weight:650;
+                    padding:0.58em 1.05em; cursor:pointer; display:inline-flex; align-items:center; gap:0.42em;
+                    transition: all .18s ease; white-space:nowrap;
                 }
-                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent); }
-                #federationConfigPage .fed-tabpanel { display: none; }
-                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
+                #federationConfigPage .fed-tab-btn .material-icons { font-size:1.18em; opacity:0.85; }
+                #federationConfigPage .fed-tab-btn:hover { opacity:1; background: rgba(128,128,128,0.09); }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active {
+                    background: var(--fed-accent); color:#fff; opacity:1;
+                    box-shadow: 0 2px 10px rgba(0,164,220,0.32);
+                }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active .material-icons { opacity:1; }
+                #federationConfigPage .fed-tabpanel { display:none; animation: fedFadeIn .22s ease; }
+                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display:block; }
+                @keyframes fedFadeIn { from{opacity:0; transform: translateY(6px);} to{opacity:1; transform:none;} }
 
-                /* Form scaffolding mirroring jellyfin-web's inputContainer/inputLabel
-                   rhythm - these rules style the fed-* equivalents the script renders
-                   dynamically so both halves of the page share one spacing scale. */
-                #federationConfigPage .fed-input-container { margin-bottom: 1.4em; min-width: 0; }
-                #federationConfigPage .fed-label { display: block; margin-bottom: 0.3em; opacity: 0.8; }
-                #federationConfigPage .fed-hint { font-size: 0.87em; opacity: 0.7; line-height: 1.5; margin: 0.35em 0 0; }
-                #federationConfigPage .fed-check-label { display: flex; align-items: flex-start; gap: 0.5em; margin: 0.55em 0; cursor: pointer; line-height: 1.4; }
-                #federationConfigPage .fed-muted { opacity: 0.6; }
-                #federationConfigPage .fed-inline { display: flex; flex-wrap: wrap; gap: 0 1.4em; align-items: flex-end; }
-                #federationConfigPage .fed-inline .fed-input-container { flex: 1 1 16em; margin-bottom: 0.9em; }
-                #federationConfigPage .fed-inline .emby-button { margin-bottom: 0.9em; }
-                #federationConfigPage .fed-grow { flex: 1 1 16em; min-width: 0; }
+                /* Section cards */
+                #federationConfigPage .verticalSection {
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius-lg); padding:1.5em 1.55em;
+                    box-shadow: var(--fed-shadow); position:relative;
+                }
+                #federationConfigPage .verticalSection .sectionTitle {
+                    margin:0 0 0.35em; font-size:1.18em; font-weight:750; letter-spacing:-0.015em;
+                    display:flex; align-items:center; gap:0.55em;
+                }
+                #federationConfigPage .verticalSection .sectionTitle .material-icons {
+                    width:1.95em; height:1.95em; border-radius:0.6em;
+                    background: var(--fed-accent-soft); color: var(--fed-accent);
+                    display:inline-flex; align-items:center; justify-content:center; font-size:1.15em; flex-shrink:0;
+                }
+                #federationConfigPage .fieldDescription { opacity:0.72; line-height:1.6; font-size:0.93em; margin-top:0.15em; }
+                #federationConfigPage .fieldDescription strong { color: inherit; }
 
-                /* Callouts: load errors, disabled-friend warnings, sync health,
-                   per-action status lines. Left-edge accent + tinted background, the
-                   same callout pattern the dashboard itself uses. */
+                /* Inputs */
+                #federationConfigPage .fed-input-container { margin-bottom:1.25em; min-width:0; }
+                #federationConfigPage .fed-label { display:block; margin-bottom:0.38em; opacity:0.82; font-weight:600; font-size:0.92em; }
+                #federationConfigPage .fed-hint { font-size:0.86em; opacity:0.68; line-height:1.5; margin:0.4em 0 0; }
+                #federationConfigPage .fed-hint .material-icons { font-size:1.05em; vertical-align: -0.15em; margin-right:0.18em; opacity:0.85; }
+                #federationConfigPage .emby-input, #federationConfigPage .emby-select {
+                    border-radius: 0.65em !important; padding-top:0.62em !important; padding-bottom:0.62em !important;
+                    border-color: var(--fed-border) !important; transition: border-color .15s, box-shadow .15s, background .15s !important;
+                }
+                #federationConfigPage .emby-input:focus, #federationConfigPage .emby-select:focus {
+                    border-color: var(--fed-accent) !important; box-shadow: 0 0 0 3px var(--fed-accent-soft) !important;
+                }
+                #federationConfigPage .fed-check-label {
+                    display:flex; align-items:flex-start; gap:0.6em; margin:0.6em 0; cursor:pointer; line-height:1.45;
+                    padding:0.45em 0.55em; border-radius:0.55em; transition: background .12s;
+                }
+                #federationConfigPage .fed-check-label:hover { background: rgba(128,128,128,0.07); }
+                #federationConfigPage .fed-inline { display:flex; flex-wrap:wrap; gap:0 1.1em; align-items:flex-end; }
+                #federationConfigPage .fed-inline .fed-input-container { flex:1 1 16em; margin-bottom:0.9em; }
+                #federationConfigPage .fed-inline .emby-button { margin-bottom:0.9em; border-radius: var(--fed-radius-pill); }
+                #federationConfigPage .fed-grow { flex:1 1 16em; min-width:0; }
+                #federationConfigPage .emby-button { border-radius: var(--fed-radius-pill); font-weight:600; letter-spacing:-0.01em; }
+                #federationConfigPage .raised { box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+                #federationConfigPage .raised:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+                #federationConfigPage .button-submit { background: var(--fed-accent) !important; color:#fff !important; }
+
+                /* Callouts */
                 #federationConfigPage .fed-error {
-                    color: var(--fed-err-text); background: rgba(209,72,72,0.10);
-                    border: 1px solid rgba(209,72,72,0.35); border-left: 3px solid var(--fed-err);
-                    border-radius: 0.35em; padding: 0.9em 1.1em; margin: 0.9em 0;
-                    white-space: pre-wrap; line-height: 1.5;
+                    color: var(--fed-err-text); background: var(--fed-err-soft);
+                    border:1px solid rgba(209,72,72,0.22); border-left:3px solid var(--fed-err);
+                    border-radius: var(--fed-radius); padding:0.95em 1.15em; margin:0.9em 0;
+                    display:flex; gap:0.75em; align-items:flex-start; line-height:1.5;
                 }
+                #federationConfigPage .fed-error::before { content:"error"; font-family:"Material Icons"; font-size:1.35em; line-height:1; margin-top:0.05em; flex-shrink:0; }
                 #federationConfigPage .fed-warnbar {
-                    background: rgba(209,143,46,0.12); border-left: 3px solid var(--fed-warn);
-                    border-radius: 0.35em; padding: 0.85em 1.05em; margin: 0 0 1em;
-                    line-height: 1.5; color: var(--fed-warn-text);
+                    background: var(--fed-warn-soft); border:1px solid rgba(217,144,26,0.18); border-left:3px solid var(--fed-warn);
+                    border-radius: var(--fed-radius); padding:0.9em 1.15em; margin:0 0 1.15em;
+                    display:flex; gap:0.7em; align-items:flex-start; line-height:1.5; color: var(--fed-warn-text);
                 }
-                #federationConfigPage .fed-synchealth { border-radius: 0.35em; padding: 0.75em 1.05em; margin: 0 0 1em; font-size: 0.94em; line-height: 1.5; }
-                #federationConfigPage .fed-synchealth-ok { background: rgba(63,169,59,0.10); border-left: 3px solid var(--fed-ok); }
-                #federationConfigPage .fed-synchealth-bad { background: rgba(209,72,72,0.10); border-left: 3px solid var(--fed-err); color: var(--fed-err-text); }
-                #federationConfigPage .fed-srvstatus { border-radius: 0.35em; padding: 0.6em 0.9em; margin: 0.6em 0; font-size: 0.92em; line-height: 1.45; }
-                #federationConfigPage .fed-srvstatus-ok { background: rgba(63,169,59,0.12); border-left: 3px solid var(--fed-ok); }
-                #federationConfigPage .fed-srvstatus-err { background: rgba(209,72,72,0.12); border-left: 3px solid var(--fed-err); color: var(--fed-err-text); }
-                #federationConfigPage .fed-srvstatus-info { background: var(--fed-surface); border-left: 3px solid var(--fed-accent); }
+                #federationConfigPage .fed-warnbar::before { content:"warning"; font-family:"Material Icons"; font-size:1.35em; flex-shrink:0; margin-top:0.02em; }
+                #federationConfigPage .fed-synchealth { border-radius: var(--fed-radius); padding:0.9em 1.15em; margin:0 0 1.15em; font-size:0.93em; line-height:1.5; display:flex; gap:0.75em; align-items:flex-start; border:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-synchealth::before { font-family:"Material Icons"; font-size:1.35em; flex-shrink:0; margin-top:0.02em; }
+                #federationConfigPage .fed-synchealth-ok { background: var(--fed-ok-soft); border-left:3px solid var(--fed-ok); }
+                #federationConfigPage .fed-synchealth-ok::before { content:"check_circle"; color: var(--fed-ok); }
+                #federationConfigPage .fed-synchealth-bad { background: var(--fed-err-soft); border-left:3px solid var(--fed-err); color: var(--fed-err-text); }
+                #federationConfigPage .fed-synchealth-bad::before { content:"error"; color: var(--fed-err); }
+                #federationConfigPage .fed-srvstatus { border-radius: var(--fed-radius); padding:0.7em 1em; margin:0.7em 0; font-size:0.92em; line-height:1.45; display:flex; gap:0.65em; align-items:flex-start; border:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-srvstatus::before { font-family:"Material Icons"; font-size:1.2em; flex-shrink:0; margin-top:0.06em; }
+                #federationConfigPage .fed-srvstatus-ok { background: var(--fed-ok-soft); border-left:3px solid var(--fed-ok); }
+                #federationConfigPage .fed-srvstatus-ok::before { content:"check_circle"; color: var(--fed-ok); }
+                #federationConfigPage .fed-srvstatus-err { background: var(--fed-err-soft); border-left:3px solid var(--fed-err); color: var(--fed-err-text); }
+                #federationConfigPage .fed-srvstatus-err::before { content:"error"; color: var(--fed-err); }
+                #federationConfigPage .fed-srvstatus-info { background: var(--fed-surface); border-left:3px solid var(--fed-accent); }
+                #federationConfigPage .fed-srvstatus-info::before { content:"info"; color: var(--fed-accent); }
 
-                /* Roster rows: friends, friend requests, pools, hidden items */
+                /* Empty states */
+                #federationConfigPage .fed-empty {
+                    text-align:center; padding:2.2em 1.6em; border:1.8px dashed var(--fed-border);
+                    border-radius: var(--fed-radius-lg); background: rgba(128,128,128,0.04);
+                    margin:0.6em 0 0;
+                }
+                #federationConfigPage .fed-empty-icon {
+                    width:3.6em; height:3.6em; margin:0 auto 0.9em; border-radius:50%;
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    display:flex; align-items:center; justify-content:center; color: var(--fed-accent);
+                }
+                #federationConfigPage .fed-empty-icon .material-icons { font-size:1.9em; }
+                #federationConfigPage .fed-empty h4 { margin:0 0 0.35em; font-size:1.05em; font-weight:750; letter-spacing:-0.015em; }
+                #federationConfigPage .fed-empty p { margin:0 auto; opacity:0.68; font-size:0.92em; line-height:1.55; max-width:30em; }
+                #federationConfigPage .fed-empty .emby-button { margin-top:1em; }
+
+                /* Roster rows */
                 #federationConfigPage .fed-server {
-                    background: var(--fed-surface); border: 1px solid var(--fed-border-soft);
-                    border-radius: 0.4em; padding: 0.85em 1em; margin: 0.7em 0;
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius); padding:1em 1.15em; margin:0.75em 0;
+                    transition: border-color .15s, box-shadow .15s, transform .15s;
                 }
-                #federationConfigPage .fed-server:first-child { margin-top: 0; }
-                #federationConfigPage .fed-server-off { border-left: 3px solid var(--fed-warn); }
-                #federationConfigPage .fed-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6em; }
-                #federationConfigPage .fed-server-url { opacity: 0.55; font-size: 0.88em; }
-                #federationConfigPage .fed-dot { width: 0.65em; height: 0.65em; border-radius: 50%; background: var(--fed-border); flex-shrink: 0; }
-                #federationConfigPage .fed-dot-ok { background: var(--fed-ok); }
-                #federationConfigPage .fed-dot-err { background: var(--fed-err); }
+                #federationConfigPage .fed-server:hover { border-color: var(--fed-border); box-shadow: var(--fed-shadow); transform: translateY(-1px); }
+                #federationConfigPage .fed-server:first-child { margin-top:0; }
+                #federationConfigPage .fed-server-off { border-left:3px solid var(--fed-warn); }
+                #federationConfigPage .fed-server-head { display:flex; align-items:center; flex-wrap:wrap; gap:0.65em; }
+                #federationConfigPage .fed-avatar {
+                    width:2.55em; height:2.55em; border-radius:50%; background: var(--fed-accent); color:#fff;
+                    display:flex; align-items:center; justify-content:center; font-weight:800; font-size:0.92em; flex-shrink:0;
+                    box-shadow: 0 2px 8px rgba(0,164,220,0.28);
+                }
+                #federationConfigPage .fed-server-url { opacity:0.58; font-size:0.86em; word-break:break-all; }
+                #federationConfigPage .fed-dot { width:0.62em; height:0.62em; border-radius:50%; background: var(--fed-border); flex-shrink:0; box-shadow: inset 0 1px 1px rgba(0,0,0,0.15); }
+                #federationConfigPage .fed-dot-ok { background: var(--fed-ok); box-shadow: 0 0 0 4px var(--fed-ok-soft); }
+                #federationConfigPage .fed-dot-err { background: var(--fed-err); box-shadow: 0 0 0 4px var(--fed-err-soft); }
                 #federationConfigPage .fed-offnote {
-                    margin-top: 0.65em; padding: 0.6em 0.85em; border-radius: 0.35em; font-size: 0.9em;
-                    background: rgba(209,143,46,0.12); color: var(--fed-warn-text);
+                    margin-top:0.75em; padding:0.65em 0.9em; border-radius: var(--fed-radius); font-size:0.88em;
+                    background: var(--fed-warn-soft); color: var(--fed-warn-text); border:1px solid rgba(217,144,26,0.18); display:flex; gap:0.55em; align-items:flex-start;
                 }
+                #federationConfigPage .fed-offnote::before { content:"pause_circle"; font-family:"Material Icons"; font-size:1.2em; flex-shrink:0; margin-top:0.05em; }
                 #federationConfigPage .fed-pill {
-                    font-size: 0.74em; letter-spacing: 0.04em; text-transform: uppercase;
-                    padding: 0.18em 0.6em; border: 1px solid var(--fed-border); border-radius: 1em;
-                    opacity: 0.85; white-space: nowrap;
+                    font-size:0.72em; letter-spacing:0.05em; text-transform:uppercase; font-weight:700;
+                    padding:0.28em 0.7em; border:1px solid var(--fed-border); border-radius: var(--fed-radius-pill);
+                    opacity:0.88; white-space:nowrap; display:inline-flex; align-items:center; gap:0.3em;
                 }
-                #federationConfigPage .fed-pill-off { border-color: var(--fed-warn); color: var(--fed-warn-text); opacity: 1; }
-                #federationConfigPage .fed-pill-pool { border-color: var(--fed-accent); color: var(--fed-accent); margin: 0.2em 0.4em 0.2em 0; display: inline-block; }
+                #federationConfigPage .fed-pill::before { font-family:"Material Icons"; font-size:1.15em; line-height:1; }
+                #federationConfigPage .fed-pill-off { border-color: var(--fed-warn); color: var(--fed-warn-text); background: var(--fed-warn-soft); opacity:1; }
+                #federationConfigPage .fed-pill-off::before { content:"pause"; }
+                #federationConfigPage .fed-pill-pool { border-color: rgba(0,164,220,0.22); color: var(--fed-accent); background: var(--fed-accent-soft); margin:0.2em 0.4em 0.2em 0; }
+                #federationConfigPage .fed-pill-pool::before { content:"hub"; }
 
-                /* Per-friend management panel: a plain toggled block one level below
-                   the friend row, with sharing and pools shown directly - only the
-                   genuinely secondary connection dials go in a details. */
+                /* Friend panel */
                 #federationConfigPage .fed-friendpanel {
-                    margin-top: 1em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft);
-                    display: flex; flex-direction: column; gap: 0.9em;
+                    margin-top:1em; padding-top:1.1em; border-top:1px solid var(--fed-border-soft);
+                    display:flex; flex-direction:column; gap:1em;
                 }
-                #federationConfigPage .fed-subcard { background: var(--fed-surface); border: 1px solid var(--fed-border-soft); border-radius: 0.4em; padding: 0.9em 1em; }
-                #federationConfigPage h4.fed-subhead { margin: 0 0 0.4em; font-size: 0.95em; font-weight: 600; }
-                #federationConfigPage h3.fed-subhead { margin: 1.4em 0 0.5em; font-size: 1em; font-weight: 600; }
-                #federationConfigPage h3.fed-substep { margin: 1.2em 0 0.4em; font-size: 1.02em; font-weight: 600; }
+                #federationConfigPage .fed-subcard {
+                    background: rgba(255,255,255,0.015); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius); padding:1.05em 1.15em; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+                }
+                #federationConfigPage h4.fed-subhead { margin:0 0 0.5em; font-size:0.98em; font-weight:750; display:flex; align-items:center; gap:0.45em; }
+                #federationConfigPage h4.fed-subhead .material-icons { color: var(--fed-accent); font-size:1.15em; opacity:0.9; }
+                #federationConfigPage h3.fed-subhead { margin:1.5em 0 0.6em; font-size:1.02em; font-weight:750; }
+                #federationConfigPage h3.fed-substep { margin:1.3em 0 0.55em; font-size:1.02em; font-weight:750; }
 
-                /* Per-remote-user access overrides */
-                #federationConfigPage .fed-userrule-row { display: flex; align-items: center; gap: 0.7em; padding: 0.45em 0; border-bottom: 1px solid var(--fed-border-soft); }
-                #federationConfigPage .fed-userrule-row:last-of-type { border-bottom: none; }
-                #federationConfigPage .fed-userrule-row .fed-pill { margin-left: auto; }
+                /* User rule rows */
+                #federationConfigPage .fed-userrule-row { display:flex; align-items:center; gap:0.75em; padding:0.55em 0.2em; border-bottom:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-userrule-row:last-of-type { border-bottom:none; }
+                #federationConfigPage .fed-userrule-row .fed-pill { margin-left:auto; }
                 #federationConfigPage .fed-userrule-editor {
-                    background: var(--fed-surface); border: 1px solid var(--fed-border-soft);
-                    border-radius: 0.35em; padding: 0.85em; margin: 0.45em 0 0.85em;
+                    background: var(--fed-surface); border:1px solid var(--fed-border-soft);
+                    border-radius: var(--fed-radius); padding:0.95em; margin:0.55em 0 0.9em; box-shadow: var(--fed-shadow);
                 }
-                #federationConfigPage .fed-userrule-results { margin-top: 0.45em; max-height: 12em; overflow-y: auto; }
-                #federationConfigPage .fed-userrule-result { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; padding: 0.22em 0; }
+                #federationConfigPage .fed-userrule-results { margin-top:0.5em; max-height:12em; overflow-y:auto; border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius); padding:0.5em; background: rgba(128,128,128,0.03); }
+                #federationConfigPage .fed-userrule-result { display:flex; align-items:center; justify-content:space-between; gap:0.6em; padding:0.32em 0.35em; border-radius:0.45em; }
+                #federationConfigPage .fed-userrule-result:hover { background: var(--fed-surface); }
 
-                /* Library picker */
-                #federationConfigPage .fed-libgroup { margin: 1em 0; }
-                #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
-                #federationConfigPage .fed-librow { display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap; padding: 0.45em 0.6em; border-radius: 0.3em; cursor: pointer; }
-                #federationConfigPage .fed-librow:hover { background: var(--fed-surface); }
-                #federationConfigPage .fed-libmeta { opacity: 0.55; font-size: 0.85em; }
-                #federationConfigPage .fed-libtype { width: auto; max-width: 12em; font-size: 0.9em; }
-                #federationConfigPage .fed-picker-actions { margin: 0.4em 0 0.8em; font-size: 0.92em; display: flex; gap: 1.2em; }
-                #federationConfigPage .fed-picker-actions a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
-                #federationConfigPage .fed-picker-actions a:hover,
-                #federationConfigPage .fed-picker-actions a:focus-visible { text-decoration: underline; }
-                #federationConfigPage .fed-liblist { max-height: 18em; overflow-y: auto; border: 1px solid var(--fed-border-soft); border-radius: 0.35em; padding: 0.75em; margin-top: 0.65em; }
-                #federationConfigPage .fed-selected { margin-top: 0.75em; padding: 0.7em 0.9em; background: rgba(63,169,59,0.10); border-radius: 0.35em; font-size: 0.9em; }
-                #federationConfigPage .fed-mapping { border: 1px solid var(--fed-border-soft); border-radius: 0.4em; margin: 1em 0; padding: 0.9em 1em; background: var(--fed-surface); }
+                /* Library picker - cards grid */
+                #federationConfigPage .fed-libgroup { margin:1.1em 0; }
+                #federationConfigPage .fed-libgroup > strong { display:flex; align-items:center; gap:0.5em; margin-bottom:0.65em; font-size:0.98em; }
+                #federationConfigPage .fed-libgroup > strong::before { content:"dns"; font-family:"Material Icons"; color: var(--fed-accent); background: var(--fed-accent-soft); width:1.7em; height:1.7em; display:inline-flex; align-items:center; justify-content:center; border-radius:0.45em; font-size:1.05em; }
+                #federationConfigPage .fed-librow {
+                    display:flex; align-items:center; gap:0.7em; flex-wrap:wrap; padding:0.7em 0.85em;
+                    border-radius:0.65em; cursor:pointer; border:1px solid transparent; transition: all .12s;
+                    background: rgba(128,128,128,0.04);
+                }
+                #federationConfigPage .fed-librow:hover { background: var(--fed-surface); border-color: var(--fed-border-soft); transform: translateY(-1px); box-shadow: var(--fed-shadow); }
+                #federationConfigPage .fed-librow:has(input:checked) { background: var(--fed-accent-soft); border-color: rgba(0,164,220,0.22); }
+                #federationConfigPage .fed-libmeta { opacity:0.58; font-size:0.84em; margin-left:auto; background: rgba(128,128,128,0.10); padding:0.18em 0.55em; border-radius: var(--fed-radius-pill); }
+                #federationConfigPage .fed-libtype { width:auto; max-width:12em; font-size:0.9em; }
+                #federationConfigPage .fed-picker-actions { margin:0.6em 0 0.9em; font-size:0.9em; display:flex; gap:0.7em; }
+                #federationConfigPage .fed-picker-actions a {
+                    color: var(--fed-accent); cursor:pointer; text-decoration:none; font-weight:600;
+                    padding:0.38em 0.75em; border-radius: var(--fed-radius-pill); border:1px solid var(--fed-border-soft); background: var(--fed-surface);
+                    display:inline-flex; align-items:center; gap:0.3em; transition: all .12s;
+                }
+                #federationConfigPage .fed-picker-actions a:hover { background: var(--fed-accent-soft); border-color: rgba(0,164,220,0.22); transform: translateY(-1px); }
+                #federationConfigPage .fed-liblist { max-height:18em; overflow-y:auto; border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius); padding:0.85em; margin-top:0.65em; background: rgba(128,128,128,0.03); }
+                #federationConfigPage .fed-selected { margin-top:0.85em; padding:0.8em 1em; background: var(--fed-ok-soft); border:1px solid rgba(47,179,68,0.18); border-radius: var(--fed-radius); font-size:0.9em; display:flex; gap:0.55em; align-items:flex-start; }
+                #federationConfigPage .fed-selected::before { content:"check_circle"; font-family:"Material Icons"; color: var(--fed-ok); font-size:1.2em; flex-shrink:0; margin-top:0.05em; }
+                #federationConfigPage .fed-mapping { border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius-lg); margin:1em 0; padding:1.15em 1.2em; background: var(--fed-surface); box-shadow: var(--fed-shadow); }
 
                 /* Downloads */
-                #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
-                #federationConfigPage .fed-download-row:first-child { border-top: none; }
-                #federationConfigPage .fed-download-info { flex: 1; min-width: 0; }
-                #federationConfigPage .fed-download-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-                #federationConfigPage .fed-download-path { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.55; margin-top: 0.2em; }
-                #federationConfigPage .fed-progress-track { margin-top: 0.45em; height: 0.4em; border-radius: 0.2em; background: var(--fed-surface); overflow: hidden; }
-                #federationConfigPage .fed-progress-fill { height: 100%; background: var(--fed-accent); }
-                #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.25em 0.7em; font-size: 0.85em; }
+                #federationConfigPage .fed-download-row { display:flex; align-items:center; gap:0.95em; padding:0.85em 0; border-top:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-download-row:first-child { border-top:none; }
+                #federationConfigPage .fed-download-info { flex:1; min-width:0; }
+                #federationConfigPage .fed-download-name { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:-0.01em; }
+                #federationConfigPage .fed-download-path { font-family:ui-monospace, SFMono-Regular, monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0.55; margin-top:0.22em; font-size:0.88em; background: rgba(128,128,128,0.08); padding:0.18em 0.5em; border-radius:0.35em; display:inline-block; max-width:100%; }
+                #federationConfigPage .fed-progress-track { margin-top:0.55em; height:0.42em; border-radius: var(--fed-radius-pill); background: rgba(128,128,128,0.12); overflow:hidden; }
+                #federationConfigPage .fed-progress-fill { height:100%; background: linear-gradient(90deg, var(--fed-accent), #7c5cff); border-radius: inherit; transition: width .3s ease; }
+                #federationConfigPage .fed-btn-sm { flex-shrink:0; padding:0.32em 0.75em; font-size:0.84em; border-radius: var(--fed-radius-pill); }
 
-                /* Save bars and misc */
-                #federationConfigPage .fed-savebar { display: flex; align-items: center; flex-wrap: wrap; gap: 1em; }
-                #federationConfigPage .fed-savebar .emby-button { margin: 0; }
-                #federationConfigPage .fed-savemsg { font-size: 0.95em; }
+                /* Save bars */
+                #federationConfigPage .fed-savebar { display:flex; align-items:center; flex-wrap:wrap; gap:1em; padding:1em 1.15em; background: var(--fed-surface); border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius); box-shadow: var(--fed-shadow); }
+                #federationConfigPage .fed-savebar .emby-button { margin:0; }
+                #federationConfigPage .fed-savemsg { font-size:0.94em; font-weight:600; }
                 #federationConfigPage .fed-savemsg-ok { color: var(--fed-ok-text); }
                 #federationConfigPage .fed-savemsg-err { color: var(--fed-err-text); }
                 #federationConfigPage .fed-danger { color: var(--fed-err-text) !important; }
-                #federationConfigPage .fed-diagnostic { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: 0.7em; margin-top: 0.7em; }
-                #federationConfigPage .fed-diagnostic div { padding: 0.7em 0.9em; background: var(--fed-surface); border-radius: 0.35em; }
-                #federationConfigPage .fed-diagnostic strong { display: block; font-size: 0.78em; opacity: 0.65; margin-bottom: 0.25em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-                #federationConfigPage code { background: var(--fed-surface); padding: 0.12em 0.4em; border-radius: 0.25em; font-size: 0.9em; }
+                #federationConfigPage .fed-diagnostic { display:grid; grid-template-columns: repeat(auto-fit, minmax(14em,1fr)); gap:0.75em; margin-top:0.8em; }
+                #federationConfigPage .fed-diagnostic div { padding:0.85em 1em; background: var(--fed-surface); border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius); transition: transform .12s, box-shadow .12s; }
+                #federationConfigPage .fed-diagnostic div:hover { transform: translateY(-1px); box-shadow: var(--fed-shadow); }
+                #federationConfigPage .fed-diagnostic strong { display:block; font-size:0.72em; opacity:0.62; margin-bottom:0.3em; font-weight:750; text-transform:uppercase; letter-spacing:0.06em; color: var(--fed-accent); }
+                #federationConfigPage code { background: var(--fed-surface); padding:0.14em 0.45em; border-radius:0.35em; font-size:0.88em; border:1px solid var(--fed-border-soft); }
 
-                /* Disclosure blocks (custom mappings, advanced settings, hidden items).
-                   Native <details> marker kept - no custom chevron, no animation. */
-                #federationConfigPage details.fed-details { margin: 1em 0; }
-                #federationConfigPage details.fed-details > summary { cursor: pointer; font-weight: 600; padding: 0.35em 0; user-select: none; }
-                #federationConfigPage details.fed-details > summary:hover { opacity: 0.85; }
-                #federationConfigPage .fed-details-body { padding-top: 0.7em; }
+                /* Details */
+                #federationConfigPage details.fed-details { margin:1.15em 0; background: rgba(128,128,128,0.03); border:1px solid var(--fed-border-soft); border-radius: var(--fed-radius); padding:0.15em 1em; }
+                #federationConfigPage details.fed-details > summary { cursor:pointer; font-weight:700; padding:0.75em 0; user-select:none; display:flex; align-items:center; gap:0.5em; list-style:none; }
+                #federationConfigPage details.fed-details > summary::-webkit-details-marker { display:none; }
+                #federationConfigPage details.fed-details > summary::before { content:"expand_more"; font-family:"Material Icons"; font-size:1.3em; opacity:0.65; transition: transform .18s; background: var(--fed-surface); width:1.6em; height:1.6em; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; border:1px solid var(--fed-border-soft); }
+                #federationConfigPage details.fed-details[open] > summary::before { transform: rotate(180deg); }
+                #federationConfigPage details.fed-details > summary:hover::before { background: var(--fed-surface-hover); }
+                #federationConfigPage .fed-details-body { padding:0.2em 0 1em; border-top:1px solid var(--fed-border-soft); margin-top:0.15em; }
+
+                /* Add friend card special */
+                #federationConfigPage #fedFriendUrl { font-size:1.02em; }
+                #federationConfigPage .fed-muted { opacity:0.65; }
+                #federationConfigPage a { color: var(--fed-accent); }
             </style>
 
-            <div class="sectionTitleContainer">
-                <h2 class="sectionTitle">Federation</h2>
+            <div class="fed-hero">
+                <div class="fed-hero-icon"><span class="material-icons" aria-hidden="true">hub</span></div>
+                <div class="fed-hero-text">
+                    <h2 class="fed-hero-title">Federation</h2>
+                    <p class="fed-hero-desc">Watch libraries from other Jellyfin servers as if they were your own. Add a friend, pick what to share — done.</p>
+                    <span class="fed-hero-badge"><span class="material-icons" aria-hidden="true">verified</span> Secure · token-based · per-friend controls</span>
+                </div>
             </div>
-            <p class="fieldDescription">
-                Watch libraries from other Jellyfin servers as if they were your own. Add a friend, pick what to share, save — that's it.
-            </p>
 
             <div id="fedErrorContainer"></div>
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
 
             <div class="fed-statusstrip verticalSection" id="fedStatusCard">
-                <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
-                <div class="fed-stat"><strong id="fedStatItems">–</strong><span>items federated</span></div>
-                <div class="fed-stat"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div>
+                <div class="fed-stat"><div class="fed-stat-icon"><span class="material-icons" aria-hidden="true">link</span></div><div class="fed-stat-text"><strong id="fedStatServers">–</strong><span>servers connected</span></div></div>
+                <div class="fed-stat"><div class="fed-stat-icon"><span class="material-icons" aria-hidden="true">video_library</span></div><div class="fed-stat-text"><strong id="fedStatItems">–</strong><span>items federated</span></div></div>
+                <div class="fed-stat"><div class="fed-stat-icon"><span class="material-icons" aria-hidden="true">schedule</span></div><div class="fed-stat-text"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div></div>
                 <div class="fed-spacer"></div>
-                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
+                <button is="emby-button" type="button" class="raised button-submit emby-button" data-fed-action="refresh-cache"><span class="material-icons" aria-hidden="true" style="font-size:1.18em; vertical-align:-0.2em; margin-right:0.28em;">refresh</span> Refresh now</button>
             </div>
 
             <!--
@@ -220,21 +394,21 @@
                 tab is the one showing.
             -->
             <div class="fed-tabs" id="fedTabs" role="tablist">
-                <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
+                <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true"><span class="material-icons" aria-hidden="true">people</span> Friends</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false"><span class="material-icons" aria-hidden="true">hub</span> Pools</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false"><span class="material-icons" aria-hidden="true">video_library</span> Libraries</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false"><span class="material-icons" aria-hidden="true">tune</span> Advanced</button>
             </div>
 
             <div class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
                 <div class="verticalSection" id="fedDownloadsCard" style="display:none;">
-                    <h3 class="sectionTitle">Downloads</h3>
+                    <h3 class="sectionTitle"><span class="material-icons" aria-hidden="true">download</span> Downloads</h3>
                     <p class="fieldDescription">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
                     <div id="fedDownloadsList"></div>
                 </div>
 
                 <div class="verticalSection">
-                    <h3 class="sectionTitle">Add a friend</h3>
+                    <h3 class="sectionTitle"><span class="material-icons" aria-hidden="true">person_add</span> Add a friend</h3>
                     <p class="fieldDescription">
                         Enter another Federation server's address and send a request. Once they accept, both servers add
                         each other automatically — no API key to copy by hand.
@@ -243,9 +417,10 @@
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
                             <label class="inputLabel" for="fedFriendUrl">Friend's server address</label>
-                            <input type="text" id="fedFriendUrl" class="emby-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            <input type="text" id="fedFriendUrl" class="emby-input" placeholder="https://friend.example.com:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            <div class="fieldDescription">Tip: this is the public address they use — the same URL they open Jellyfin with.</div>
                         </div>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+                        <button is="emby-button" type="button" class="raised button-submit emby-button" data-fed-action="send-friend-request"><span class="material-icons" aria-hidden="true" style="font-size:1.2em; vertical-align:-0.18em; margin-right:0.28em;">send</span> Send request</button>
                     </div>
                     <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
 
@@ -254,7 +429,7 @@
                 </div>
 
                 <div class="verticalSection">
-                    <h3 class="sectionTitle">People</h3>
+                    <h3 class="sectionTitle"><span class="material-icons" aria-hidden="true">people</span> People</h3>
                     <p class="fieldDescription">
                         Servers you're connected with. Manage a friend to control what they can see of your library, put
                         them in a pool, or tweak connection settings.
@@ -266,7 +441,7 @@
 
             <div class="fed-tabpanel" data-tab-panel="pools" role="tabpanel">
                 <div class="verticalSection">
-                    <h3 class="sectionTitle">Pools</h3>
+                    <h3 class="sectionTitle"><span class="material-icons" aria-hidden="true">hub</span> Pools</h3>
                     <p class="fieldDescription">
                         A pool is a named group of Federation servers who all federate with every other member, not just you.
                         Create a pool and invite servers into it - each invite still goes through the normal friend request,
@@ -279,7 +454,7 @@
                             <label class="inputLabel" for="fedNewPoolName">New pool name</label>
                             <input type="text" id="fedNewPoolName" class="emby-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-pool">Create pool</button>
+                        <button is="emby-button" type="button" class="raised button-submit emby-button" data-fed-action="create-pool"><span class="material-icons" aria-hidden="true" style="font-size:1.2em; vertical-align:-0.18em; margin-right:0.28em;">add</span> Create pool</button>
                     </div>
                     <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
 
@@ -290,7 +465,7 @@
             <form id="fedConfigForm">
                 <div class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
                     <div class="verticalSection">
-                        <h3 class="sectionTitle">Libraries</h3>
+                        <h3 class="sectionTitle"><span class="material-icons" aria-hidden="true">video_library</span> Libraries</h3>
                         <p class="fieldDescription">
                             Each library you check appears on this server as a virtual library.
                             Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
@@ -317,7 +492,7 @@
                     <div class="verticalSection">
                         <p class="fieldDescription">This button saves your library selections and the advanced settings below. Sharing, pools and per-friend connection details above already save themselves as you edit them.</p>
                         <div class="fed-savebar">
-                            <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
+                            <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span class="material-icons" aria-hidden="true" style="font-size:1.2em; vertical-align:-0.18em; margin-right:0.3em;">save</span><span>Save library selections</span></button>
                             <span class="fed-savemsg" id="fedSaveMsg"></span>
                         </div>
                     </div>
@@ -373,7 +548,7 @@
                     <div class="verticalSection">
                         <p class="fieldDescription">Saves the advanced settings above and your library selections on the Libraries tab together - it's the same save action either tab's button triggers.</p>
                         <div class="fed-savebar">
-                            <button is="emby-button" type="submit" id="fedBtnSaveAdvanced" class="raised button-submit emby-button"><span>Save advanced settings</span></button>
+                            <button is="emby-button" type="submit" id="fedBtnSaveAdvanced" class="raised button-submit emby-button"><span class="material-icons" aria-hidden="true" style="font-size:1.2em; vertical-align:-0.18em; margin-right:0.3em;">save</span><span>Save advanced settings</span></button>
                             <span class="fed-savemsg" id="fedSaveMsgAdvanced"></span>
                         </div>
                     </div>
@@ -1252,7 +1427,7 @@
 
                         var s = currentConfig.RemoteServers || [];
                         if (s.length === 0) {
-                            c.innerHTML = '<p class="fed-muted">No friends connected yet - add one above.</p>';
+                            c.innerHTML = '<div class="fed-empty"><div class="fed-empty-icon"><span class="material-icons" aria-hidden="true">group_add</span></div><h4>No friends yet</h4><p>Add a friend above to start sharing libraries. They just need to accept your request — no API keys to copy.</p></div>' + '<div class="fed-onboarding"><div class="fed-step"><div class="fed-step-num">1</div><strong>Add a friend</strong><span>Paste their server address above and send a request</span></div><div class="fed-step"><div class="fed-step-num">2</div><strong>They accept</strong><span>Both servers trust each other instantly — no key to copy</span></div><div class="fed-step"><div class="fed-step-num">3</div><strong>Pick libraries</strong><span>Choose what to share on the Libraries tab and you\'re done</span></div></div>';
                             return;
                         }
 
@@ -1263,6 +1438,8 @@
                             var isOff = server.Enabled === false;
                             html += '<div class="fed-server' + (isOff ? ' fed-server-off' : '') + '">';
                             html += '<div class="fed-server-head">';
+                            var letter = (title || '?').trim().charAt(0).toUpperCase() || '?';
+                            html += '<span class="fed-avatar" aria-hidden="true">' + escapeHtml(letter) + '</span>';
                             html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
                             html += '<strong>' + escapeHtml(title) + '</strong>';
                             if (isOff) {
@@ -1667,7 +1844,7 @@
 
                         pools = pools || [];
                         if (pools.length === 0) {
-                            list.innerHTML = '<p class="fed-muted">No pools yet. Create one above, or accept a pool invite from a friend.</p>';
+                            list.innerHTML = '<div class="fed-empty"><div class="fed-empty-icon"><span class="material-icons" aria-hidden="true">hub</span></div><h4>No pools yet</h4><p>Pools connect multiple servers at once — create one above and invite your friends, or accept an invite they send you.</p></div>';
                             return;
                         }
 
@@ -2017,7 +2194,7 @@
                         }
 
                         if (customMappings.length === 0) {
-                            c.innerHTML = '<p class="fed-muted">No custom libraries.</p>';
+                            c.innerHTML = '<div class="fed-empty"><div class="fed-empty-icon"><span class="material-icons" aria-hidden="true">layers</span></div><h4>No custom libraries</h4><p>Most setups never need this — the picker above handles everything. Add one only if you want to merge different library names or tweak media types by hand.</p></div>';
                             return;
                         }
 
@@ -2298,7 +2475,7 @@
                         }
 
                         if (items.length === 0) {
-                            listEl.innerHTML = '<p class="fed-muted">Nothing hidden. Use the "Hide" button on a federated item\'s detail page to add one here.</p>';
+                            listEl.innerHTML = '<div class="fed-empty"><div class="fed-empty-icon"><span class="material-icons" aria-hidden="true">visibility_off</span></div><h4>Nothing hidden</h4><p>Use Hide on any federated item\'s detail page to remove clutter — the friend keeps sharing it, it just stops showing here.</p></div>';
                             return;
                         }
 

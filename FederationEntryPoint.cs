@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -59,6 +60,41 @@ namespace Jellyfin.Plugin.Federation
                 {
                     _logger.LogWarning("[Federation] Plugin configuration not available");
                     return;
+                }
+
+                // One-time cleanup for DedupProviderIds bloat: repeated saves with the
+                // default "imdb,tmdb,tvdb" value grew to 84 entries (28×) on at least
+                // one live install because the list was never de-duplicated before
+                // saving (see FederationPluginController.UpdateConfiguration). Clean
+                // it here on startup so the next sync doesn't carry the bloat, and
+                // the config page shows the correct 3 values without requiring a
+                // manual save. Also normalises to lowercase/trimmed form.
+                try
+                {
+                    var dedup = config.DedupProviderIds;
+                    if (dedup != null)
+                    {
+                        var cleaned = dedup
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Select(s => s.Trim().ToLowerInvariant())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        if (cleaned.Count == 0)
+                        {
+                            cleaned = new List<string> { "imdb", "tmdb", "tvdb" };
+                        }
+
+                        if (cleaned.Count != dedup.Count || !cleaned.SequenceEqual(dedup, StringComparer.OrdinalIgnoreCase))
+                        {
+                            _logger.LogInformation("[Federation] Cleaning DedupProviderIds: {Old} -> {New} ({OldRaw} -> {NewRaw})", dedup.Count, cleaned.Count, string.Join(",", dedup), string.Join(",", cleaned));
+                            config.DedupProviderIds = cleaned;
+                            Plugin.Instance?.SaveConfiguration();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Failed to clean DedupProviderIds on startup");
                 }
 
                 // The local server URL is intentionally left blank when unconfigured:
