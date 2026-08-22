@@ -77,6 +77,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "This item isn't streamed from a friend's server - nothing to download.", null);
             }
 
+            // Admin gates: global incoming filter + per-friend allowDownloads
+            var cfg = Plugin.Instance?.Configuration;
+            if (cfg?.IncomingFilter != null && !cfg.IncomingFilter.AllowDownloads)
+            {
+                return (false, "Downloads are disabled in Catalog → Incoming content filters.", null);
+            }
+
             if (DownloadProgressTracker.IsDownloadingItem(localItemId))
             {
                 return (false, "Already downloading.", null);
@@ -87,6 +94,12 @@ namespace Jellyfin.Plugin.Federation.Services
             if (entry == null || source == null)
             {
                 return (false, "Could not find this item's source server.", null);
+            }
+
+            var srcServer = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == source.ServerId);
+            if (srcServer != null && !srcServer.AllowDownloads)
+            {
+                return (false, $"Downloads from {srcServer.Name} are disabled (Catalog → {srcServer.Name} → Download access).", null);
             }
 
             var operationId = Guid.NewGuid().ToString();

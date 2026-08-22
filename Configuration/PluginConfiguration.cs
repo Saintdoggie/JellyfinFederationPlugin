@@ -301,6 +301,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// </para>
         /// </summary>
         public List<string> HiddenFederatedItemIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the receiving-side filter that decides what this server will
+        /// even pull in from friends, before any per-friend sharing scope is evaluated.
+        /// Empty means allow everything — the historical behaviour.
+        /// </summary>
+        public IncomingContentFilter IncomingFilter { get; set; } = new IncomingContentFilter();
+
+        /// <summary>
+        /// Gets or sets whether the one-time backfill for the new download/rating
+        /// fields has run. Existing rules had AllowDownload=true implicitly before
+        /// this existed, so no migration needed beyond a flag to record that fresh
+        /// defaults are already correct.
+        /// </summary>
+        public bool MigratedIncomingFilterV12 { get; set; }
     }
 
     /// <summary>
@@ -498,6 +513,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// editable from this server's own admin UI - the friend owns it.
         /// </summary>
         public List<RemoteUserAccessRule> FriendUserAccessRules { get; set; } = new List<RemoteUserAccessRule>();
+
+        /// <summary>
+        /// Gets or sets whether this friend's federated items are allowed to be
+        /// downloaded to local storage via <see cref="Services.FederationDownloadService"/>.
+        /// True by default — downloads still need an authenticated admin request.
+        /// </summary>
+        public bool AllowDownloads { get; set; } = true;
     }
 
     /// <summary>
@@ -583,6 +605,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Ignored otherwise.
         /// </summary>
         public List<string> ItemIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the maximum OfficialRating this specific remote user is
+        /// allowed to see. Empty means no per-user rating ceiling — the global
+        /// <see cref="IncomingContentFilter.MaxAllowedRating"/> or no ceiling at all
+        /// applies instead. When both are set the stricter of the two wins.
+        /// </summary>
+        public string MaxAllowedRating { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets whether this remote user is allowed to use the Download
+        /// action. False blocks only downloads — browsing/streaming may still be
+        /// allowed depending on <see cref="Mode"/>/<see cref="LibraryFolderIds"/>/
+        /// <see cref="ItemIds"/>.
+        /// </summary>
+        public bool AllowDownload { get; set; } = true;
     }
 
     /// <summary>
@@ -814,5 +852,54 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Gets or sets the remote library name (for display).
         /// </summary>
         public string RemoteLibraryName { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Receiving-side filter: what this server will accept from any friend,
+    /// before per-friend sharing scope is evaluated. All fields are ANDed and
+    /// empty means "allow everything" — so upgrading never hides content until
+    /// an admin actually sets a filter.
+    /// </summary>
+    public class IncomingContentFilter
+    {
+        /// <summary>
+        /// Gets or sets the set of item types this server will pull in. Empty
+        /// means allow every type. Values match <see cref="FederatedCacheEntry.ItemType"/>
+        /// ("Movie", "Series", "Episode", "MusicAlbum", "Audio", "MusicVideo", "Book",
+        /// "Photo", "Video", "BoxSet").
+        /// </summary>
+        public List<string> AllowedItemTypes { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the maximum OfficialRating this server will pull in.
+        /// Empty means no ceiling. Compared by rank — G &lt; PG &lt; PG-13 &lt; R &lt; NC-17
+        /// and TV-Y &lt; TV-Y7 &lt; TV-G &lt; TV-PG &lt; TV-14 &lt; TV-MA. An item whose
+        /// rating is not in the known ranking is allowed through (fail open rather
+        /// than silently hiding foreign-rating content).
+        /// </summary>
+        public string MaxAllowedRating { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets tags that, if present on an item, cause it to be skipped.
+        /// Case-insensitive exact match against <see cref="FederatedItemMetadata.Tags"/>.
+        /// Empty means no tag filtering.
+        /// </summary>
+        public List<string> BlockedTags { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets genres that, if present on an item, cause it to be skipped.
+        /// Case-insensitive exact match against <see cref="FederatedItemMetadata.Genres"/>.
+        /// Empty means no genre filtering.
+        /// </summary>
+        public List<string> BlockedGenres { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets a value indicating whether downloads (server-side fetches via
+        /// <see cref="Services.FederationDownloadService"/>) are allowed at all. When
+        /// false the detail-page Download action and the dashboard's Downloads section
+        /// still render but return 403. True by default — downloads never bypass
+        /// per-friend/per-user sharing scope; this is one more admin gate on top.
+        /// </summary>
+        public bool AllowDownloads { get; set; } = true;
     }
 }
