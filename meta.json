@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.85",
-  "changelog": "Revert Federation dashboard UI to the pre-redesign (0.0.82) layout \u2014 the 0.0.83 hero/pill and 0.0.84 Catalog redesigns were reverted per your request. This is the plain utilitarian dashboard that matched native Jellyfin: sectionTitle/fieldDescription/inputContainer/emby-* controls, underline tabs, 0.35em callouts, no gradients/shadows/animations. Backend for Incoming content filters / per-friend + per-user download + per-user rating ceilings (Services/IncomingContentFilterService, RemoteAccessControlService, FederationPeerAccessService, FederationSyncService) stays in this build but is no longer surfaced in the UI until a new frontend is wired up \u2014 upgrading hides nothing, and federated item delete propagation (rm on source \u2192 pruned on next sync via PruneServerSources \u2192 ReconcileMappingAsync) is unchanged. No functional change beyond the UI revert.",
+  "version": "0.0.86",
+  "changelog": "Settings page pass: stripped the leftover decoration from the 0.0.82 layout (coloured pill badges, status dots, tinted card backgrounds on every friend/pool/subcard row) so it reads like a native Jellyfin plugin page \u2014 checked this against Trakt's and Webhook's own configPage.html conventions. Rows are now plain, separated by a hairline instead of a boxed card; nested panels (sharing, per-user rules, pools, connection details) are shown with a simple left-rule indent instead of a filled sub-card; status/error/warning text is plain coloured text instead of a background callout. No layout, tabs, or functionality changed \u2014 same Friends/Pools/Libraries/Advanced structure, same fields, same JS behaviour, only how it's painted. Goal: someone who never opens the README should still be able to tell what's going on at a glance.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-22T20:48:43Z",
+  "timestamp": "2026-08-23T14:50:00Z",
   "imageUrl": "thumb.png"
 }
