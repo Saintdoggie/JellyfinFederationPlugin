@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.89",
+        "changelog": "Friend API keys and federation tokens are now encrypted at rest. Previously RemoteServer.ApiKey/IssuedApiKey, InternalRelayApiKey, and pending FriendRequest.ApiKey values were written to the plugin's config XML in plain text - readable by anything with filesystem access to the Jellyfin config folder. They're now encrypted with ASP.NET Core's DataProtection API (a key ring kept in this plugin's own data folder) right before the config hits disk; the in-memory copy every other part of the plugin already reads stays plaintext, so nothing else changed. Existing installs upgrade transparently - a key saved before this version is detected as not-yet-encrypted and used as-is, then encrypted for real on the next save, no manual migration step. 237 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.89/Jellyfin.Federation.zip",
+        "checksum": "7d8dc98145358eea52da74cba971a0ec",
+        "timestamp": "2026-08-23T22:30:00Z"
+      },
+      {
         "version": "0.0.88",
         "changelog": "Pool invites now require consent: adding an already-connected friend to a pool used to enroll them immediately and only notify them afterward (and that notify endpoint was mis-configured so it silently never worked at all) - it's now a real invite with Accept/Reject, matching how friend requests already worked, shown in a new 'Pool invites' section on the Pools tab. Pools also get an optional icon, spread peer-to-peer through the same roster-sync notice used for membership changes - no central image host. New Discovery tab: asks your current friends who their other friends are (reusing the existing opt-in friends-of-friends primitive) and lists what it finds with a one-click 'Add friend' - never contacts or adds anyone automatically, purely a search/browse aid over servers you're already one hop from. Also fixes the Catalog tab's BrowseLocalItems endpoint throwing an unhandled exception (returned as an unparseable plain-text error page) instead of a proper JSON error. 231 tests, all green.",
         "targetAbi": "10.11.0.0",
