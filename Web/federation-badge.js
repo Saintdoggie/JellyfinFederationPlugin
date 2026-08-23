@@ -21,6 +21,16 @@
     '<path d="M6.5 19h11a4.5 4.5 0 0 0 .5-8.97 6 6 0 0 0-11.66-1.5A3.75 3.75 0 0 0 6.5 19z"></path>' +
     '</svg>';
 
+  // Same "eye with a line through it" glyph as the native visibility_off
+  // material icon already used for the receiving-side Hide action, so the two
+  // opposite-direction "make this invisible" actions read as the same idea.
+  // Filled rather than stroked for the same 12px-legibility reason as the
+  // cloud glyph above.
+  var EYE_OFF_SVG =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">' +
+    '<path d="M2 4.27 3.28 3 21 20.72 19.73 22l-3.08-3.08c-1.44.61-2.99.93-4.65.93-5 0-9.27-3.11-11-7.5.72-1.84 1.87-3.45 3.31-4.71L2 4.27ZM12 9a3 3 0 0 1 3 3c0 .35-.06.68-.16 1L11 9.16c.32-.1.65-.16 1-.16Zm0-4.5c5 0 9.27 3.11 11 7.5a11.8 11.8 0 0 1-2.88 4.19l-1.42-1.42A9.8 9.8 0 0 0 20.82 12C19.17 8.36 15.75 6 12 6c-1.1 0-2.16.2-3.15.56L7.34 5.06A11.6 11.6 0 0 1 12 4.5ZM9.5 12a2.5 2.5 0 0 0 2.94 2.46l-2.9-2.9c-.03.14-.04.29-.04.44Z"></path>' +
+    '</svg>';
+
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) {
       return;
@@ -108,11 +118,39 @@
       });
   }
 
+  // ids of this server's own local items currently excluded from sharing with
+  // every friend (Configuration/FederationPluginController.cs's
+  // "Outgoing sharing" region) - the opposite direction from federatedIds
+  // above, so the corner badge and detail-page action can tell an admin apart
+  // "this plays from elsewhere" from "this plays here but I've stopped
+  // sharing it out".
+  var sharingDisabledIds = new Set();
+
+  function refreshSharingDisabledIds() {
+    fetch('/Plugins/Federation/Sharing/DisabledIds', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (ids) {
+        var next = new Set();
+        (ids || []).forEach(function (id) { next.add(normalizeId(id)); });
+        sharingDisabledIds = next;
+      })
+      .catch(function () {
+        // Leave the previous set in place; try again on the next interval.
+      });
+  }
+
   function badgeCard(el) {
     var id = normalizeId(el.getAttribute('data-id'));
-    if (!id || !federatedIds.has(id)) {
-      // Not federated (or not known yet) - skip this element for good so we
-      // don't keep re-checking it on every scan.
+    var isFederated = !!id && federatedIds.has(id);
+    // A federated item can never itself be re-shared onward (see
+    // FederationPeerAccessService's remarks on the non-transitive guarantee),
+    // so the two badges are mutually exclusive - no need to pick between them
+    // on the same card.
+    var isSharingDisabled = !isFederated && !!id && sharingDisabledIds.has(id);
+
+    if (!isFederated && !isSharingDisabled) {
+      // Neither (or not known yet) - skip this element for good so we don't
+      // keep re-checking it on every scan.
       el.setAttribute('data-federation-badge', '0');
       return;
     }
@@ -127,16 +165,24 @@
         el.style.position = 'relative';
       }
 
-      var srv = federatedIds.get(id);
       var badge = document.createElement('div');
       badge.className = 'federation-badge-corner';
-      badge.title = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
-      badge.innerHTML = ICON_SVG;
+      if (isFederated) {
+        var srv = federatedIds.get(id);
+        badge.title = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
+        badge.innerHTML = ICON_SVG;
+      } else {
+        badge.title = 'Not shared with any friend';
+        badge.innerHTML = EYE_OFF_SVG;
+      }
+
       el.appendChild(badge);
     }
 
     el.setAttribute('data-federation-badge', '1');
-    updateDownloadRing(el, id);
+    if (isFederated) {
+      updateDownloadRing(el, id);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -559,6 +605,74 @@
       });
   }
 
+  // Stops sharing one of this server's OWN items with every friend - the
+  // opposite direction from startHide above (that suppresses a friend's item
+  // locally; this stops offering one of ours to anyone). See
+  // Configuration/FederationPluginController.cs's "Outgoing sharing" region
+  // and PluginConfiguration.GloballyExcludedItemIds for the backend half.
+  // Per-friend/per-user narrowing still lives in the settings page's Catalog
+  // picker - this quick action is deliberately the broad "everyone" case only.
+  function startDisableSharing(button, itemId) {
+    setButtonState(button, 'busy', 'Stopping', 'Stopping sharing');
+
+    var token = getToken();
+    fetch('/Plugins/Federation/Sharing/Disable', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      body: JSON.stringify({ ItemId: itemId })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.success) {
+          setButtonState(button, 'error', 'Failed', (result.data && result.data.message) || 'Could not stop sharing this item');
+          return;
+        }
+
+        sharingDisabledIds.add(normalizeId(itemId));
+        setButtonState(button, 'done', 'Stopped sharing', 'Not shared with any friend');
+        refreshDownloadRingsOnCards();
+      })
+      .catch(function () {
+        setButtonState(button, 'error', 'Failed', 'Could not stop sharing this item');
+      });
+  }
+
+  function startEnableSharing(button, itemId) {
+    setButtonState(button, 'busy', 'Resuming', 'Resuming sharing');
+
+    var token = getToken();
+    fetch('/Plugins/Federation/Sharing/Enable', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      body: JSON.stringify({ ItemId: itemId })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.success) {
+          setButtonState(button, 'error', 'Failed', (result.data && result.data.message) || 'Could not resume sharing this item');
+          return;
+        }
+
+        sharingDisabledIds.delete(normalizeId(itemId));
+        setButtonState(button, 'done', 'Sharing', 'Shared per its existing per-friend settings');
+        document.querySelectorAll('.card[data-id],.listItem[data-id]').forEach(function (el) {
+          if (normalizeId(el.getAttribute('data-id')) === normalizeId(itemId)) {
+            var badge = el.querySelector('.federation-badge-corner');
+            if (badge) {
+              badge.remove();
+            }
+
+            el.setAttribute('data-federation-badge', '0');
+          }
+        });
+      })
+      .catch(function () {
+        setButtonState(button, 'error', 'Failed', 'Could not resume sharing this item');
+      });
+  }
+
   // -------------------------------------------------------------------------
   // Detail page: native-looking chrome only.
   //
@@ -634,10 +748,11 @@
   // Waits for the actionsheet the "..." button just opened to render (there's
   // no synchronous hook: jellyfin-web looks up the item and the current
   // user's permissions, itself async, before calling into the actionsheet
-  // module), then adds Download/Hide to the top of it. Guards against
-  // double-injecting into the same open sheet since the more-commands click
-  // handler and this can both run more than once in edge cases.
-  function injectActionSheetItems(rawId) {
+  // module), then adds Download/Hide (federated item) or a sharing toggle
+  // (this server's own item) to the top of it. Guards against double-injecting
+  // into the same open sheet since the more-commands click handler and this
+  // can both run more than once in edge cases.
+  function injectActionSheetItems(rawId, isFederated) {
     var attempts = 0;
     function tryInject() {
       var scroller = document.querySelector('.actionSheetScroller');
@@ -654,30 +769,48 @@
         return;
       }
 
-      var active = loadActiveDownloads()[rawId];
-      var downloadItem = makeActionSheetItem(
-        active ? 'cloud_off' : 'cloud_download',
-        active ? 'Cancel download' : 'Download',
-        'federation-download',
-        function (btn) {
-          if (active) {
-            cancelDownload(btn);
-          } else {
-            startDownload(btn, rawId);
-          }
-        });
-      if (active) {
-        downloadItem.setAttribute('data-operation-id', active.operationId);
+      if (isFederated) {
+        var active = loadActiveDownloads()[rawId];
+        var downloadItem = makeActionSheetItem(
+          active ? 'cloud_off' : 'cloud_download',
+          active ? 'Cancel download' : 'Download',
+          'federation-download',
+          function (btn) {
+            if (active) {
+              cancelDownload(btn);
+            } else {
+              startDownload(btn, rawId);
+            }
+          });
+        if (active) {
+          downloadItem.setAttribute('data-operation-id', active.operationId);
+        }
+
+        var hideItem = makeActionSheetItem(
+          'visibility_off',
+          'Hide',
+          'federation-hide',
+          function (btn) { startHide(btn, rawId); });
+
+        scroller.insertBefore(hideItem, scroller.firstChild);
+        scroller.insertBefore(downloadItem, scroller.firstChild);
+        return;
       }
 
-      var hideItem = makeActionSheetItem(
-        'visibility_off',
-        'Hide',
-        'federation-hide',
-        function (btn) { startHide(btn, rawId); });
+      var currentlyDisabled = sharingDisabledIds.has(normalizeId(rawId));
+      var sharingItem = makeActionSheetItem(
+        currentlyDisabled ? 'visibility' : 'visibility_off',
+        currentlyDisabled ? 'Share again' : 'Stop sharing',
+        'federation-sharing',
+        function (btn) {
+          if (currentlyDisabled) {
+            startEnableSharing(btn, rawId);
+          } else {
+            startDisableSharing(btn, rawId);
+          }
+        });
 
-      scroller.insertBefore(hideItem, scroller.firstChild);
-      scroller.insertBefore(downloadItem, scroller.firstChild);
+      scroller.insertBefore(sharingItem, scroller.firstChild);
     }
 
     requestAnimationFrame(tryInject);
@@ -686,10 +819,11 @@
   // jellyfin-web reuses the same itemDetails view instance (and so the same
   // .btnMoreCommands element) across navigations between different items'
   // detail pages, rather than recreating it per item - so the click listener
-  // below is bound exactly once and must read the CURRENT item id at click
-  // time, never one captured in its own closure, or the menu would keep
-  // acting on whichever federated item's page happened to bind it first.
-  var currentFederatedItemId = null;
+  // below is bound exactly once and must read the CURRENT item id/kind at
+  // click time, never values captured in its own closure, or the menu would
+  // keep acting on whichever item's page happened to bind it first.
+  var currentItemId = null;
+  var currentItemIsFederated = false;
 
   function bindMoreCommandsMenu() {
     var btn = document.querySelector('.btnMoreCommands');
@@ -699,8 +833,8 @@
 
     btn.dataset.federationBound = 'true';
     btn.addEventListener('click', function () {
-      if (currentFederatedItemId) {
-        injectActionSheetItems(currentFederatedItemId);
+      if (currentItemId) {
+        injectActionSheetItems(currentItemId, currentItemIsFederated);
       }
     });
   }
@@ -710,16 +844,31 @@
     var rawId = match ? match[0] : null;
     var id = rawId ? normalizeId(rawId) : null;
 
-    if (!id || !federatedIds.has(id)) {
-      // Leaving a federated item's detail page (or never on one) - clear
-      // this so a stale id can't leak into the next click on a page whose
-      // item isn't federated at all.
-      currentFederatedItemId = null;
+    if (!id) {
+      currentItemId = null;
       return;
     }
 
-    currentFederatedItemId = rawId;
-    injectSourceTag(rawId, federatedIds.get(id));
+    if (federatedIds.has(id)) {
+      currentItemId = rawId;
+      currentItemIsFederated = true;
+      injectSourceTag(rawId, federatedIds.get(id));
+      bindMoreCommandsMenu();
+      return;
+    }
+
+    // Not federated - only offer the sharing toggle on an actual media detail
+    // page (has the runtime/year/rating info line every playable item shows),
+    // not a Person/Studio/Genre page or anything else that happens to carry a
+    // guid in its URL but isn't one of this server's own shareable items.
+    var isMediaPage = !!(document.querySelector('.itemMiscInfo-primary') || document.querySelector('.itemMiscInfo'));
+    if (!isMediaPage) {
+      currentItemId = null;
+      return;
+    }
+
+    currentItemId = rawId;
+    currentItemIsFederated = false;
     bindMoreCommandsMenu();
   }
 
@@ -757,6 +906,8 @@
 
   refreshFederatedIds();
   setInterval(refreshFederatedIds, 5 * 60 * 1000);
+  refreshSharingDisabledIds();
+  setInterval(refreshSharingDisabledIds, 5 * 60 * 1000);
   resumeActiveDownloads();
 
   refreshDownloadsList();

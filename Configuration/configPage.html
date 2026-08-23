@@ -132,6 +132,24 @@
                 #federationConfigPage .fed-selected { margin-top: 0.75em; font-size: 0.9em; color: var(--fed-ok-text); }
                 #federationConfigPage .fed-mapping { border-bottom: 1px solid var(--fed-border-soft); padding: 1em 0; }
 
+                /* Catalog: cover-art picker for what NOT to share. Selection is
+                   shown with an outline only (no background tint, no shadow) - the
+                   same "plain, functional, not decorative" treatment as everything
+                   else on this page, just applied to a grid instead of a list. */
+                #federationConfigPage .fed-catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5em, 1fr)); gap: 1em; margin-top: 1em; }
+                #federationConfigPage .fed-catalog-card { cursor: pointer; text-align: center; }
+                #federationConfigPage .fed-catalog-poster {
+                    width: 100%; aspect-ratio: 2 / 3; border-radius: 0.25em; background: rgba(128,128,128,0.14);
+                    background-size: cover; background-position: center; outline: 2px solid transparent; outline-offset: 2px;
+                }
+                #federationConfigPage .fed-catalog-card-selected .fed-catalog-poster { outline-color: var(--fed-accent); }
+                #federationConfigPage .fed-catalog-name { font-size: 0.85em; margin-top: 0.35em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                #federationConfigPage .fed-catalog-state { font-size: 0.75em; color: var(--fed-warn-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                #federationConfigPage .fed-catalog-actionbar { margin-top: 1.2em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft); display: flex; flex-direction: column; gap: 0.7em; }
+                #federationConfigPage .fed-catalog-actionbar-row { display: flex; align-items: center; gap: 1.2em; }
+                #federationConfigPage .fed-catalog-actionbar-row a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
+                #federationConfigPage .fed-catalog-actionbar-row a:hover { text-decoration: underline; }
+
                 /* Downloads */
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
                 #federationConfigPage .fed-download-row:first-child { border-top: none; }
@@ -198,6 +216,7 @@
                 <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
             </div>
 
@@ -259,6 +278,62 @@
                     <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
 
                     <div id="fedPoolList"></div>
+                </div>
+            </div>
+
+            <div class="fed-tabpanel" data-tab-panel="catalog" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Catalog</h3>
+                    <p class="fieldDescription">
+                        Browse your own library by cover art and choose what NOT to share - with everyone, with one
+                        friend, or with just one of their users. This is the opposite direction from the Libraries tab
+                        above, which controls what you pull in from friends. Federated items (things you're already
+                        watching from a friend) don't appear here - they were never yours to share onward.
+                    </p>
+
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedCatalogSearch">Search your library</label>
+                            <input type="text" id="fedCatalogSearch" class="emby-input" placeholder="Leave blank to browse everything" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="catalog-search">Search</button>
+                    </div>
+
+                    <div id="fedCatalogStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedCatalogGrid" class="fed-catalog-grid"></div>
+                    <div class="fed-picker-actions" id="fedCatalogMoreWrap" style="display:none;">
+                        <a data-fed-action="catalog-more">Load more</a>
+                    </div>
+
+                    <div class="fed-catalog-actionbar" id="fedCatalogActionBar" style="display:none;">
+                        <div class="fed-catalog-actionbar-row">
+                            <strong id="fedCatalogSelectedCount">0 selected</strong>
+                            <a data-fed-action="catalog-clear-selection">Clear selection</a>
+                        </div>
+                        <div class="fed-inline">
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="catalog-hide-everyone">Hide from everyone</button>
+                        </div>
+                        <div class="fed-inline">
+                            <div class="fed-input-container">
+                                <label class="fed-label">Hide from one friend</label>
+                                <select class="emby-select fed-select" id="fedCatalogFriendPick"></select>
+                            </div>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="catalog-hide-friend">Apply</button>
+                        </div>
+                        <div class="fed-inline">
+                            <div class="fed-input-container">
+                                <label class="fed-label">...or just one of their users</label>
+                                <select class="emby-select fed-select" id="fedCatalogUserPick" disabled>
+                                    <option value="">Pick a friend first</option>
+                                </select>
+                            </div>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="catalog-hide-user" disabled id="fedCatalogHideUserBtn">Apply</button>
+                        </div>
+                        <p class="fed-hint">
+                            To share something again, use "Share again" on this item's own detail page (everyone), or
+                            the People tab's per-friend/per-user editors (one friend or user).
+                        </p>
+                    </div>
                 </div>
             </div>
 
@@ -1983,6 +2058,317 @@
                         });
                     }
 
+                    /* ---------------- Catalog (what NOT to share) ---------------- */
+                    //
+                    // A visual, cover-art picker over this server's own local, non-
+                    // federated items - the opposite direction from the Libraries
+                    // tab's picker (that chooses what to pull IN from friends; this
+                    // chooses what NOT to send OUT). "Hide from everyone" writes to
+                    // PluginConfiguration.GloballyExcludedItemIds via Sharing/Disable
+                    // (same endpoint the item detail page's own "Stop sharing" button
+                    // uses); "Hide from one friend"/"...one of their users" reuse the
+                    // existing Friends/{id}/Sharing and Friends/{id}/RemoteUserRule
+                    // endpoints the People tab's per-friend editors already call, just
+                    // pre-filled with whatever that friend/user already had plus the
+                    // newly selected items merged in - selecting cover art here is a
+                    // faster way to build the same exclude/block lists, not a second
+                    // parallel mechanism.
+
+                    var catalogItems = [];
+                    var catalogQuery = '';
+                    var catalogStartIndex = 0;
+                    var catalogTotal = 0;
+                    var catalogLoaded = false;
+                    var catalogSelected = {};
+
+                    function catalogPosterUrl(id) {
+                        try {
+                            if (window.ApiClient && typeof window.ApiClient.getImageUrl === 'function') {
+                                return window.ApiClient.getImageUrl(id, { type: 'Primary', maxHeight: 300, quality: 90 });
+                            }
+                        } catch (e) { /* fall through to a plain same-origin URL */ }
+
+                        return apiBase + '/Items/' + id + '/Images/Primary?fillHeight=300&quality=90';
+                    }
+
+                    function setCatalogStatus(msg, kind) {
+                        var el = q('#fedCatalogStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function catalogStateLabel(item) {
+                        if (item.hiddenFromEveryone) {
+                            return 'Hidden from everyone';
+                        }
+
+                        if (item.excludedFriendNames && item.excludedFriendNames.length > 0) {
+                            return 'Hidden from ' + item.excludedFriendNames.join(', ');
+                        }
+
+                        return '';
+                    }
+
+                    function renderCatalogGrid() {
+                        var grid = q('#fedCatalogGrid');
+                        if (!grid) {
+                            return;
+                        }
+
+                        if (catalogItems.length === 0) {
+                            grid.innerHTML = catalogLoaded ? '<p class="fed-muted">No items found.</p>' : '';
+                            return;
+                        }
+
+                        var html = '';
+                        catalogItems.forEach(function (item) {
+                            var selected = !!catalogSelected[item.id];
+                            var state = catalogStateLabel(item);
+                            html += '<div class="fed-catalog-card' + (selected ? ' fed-catalog-card-selected' : '') + '" data-fed-action="catalog-toggle" data-id="' + escapeHtml(item.id) + '">';
+                            html += '<div class="fed-catalog-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(item.id)) + '\')"></div>';
+                            html += '<div class="fed-catalog-name">' + escapeHtml(item.name) + (item.year ? ' (' + item.year + ')' : '') + '</div>';
+                            html += state ? '<div class="fed-catalog-state">' + escapeHtml(state) + '</div>' : '';
+                            html += '</div>';
+                        });
+
+                        grid.innerHTML = html;
+
+                        var moreWrap = q('#fedCatalogMoreWrap');
+                        if (moreWrap) {
+                            moreWrap.style.display = catalogItems.length < catalogTotal ? 'flex' : 'none';
+                        }
+                    }
+
+                    function loadCatalog(reset) {
+                        if (reset) {
+                            catalogStartIndex = 0;
+                            catalogItems = [];
+                        }
+
+                        setCatalogStatus('Loading…', 'info');
+                        var url = '/Plugins/Federation/BrowseLocalItems?startIndex=' + catalogStartIndex + '&limit=60'
+                            + (catalogQuery ? '&query=' + encodeURIComponent(catalogQuery) : '');
+                        fedFetch(url)
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            catalogLoaded = true;
+                            catalogTotal = res.totalRecordCount || 0;
+                            catalogItems = catalogItems.concat(res.items || []);
+                            catalogStartIndex = catalogItems.length;
+                            setCatalogStatus('');
+                            renderCatalogGrid();
+                        })
+                        .catch(function (e) {
+                            setCatalogStatus('Could not load your catalog: ' + e.message, 'err');
+                        });
+                    }
+
+                    function toggleCatalogSelect(id) {
+                        if (catalogSelected[id]) {
+                            delete catalogSelected[id];
+                        } else {
+                            catalogSelected[id] = true;
+                        }
+
+                        renderCatalogGrid();
+                        updateCatalogActionBar();
+                    }
+
+                    function catalogSelectedIds() {
+                        return Object.keys(catalogSelected);
+                    }
+
+                    function updateCatalogActionBar() {
+                        var bar = q('#fedCatalogActionBar');
+                        var count = catalogSelectedIds().length;
+                        if (!bar) {
+                            return;
+                        }
+
+                        bar.style.display = count > 0 ? 'flex' : 'none';
+                        var countEl = q('#fedCatalogSelectedCount');
+                        if (countEl) {
+                            countEl.textContent = count + (count === 1 ? ' selected' : ' selected');
+                        }
+                    }
+
+                    function clearCatalogSelection() {
+                        catalogSelected = {};
+                        renderCatalogGrid();
+                        updateCatalogActionBar();
+                    }
+
+                    function populateCatalogFriendPick() {
+                        var sel = q('#fedCatalogFriendPick');
+                        if (!sel) {
+                            return;
+                        }
+
+                        var previous = sel.value;
+                        var servers = currentConfig.RemoteServers || [];
+                        sel.innerHTML = servers.length === 0
+                            ? '<option value="">No friends connected yet</option>'
+                            : servers.map(function (s) { return '<option value="' + escapeHtml(s.Id) + '">' + escapeHtml(s.Name || s.Url) + '</option>'; }).join('');
+
+                        if (servers.some(function (s) { return s.Id === previous; })) {
+                            sel.value = previous;
+                        }
+                    }
+
+                    function onCatalogFriendPickChange() {
+                        var friendSel = q('#fedCatalogFriendPick');
+                        var userSel = q('#fedCatalogUserPick');
+                        var userBtn = q('#fedCatalogHideUserBtn');
+                        var serverId = friendSel ? friendSel.value : '';
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === serverId; })[0];
+                        if (!server || !userSel) {
+                            return;
+                        }
+
+                        userSel.disabled = true;
+                        if (userBtn) {
+                            userBtn.disabled = true;
+                        }
+
+                        userSel.innerHTML = '<option value="">Loading their users…</option>';
+                        loadRemoteUsersFor(server).then(function () {
+                            var cached = remoteUsersCache[server.Id];
+                            if (!cached || cached.error) {
+                                userSel.innerHTML = '<option value="">' + escapeHtml((cached && cached.error) || 'Could not load their users') + '</option>';
+                                return;
+                            }
+
+                            if (cached.users.length === 0) {
+                                userSel.innerHTML = '<option value="">No users found on their server</option>';
+                                return;
+                            }
+
+                            userSel.innerHTML = cached.users.map(function (u) {
+                                return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.name) + '</option>';
+                            }).join('');
+                            userSel.disabled = false;
+                            if (userBtn) {
+                                userBtn.disabled = false;
+                            }
+                        });
+                    }
+
+                    function applyCatalogHideEveryone() {
+                        var ids = catalogSelectedIds();
+                        if (ids.length === 0) {
+                            return;
+                        }
+
+                        setCatalogStatus('Hiding from everyone…', 'info');
+                        Promise.all(ids.map(function (id) {
+                            return fedFetch('/Plugins/Federation/Sharing/Disable', {
+                                method: 'POST',
+                                body: JSON.stringify({ ItemId: id })
+                            });
+                        }))
+                        .then(function () {
+                            setCatalogStatus(ids.length + ' item' + (ids.length === 1 ? '' : 's') + ' hidden from everyone.', 'ok');
+                            clearCatalogSelection();
+                            loadCatalog(true);
+                        })
+                        .catch(function (e) { setCatalogStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function applyCatalogHideFriend() {
+                        var ids = catalogSelectedIds();
+                        var friendSel = q('#fedCatalogFriendPick');
+                        var serverId = friendSel ? friendSel.value : '';
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === serverId; })[0];
+                        if (ids.length === 0 || !server) {
+                            return;
+                        }
+
+                        var merged = (server.ExcludedItemIds || []).slice();
+                        ids.forEach(function (id) {
+                            if (merged.indexOf(id) === -1) {
+                                merged.push(id);
+                            }
+                        });
+
+                        setCatalogStatus('Hiding from ' + (server.Name || server.Url) + '…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(server.Id) + '/Sharing', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                ShareAll: server.ShareAllLibraries !== false,
+                                FolderIds: server.SharedLibraryFolderIds || [],
+                                ExcludedItemIds: merged
+                            })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setCatalogStatus(res.message, res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                clearCatalogSelection();
+                                loadCatalog(true);
+                                loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { setCatalogStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function applyCatalogHideUser() {
+                        var ids = catalogSelectedIds();
+                        var friendSel = q('#fedCatalogFriendPick');
+                        var userSel = q('#fedCatalogUserPick');
+                        var serverId = friendSel ? friendSel.value : '';
+                        var remoteUserId = userSel ? userSel.value : '';
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === serverId; })[0];
+                        if (ids.length === 0 || !server || !remoteUserId) {
+                            return;
+                        }
+
+                        var cached = remoteUsersCache[server.Id];
+                        var remoteUser = cached ? cached.users.filter(function (u) { return u.id === remoteUserId; })[0] : null;
+                        var existing = existingUserRule(server, remoteUserId);
+                        var blocked = (existing ? existing.BlockedItemIds : null) || [];
+                        blocked = blocked.slice();
+                        ids.forEach(function (id) {
+                            if (blocked.indexOf(id) === -1) {
+                                blocked.push(id);
+                            }
+                        });
+
+                        setCatalogStatus('Hiding from ' + (remoteUser ? remoteUser.name : 'that user') + '…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(server.Id) + '/RemoteUserRule', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                RemoteUserId: remoteUserId,
+                                RemoteUserName: remoteUser ? remoteUser.name : '',
+                                Mode: existing ? existing.Mode : 0,
+                                LibraryFolderIds: existing ? existing.LibraryFolderIds : [],
+                                ItemIds: existing ? existing.ItemIds : [],
+                                MaxAllowedRating: existing ? existing.MaxAllowedRating : '',
+                                AllowDownload: existing ? existing.AllowDownload : true,
+                                BlockedItemIds: blocked
+                            })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setCatalogStatus(res.message, res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                clearCatalogSelection();
+                                loadCatalog(true);
+                                loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { setCatalogStatus('Failed: ' + e.message, 'err'); });
+                    }
+
                     /* ---------------- Custom mappings (advanced) ---------------- */
 
                     function renderMappings() {
@@ -2374,6 +2760,7 @@
                             loadStatus();
                             loadDiagnostics();
                             loadHiddenItems();
+                            populateCatalogFriendPick();
 
                             if (newlyConnectedIds.length > 0) {
                                 loadLibraryPicker(newlyConnectedIds);
@@ -2443,7 +2830,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'libraries', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'libraries', 'catalog', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
 
                     function switchTab(tab) {
@@ -2459,6 +2846,14 @@
                             btn.classList.toggle('fed-tab-btn-active', active);
                             btn.setAttribute('aria-selected', active ? 'true' : 'false');
                         });
+
+                        // Lazy: the catalog can be a large fetch, so it's only loaded
+                        // the first time an admin actually opens this tab, not on
+                        // every page load.
+                        if (tab === 'catalog' && !catalogLoaded) {
+                            populateCatalogFriendPick();
+                            loadCatalog(true);
+                        }
 
                         try {
                             localStorage.setItem(TAB_STORAGE_KEY, tab);
@@ -2586,6 +2981,28 @@
                                 case 'cancel-user-rule':
                                     toggleUserRuleEditor(t.getAttribute('data-key'));
                                     break;
+                                case 'catalog-search':
+                                    catalogQuery = (q('#fedCatalogSearch') || {}).value || '';
+                                    loadCatalog(true);
+                                    break;
+                                case 'catalog-more':
+                                    loadCatalog(false);
+                                    break;
+                                case 'catalog-toggle':
+                                    toggleCatalogSelect(t.getAttribute('data-id'));
+                                    break;
+                                case 'catalog-clear-selection':
+                                    clearCatalogSelection();
+                                    break;
+                                case 'catalog-hide-everyone':
+                                    applyCatalogHideEveryone();
+                                    break;
+                                case 'catalog-hide-friend':
+                                    applyCatalogHideFriend();
+                                    break;
+                                case 'catalog-hide-user':
+                                    applyCatalogHideUser();
+                                    break;
                                 case 'picker-all':
                                     pickerLibs.forEach(function (lib) { lib.selected = true; });
                                     renderPicker();
@@ -2660,6 +3077,11 @@
                         page.addEventListener('change', function (e) {
                             var t = e.target;
                             if (!t || !t.classList) {
+                                return;
+                            }
+
+                            if (t.id === 'fedCatalogFriendPick') {
+                                onCatalogFriendPickChange();
                                 return;
                             }
 

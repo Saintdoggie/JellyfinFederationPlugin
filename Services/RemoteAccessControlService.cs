@@ -90,6 +90,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 return true;
             }
 
+            // Mirrors FederationPeerAccessService's own BlockedItemIds check on the
+            // friend's side - the authoritative enforcement already happened there
+            // (they never sent us this item to begin with), this is only a second
+            // layer in case we already cached/materialized it under an older copy
+            // of their rule before it was pushed.
+            if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => Guid.TryParse(id, out var blockedGuid) && blockedGuid == remoteItemId))
+            {
+                _logger.LogInformation(
+                    "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-item block)",
+                    localUserId,
+                    remoteItemId,
+                    server.Name);
+                return false;
+            }
+
             switch (rule.Mode)
             {
                 case RemoteUserAccessMode.Blocked:

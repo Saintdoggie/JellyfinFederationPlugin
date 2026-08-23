@@ -1016,7 +1016,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             server.RemoteUserAccessRules.RemoveAll(r => string.Equals(r.RemoteUserId, rule.RemoteUserId, StringComparison.OrdinalIgnoreCase));
-            var hasExtraRestrictions = !string.IsNullOrWhiteSpace(rule.MaxAllowedRating) || !rule.AllowDownload;
+            var hasExtraRestrictions = !string.IsNullOrWhiteSpace(rule.MaxAllowedRating) || !rule.AllowDownload || (rule.BlockedItemIds != null && rule.BlockedItemIds.Count > 0);
             if (rule.Mode != RemoteUserAccessMode.AllLibraries || hasExtraRestrictions)
             {
                 server.RemoteUserAccessRules.Add(rule);

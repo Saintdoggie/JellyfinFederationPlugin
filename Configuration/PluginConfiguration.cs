@@ -316,6 +316,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// defaults are already correct.
         /// </summary>
         public bool MigratedIncomingFilterV12 { get; set; }
+
+        /// <summary>
+        /// Gets or sets this server's own local item ids that are never shared with
+        /// ANY friend - present or future - regardless of that friend's
+        /// <see cref="RemoteServer.ShareAllLibraries"/>/<see cref="RemoteServer.SharedLibraryFolderIds"/>/
+        /// <see cref="RemoteServer.ExcludedItemIds"/>. The one-click "stop sharing
+        /// this" toggle (item detail page button, and the settings page's catalog
+        /// picker) writes here; per-friend/per-user narrowing stays on
+        /// <see cref="RemoteServer.ExcludedItemIds"/>/<see cref="RemoteUserAccessRule.BlockedItemIds"/>
+        /// instead, since those already mean "this friend/user specifically" and
+        /// this list would be the wrong place for that. Enforced in
+        /// <see cref="Services.FederationPeerAccessService.IsItemVisible(RemoteServer, string?, System.Guid, string?)"/>,
+        /// ahead of every other check, on the exact same <c>Peer/*</c> code path
+        /// every other sharing rule already goes through.
+        /// </summary>
+        public List<string> GloballyExcludedItemIds { get; set; } = new List<string>();
     }
 
     /// <summary>
@@ -621,6 +637,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <see cref="ItemIds"/>.
         /// </summary>
         public bool AllowDownload { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets this server's own item ids that are hidden from this
+        /// specific remote user regardless of <see cref="Mode"/> - a deny-list
+        /// layered on top, for quickly hiding one item from one person without
+        /// reconfiguring their whole access mode (their <see cref="Mode"/> might be
+        /// <see cref="RemoteUserAccessMode.AllLibraries"/>, which has no other way
+        /// to exclude a single item without narrowing everything else they can see
+        /// too). Ignored when <see cref="Mode"/> is
+        /// <see cref="RemoteUserAccessMode.Blocked"/> (already hidden from
+        /// everything). Checked in
+        /// <see cref="Services.FederationPeerAccessService.IsItemVisible(RemoteServer, string?, System.Guid, string?)"/>.
+        /// </summary>
+        public List<string> BlockedItemIds { get; set; } = new List<string>();
     }
 
     /// <summary>

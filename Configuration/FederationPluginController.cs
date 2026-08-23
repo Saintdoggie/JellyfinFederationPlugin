@@ -1112,6 +1112,82 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: pages through this server's own local, non-federated
+        /// catalog with cover art, for the settings page's "Catalog" picker - the
+        /// one place an admin can browse everything they own by cover art and pick
+        /// what to stop sharing, rather than knowing an exact name to type into
+        /// <see cref="SearchLocalItems"/>. Federated items (anything carrying a
+        /// <c>FederationKey</c> provider id - already someone else's content
+        /// passing through this server) are excluded: this picker is about what
+        /// *this server* shares out, and federated content can never be re-shared
+        /// onward anyway (see <see cref="FederationPeerAccessService"/>'s remarks
+        /// on the non-transitive guarantee).
+        /// </summary>
+        [HttpGet("BrowseLocalItems")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult BrowseLocalItems([FromQuery] string? query, [FromQuery] string? type, [FromQuery] int startIndex = 0, [FromQuery] int limit = 60)
+        {
+            var boundedLimit = Math.Clamp(limit, 1, 200);
+            var boundedStart = Math.Max(0, startIndex);
+
+            var itemQuery = new MediaBrowser.Controller.Entities.InternalItemsQuery
+            {
+                Recursive = true,
+                IsVirtualItem = false
+            };
+
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                itemQuery.SearchTerm = query;
+            }
+
+            if (!string.IsNullOrWhiteSpace(type) && Enum.TryParse<Jellyfin.Data.Enums.BaseItemKind>(type, true, out var kind))
+            {
+                itemQuery.IncludeItemTypes = new[] { kind };
+            }
+
+            // Federated items are excluded below by their FederationKey provider id -
+            // ILibraryManager's own query has no "does not have provider id"
+            // predicate to push that down to, so this fetches a bounded batch
+            // up front and filters/pages it in memory instead. 5000 comfortably
+            // covers a real single library's catalog for the search/type-filtered
+            // case this is normally used with; an admin browsing their entire
+            // unfiltered catalog on a much larger install sees a floor, not
+            // necessarily the exact total, past that point.
+            itemQuery.StartIndex = 0;
+            itemQuery.Limit = 5000;
+
+            var result = _libraryManager.GetItemsResult(itemQuery);
+            var localOnly = result.Items
+                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
+                .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var config = Plugin.Instance?.Configuration;
+            var globallyExcluded = config?.GloballyExcludedItemIds ?? new List<string>();
+            var page = localOnly.Skip(boundedStart).Take(boundedLimit).Select(i =>
+            {
+                var idString = i.Id.ToString("N");
+                var excludedFriends = (config?.RemoteServers ?? new List<RemoteServer>())
+                    .Where(s => (s.ExcludedItemIds ?? new List<string>()).Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)))
+                    .Select(s => s.Name)
+                    .ToList();
+
+                return new
+                {
+                    id = idString,
+                    name = i.Name,
+                    type = i.GetType().Name,
+                    year = i.ProductionYear,
+                    hiddenFromEveryone = globallyExcluded.Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)),
+                    excludedFriendNames = excludedFriends
+                };
+            }).ToList();
+
+            return Ok(new { totalRecordCount = localOnly.Count, items = page });
+        }
+
+        /// <summary>
         /// Lists Jellyfin's own local users, entirely through reflection rather
         /// than a direct <c>_userManager.Users</c>/<c>GetUsers()</c> call. The
         /// member exposing this changed shape between the <c>Jellyfin.Controller</c>
@@ -2108,6 +2184,94 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok(new { success = true });
+        }
+
+        #endregion
+
+        #region Outgoing sharing (stop sharing this item with anyone)
+        //
+        // The opposite direction from Hidden Items above: this is a sending-side
+        // "never share this" toggle on one of *this server's* own items, not a
+        // receiving-side suppression of a friend's. See
+        // Configuration.PluginConfiguration.GloballyExcludedItemIds and
+        // Services.FederationPeerAccessService.IsItemVisible (the enforcement
+        // point) for the rest of the mechanism. Per-friend/per-user exclusion
+        // already existed via Friends/{id}/Sharing and Friends/{id}/RemoteUserRule;
+        // these three endpoints are the "everyone" case, plus the ids list the
+        // item detail page's own button/badge (Web/federation-badge.js) and the
+        // settings page's Catalog picker both read to know current state.
+
+        /// <summary>
+        /// Stops sharing one of this server's own items with every friend,
+        /// present and future. The detail-page "Stop sharing" button and the
+        /// Catalog picker's "Hide from everyone" action both call this.
+        /// </summary>
+        [HttpPost("Sharing/Disable")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult DisableSharing([FromBody] HideItemBody body)
+        {
+            if (!Guid.TryParse(body?.ItemId, out var itemGuid))
+            {
+                return BadRequest(new { success = false, message = "Invalid item id" });
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config != null)
+            {
+                config.GloballyExcludedItemIds ??= new List<string>();
+                var idString = itemGuid.ToString("N");
+                if (!config.GloballyExcludedItemIds.Contains(idString, StringComparer.OrdinalIgnoreCase))
+                {
+                    config.GloballyExcludedItemIds.Add(idString);
+                    Plugin.Instance?.SaveConfiguration();
+                }
+            }
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Resumes sharing a previously globally-disabled item, subject to
+        /// whatever per-friend/per-user scope already applied before it was
+        /// disabled (this only removes the "everyone" override, it does not touch
+        /// <see cref="RemoteServer.ExcludedItemIds"/> or any
+        /// <see cref="RemoteUserAccessRule.BlockedItemIds"/>).
+        /// </summary>
+        [HttpPost("Sharing/Enable")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult EnableSharing([FromBody] HideItemBody body)
+        {
+            if (!Guid.TryParse(body?.ItemId, out var itemGuid))
+            {
+                return BadRequest(new { success = false, message = "Invalid item id" });
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config?.GloballyExcludedItemIds != null)
+            {
+                var removed = config.GloballyExcludedItemIds.RemoveAll(id => string.Equals(id, itemGuid.ToString("N"), StringComparison.OrdinalIgnoreCase));
+                if (removed > 0)
+                {
+                    Plugin.Instance?.SaveConfiguration();
+                }
+            }
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Returns the local item ids (format "N") currently excluded from sharing
+        /// with everyone, for <see cref="GetClientScript"/> to badge in the UI.
+        /// Ids only, no other item data, so anonymous is fine here too - same
+        /// reasoning as <see cref="GetFederatedIds"/>.
+        /// </summary>
+        [HttpGet("Sharing/DisabledIds")]
+        [AllowAnonymous]
+        [Produces("application/json")]
+        public ActionResult<object> GetGloballyDisabledIds()
+        {
+            var ids = Plugin.Instance?.Configuration?.GloballyExcludedItemIds ?? new List<string>();
+            return Ok(ids);
         }
 
         #endregion

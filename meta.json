@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.86",
-  "changelog": "Settings page pass: stripped the leftover decoration from the 0.0.82 layout (coloured pill badges, status dots, tinted card backgrounds on every friend/pool/subcard row) so it reads like a native Jellyfin plugin page \u2014 checked this against Trakt's and Webhook's own configPage.html conventions. Rows are now plain, separated by a hairline instead of a boxed card; nested panels (sharing, per-user rules, pools, connection details) are shown with a simple left-rule indent instead of a filled sub-card; status/error/warning text is plain coloured text instead of a background callout. No layout, tabs, or functionality changed \u2014 same Friends/Pools/Libraries/Advanced structure, same fields, same JS behaviour, only how it's painted. Goal: someone who never opens the README should still be able to tell what's going on at a glance.",
+  "version": "0.0.87",
+  "changelog": "Adds a way to stop sharing a specific piece of YOUR OWN content, two ways. (1) A new Catalog tab: browse your library by cover art, click to select one or more titles, then hide them from everyone, from one friend, or from just one of that friend's users - reuses the same per-friend/per-user exclude lists the People tab already had, just with a faster visual picker on top, plus a new global GloballyExcludedItemIds list for the \"everyone\" case. (2) A matching one-click \"Stop sharing\"/\"Share again\" action in the native \"...\" menu on the item's own detail page (only shown for your own items, never for federated ones - those were never yours to re-share), with an eye-with-a-line-through badge on the cover art while sharing is off, the same corner treatment the federated-item cloud badge already used. New backend: RemoteUserAccessRule.BlockedItemIds lets a per-user rule hide specific items even in 'All shared libraries' mode, enforced both server-side (authoritative) and on the receiving side (defense in depth), same dual-check pattern as the existing Mode/rating fields. 223 tests, all still green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-23T14:50:00Z",
+  "timestamp": "2026-08-23T19:40:00Z",
   "imageUrl": "thumb.png"
 }
