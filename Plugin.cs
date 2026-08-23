@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Common.Configuration;
@@ -47,7 +48,110 @@ namespace Jellyfin.Plugin.Federation
             _provisioning = provisioning;
             _serviceProvider = serviceProvider;
             Instance = this;
+
+            // Must run before anything else touches Configuration (the base
+            // class's getter lazily deserializes the on-disk XML the first time
+            // it's read, which happens right here): the key ring has to exist
+            // before DecryptConfigurationInPlace tries to use it, and every other
+            // call site in the plugin expects Configuration to already hold
+            // plaintext keys by the time it can possibly see it.
+            // DataFolderPath is safe to build a key ring under across plugin
+            // upgrades specifically because it is NOT version-scoped in practice:
+            // BasePlugin<T>'s own constructor computes it from the assembly's bare
+            // file name (Jellyfin.Plugin.Federation, unchanged release to release)
+            // and only appends "_<version>" if that unversioned folder doesn't
+            // already exist AND Version is already set - but that check runs
+            // before SetAttributes has set Version, so it's always null there and
+            // the version suffix never actually triggers (verified directly
+            // against MediaBrowser.Common's BasePluginOfT.cs source for the
+            // Jellyfin.Controller version this project targets). If a future
+            // Jellyfin release changes that, this key ring - and this plugin's
+            // existing federation-cache.json (see GetDefaultCachePath) - would
+            // both need revisiting together, not just this one.
+            ApiKeyProtector.Initialize(Path.Combine(DataFolderPath, "keys"));
+            DecryptConfigurationInPlace();
+
             _logger.LogInformation("=== Jellyfin Federation Plugin v{Version} Initialized ===", Version);
+        }
+
+        /// <summary>
+        /// Decrypts the API key fields on the just-loaded <see cref="Configuration"/>
+        /// in place. Safe to mutate directly (rather than needing a clone, the way
+        /// <see cref="SaveConfiguration(PluginConfiguration)"/> does) because this
+        /// runs once, synchronously, before the constructor returns - nothing else
+        /// in the process can have a reference to this object yet. A value that
+        /// isn't valid ciphertext is left as-is by <see cref="ApiKeyProtector.Unprotect"/>
+        /// rather than throwing, so an existing install upgrading from a version
+        /// before this feature existed keeps working with no explicit migration -
+        /// the plaintext keys it already has just get encrypted on the next save.
+        /// </summary>
+        private void DecryptConfigurationInPlace()
+        {
+            var config = Configuration;
+
+            foreach (var server in config.RemoteServers ?? new List<RemoteServer>())
+            {
+                server.ApiKey = ApiKeyProtector.Unprotect(server.ApiKey);
+                server.IssuedApiKey = ApiKeyProtector.Unprotect(server.IssuedApiKey);
+            }
+
+            config.InternalRelayApiKey = ApiKeyProtector.Unprotect(config.InternalRelayApiKey);
+
+            foreach (var request in config.OutgoingFriendRequests ?? new List<FriendRequest>())
+            {
+                request.ApiKey = ApiKeyProtector.Unprotect(request.ApiKey);
+            }
+
+            foreach (var request in config.IncomingFriendRequests ?? new List<FriendRequest>())
+            {
+                request.ApiKey = ApiKeyProtector.Unprotect(request.ApiKey);
+            }
+        }
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// Encrypts the API key fields before they hit disk, on a deep clone -
+        /// never the live <see cref="Configuration"/> object itself, which every
+        /// other call site in the plugin (~40 of them) expects to keep holding
+        /// plaintext for the rest of the process's life. Overriding this one
+        /// method is sufficient for the whole write path: the base class's own
+        /// parameterless <c>SaveConfiguration()</c> and <c>UpdateConfiguration(...)</c>
+        /// both funnel into this same virtual method, so no other call site needs
+        /// to change. The clone goes through JSON rather than a hand-written
+        /// field-by-field copy specifically so a future property added to
+        /// <see cref="PluginConfiguration"/> or its nested types can never be
+        /// silently dropped by this step forgetting to copy it - the same JSON
+        /// round-trip the settings page's save flow already puts this exact type
+        /// through on every request.
+        /// </remarks>
+        public override void SaveConfiguration(PluginConfiguration config)
+        {
+            base.SaveConfiguration(CloneWithEncryptedApiKeys(config));
+        }
+
+        private static PluginConfiguration CloneWithEncryptedApiKeys(PluginConfiguration source)
+        {
+            var clone = JsonSerializer.Deserialize<PluginConfiguration>(JsonSerializer.Serialize(source)) ?? new PluginConfiguration();
+
+            foreach (var server in clone.RemoteServers ?? new List<RemoteServer>())
+            {
+                server.ApiKey = ApiKeyProtector.Protect(server.ApiKey);
+                server.IssuedApiKey = ApiKeyProtector.Protect(server.IssuedApiKey);
+            }
+
+            clone.InternalRelayApiKey = ApiKeyProtector.Protect(clone.InternalRelayApiKey);
+
+            foreach (var request in clone.OutgoingFriendRequests ?? new List<FriendRequest>())
+            {
+                request.ApiKey = ApiKeyProtector.Protect(request.ApiKey);
+            }
+
+            foreach (var request in clone.IncomingFriendRequests ?? new List<FriendRequest>())
+            {
+                request.ApiKey = ApiKeyProtector.Protect(request.ApiKey);
+            }
+
+            return clone;
         }
 
         /// <inheritdoc />
