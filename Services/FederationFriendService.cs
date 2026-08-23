@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -369,6 +370,95 @@ namespace Jellyfin.Plugin.Federation.Services
             return sent;
         }
 
+        // In-memory only, static so it survives across this Scoped service's
+        // per-request instances (same reasoning as InternalRelayKeyLock above).
+        // Deliberately never persisted to PluginConfiguration: it's a derived,
+        // best-effort cache the admin can always rebuild with a refresh, not
+        // something that needs to survive a restart, and keeping it out of the
+        // saved config means a discovered-but-unfriended server's address never
+        // ends up written to disk.
+        private static readonly ConcurrentDictionary<string, DiscoveredServer> DiscoveredServersCache = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Admin-triggered: asks every current friend who their other friends are -
+        /// the same primitive <see cref="DiscoverFriendsOfFriendsAsync"/> uses for
+        /// automatic discovery, but here purely to populate the Discovery
+        /// dashboard's search results. Never adds anyone as a friend by itself; the
+        /// admin picks who to send a request to from the results. Requires the
+        /// asked friend to have <see cref="PluginConfiguration.AllowFriendsOfFriends"/>
+        /// enabled on their side, same gate as the automatic path.
+        /// </summary>
+        public async Task<int> RefreshDiscoveredServersAsync(CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var localUrl = (ResolveLocalUrl() ?? string.Empty).TrimEnd('/');
+            var found = 0;
+
+            foreach (var friend in config.RemoteServers.Where(s => s.Enabled).ToList())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var client = _clientFactory.GetClient(friend);
+                List<FriendListEntry>? entries;
+                try
+                {
+                    entries = await client.GetFriendsListAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Discovery lookup failed for {Server} (non-fatal)", friend.Name);
+                    continue;
+                }
+
+                if (entries == null)
+                {
+                    continue;
+                }
+
+                foreach (var entry in entries)
+                {
+                    if (string.IsNullOrEmpty(entry.Url) || !ConfigValidator.IsValidServerUrl(entry.Url))
+                    {
+                        continue;
+                    }
+
+                    var normalizedUrl = entry.Url.TrimEnd('/');
+                    if (!string.IsNullOrEmpty(localUrl) && string.Equals(normalizedUrl, localUrl, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    DiscoveredServersCache[normalizedUrl] = new DiscoveredServer
+                    {
+                        Name = string.IsNullOrEmpty(entry.Name) ? normalizedUrl : entry.Name,
+                        Url = normalizedUrl,
+                        DiscoveredViaFriendName = friend.Name,
+                        LastSeenUtc = DateTime.UtcNow
+                    };
+                    found++;
+                }
+            }
+
+            return found;
+        }
+
+        /// <summary>
+        /// Searches the cache <see cref="RefreshDiscoveredServersAsync"/> builds, by
+        /// substring match on name or address.
+        /// </summary>
+        public IReadOnlyList<DiscoveredServer> SearchDiscoveredServers(string? query)
+        {
+            IEnumerable<DiscoveredServer> results = DiscoveredServersCache.Values;
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                results = results.Where(s =>
+                    s.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || s.Url.Contains(query, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return results.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
         /// <summary>
         /// Handles an inbound friend request. Anonymous by design - the sender has no
         /// key for us yet, since issuing one is the whole point of this handshake.
@@ -581,52 +671,398 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Adds an already-known friend to a pool without repeating the friend
-        /// handshake, and tells them so their own copy of the pool (and their own
-        /// fan-out to whichever members they don't already know) stays in sync.
+        /// Invites an already-known friend into a pool without repeating the full
+        /// friend handshake - but still requires their admin to explicitly accept,
+        /// same as any other pool introduction. Previously this added the friend to
+        /// the pool immediately and only *notified* them afterward; that let one
+        /// admin unilaterally enroll another server in a pool with zero consent on
+        /// their side. Now it stages a <see cref="PoolInvite"/> on their end (see
+        /// <see cref="ReceivePoolInviteNotice"/>) and only actually joins them to
+        /// the pool once <see cref="AcceptPoolInviteAsync"/> confirms back.
         /// </summary>
         private async Task<(bool Success, string Message)> AddExistingFriendToPoolAsync(FederationPool pool, RemoteServer friend, CancellationToken cancellationToken)
         {
             var normalized = friend.Url.TrimEnd('/');
-            if (!pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+            if (pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
             {
-                pool.Members.Add(new PoolMember { FederationId = friend.FederationId, Name = friend.Name, Url = friend.Url });
-                Plugin.Instance!.SaveConfiguration();
+                return (false, $"{friend.Name} is already in this pool.");
             }
 
             if (string.IsNullOrEmpty(friend.Url) || string.IsNullOrEmpty(friend.ApiKey))
             {
-                return (true, $"{friend.Name} added to the pool locally, but has no address/key on file to notify.");
+                return (false, $"No address/key on file for {friend.Name} yet.");
             }
 
+            var config = Plugin.Instance!.Configuration;
+            if (config.OutgoingPoolInvites.Any(i => i.PoolId == pool.Id && string.Equals(i.RemoteServerUrl.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, $"{friend.Name} already has a pending invite to this pool.");
+            }
+
+            var inviteId = Guid.NewGuid().ToString();
             try
             {
-                var payload = new PoolNoticePayload
+                var payload = new PoolInviteNoticePayload
                 {
+                    InviteId = inviteId,
                     FromFederationId = GetOrCreateLocalFederationId(),
                     PoolId = pool.Id,
                     PoolName = pool.Name,
                     OwnerFederationId = pool.OwnerFederationId,
                     OwnerName = pool.OwnerName,
-                    Roster = pool.Members.ToList()
+                    Roster = pool.Members.ToList(),
+                    IconBase64 = pool.IconBase64
                 };
                 using var response = await PostAuthenticatedAsync(
-                    $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/Notice",
+                    $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/InviteNotice",
                     payload,
                     friend.ApiKey,
                     cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    return (true, $"{friend.Name} added to the pool locally, but could not notify them (HTTP {(int)response.StatusCode}) - they'll pick up the pool the next time they see it another way.");
+                    return (false, $"Could not invite {friend.Name} to the pool (HTTP {(int)response.StatusCode}). Check they're reachable and running a compatible Federation plugin version.");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Federation] Could not notify {Name} about being added to pool {Pool} (non-fatal)", friend.Name, pool.Name);
-                return (true, $"{friend.Name} added to the pool locally, but could not be reached to notify.");
+                _logger.LogWarning(ex, "[Federation] Could not invite {Name} to pool {Pool} (non-fatal)", friend.Name, pool.Name);
+                return (false, $"Could not reach {friend.Name}: {ex.Message}");
             }
 
-            return (true, $"{friend.Name} added to the pool.");
+            config.OutgoingPoolInvites.Add(new PoolInvite
+            {
+                Id = inviteId,
+                PoolId = pool.Id,
+                PoolName = pool.Name,
+                OwnerFederationId = pool.OwnerFederationId,
+                OwnerName = pool.OwnerName,
+                RemoteServerUrl = friend.Url,
+                RemoteServerName = friend.Name,
+                RemoteServerId = friend.FederationId
+            });
+            Plugin.Instance.SaveConfiguration();
+
+            return (true, $"Invited {friend.Name} to the pool. Waiting for them to accept.");
+        }
+
+        /// <summary>
+        /// Server-to-server: an already-known friend is inviting us into a pool. If
+        /// we're already a member (they're just re-sending an up-to-date roster/icon
+        /// for a pool we both already belong to), this is treated as an ordinary
+        /// sync - no new consent needed, same trust boundary as
+        /// <see cref="ReceivePoolNotice"/>. Only a pool genuinely new to us is
+        /// staged as a <see cref="PoolInvite"/> for the admin to accept or reject.
+        /// </summary>
+        public Task ReceivePoolInviteNotice(PoolInviteNoticePayload payload, CancellationToken cancellationToken)
+        {
+            if (payload == null || string.IsNullOrEmpty(payload.InviteId) || string.IsNullOrEmpty(payload.PoolId) || string.IsNullOrEmpty(payload.FromFederationId))
+            {
+                return Task.CompletedTask;
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            var sender = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
+            if (sender == null)
+            {
+                _logger.LogWarning("[Federation] Received a pool invite from an unrecognized federation id {FederationId}", payload.FromFederationId);
+                return Task.CompletedTask;
+            }
+
+            var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
+            if (existingPool != null)
+            {
+                if (!string.IsNullOrEmpty(payload.IconBase64))
+                {
+                    existingPool.IconBase64 = payload.IconBase64;
+                }
+
+                return AdoptPoolRosterAndFanOutAsync(
+                    payload.PoolId,
+                    payload.PoolName,
+                    payload.OwnerFederationId,
+                    payload.OwnerName,
+                    sender.Url,
+                    sender.FederationId,
+                    sender.Name,
+                    payload.Roster,
+                    cancellationToken);
+            }
+
+            if (config.IncomingPoolInvites.Any(i => i.Id == payload.InviteId))
+            {
+                return Task.CompletedTask;
+            }
+
+            config.IncomingPoolInvites.Add(new PoolInvite
+            {
+                Id = payload.InviteId,
+                PoolId = payload.PoolId,
+                PoolName = payload.PoolName ?? payload.PoolId,
+                OwnerFederationId = payload.OwnerFederationId ?? string.Empty,
+                OwnerName = payload.OwnerName ?? sender.Name,
+                RemoteServerUrl = sender.Url,
+                RemoteServerName = sender.Name,
+                RemoteServerId = sender.FederationId,
+                Roster = payload.Roster ?? new List<PoolMember>(),
+                IconBase64 = payload.IconBase64
+            });
+            Plugin.Instance.SaveConfiguration();
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Admin-triggered: accepts a pending pool invite from an already-known
+        /// friend. Confirmation to the inviter is required to succeed, not
+        /// best-effort - mirrors <see cref="AcceptFriendRequestAsync"/>'s reasoning:
+        /// without it, the inviter never adds us to their own copy of the roster.
+        /// </summary>
+        public async Task<(bool Success, string Message)> AcceptPoolInviteAsync(string inviteId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var entry = config.IncomingPoolInvites.FirstOrDefault(i => i.Id == inviteId);
+            if (entry == null)
+            {
+                return (false, "Pool invite not found.");
+            }
+
+            var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == entry.RemoteServerId);
+            if (friend == null || string.IsNullOrEmpty(friend.ApiKey))
+            {
+                config.IncomingPoolInvites.Remove(entry);
+                Plugin.Instance.SaveConfiguration();
+                return (false, $"{entry.RemoteServerName} is no longer a connected friend.");
+            }
+
+            try
+            {
+                var payload = new PoolInviteResponsePayload { InviteId = entry.Id, FromFederationId = GetOrCreateLocalFederationId() };
+                using var response = await PostAuthenticatedAsync(
+                    $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/AcceptNotice",
+                    payload,
+                    friend.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (false, $"Could not confirm with {entry.RemoteServerName} (HTTP {(int)response.StatusCode}). Try again shortly.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Failed to confirm pool acceptance with {Url}", friend.Url);
+                return (false, $"Could not reach {entry.RemoteServerName}: {ex.Message}");
+            }
+
+            config.IncomingPoolInvites.Remove(entry);
+            Plugin.Instance.SaveConfiguration();
+
+            await AdoptPoolRosterAndFanOutAsync(
+                entry.PoolId,
+                entry.PoolName,
+                entry.OwnerFederationId,
+                entry.OwnerName,
+                entry.RemoteServerUrl,
+                entry.RemoteServerId,
+                entry.RemoteServerName,
+                entry.Roster,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrEmpty(entry.IconBase64))
+            {
+                var pool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+                if (pool != null)
+                {
+                    pool.IconBase64 = entry.IconBase64;
+                    Plugin.Instance.SaveConfiguration();
+                }
+            }
+
+            return (true, $"You joined {entry.PoolName}.");
+        }
+
+        /// <summary>
+        /// Admin-triggered: rejects a pending pool invite from an already-known
+        /// friend, and best-effort tells them so their outgoing list clears too.
+        /// </summary>
+        public async Task<(bool Success, string Message)> RejectPoolInviteAsync(string inviteId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var entry = config.IncomingPoolInvites.FirstOrDefault(i => i.Id == inviteId);
+            if (entry == null)
+            {
+                return (false, "Pool invite not found.");
+            }
+
+            config.IncomingPoolInvites.Remove(entry);
+            Plugin.Instance.SaveConfiguration();
+
+            var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == entry.RemoteServerId);
+            if (friend != null && !string.IsNullOrEmpty(friend.ApiKey))
+            {
+                try
+                {
+                    var payload = new PoolInviteResponsePayload { InviteId = entry.Id, FromFederationId = GetOrCreateLocalFederationId() };
+                    using var response = await PostAuthenticatedAsync(
+                        $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/RejectNotice",
+                        payload,
+                        friend.ApiKey,
+                        cancellationToken).ConfigureAwait(false);
+                    _ = response;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not notify {Url} of a rejected pool invite (non-fatal)", friend.Url);
+                }
+            }
+
+            return (true, "Pool invite rejected.");
+        }
+
+        /// <summary>
+        /// Admin-triggered: cancels a pool invite this server sent before the other
+        /// side responded.
+        /// </summary>
+        public Task<(bool Success, string Message)> CancelOutgoingPoolInviteAsync(string inviteId)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == inviteId);
+            if (entry == null)
+            {
+                return Task.FromResult((false, "Pool invite not found."));
+            }
+
+            config.OutgoingPoolInvites.Remove(entry);
+            Plugin.Instance.SaveConfiguration();
+
+            return Task.FromResult((true, "Pool invite cancelled."));
+        }
+
+        /// <summary>
+        /// Server-to-server: the friend we invited into a pool has accepted -
+        /// finally adds them to our own copy of the roster, and best-effort tells
+        /// every other current member so the mesh learns about the newcomer without
+        /// each of them having to sync independently.
+        /// </summary>
+        public bool HandlePoolAcceptNotice(PoolInviteResponsePayload payload)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == payload.InviteId);
+            if (entry == null)
+            {
+                _logger.LogWarning("[Federation] Received a pool-accept callback for an unknown/expired invite {InviteId}", payload.InviteId);
+                return false;
+            }
+
+            var pool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+            if (pool == null)
+            {
+                config.OutgoingPoolInvites.Remove(entry);
+                Plugin.Instance.SaveConfiguration();
+                return false;
+            }
+
+            var normalized = entry.RemoteServerUrl.TrimEnd('/');
+            if (!pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                pool.Members.Add(new PoolMember { FederationId = entry.RemoteServerId, Name = entry.RemoteServerName, Url = entry.RemoteServerUrl });
+            }
+
+            config.OutgoingPoolInvites.Remove(entry);
+            Plugin.Instance.SaveConfiguration();
+
+            _ = BroadcastPoolNoticeAsync(pool, entry.RemoteServerId, CancellationToken.None);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Server-to-server: the friend we invited into a pool declined - just
+        /// clears our outgoing record, nothing else changed.
+        /// </summary>
+        public void HandlePoolRejectNotice(string inviteId)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == inviteId);
+            if (entry == null)
+            {
+                return;
+            }
+
+            config.OutgoingPoolInvites.Remove(entry);
+            Plugin.Instance.SaveConfiguration();
+        }
+
+        /// <summary>
+        /// Admin-triggered: sets or clears a pool's icon and best-effort spreads it
+        /// to every other current member via the same roster-sync notice used for
+        /// membership changes - no central image host, purely peer-to-peer.
+        /// </summary>
+        public async Task<(bool Success, string Message)> SetPoolIconAsync(string poolId, string? iconBase64, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
+            if (pool == null)
+            {
+                return (false, "Pool not found.");
+            }
+
+            if (!string.IsNullOrEmpty(iconBase64) && iconBase64.Length > 150_000)
+            {
+                return (false, "Icon is too large - please use a smaller image.");
+            }
+
+            pool.IconBase64 = string.IsNullOrEmpty(iconBase64) ? null : iconBase64;
+            Plugin.Instance.SaveConfiguration();
+
+            await BroadcastPoolNoticeAsync(pool, excludeFederationId: null, cancellationToken).ConfigureAwait(false);
+
+            return (true, "Pool icon updated.");
+        }
+
+        /// <summary>
+        /// Best-effort tells every current member of <paramref name="pool"/> (other
+        /// than <paramref name="excludeFederationId"/>, if given) the pool's current
+        /// roster and icon, via the same already-trusted <c>Pools/Notice</c> channel
+        /// used for any other in-pool sync. Failures are logged and skipped per
+        /// member - a full picture converges over the next sync rather than
+        /// depending on every member being reachable right now.
+        /// </summary>
+        private async Task BroadcastPoolNoticeAsync(FederationPool pool, string? excludeFederationId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var selfId = GetOrCreateLocalFederationId();
+
+            foreach (var member in pool.Members.Where(m => m.FederationId != selfId && m.FederationId != excludeFederationId))
+            {
+                var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == member.FederationId);
+                if (friend == null || string.IsNullOrEmpty(friend.ApiKey))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var payload = new PoolNoticePayload
+                    {
+                        FromFederationId = selfId,
+                        PoolId = pool.Id,
+                        PoolName = pool.Name,
+                        OwnerFederationId = pool.OwnerFederationId,
+                        OwnerName = pool.OwnerName,
+                        Roster = pool.Members.ToList(),
+                        IconBase64 = pool.IconBase64
+                    };
+                    using var response = await PostAuthenticatedAsync(
+                        $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/Notice",
+                        payload,
+                        friend.ApiKey,
+                        cancellationToken).ConfigureAwait(false);
+                    _ = response;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Pool sync to {Name} failed (non-fatal - will converge on a future sync)", friend.Name);
+                }
+            }
         }
 
         /// <summary>
@@ -788,10 +1224,14 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Server-to-server: an existing friend added us to a pool we weren't
-        /// already in, or has an updated roster for one we're already in. No accept
-        /// step needed - the two servers are already connected, so this is purely
+        /// Server-to-server: an existing member of a pool we're already in is
+        /// syncing its current roster and/or icon (e.g. a new member just accepted,
+        /// or the icon changed). No accept step needed - the two servers are already
+        /// connected *and* already share this specific pool, so this is purely
         /// informational, same trust boundary as the rest of the friend system.
+        /// A pool we don't already belong to is ignored here: introducing a
+        /// genuinely new pool goes through <see cref="ReceivePoolInviteNotice"/>
+        /// instead, which does require the admin to accept.
         /// </summary>
         public Task ReceivePoolNotice(PoolNoticePayload payload, CancellationToken cancellationToken)
         {
@@ -806,6 +1246,18 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogWarning("[Federation] Received a pool notice from an unrecognized federation id {FederationId}", payload.FromFederationId);
                 return Task.CompletedTask;
+            }
+
+            var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
+            if (existingPool == null)
+            {
+                _logger.LogDebug("[Federation] Ignored a pool sync notice for pool {PoolId} we're not a member of - introductions go through Pools/InviteNotice", payload.PoolId);
+                return Task.CompletedTask;
+            }
+
+            if (!string.IsNullOrEmpty(payload.IconBase64))
+            {
+                existingPool.IconBase64 = payload.IconBase64;
             }
 
             return AdoptPoolRosterAndFanOutAsync(
@@ -1390,5 +1842,74 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the pool's membership as known by the sender.</summary>
         public List<PoolMember>? Roster { get; set; }
+
+        /// <summary>Gets or sets the pool's current icon, if any.</summary>
+        public string? IconBase64 { get; set; }
+    }
+
+    /// <summary>
+    /// Wire payload inviting an already-known friend into a pool - see
+    /// <see cref="FederationFriendService.AddExistingFriendToPoolAsync"/> and
+    /// <see cref="FederationFriendService.ReceivePoolInviteNotice"/>.
+    /// </summary>
+    public class PoolInviteNoticePayload
+    {
+        /// <summary>Gets or sets the id shared by both sides of the invite.</summary>
+        public string InviteId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the sender's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool's id.</summary>
+        public string PoolId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string? PoolName { get; set; }
+
+        /// <summary>Gets or sets the persistent federation id of the pool's owner.</summary>
+        public string? OwnerFederationId { get; set; }
+
+        /// <summary>Gets or sets the pool owner's display name.</summary>
+        public string? OwnerName { get; set; }
+
+        /// <summary>Gets or sets the pool's membership as known by the sender.</summary>
+        public List<PoolMember>? Roster { get; set; }
+
+        /// <summary>Gets or sets the pool's current icon, if any.</summary>
+        public string? IconBase64 { get; set; }
+    }
+
+    /// <summary>
+    /// Wire payload accepting or rejecting a pool invite - see
+    /// <see cref="FederationFriendService.HandlePoolAcceptNotice"/> and
+    /// <see cref="FederationFriendService.HandlePoolRejectNotice"/>.
+    /// </summary>
+    public class PoolInviteResponsePayload
+    {
+        /// <summary>Gets or sets the id of the invite being responded to.</summary>
+        public string InviteId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the responder's persistent federation id.</summary>
+        public string FromFederationId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// A server found through friends-of-friends discovery, cached in memory for
+    /// the settings page's Discovery dashboard - see
+    /// <see cref="FederationFriendService.RefreshDiscoveredServersAsync"/>.
+    /// </summary>
+    public class DiscoveredServer
+    {
+        /// <summary>Gets or sets the server's display name.</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the server's address.</summary>
+        public string Url { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the name of the friend this server was discovered through.</summary>
+        public string? DiscoveredViaFriendName { get; set; }
+
+        /// <summary>Gets or sets when this server was last seen in a discovery refresh.</summary>
+        public DateTime LastSeenUtc { get; set; }
     }
 }

@@ -215,6 +215,7 @@
             <div class="fed-tabs" id="fedTabs" role="tablist">
                 <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
@@ -263,9 +264,9 @@
                     <h3 class="sectionTitle">Pools</h3>
                     <p class="fieldDescription">
                         A pool is a named group of Federation servers who all federate with every other member, not just you.
-                        Create a pool and invite servers into it - each invite still goes through the normal friend request,
-                        so every server's admin has to accept before it connects to anyone. To add a friend you're already
-                        connected to, use their entry under People above.
+                        Create a pool and invite servers into it - each invite still goes through an accept step, so every
+                        server's admin has to agree before it joins anyone's pool, whether they're a brand new contact or
+                        already a friend. To invite a friend you're already connected to, use their entry under People above.
                     </p>
 
                     <div class="fed-inline">
@@ -277,7 +278,34 @@
                     </div>
                     <div id="fedPoolStatus" class="fed-srvstatus" style="display:none;"></div>
 
+                    <div id="fedPoolInvitesIncoming"></div>
+                    <div id="fedPoolInvitesOutgoing"></div>
+
                     <div id="fedPoolList"></div>
+                </div>
+            </div>
+
+            <div class="fed-tabpanel" data-tab-panel="discovery" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Discovery</h3>
+                    <p class="fieldDescription">
+                        See who else your friends are already federated with. This asks each of your current friends for
+                        their own friends list - it never contacts anyone you're not already connected to, and nobody is
+                        added automatically. A friend only shows up here if they've turned on "Allow friends-of-friends"
+                        under Advanced settings themselves.
+                    </p>
+
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedDiscoverySearch">Search by name or address</label>
+                            <input type="text" id="fedDiscoverySearch" class="emby-input" placeholder="Leave blank to see everything found" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="discovery-search">Search</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="discovery-refresh">Refresh</button>
+                    </div>
+
+                    <div id="fedDiscoveryStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedDiscoveryList"></div>
                 </div>
             </div>
 
@@ -1178,7 +1206,7 @@
                         .then(function (res) {
                             setFriendPoolStatus(friendId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
-                                loadPools();
+                                loadPoolInvites();
                             }
                         })
                         .catch(function (e) { setFriendPoolStatus(friendId, 'Failed: ' + e.message, 'err'); });
@@ -1725,7 +1753,11 @@
                         pools.forEach(function (p) {
                             html += '<div class="fed-server">';
                             html += '<div class="fed-server-head">';
-                            html += '<span class="fed-dot fed-dot-ok"></span>';
+                            if (p.IconBase64) {
+                                html += '<img src="data:image/png;base64,' + p.IconBase64 + '" alt="" style="width:1.6em;height:1.6em;border-radius:3px;object-fit:cover;margin-right:0.4em;" />';
+                            } else {
+                                html += '<span class="fed-dot fed-dot-ok"></span>';
+                            }
                             html += '<strong>' + escapeHtml(p.Name) + '</strong>';
                             html += '<span class="fed-server-url">' + (p.IsOwner ? 'you own this pool' : ('owned by ' + escapeHtml(p.OwnerName))) + ' · ' + p.Members.length + ' member' + (p.Members.length === 1 ? '' : 's') + '</span>';
                             html += '<span class="fed-spacer"></span>';
@@ -1742,10 +1774,151 @@
                             html += '</div>';
                             html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="invite-pool" data-pool="' + escapeHtml(p.Id) + '">Invite</button>';
                             html += '</div>';
+
+                            html += '<div class="fed-inline" style="margin-top:0.4em;">';
+                            html += '<label class="emby-button button-flat fed-pool-icon-pick" style="cursor:pointer;">Set pool icon<input type="file" accept="image/*" class="fedPoolIconInput" data-pool="' + escapeHtml(p.Id) + '" style="display:none;" /></label>';
+                            html += '</div>';
+
                             html += '</div>';
                         });
 
                         list.innerHTML = html;
+                    }
+
+                    // Pool icons are shared peer-to-peer through the same roster-sync
+                    // notice used for membership changes - there is no central image
+                    // host. Kept small (resized client-side before upload) so it stays
+                    // a reasonable size to carry in that notice and in the saved config.
+                    function setPoolIconFromFile(poolId, file) {
+                        if (!file) {
+                            return;
+                        }
+
+                        var reader = new FileReader();
+                        reader.onload = function () {
+                            var img = new Image();
+                            img.onload = function () {
+                                var size = 96;
+                                var canvas = document.createElement('canvas');
+                                canvas.width = size;
+                                canvas.height = size;
+                                var ctx = canvas.getContext('2d');
+                                var scale = Math.max(size / img.width, size / img.height);
+                                var w = img.width * scale;
+                                var h = img.height * scale;
+                                ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+
+                                var dataUrl = canvas.toDataURL('image/png');
+                                var base64 = dataUrl.split(',')[1];
+
+                                setPoolStatus('Setting icon…', 'info');
+                                fedFetch('/Plugins/Federation/Pools/' + encodeURIComponent(poolId) + '/Icon', {
+                                    method: 'POST',
+                                    body: JSON.stringify({ IconBase64: base64 })
+                                })
+                                .then(function (r) { return r.json(); })
+                                .then(function (res) {
+                                    setPoolStatus(res.message, res.success ? 'ok' : 'err');
+                                    loadPools();
+                                })
+                                .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                            };
+                            img.src = reader.result;
+                        };
+                        reader.readAsDataURL(file);
+                    }
+
+                    function renderPoolInvites(data) {
+                        var incoming = q('#fedPoolInvitesIncoming');
+                        var outgoing = q('#fedPoolInvitesOutgoing');
+                        if (!incoming || !outgoing) {
+                            return;
+                        }
+
+                        var inList = (data && data.incoming) || [];
+                        var outList = (data && data.outgoing) || [];
+
+                        if (inList.length === 0) {
+                            incoming.innerHTML = '';
+                        } else {
+                            var ih = '<h3 class="fed-substep" style="margin-top:1.2em;">Pool invites waiting on you</h3>';
+                            inList.forEach(function (inv) {
+                                ih += '<div class="fed-server">';
+                                ih += '<div class="fed-server-head">';
+                                ih += '<span class="fed-dot"></span>';
+                                ih += '<strong>' + escapeHtml(inv.PoolName) + '</strong>';
+                                ih += '<span class="fed-server-url">invited by ' + escapeHtml(inv.RemoteServerName) + '</span>';
+                                ih += '<span class="fed-spacer"></span>';
+                                ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-pool-invite" data-id="' + escapeHtml(inv.Id) + '">Accept</button>';
+                                ih += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-pool-invite" data-id="' + escapeHtml(inv.Id) + '">Reject</button>';
+                                ih += '</div></div>';
+                            });
+                            incoming.innerHTML = ih;
+                        }
+
+                        if (outList.length === 0) {
+                            outgoing.innerHTML = '';
+                        } else {
+                            var oh = '<h3 class="fed-substep" style="margin-top:1.2em;">Pool invites sent, waiting on them</h3>';
+                            outList.forEach(function (inv) {
+                                oh += '<div class="fed-server">';
+                                oh += '<div class="fed-server-head">';
+                                oh += '<span class="fed-dot"></span>';
+                                oh += '<strong>' + escapeHtml(inv.PoolName) + '</strong>';
+                                oh += '<span class="fed-server-url">invited ' + escapeHtml(inv.RemoteServerName) + '</span>';
+                                oh += '<span class="fed-spacer"></span>';
+                                oh += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="cancel-pool-invite" data-id="' + escapeHtml(inv.Id) + '">Cancel</button>';
+                                oh += '</div></div>';
+                            });
+                            outgoing.innerHTML = oh;
+                        }
+                    }
+
+                    function loadPoolInvites() {
+                        fedFetch('/Plugins/Federation/Pools/Invites')
+                        .then(function (r) { return r.json(); })
+                        .then(renderPoolInvites)
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function acceptPoolInvite(id) {
+                        setPoolStatus('Confirming with the inviting server…', 'info');
+                        fedFetch('/Plugins/Federation/Pools/Invites/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setPoolStatus(res.message, res.success ? 'ok' : 'err');
+                            loadPoolInvites();
+                            loadPools();
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function rejectPoolInvite(id) {
+                        if (!window.confirm('Reject this pool invite?')) {
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/Pools/Invites/' + encodeURIComponent(id) + '/Reject', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setPoolStatus(res.message, res.success ? 'ok' : 'err');
+                            loadPoolInvites();
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function cancelPoolInvite(id) {
+                        if (!window.confirm('Cancel this outgoing pool invite?')) {
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/Pools/Invites/Outgoing/' + encodeURIComponent(id), { method: 'DELETE' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setPoolStatus(res.message, res.success ? 'ok' : 'err');
+                            loadPoolInvites();
+                        })
+                        .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
                     }
 
                     function loadPools() {
@@ -1825,6 +1998,104 @@
                             loadPools();
                         })
                         .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Discovery ---------------- */
+
+                    var discoveryLoaded = false;
+
+                    function setDiscoveryStatus(msg, kind) {
+                        var el = q('#fedDiscoveryStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function renderDiscoveryResults(results) {
+                        var list = q('#fedDiscoveryList');
+                        if (!list) {
+                            return;
+                        }
+
+                        results = results || [];
+                        if (results.length === 0) {
+                            list.innerHTML = '<p class="fed-muted">Nothing found yet. Click Refresh to ask your current friends who they know.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        results.forEach(function (s) {
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<span class="fed-dot' + (s.alreadyFriend ? ' fed-dot-ok' : '') + '"></span>';
+                            html += '<strong>' + escapeHtml(s.name) + '</strong>';
+                            html += '<span class="fed-server-url">' + escapeHtml(s.url) + (s.discoveredVia ? (' · via ' + escapeHtml(s.discoveredVia)) : '') + '</span>';
+                            html += '<span class="fed-spacer"></span>';
+                            if (s.alreadyFriend) {
+                                html += '<span class="fed-hint">Already friends</span>';
+                            } else if (s.pending) {
+                                html += '<span class="fed-hint">Request pending</span>';
+                            } else {
+                                html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="discovery-add-friend" data-url="' + escapeHtml(s.url) + '">Add friend</button>';
+                            }
+
+                            html += '</div></div>';
+                        });
+
+                        list.innerHTML = html;
+                    }
+
+                    function searchDiscovery() {
+                        var q1 = q('#fedDiscoverySearch');
+                        var query = q1 ? q1.value.trim() : '';
+                        fedFetch('/Plugins/Federation/Discovery/Search' + (query ? ('?query=' + encodeURIComponent(query)) : ''))
+                        .then(function (r) { return r.json(); })
+                        .then(renderDiscoveryResults)
+                        .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function refreshDiscovery() {
+                        setDiscoveryStatus('Asking your friends who they know…', 'info');
+                        fedFetch('/Plugins/Federation/Discovery/Refresh', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setDiscoveryStatus('Found ' + (res.count || 0) + ' server(s).', 'ok');
+                            searchDiscovery();
+                        })
+                        .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function loadDiscovery(refresh) {
+                        discoveryLoaded = true;
+                        if (refresh) {
+                            refreshDiscovery();
+                        } else {
+                            searchDiscovery();
+                        }
+                    }
+
+                    function addDiscoveredFriend(url) {
+                        setDiscoveryStatus('Sending…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/Send', {
+                            method: 'POST',
+                            body: JSON.stringify({ Url: url })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setDiscoveryStatus(res.message, res.success ? 'ok' : 'err');
+                            loadFriendRequests();
+                            searchDiscovery();
+                        })
+                        .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
                     }
 
                     /* ---------------- Library picker ---------------- */
@@ -2830,7 +3101,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'libraries', 'catalog', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'catalog', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
 
                     function switchTab(tab) {
@@ -2853,6 +3124,13 @@
                         if (tab === 'catalog' && !catalogLoaded) {
                             populateCatalogFriendPick();
                             loadCatalog(true);
+                        }
+
+                        // Lazy for the same reason as the catalog above: a discovery
+                        // refresh calls out to every friend, so it only happens the
+                        // first time an admin opens this tab.
+                        if (tab === 'discovery' && !discoveryLoaded) {
+                            loadDiscovery(true);
                         }
 
                         try {
@@ -2905,6 +3183,24 @@
                                     break;
                                 case 'add-to-pool':
                                     addFriendToPool(friendId);
+                                    break;
+                                case 'accept-pool-invite':
+                                    acceptPoolInvite(t.getAttribute('data-id'));
+                                    break;
+                                case 'reject-pool-invite':
+                                    rejectPoolInvite(t.getAttribute('data-id'));
+                                    break;
+                                case 'cancel-pool-invite':
+                                    cancelPoolInvite(t.getAttribute('data-id'));
+                                    break;
+                                case 'discovery-search':
+                                    searchDiscovery();
+                                    break;
+                                case 'discovery-refresh':
+                                    refreshDiscovery();
+                                    break;
+                                case 'discovery-add-friend':
+                                    addDiscoveredFriend(t.getAttribute('data-url'));
                                     break;
                                 case 'save-sharing':
                                     saveSharing(t.getAttribute('data-id'));
@@ -3085,6 +3381,11 @@
                                 return;
                             }
 
+                            if (t.classList.contains('fedPoolIconInput')) {
+                                setPoolIconFromFile(t.getAttribute('data-pool'), t.files && t.files[0]);
+                                return;
+                            }
+
                             if (t.classList.contains('fedPickLib')) {
                                 var idx = parseInt(t.getAttribute('data-idx'), 10);
                                 if (pickerLibs[idx]) {
@@ -3190,6 +3491,7 @@
 
                         loadFriendRequests();
                         loadPools();
+                        loadPoolInvites();
                         loadConfiguration(false).then(function () {
                             loadLibraryPicker();
                         });
