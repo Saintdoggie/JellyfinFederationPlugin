@@ -118,6 +118,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// </summary>
         public List<FriendRequest> IncomingFriendRequests { get; set; } = new List<FriendRequest>();
 
+        /// <summary>
+        /// Gets or sets pool invites this server has sent to already-known friends,
+        /// still awaiting their decision. See <see cref="PoolInvite"/>.
+        /// </summary>
+        public List<PoolInvite> OutgoingPoolInvites { get; set; } = new List<PoolInvite>();
+
+        /// <summary>
+        /// Gets or sets pool invites received from already-known friends, awaiting
+        /// this server's admin to accept or reject. See <see cref="PoolInvite"/>.
+        /// </summary>
+        public List<PoolInvite> IncomingPoolInvites { get; set; } = new List<PoolInvite>();
+
 
         /// <summary>
         /// Gets or sets a value indicating whether the one-time migration that
@@ -795,6 +807,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets this server's best-effort view of the pool's members.</summary>
         public List<PoolMember> Members { get; set; } = new List<PoolMember>();
+
+        /// <summary>
+        /// Gets or sets a small icon for the pool, as a base64-encoded image (no
+        /// data: prefix). Purely cosmetic, set by any member and spread to the rest
+        /// peer-to-peer through the same roster-sync notice used for membership
+        /// changes - there is no central image host, this rides the existing
+        /// gossip-only channel. Null/empty means no icon set.
+        /// </summary>
+        public string? IconBase64 { get; set; }
     }
 
     /// <summary>
@@ -810,6 +831,58 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets the member's server address.</summary>
         public string Url { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// A pending invite to join a pool, extended by one already-connected friend to
+    /// another. Reused for both directions the same way <see cref="FriendRequest"/>
+    /// is: on <see cref="PluginConfiguration.OutgoingPoolInvites"/>,
+    /// <see cref="RemoteServerUrl"/>/<see cref="RemoteServerName"/>/
+    /// <see cref="RemoteServerId"/> identify the friend being invited; on
+    /// <see cref="PluginConfiguration.IncomingPoolInvites"/> they identify the
+    /// friend who sent the invite. Unlike a brand-new contact (who joins a pool by
+    /// accepting an ordinary <see cref="FriendRequest"/> carrying pool fields),
+    /// this exists specifically for the "we're already friends" fast path, which
+    /// used to skip consent entirely - see
+    /// <see cref="Services.FederationFriendService.AddExistingFriendToPoolAsync"/>.
+    /// </summary>
+    public class PoolInvite
+    {
+        /// <summary>Gets or sets the id shared by both sides of the invite.</summary>
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+
+        /// <summary>Gets or sets the pool's id.</summary>
+        public string PoolId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool's display name.</summary>
+        public string PoolName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the persistent federation id of the pool's owner.</summary>
+        public string OwnerFederationId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pool owner's display name.</summary>
+        public string OwnerName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the other friend's server address.</summary>
+        public string RemoteServerUrl { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the other friend's display name.</summary>
+        public string RemoteServerName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the other friend's persistent federation id.</summary>
+        public string RemoteServerId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the pool's membership as known by the sender at the time
+        /// this invite was sent.
+        /// </summary>
+        public List<PoolMember> Roster { get; set; } = new List<PoolMember>();
+
+        /// <summary>Gets or sets the pool's icon at the time this invite was sent, if any.</summary>
+        public string? IconBase64 { get; set; }
+
+        /// <summary>Gets or sets when the invite was created.</summary>
+        public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     }
 
     /// <summary>

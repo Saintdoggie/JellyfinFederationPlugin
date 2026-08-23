@@ -1127,64 +1127,72 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult BrowseLocalItems([FromQuery] string? query, [FromQuery] string? type, [FromQuery] int startIndex = 0, [FromQuery] int limit = 60)
         {
-            var boundedLimit = Math.Clamp(limit, 1, 200);
-            var boundedStart = Math.Max(0, startIndex);
-
-            var itemQuery = new MediaBrowser.Controller.Entities.InternalItemsQuery
+            try
             {
-                Recursive = true,
-                IsVirtualItem = false
-            };
+                var boundedLimit = Math.Clamp(limit, 1, 200);
+                var boundedStart = Math.Max(0, startIndex);
 
-            if (!string.IsNullOrWhiteSpace(query))
-            {
-                itemQuery.SearchTerm = query;
-            }
+                var itemQuery = new MediaBrowser.Controller.Entities.InternalItemsQuery
+                {
+                    Recursive = true,
+                    IsVirtualItem = false
+                };
 
-            if (!string.IsNullOrWhiteSpace(type) && Enum.TryParse<Jellyfin.Data.Enums.BaseItemKind>(type, true, out var kind))
-            {
-                itemQuery.IncludeItemTypes = new[] { kind };
-            }
+                if (!string.IsNullOrWhiteSpace(query))
+                {
+                    itemQuery.SearchTerm = query;
+                }
 
-            // Federated items are excluded below by their FederationKey provider id -
-            // ILibraryManager's own query has no "does not have provider id"
-            // predicate to push that down to, so this fetches a bounded batch
-            // up front and filters/pages it in memory instead. 5000 comfortably
-            // covers a real single library's catalog for the search/type-filtered
-            // case this is normally used with; an admin browsing their entire
-            // unfiltered catalog on a much larger install sees a floor, not
-            // necessarily the exact total, past that point.
-            itemQuery.StartIndex = 0;
-            itemQuery.Limit = 5000;
+                if (!string.IsNullOrWhiteSpace(type) && Enum.TryParse<Jellyfin.Data.Enums.BaseItemKind>(type, true, out var kind))
+                {
+                    itemQuery.IncludeItemTypes = new[] { kind };
+                }
 
-            var result = _libraryManager.GetItemsResult(itemQuery);
-            var localOnly = result.Items
-                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
-                .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                // Federated items are excluded below by their FederationKey provider id -
+                // ILibraryManager's own query has no "does not have provider id"
+                // predicate to push that down to, so this fetches a bounded batch
+                // up front and filters/pages it in memory instead. 5000 comfortably
+                // covers a real single library's catalog for the search/type-filtered
+                // case this is normally used with; an admin browsing their entire
+                // unfiltered catalog on a much larger install sees a floor, not
+                // necessarily the exact total, past that point.
+                itemQuery.StartIndex = 0;
+                itemQuery.Limit = 5000;
 
-            var config = Plugin.Instance?.Configuration;
-            var globallyExcluded = config?.GloballyExcludedItemIds ?? new List<string>();
-            var page = localOnly.Skip(boundedStart).Take(boundedLimit).Select(i =>
-            {
-                var idString = i.Id.ToString("N");
-                var excludedFriends = (config?.RemoteServers ?? new List<RemoteServer>())
-                    .Where(s => (s.ExcludedItemIds ?? new List<string>()).Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)))
-                    .Select(s => s.Name)
+                var result = _libraryManager.GetItemsResult(itemQuery);
+                var localOnly = result.Items
+                    .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
+                    .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                return new
+                var config = Plugin.Instance?.Configuration;
+                var globallyExcluded = config?.GloballyExcludedItemIds ?? new List<string>();
+                var page = localOnly.Skip(boundedStart).Take(boundedLimit).Select(i =>
                 {
-                    id = idString,
-                    name = i.Name,
-                    type = i.GetType().Name,
-                    year = i.ProductionYear,
-                    hiddenFromEveryone = globallyExcluded.Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)),
-                    excludedFriendNames = excludedFriends
-                };
-            }).ToList();
+                    var idString = i.Id.ToString("N");
+                    var excludedFriends = (config?.RemoteServers ?? new List<RemoteServer>())
+                        .Where(s => (s.ExcludedItemIds ?? new List<string>()).Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)))
+                        .Select(s => s.Name)
+                        .ToList();
 
-            return Ok(new { totalRecordCount = localOnly.Count, items = page });
+                    return new
+                    {
+                        id = idString,
+                        name = i.Name,
+                        type = i.GetType().Name,
+                        year = i.ProductionYear,
+                        hiddenFromEveryone = globallyExcluded.Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)),
+                        excludedFriendNames = excludedFriends
+                    };
+                }).ToList();
+
+                return Ok(new { totalRecordCount = localOnly.Count, items = page });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error browsing local catalog (query={Query}, type={Type})", query, type);
+                return StatusCode(500, new { error = $"Error: {ex.Message}" });
+            }
         }
 
         /// <summary>
@@ -1284,8 +1292,10 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Admin-triggered: adds a friend this server is already connected to into a
-        /// pool, without re-typing their URL or repeating the handshake.
+        /// Admin-triggered: invites a friend this server is already connected to
+        /// into a pool, without re-typing their URL or repeating the friend
+        /// handshake. Still requires their admin to accept - see
+        /// <see cref="GetPoolInvites"/>/<see cref="AcceptPoolInvite"/>.
         /// </summary>
         [HttpPost("Pools/{poolId}/AddFriend")]
         [Authorize(Policy = "RequiresElevation")]
@@ -1308,17 +1318,184 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Server-to-server: an already-known friend added us to a pool, or has an
-        /// updated roster for one we're already in. Not AllowAnonymous - only an
-        /// existing friend's API key (or this server's own admin) passes
-        /// RequiresElevation, same reasoning as Friends/List.
+        /// Admin-triggered: sets or clears a pool's icon, and best-effort spreads it
+        /// to every other current member.
+        /// </summary>
+        [HttpPost("Pools/{poolId}/Icon")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> SetPoolIcon(string poolId, [FromBody] SetPoolIconBody body, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.SetPoolIconAsync(poolId, body?.IconBase64, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists this server's pending incoming and outgoing pool invites.
+        /// </summary>
+        [HttpGet("Pools/Invites")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetPoolInvites()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            return Ok(new
+            {
+                incoming = config.IncomingPoolInvites.Select(i => new { i.Id, i.PoolId, i.PoolName, i.RemoteServerName, i.CreatedUtc }),
+                outgoing = config.OutgoingPoolInvites.Select(i => new { i.Id, i.PoolId, i.PoolName, i.RemoteServerName, i.CreatedUtc })
+            });
+        }
+
+        /// <summary>
+        /// Admin-triggered: accepts a pending pool invite from an already-known friend.
+        /// </summary>
+        [HttpPost("Pools/Invites/{id}/Accept")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> AcceptPoolInvite(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.AcceptPoolInviteAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: rejects a pending pool invite from an already-known friend.
+        /// </summary>
+        [HttpPost("Pools/Invites/{id}/Reject")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> RejectPoolInvite(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.RejectPoolInviteAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: cancels a pool invite this server sent before the other
+        /// side responded.
+        /// </summary>
+        [HttpDelete("Pools/Invites/Outgoing/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> CancelPoolInvite(string id)
+        {
+            var (success, message) = await _friends.CancelOutgoingPoolInviteAsync(id).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: an already-known friend is inviting us into
+        /// a pool. Anonymous at the ASP.NET layer like every genuine peer endpoint -
+        /// authenticated instead via the federation token, which never satisfies
+        /// RequiresElevation (it isn't registered with Jellyfin's own auth manager).
+        /// </summary>
+        [HttpPost("Pools/InviteNotice")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReceivePoolInviteNotice([FromBody] PoolInviteNoticePayload payload, CancellationToken cancellationToken)
+        {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
+            await _friends.ReceivePoolInviteNotice(payload, cancellationToken).ConfigureAwait(false);
+            return Ok();
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: the friend we invited into a pool accepted.
+        /// </summary>
+        [HttpPost("Pools/AcceptNotice")]
+        [AllowAnonymous]
+        public IActionResult ReceivePoolAcceptNotice([FromBody] PoolInviteResponsePayload payload)
+        {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
+            return _friends.HandlePoolAcceptNotice(payload) ? Ok() : BadRequest();
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: the friend we invited into a pool declined.
+        /// </summary>
+        [HttpPost("Pools/RejectNotice")]
+        [AllowAnonymous]
+        public IActionResult ReceivePoolRejectNotice([FromBody] PoolInviteResponsePayload payload)
+        {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
+            _friends.HandlePoolRejectNotice(payload?.InviteId ?? string.Empty);
+            return Ok();
+        }
+
+        /// <summary>
+        /// Server-to-server, anonymous: an already-known member of a pool we're
+        /// already in is syncing its current roster/icon. Not a new introduction -
+        /// see <see cref="ReceivePoolInviteNotice"/> for that. Anonymous at the
+        /// ASP.NET layer like every genuine peer endpoint - authenticated instead
+        /// via the federation token, which never satisfies RequiresElevation (it
+        /// isn't registered with Jellyfin's own auth manager).
         /// </summary>
         [HttpPost("Pools/Notice")]
-        [Authorize(Policy = "RequiresElevation")]
+        [AllowAnonymous]
         public async Task<IActionResult> ReceivePoolNotice([FromBody] PoolNoticePayload payload, CancellationToken cancellationToken)
         {
+            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            {
+                return Unauthorized();
+            }
+
             await _friends.ReceivePoolNotice(payload, cancellationToken).ConfigureAwait(false);
             return Ok();
+        }
+
+        #endregion
+
+        #region Discovery
+
+        /// <summary>
+        /// Admin-triggered: asks every current friend who their other friends are
+        /// and caches the results for the settings page's Discovery dashboard.
+        /// Never adds anyone as a friend by itself - see <see cref="SearchDiscovery"/>
+        /// for the results and <see cref="SendFriendRequest"/> for actually adding
+        /// one. Requires the asked friend to have friends-of-friends sharing
+        /// enabled on their own side.
+        /// </summary>
+        [HttpPost("Discovery/Refresh")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> RefreshDiscovery(CancellationToken cancellationToken)
+        {
+            var count = await _friends.RefreshDiscoveredServersAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { success = true, count });
+        }
+
+        /// <summary>
+        /// Admin-triggered: searches the in-memory discovery cache built by
+        /// <see cref="RefreshDiscovery"/>, flagging servers already friended or
+        /// with a pending request so the dashboard can grey those out.
+        /// </summary>
+        [HttpGet("Discovery/Search")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SearchDiscovery([FromQuery] string? query)
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            var results = _friends.SearchDiscoveredServers(query).Select(s =>
+            {
+                var normalized = s.Url.TrimEnd('/');
+                var alreadyFriend = config.RemoteServers.Any(r => string.Equals(r.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase));
+                var pending = config.OutgoingFriendRequests.Any(r => string.Equals(r.RemoteServerUrl.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase))
+                    || config.IncomingFriendRequests.Any(r => string.Equals(r.RemoteServerUrl.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase));
+                return new
+                {
+                    name = s.Name,
+                    url = s.Url,
+                    discoveredVia = s.DiscoveredViaFriendName,
+                    lastSeenUtc = s.LastSeenUtc,
+                    alreadyFriend,
+                    pending
+                };
+            });
+            return Ok(results);
         }
 
         #endregion
@@ -2593,6 +2770,11 @@ namespace Jellyfin.Plugin.Federation.Api
     public class AddFriendToPoolBody
     {
         public string? RemoteServerId { get; set; }
+    }
+
+    public class SetPoolIconBody
+    {
+        public string? IconBase64 { get; set; }
     }
 
     public class DownloadItemBody
