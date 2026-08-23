@@ -99,6 +99,12 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var itemIdString = itemId.ToString("N");
 
+            if ((Plugin.Instance?.Configuration?.GloballyExcludedItemIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
             if ((caller.ExcludedItemIds ?? new System.Collections.Generic.List<string>())
                 .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
             {
@@ -117,6 +123,16 @@ namespace Jellyfin.Plugin.Federation.Services
             if (rule == null)
             {
                 return true;
+            }
+
+            // A per-item deny-list applies even when Mode is AllLibraries (no
+            // other restriction): the only way to hide one specific item from
+            // someone who otherwise sees everything, without narrowing their
+            // whole access mode down to an allow-list of items.
+            if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
             }
 
             // Per-user rating ceiling applies even when Mode is AllLibraries (no
