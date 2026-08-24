@@ -49,9 +49,15 @@ this doc before ranking so nothing gets rebuilt from scratch.
   sharing") - the automatic side (`EnableDedup`/`DedupProviderIds`) already
   exists; the gap is admin override UI, already noted under "Dedup
   management" below.
-- A "someone is currently watching your federated content" indicator on the
-  local dashboard - smallest, most isolated of the new asks; a plain Sessions
-  poll filtered to federated items would cover it. Low risk either way.
+- **Done (0.0.90):** a "someone is currently watching your federated content"
+  indicator on the local dashboard - built exactly as scoped, a plain
+  Sessions poll filtered to federated items. New `FederationNowWatchingService`
+  reads `ISessionManager.Sessions` live and keeps only sessions whose
+  `NowPlayingItem` carries a `FederationKey` provider id; the source friend's
+  name comes from the existing "🌐 ServerName" tag rather than a second cache
+  lookup. New `GET /Plugins/Federation/NowWatching` endpoint, polled every 5s
+  by a "Now watching" card on the dashboard (hidden entirely when nothing
+  federated is playing).
 
 **Needs scoping before work starts:**
 

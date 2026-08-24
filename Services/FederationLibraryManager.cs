@@ -623,6 +623,18 @@ namespace Jellyfin.Plugin.Federation.Services
         private const string ServerTagPrefix = "🌐 ";
 
         /// <summary>
+        /// Extracts the source server name from a "🌐 ServerName" tag if one is present -
+        /// the same tag <see cref="AppendServerTag"/> stamps on every materialized
+        /// federation item. Used to label a federated item without a second lookup
+        /// through <see cref="FederationItemCache"/> or <see cref="PluginConfiguration"/>.
+        /// </summary>
+        public static string? GetServerNameFromTags(IReadOnlyList<string>? tags)
+        {
+            var tag = tags?.FirstOrDefault(t => t.StartsWith(ServerTagPrefix, StringComparison.Ordinal));
+            return tag != null ? tag.Substring(ServerTagPrefix.Length) : null;
+        }
+
+        /// <summary>
         /// Checks if an item is federated.
         /// </summary>
         public bool IsFederatedItem(BaseItem? item) => GetFederationKey(item) != null;

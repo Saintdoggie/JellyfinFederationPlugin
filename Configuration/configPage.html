@@ -160,6 +160,14 @@
                 #federationConfigPage .fed-progress-fill { height: 100%; background: var(--fed-accent); }
                 #federationConfigPage .fed-btn-sm { flex-shrink: 0; padding: 0.25em 0.7em; font-size: 0.85em; }
 
+                /* Now watching */
+                #federationConfigPage .fed-watching-row { display: flex; align-items: center; gap: 0.9em; padding: 0.6em 0; border-top: 1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-watching-row:first-child { border-top: none; }
+                #federationConfigPage .fed-watching-dot { flex-shrink: 0; width: 0.6em; height: 0.6em; border-radius: 50%; background: var(--fed-ok-text, #4caf50); box-shadow: 0 0 0 3px rgba(76,175,80,0.18); }
+                #federationConfigPage .fed-watching-dot.fed-watching-paused { background: #888; box-shadow: 0 0 0 3px rgba(136,136,136,0.18); }
+                #federationConfigPage .fed-watching-info { flex: 1; min-width: 0; }
+                #federationConfigPage .fed-watching-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
                 /* Save bars and misc */
                 #federationConfigPage .fed-savebar { display: flex; align-items: center; flex-wrap: wrap; gap: 1em; }
                 #federationConfigPage .fed-savebar .emby-button { margin: 0; }
@@ -197,6 +205,12 @@
                 <div class="fed-stat"><strong id="fedStatRefresh">–</strong><span>last refresh</span></div>
                 <div class="fed-spacer"></div>
                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="refresh-cache">Refresh now</button>
+            </div>
+
+            <div class="verticalSection" id="fedWatchingCard" style="display:none;">
+                <h3 class="sectionTitle">Now watching</h3>
+                <p class="fieldDescription">Sessions on this server currently playing an item federated in from a friend.</p>
+                <div id="fedWatchingList"></div>
             </div>
 
             <!--
@@ -2915,6 +2929,60 @@
                         .catch(function () { /* downloads card is best-effort */ });
                     }
 
+                    /* ---------------- Now watching ---------------- */
+
+                    function formatTicksAsTime(ticks) {
+                        if (!ticks && ticks !== 0) { return ''; }
+                        var totalSeconds = Math.floor(ticks / 10000000);
+                        var h = Math.floor(totalSeconds / 3600);
+                        var m = Math.floor((totalSeconds % 3600) / 60);
+                        var s = totalSeconds % 60;
+                        var mm = (h > 0 && m < 10 ? '0' : '') + m;
+                        var ss = (s < 10 ? '0' : '') + s;
+                        return h > 0 ? (h + ':' + mm + ':' + ss) : (m + ':' + ss);
+                    }
+
+                    function renderWatching(list) {
+                        list = list || [];
+                        var card = q('#fedWatchingCard');
+                        var listEl = q('#fedWatchingList');
+                        if (!card || !listEl) { return; }
+
+                        if (list.length === 0) {
+                            card.style.display = 'none';
+                            listEl.innerHTML = '';
+                            return;
+                        }
+
+                        card.style.display = '';
+                        listEl.innerHTML = list.map(function (w) {
+                            var progress = w.runtimeTicks
+                                ? ' — ' + formatTicksAsTime(w.positionTicks || 0) + ' / ' + formatTicksAsTime(w.runtimeTicks)
+                                : '';
+                            var device = w.deviceName ? (w.deviceName + (w.client ? ' (' + w.client + ')' : '')) : (w.client || '');
+                            var dotClass = 'fed-watching-dot' + (w.isPaused ? ' fed-watching-paused' : '');
+
+                            return '<div class="fed-watching-row">' +
+                                '<div class="' + dotClass + '"></div>' +
+                                '<div class="fed-watching-info">' +
+                                    '<div class="fed-watching-name">' + escapeHtml(w.itemName || 'Item') + '</div>' +
+                                    '<div class="fed-hint">' + escapeHtml(w.userName || 'Someone') +
+                                        (device ? ' on ' + escapeHtml(device) : '') +
+                                        ' — from ' + escapeHtml(w.serverName || 'a friend') + progress +
+                                        (w.isPaused ? ' — Paused' : '') +
+                                    '</div>' +
+                                '</div>' +
+                            '</div>';
+                        }).join('');
+                    }
+
+                    function loadWatching() {
+                        fedFetch('/Plugins/Federation/NowWatching')
+                        .then(function (r) { return r.json(); })
+                        .then(function (list) { renderWatching(list); })
+                        .catch(function () { /* now-watching card is best-effort */ });
+                    }
+
                     /* ---------------- Hidden items ---------------- */
 
                     function renderHiddenItems(items) {
@@ -3478,6 +3546,7 @@
                     }
 
                     var downloadsPollInterval = null;
+                    var watchingPollInterval = null;
 
                     function initPage(page) {
                         pageEl = page;
@@ -3502,6 +3571,13 @@
                         }
 
                         downloadsPollInterval = setInterval(loadDownloads, 3000);
+
+                        loadWatching();
+                        if (watchingPollInterval) {
+                            clearInterval(watchingPollInterval);
+                        }
+
+                        watchingPollInterval = setInterval(loadWatching, 5000);
                     }
 
                     if (!window.__federationPageshowBound) {
