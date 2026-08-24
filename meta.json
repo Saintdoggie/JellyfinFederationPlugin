@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.89",
-  "changelog": "Friend API keys and federation tokens are now encrypted at rest. Previously RemoteServer.ApiKey/IssuedApiKey, InternalRelayApiKey, and pending FriendRequest.ApiKey values were written to the plugin's config XML in plain text - readable by anything with filesystem access to the Jellyfin config folder. They're now encrypted with ASP.NET Core's DataProtection API (a key ring kept in this plugin's own data folder) right before the config hits disk; the in-memory copy every other part of the plugin already reads stays plaintext, so nothing else changed. Existing installs upgrade transparently - a key saved before this version is detected as not-yet-encrypted and used as-is, then encrypted for real on the next save, no manual migration step. 237 tests, all green.",
+  "version": "0.0.90",
+  "changelog": "Dashboard now shows a \"Now watching\" indicator: any session on this server currently playing an item federated in from a friend, with who's watching, which friend it came from, and playback progress. Backed by a new FederationNowWatchingService that reads ISessionManager.Sessions live (no separate state to keep in sync) and filters to sessions whose now-playing item carries a FederationKey provider id, reusing the existing \"🌐 ServerName\" tag already stamped on every federated item to label the source. Polls every 5s alongside the existing Downloads card; the section stays hidden entirely when nothing federated is playing. 243 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-23T22:30:00Z",
+  "timestamp": "2026-08-24T12:00:00Z",
   "imageUrl": "thumb.png"
 }

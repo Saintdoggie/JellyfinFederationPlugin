@@ -53,6 +53,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationUserSessionTokenService _userSessionTokens;
         private readonly FederationPeerAccessService _peerAccess;
         private readonly IServerApplicationHost _applicationHost;
+        private readonly FederationNowWatchingService _nowWatching;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -71,7 +72,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationPlaybackTokenService playbackTokens,
             FederationUserSessionTokenService userSessionTokens,
             FederationPeerAccessService peerAccess,
-            IServerApplicationHost applicationHost)
+            IServerApplicationHost applicationHost,
+            FederationNowWatchingService nowWatching)
         {
             _logger = logger;
             _syncService = syncService;
@@ -90,6 +92,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _userSessionTokens = userSessionTokens;
             _peerAccess = peerAccess;
             _applicationHost = applicationHost;
+            _nowWatching = nowWatching;
         }
 
         /// <summary>
@@ -2633,6 +2636,31 @@ namespace Jellyfin.Plugin.Federation.Api
             });
 
             return Ok(downloads);
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists every active session currently playing a federated
+        /// item - backs the dashboard's "Now watching" indicator.
+        /// </summary>
+        [HttpGet("NowWatching")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetNowWatching()
+        {
+            var sessions = _nowWatching.GetNowWatching().Select(s => new
+            {
+                sessionId = s.SessionId,
+                userName = s.UserName,
+                itemName = s.ItemName,
+                serverName = s.ServerName,
+                deviceName = s.DeviceName,
+                client = s.Client,
+                isPaused = s.IsPaused,
+                playMethod = s.PlayMethod,
+                positionTicks = s.PositionTicks,
+                runtimeTicks = s.RuntimeTicks
+            });
+
+            return Ok(sessions);
         }
 
         /// <summary>
