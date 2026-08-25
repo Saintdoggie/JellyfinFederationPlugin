@@ -512,6 +512,40 @@
     }).catch(function () { /* the next progress poll tick reconciles state regardless */ });
   }
 
+  // Saves a copy straight to the viewer's own device - distinct from
+  // startDownload above, which downloads a permanent copy onto the *server's*
+  // disk instead. Resolves the actual (anonymous, no-token-needed) stream URL
+  // via DownloadUrl, then triggers it through a throwaway <a download> click
+  // rather than fetching it into memory first - browsers stream a same-origin
+  // navigation like this straight to disk, exactly like any other download.
+  function downloadToDevice(button, itemId) {
+    setButtonState(button, 'busy', 'Preparing', 'Preparing download');
+
+    var token = getToken();
+    fetch('/Plugins/Federation/DownloadUrl/' + itemId, {
+      credentials: 'same-origin',
+      headers: token ? { 'X-Emby-Token': token } : {}
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.url) {
+          setButtonState(button, 'error', 'Download failed', (result.data && result.data.message) || 'Could not resolve download URL');
+          return;
+        }
+
+        var link = document.createElement('a');
+        link.href = result.data.url;
+        link.download = result.data.fileName || '';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setButtonState(button, 'default', 'Download to device', '');
+      })
+      .catch(function () {
+        setButtonState(button, 'error', 'Download failed', 'Could not resolve download URL');
+      });
+  }
+
   function startDownload(button, itemId) {
     setButtonState(button, 'busy', 'Starting', 'Starting download');
 
@@ -786,6 +820,12 @@
           downloadItem.setAttribute('data-operation-id', active.operationId);
         }
 
+        var downloadToDeviceItem = makeActionSheetItem(
+          'file_download',
+          'Download to device',
+          'federation-download-device',
+          function (btn) { downloadToDevice(btn, rawId); });
+
         var hideItem = makeActionSheetItem(
           'visibility_off',
           'Hide',
@@ -793,6 +833,7 @@
           function (btn) { startHide(btn, rawId); });
 
         scroller.insertBefore(hideItem, scroller.firstChild);
+        scroller.insertBefore(downloadToDeviceItem, scroller.firstChild);
         scroller.insertBefore(downloadItem, scroller.firstChild);
         return;
       }

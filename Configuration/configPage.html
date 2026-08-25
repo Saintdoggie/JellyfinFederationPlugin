@@ -452,6 +452,20 @@
                             </div>
                             <p class="fieldDescription">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
 
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkPlexStrmExport" class="emby-checkbox fed-check" /> Export federated content as .strm files for Plex (or any other file-scanning media server)</label>
+                            <p class="fieldDescription">
+                                Plex has no plugin system for browsing a remote catalog the way this plugin does for Jellyfin, so this writes each
+                                federated movie/episode as a tiny <code>.strm</code> text file (just its stream URL) under the path below, on every
+                                refresh. Nothing is downloaded — Plex scans the file like any other video, but streams from the URL inside it,
+                                through the same relay used for every other federated play. Point a Plex library at
+                                <code>&lt;path&gt;/Movies</code> and/or <code>&lt;path&gt;/Shows</code>. Requires that folder to also be reachable
+                                (read-only is enough) from wherever Plex runs — e.g. a shared host mount.
+                            </p>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtPlexStrmPath">.strm export path</label>
+                                <input type="text" id="fedTxtPlexStrmPath" class="emby-input" placeholder="/media/federated" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            </div>
+
                             <h3 class="fed-subhead">Diagnostics</h3>
                             <div id="fedDiagnostics" class="fed-diagnostic"></div>
                             <div>
@@ -3093,6 +3107,8 @@
                             q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
+                            q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
+                            q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
 
                             renderFriends();
                             renderMappings();
@@ -3128,6 +3144,8 @@
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
                             AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
+                            EnablePlexStrmExport: q('#fedChkPlexStrmExport').checked,
+                            PlexStrmExportPath: q('#fedTxtPlexStrmPath').value.trim(),
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {

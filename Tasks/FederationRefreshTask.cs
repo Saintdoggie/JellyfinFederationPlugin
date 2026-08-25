@@ -18,6 +18,7 @@ namespace Jellyfin.Plugin.Federation.Tasks
         private readonly ILogger<FederationRefreshTask> _logger;
         private readonly FederationSyncService _syncService;
         private readonly LibraryProvisioningService _provisioning;
+        private readonly PlexStrmExportService _strmExport;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationRefreshTask"/> class.
@@ -25,11 +26,13 @@ namespace Jellyfin.Plugin.Federation.Tasks
         public FederationRefreshTask(
             ILogger<FederationRefreshTask> logger,
             FederationSyncService syncService,
-            LibraryProvisioningService provisioning)
+            LibraryProvisioningService provisioning,
+            PlexStrmExportService strmExport)
         {
             _logger = logger;
             _syncService = syncService;
             _provisioning = provisioning;
+            _strmExport = strmExport;
         }
 
         /// <inheritdoc />
@@ -70,6 +73,9 @@ namespace Jellyfin.Plugin.Federation.Tasks
 
                 progress?.Report(15);
                 var result = await _syncService.SyncAllAsync(cancellationToken).ConfigureAwait(false);
+                progress?.Report(90);
+
+                await _strmExport.ExportAsync(cancellationToken).ConfigureAwait(false);
                 progress?.Report(100);
 
                 if (result.Success)

@@ -165,4 +165,135 @@ public class FederationDownloadServiceTests : IDisposable
         var (success, message) = _service.CancelDownload(operationId!);
         Assert.True(success, message);
     }
+
+    [Fact]
+    public void GetDownloadUrl_InvalidItemId_Fails()
+    {
+        var (success, message, url, fileName) = _service.GetDownloadUrl("not-a-guid");
+
+        Assert.False(success);
+        Assert.Contains("Invalid item id", message);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ItemNotFound_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns((MediaBrowser.Controller.Entities.BaseItem?)null);
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.False(success);
+        Assert.Contains("not found", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ItemNotFederated_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string>() };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.False(success);
+        Assert.Contains("friend's server", message);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_FederatedButNotInCache_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = "Movies/raw/server-1/" + Guid.NewGuid() } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.False(success);
+        Assert.Contains("source server", message);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ServerNotConfigured_Fails()
+    {
+        // Unlike StartDownload (which only optionally checks AllowDownloads on a
+        // registered server and tolerates a missing one), BuildStaticPath - and
+        // therefore this method - requires the server to actually be configured:
+        // there is no proxy URL to build without it.
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Some Movie", Container = "mkv" }, 0, "Movie");
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.False(success);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ValidFederatedItem_ReturnsDownloadUrlAndSanitizedFileName()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "server-1", Name = "Friend", Url = "http://friend.example:8096", Enabled = true });
+
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        // "/" - unlike ":" or "?" - is invalid in a filename on every platform
+        // Path.GetInvalidFileNameChars() runs on, so asserting its replacement
+        // here isn't OS-dependent the way punctuation like ":" would be (that's
+        // only invalid on Windows; these tests run on Linux).
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Movie / The Sequel", Container = "mkv" }, 0, "Movie");
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.True(success, message);
+        Assert.NotNull(url);
+        Assert.Contains("/Plugins/Federation/Stream?", url);
+        Assert.Contains("download=true", url);
+        Assert.Equal("Movie _ The Sequel.mkv", fileName);
+        Assert.Contains(Uri.EscapeDataString(fileName!), url);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ServerHasFriendUserAccessRules_Fails()
+    {
+        // A per-remote-user restriction can't be enforced through a static URL
+        // handed straight to a browser download - same guard BuildStaticPath
+        // already applies for the item.Path it stamps for Jellyfin clients.
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            Enabled = true,
+            FriendUserAccessRules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule() }
+        });
+
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Restricted Movie", Container = "mkv" }, 0, "Movie");
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+
+        Assert.False(success);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
 }

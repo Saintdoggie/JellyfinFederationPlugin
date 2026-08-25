@@ -114,6 +114,59 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Resolves a browser-downloadable URL for a federated item: the same
+        /// proxy stream URL playback already uses (<see cref="FederationLibraryManager.BuildStaticPath"/>),
+        /// with <c>download=true</c> and a filesystem-safe filename appended so
+        /// <c>FederationController.Stream</c> sends a <c>Content-Disposition</c>
+        /// header and the browser saves it to the viewer's own device instead of
+        /// playing it inline. Distinct from <see cref="StartDownload"/> above,
+        /// which downloads a permanent copy onto *this server's* disk instead -
+        /// this never touches server storage at all, it just resolves a URL that
+        /// streams straight to whoever asked. Shares this method's item/source
+        /// resolution (and its failure messages) with StartDownload rather than
+        /// duplicating it.
+        /// </summary>
+        public (bool Success, string Message, string? Url, string? FileName) GetDownloadUrl(string localItemId)
+        {
+            if (!Guid.TryParse(localItemId, out var itemGuid))
+            {
+                return (false, "Invalid item id.", null, null);
+            }
+
+            var item = _libraryManager.GetItemById(itemGuid);
+            if (item == null)
+            {
+                return (false, "Item not found.", null, null);
+            }
+
+            var key = FederationLibraryManager.GetFederationKey(item);
+            if (key == null)
+            {
+                return (false, "This item isn't streamed from a friend's server.", null, null);
+            }
+
+            var entry = _federationManager.Cache.GetEntryByKey(key);
+            var source = entry?.GetPrimarySource();
+            if (entry == null || source == null)
+            {
+                return (false, "Could not find this item's source server.", null, null);
+            }
+
+            var url = _federationManager.BuildStaticPath(entry.ItemType, source);
+            if (url == null)
+            {
+                return (false, "This source is not currently available for download.", null, null);
+            }
+
+            var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mp4" : entry.Metadata.Container.Trim().TrimStart('.');
+            var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
+            var separator = url.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+            var downloadUrl = $"{url}{separator}download=true&fileName={Uri.EscapeDataString(fileName)}";
+
+            return (true, "OK", downloadUrl, fileName);
+        }
+
+        /// <summary>
         /// Admin-triggered: cancels an in-progress download. No-ops (successfully)
         /// if the operation already finished or was never known - cancelling
         /// something that's already done isn't an error from the caller's side.
