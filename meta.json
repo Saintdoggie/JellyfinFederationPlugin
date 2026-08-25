@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.94",
-  "changelog": "Adds Plex as a federation source, alongside other Jellyfin servers. This plugin now talks to a Plex Media Server's own HTTP API and translates its libraries/items into the same shape as any other federated content, so a friend's Plex catalog flows through the existing sync, cache and stream-relay pipeline unchanged - merging with (and deduplicating against, via IMDb/TMDB/TVDB ids) content from Jellyfin sources in the same local library. Built as a pluggable provider (IExternalCatalogProvider) rather than a Plex-specific path, so supporting another non-Jellyfin product later is a matter of implementing that interface, not touching the sync/stream pipeline again. Verified end-to-end against a real Plex server over Tailscale Funnel: library listing, movie/show/episode metadata (including provider-id extraction for dedup and codec/container details for direct-play checks), and stream resolution all confirmed correct. No UI yet for adding a Plex server - that's next; for now it's configured directly. 256 tests, all green.",
+  "version": "0.0.95",
+  "changelog": "Fix: a server's Kind (Jellyfin vs Plex) silently reset to Jellyfin on the very next unrelated config save. The main config page's Save form has no field for Kind - it's set once when a server is added - but the save endpoint's per-server preservation block (which already exists to protect fields like FederationId and IssuedApiKey from the same fate) never covered it, and the sanitized server shape returned to the UI never included it either, so there was no way to even see it get lost. Confirmed live: a freshly-added Plex server had its Kind wiped back to Jellyfin within the same session it was created in, which would have made the sync treat it as an ordinary (and non-functional) Jellyfin peer. Kind is now preserved across saves and included in the API response. 256 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-25T17:55:19Z",
+  "timestamp": "2026-08-25T20:00:31Z",
   "imageUrl": "thumb.png"
 }
