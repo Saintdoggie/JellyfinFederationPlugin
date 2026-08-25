@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.92",
-  "changelog": "Two additions. (1) Federated movies/episodes can now be exported as .strm files (Advanced settings → \"Export federated content as .strm files for Plex\") - plain text files containing just the item's existing proxy stream URL, written under a configurable path on every refresh. Plex has no plugin system for browsing a remote catalog the way this plugin does for Jellyfin, so this is how federated content becomes visible to it: point a Plex library at the exported Movies/Shows folders and it scans and streams them like any other file, through the same relay every other federated play already uses - nothing is downloaded or duplicated. (2) A new \"Download to device\" action-sheet entry alongside the existing \"Download\" (to server): resolves the same proxy stream URL with a Content-Disposition header so the browser saves a copy straight to the viewer's own device, without this server ever writing it to disk. 256 tests, all green.",
+  "version": "0.0.93",
+  "changelog": "Fix: the plugin's own assembly version had been left at 0.0.90.0 in the project file for the last two releases (0.0.91, 0.0.92) - only meta.json's version was being bumped, not the .csproj's Version/AssemblyVersion/FileVersion. Jellyfin identifies an installed plugin's version from the loaded assembly itself, not the folder it was extracted into, so the server kept seeing '0.0.90.0' installed no matter which zip it had actually unpacked - permanently mismatched against whatever the repository manifest advertised, which is what made 0.0.92 (and technically 0.0.91) refuse to reconcile as installed. The assembly now correctly reports 0.0.93. 256 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-25T16:28:01Z",
+  "timestamp": "2026-08-25T17:42:19Z",
   "imageUrl": "thumb.png"
 }
