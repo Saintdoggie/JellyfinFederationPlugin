@@ -113,4 +113,50 @@ public class PlexApiClientTests
 
         Assert.Contains("X-Plex-Token=a%20b%26c", url, StringComparison.Ordinal);
     }
+
+    private sealed class ScriptedSectionHandler : HttpMessageHandler
+    {
+        private readonly string _body;
+
+        public ScriptedSectionHandler(string body)
+        {
+            _body = body;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var query = request.RequestUri?.Query ?? string.Empty;
+            var body = query.Contains("type=1", StringComparison.Ordinal)
+                ? _body
+                : "{\"MediaContainer\":{\"Metadata\":[]}}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
+    /// <summary>
+    /// Regression test: Plex reports one combined bitrate per Media entry (in
+    /// kbps), which ApplyMediaDetails used to drop entirely - Jellyfin then had
+    /// no idea what a Plex-sourced item's actual data rate was, which is what
+    /// made its own client-side quality selector fall back to a low, generic
+    /// default regardless of the source's real quality.
+    /// </summary>
+    [Fact]
+    public async Task GetSectionItemsAsync_ConvertsPlexBitrateFromKbpsToVideoStreamBps()
+    {
+        const string body = "{\"MediaContainer\":{\"Metadata\":[{" +
+            "\"ratingKey\":\"300\",\"title\":\"Some Movie\",\"type\":\"movie\"," +
+            "\"Media\":[{\"container\":\"mp4\",\"bitrate\":2043,\"videoCodec\":\"h264\",\"width\":1920,\"height\":1080," +
+            "\"audioCodec\":\"aac\",\"audioChannels\":2,\"Part\":[{\"key\":\"/library/parts/1/1/file.mp4\"}]}]" +
+            "}]}}";
+        var client = BuildClient(new ScriptedSectionHandler(body));
+
+        var items = await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None);
+
+        var item = Assert.Single(items);
+        var videoStream = Assert.Single(item.Dto.MediaStreams!, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
+        Assert.Equal(2043 * 1000, videoStream.BitRate);
+    }
 }

@@ -7,6 +7,7 @@ using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -492,11 +493,23 @@ namespace Jellyfin.Plugin.Federation.Services
                         changed = true;
                     }
 
-                    // One-time backfill for items created before real stream data was
-                    // tracked (see FederationLibraryManager.TryPersistMediaStreams) -
-                    // only when the item doesn't have any yet, so this doesn't re-save
-                    // on every single sync once it's already been backfilled.
-                    if (x.Item.GetMediaStreams().Count == 0)
+                    // Backfill for items created before real stream data was tracked
+                    // at all (see FederationLibraryManager.TryPersistMediaStreams), or
+                    // before a Plex source's video BitRate was captured (Plex reports
+                    // one combined bitrate per Media entry that ApplyMediaDetails used
+                    // to drop entirely, leaving Jellyfin's own client-side quality
+                    // selector with no idea what the item's real data rate was and
+                    // falling back to a low, generic default regardless of the
+                    // source's actual quality). Only when actually missing something
+                    // the cache now has, so this doesn't re-save on every sync once
+                    // it's already been backfilled.
+                    var storedStreams = x.Item.GetMediaStreams();
+                    var cachedStreams = entry.Metadata.MediaStreams;
+                    var missingBitrate = cachedStreams != null
+                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate == null)
+                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate.HasValue);
+
+                    if (storedStreams.Count == 0 || missingBitrate)
                     {
                         _federationManager.TryPersistMediaStreams(x.Item, entry);
                     }
