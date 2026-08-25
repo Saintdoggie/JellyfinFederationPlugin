@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.90",
-  "changelog": "Dashboard now shows a \"Now watching\" indicator: any session on this server currently playing an item federated in from a friend, with who's watching, which friend it came from, and playback progress. Backed by a new FederationNowWatchingService that reads ISessionManager.Sessions live (no separate state to keep in sync) and filters to sessions whose now-playing item carries a FederationKey provider id, reusing the existing \"🌐 ServerName\" tag already stamped on every federated item to label the source. Polls every 5s alongside the existing Downloads card; the section stays hidden entirely when nothing federated is playing. 243 tests, all green.",
+  "version": "0.0.91",
+  "changelog": "Fixed federated playback permanently stalling partway through long streams (most visible on clients like Safari/iOS that need an audio transcode - e.g. an EAC-3/Dolby Digital+ track Safari can't play natively - since that's the only path that routes the stream through FederationStreamHandler's relay as FFmpeg's transcode input). The relay retries a stalled/dropped upstream read, but its retry budget (3 attempts) was a lifetime cap for the whole stream instead of resetting as the transfer made progress: any 4th hiccup anywhere across a long WAN relay to a friend's server - not unusual over the runtime of a 90+ minute movie - permanently aborted the connection with no way to recover, silently killing the HLS segment feed and leaving the player buffering forever. The budget now resets on every chunk actually relayed, so only repeated stalls with no progress in between exhaust it. 244 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-24T12:00:00Z",
+  "timestamp": "2026-08-25T14:57:26Z",
   "imageUrl": "thumb.png"
 }
