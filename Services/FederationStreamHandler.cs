@@ -53,6 +53,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly RemoteAccessControlService _accessControl;
         private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly ExternalCatalogRegistry _externalCatalogs;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
@@ -61,12 +62,14 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationStreamHandler> logger,
             FederationLibraryManager federationManager,
             RemoteAccessControlService accessControl,
-            IRemoteServerClientFactory clientFactory)
+            IRemoteServerClientFactory clientFactory,
+            ExternalCatalogRegistry externalCatalogs)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _accessControl = accessControl;
+            _externalCatalogs = externalCatalogs;
         }
 
         /// <summary>
@@ -102,6 +105,31 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException($"Server not found: {serverId}");
             }
 
+            // A non-Jellyfin server (Plex today) has no federation playback-token
+            // concept at all - its provider resolves a credential-bearing URL
+            // against that product's own API instead. Resolved per play rather
+            // than cached, so a rescan on their side that moves the file doesn't
+            // leave a permanently broken link. The URL is internal-only: it
+            // carries a whole-server credential, which is exactly why these
+            // sources are always proxied and never handed to a client.
+            var externalProvider = _externalCatalogs.For(server);
+            if (externalProvider != null)
+            {
+                var nativeId = ResolveExternalNativeId(serverId, remoteItemId);
+                if (nativeId == null)
+                {
+                    throw new InvalidOperationException(
+                        $"No cached {server.Kind} item id for {remoteItemId} on {server.Name}; a library refresh is needed before it can be streamed.");
+                }
+
+                var externalUrl = await externalProvider
+                    .ResolveStreamUrlAsync(server, nativeId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return externalUrl ?? throw new InvalidOperationException(
+                    $"{server.Name} did not return a playable file for item {nativeId}.");
+            }
+
             var client = _clientFactory.GetClient(server);
 
             // Same preference as FederationMediaSourceProvider's Direct-mode
@@ -123,6 +151,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var audioFlag = isAudio ? "&audio=true" : string.Empty;
             return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
+        }
+
+        /// <summary>
+        /// Looks up the source product's own id for a federated item, which the
+        /// cache recorded at sync time (see
+        /// <see cref="FederatedItemMetadata.RemoteNativeId"/>). Needed because the
+        /// Guid used as a federated item's remote id is *derived* from that native
+        /// id one-way, so it cannot simply be converted back. Returns null when
+        /// the item isn't in the cache or predates this being recorded - in both
+        /// cases the fix is a library refresh, which the caller says so.
+        /// </summary>
+        private string? ResolveExternalNativeId(string serverId, string remoteItemId)
+        {
+            if (!Guid.TryParse(remoteItemId, out var remoteGuid))
+            {
+                return null;
+            }
+
+            var key = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteGuid);
+            return key == null ? null : _federationManager.Cache.GetEntryByKey(key)?.Metadata.RemoteNativeId;
         }
 
         /// <summary>

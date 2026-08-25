@@ -753,6 +753,20 @@ namespace Jellyfin.Plugin.Federation.Services
         public Dictionary<string, string>? ProviderIds { get; set; }
 
         public List<FederatedPerson>? People { get; set; }
+
+        /// <summary>
+        /// Gets or sets the source server's own native id for this item, when it
+        /// isn't a Guid the way a Jellyfin item id is - specifically a Plex
+        /// <c>ratingKey</c>. Needed because a federated item's
+        /// <see cref="FederatedSource.RemoteItemId"/> is a Guid, and the Guid a
+        /// Plex item gets is *derived* from its ratingKey (see
+        /// <c>PlexApiClient.RatingKeyToGuid</c>) and therefore can't be reversed
+        /// back into one. Kept here so the stream path can ask Plex for the
+        /// item's current file location at play time rather than caching a part
+        /// id that a library re-scan on their end would silently invalidate.
+        /// Null for Jellyfin-sourced items, which need no such mapping.
+        /// </summary>
+        public string? RemoteNativeId { get; set; }
     }
 
     /// <summary>

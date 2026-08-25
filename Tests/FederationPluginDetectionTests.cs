@@ -69,7 +69,8 @@ public class FederationPluginDetectionTests
             cache,
             persistence,
             bandwidthMonitor,
-            new Mock<IServiceProvider>().Object);
+            new Mock<IServiceProvider>().Object,
+            new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
 
         var mapping = new LibraryMapping
         {

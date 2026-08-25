@@ -39,6 +39,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationNowWatchingService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
 
+            // Catalog providers for non-Jellyfin servers. Registering another
+            // product means adding its IExternalCatalogProvider here and nowhere
+            // else - the registry is resolved by everything that dispatches on
+            // server kind. See IExternalCatalogProvider.
+            serviceCollection.AddSingleton<IExternalCatalogProvider, PlexCatalogProvider>();
+            serviceCollection.AddSingleton<ExternalCatalogRegistry>();
+
             // Scoped, not Singleton: needs IAuthenticationManager, which Jellyfin
             // registers scoped. FederationSyncService (a singleton) resolves it
             // through a short-lived DI scope rather than a direct constructor

@@ -64,7 +64,7 @@ public class FederationStreamHandlerTests : IDisposable
         var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object);
+        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
     }
 
     private static HttpResponseMessage Json(string body)
@@ -243,7 +243,8 @@ public class FederationStreamHandlerTests : IDisposable
             NullLogger<FederationStreamHandler>.Instance,
             federationManager,
             new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance),
-            clientFactory.Object);
+            clientFactory.Object,
+            new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
 
         FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
         {

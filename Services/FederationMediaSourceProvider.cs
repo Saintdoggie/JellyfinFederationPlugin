@@ -465,7 +465,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId, CancellationToken cancellationToken)
         {
-            if (server.StreamingMode == StreamingMode.Proxy)
+            // Non-Jellyfin servers are always proxied - see the matching guard in
+            // FederationLibraryManager.BuildPlaybackUrl for why (the Direct branch
+            // below mints a *federation* playback token, which only another
+            // Jellyfin running this plugin can issue or honor).
+            if (server.StreamingMode == StreamingMode.Proxy || server.Kind != ServerKind.Jellyfin)
             {
                 // The remote api_key stays server-side; clients only see this server.
                 // Redundant with the access check already applied in GetMediaSources
