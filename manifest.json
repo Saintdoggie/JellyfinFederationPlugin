@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.91",
+        "changelog": "Fixed federated playback permanently stalling partway through long streams (most visible on clients like Safari/iOS that need an audio transcode - e.g. an EAC-3/Dolby Digital+ track Safari can't play natively - since that's the only path that routes the stream through FederationStreamHandler's relay as FFmpeg's transcode input). The relay retries a stalled/dropped upstream read, but its retry budget (3 attempts) was a lifetime cap for the whole stream instead of resetting as the transfer made progress: any 4th hiccup anywhere across a long WAN relay to a friend's server - not unusual over the runtime of a 90+ minute movie - permanently aborted the connection with no way to recover, silently killing the HLS segment feed and leaving the player buffering forever. The budget now resets on every chunk actually relayed, so only repeated stalls with no progress in between exhaust it. 244 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.91/Jellyfin.Federation.zip",
+        "checksum": "93e66fd8cfa842d5baa1c03fba29226e",
+        "timestamp": "2026-08-25T14:57:26Z"
+      },
+      {
         "version": "0.0.89",
         "changelog": "Friend API keys and federation tokens are now encrypted at rest. Previously RemoteServer.ApiKey/IssuedApiKey, InternalRelayApiKey, and pending FriendRequest.ApiKey values were written to the plugin's config XML in plain text - readable by anything with filesystem access to the Jellyfin config folder. They're now encrypted with ASP.NET Core's DataProtection API (a key ring kept in this plugin's own data folder) right before the config hits disk; the in-memory copy every other part of the plugin already reads stays plaintext, so nothing else changed. Existing installs upgrade transparently - a key saved before this version is detected as not-yet-encrypted and used as-is, then encrypted for real on the next save, no manual migration step. 237 tests, all green.",
         "targetAbi": "10.11.0.0",
