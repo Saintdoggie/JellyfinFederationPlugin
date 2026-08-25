@@ -244,11 +244,45 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Builds the absolute, token-bearing URL for a part key. Internal use
-        /// only - the token authenticates against the whole Plex server, so this
-        /// URL must never be handed to a client (see
-        /// <see cref="ServerKind.Plex"/>); it is only ever fetched server-side by
-        /// <see cref="FederationStreamHandler"/>.
+        /// Resolves an item's cover art (<c>thumb</c>) and backdrop (<c>art</c>)
+        /// paths, asked for at request time rather than cached: like a part key,
+        /// Plex's own path for these includes a timestamp that changes on every
+        /// rescan. Returns null when the item is gone.
+        /// </summary>
+        public async Task<(string? Thumb, string? Art)?> GetImagePathsAsync(string ratingKey, CancellationToken cancellationToken)
+        {
+            var doc = await GetJsonAsync($"/library/metadata/{ratingKey}", cancellationToken).ConfigureAwait(false);
+            if (doc == null)
+            {
+                return null;
+            }
+
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("MediaContainer", out var container)
+                    || !container.TryGetProperty("Metadata", out var metadata)
+                    || metadata.ValueKind != JsonValueKind.Array)
+                {
+                    return null;
+                }
+
+                foreach (var m in metadata.EnumerateArray())
+                {
+                    return (GetString(m, "thumb"), GetString(m, "art"));
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Builds the absolute, token-bearing URL for a part or image path.
+        /// Internal use only - the token authenticates against the whole Plex
+        /// server, so this URL must never be handed to a client (see
+        /// <see cref="ServerKind.Plex"/>); it is only ever fetched server-side, by
+        /// <see cref="FederationStreamHandler"/> for playback or by Jellyfin's own
+        /// image-caching pipeline (<c>IRemoteImageProvider.GetImageResponse</c>)
+        /// for cover art.
         /// </summary>
         public string BuildStreamUrl(string partKey)
         {
