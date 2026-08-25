@@ -1567,7 +1567,9 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string itemId,
             CancellationToken cancellationToken,
             [FromQuery] bool audio = false,
-            [FromQuery] string? requestingUserId = null)
+            [FromQuery] string? requestingUserId = null,
+            [FromQuery] bool download = false,
+            [FromQuery] string? fileName = null)
         {
             var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
             if (server == null)
@@ -1580,8 +1582,59 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
+            // download=true is the only difference from a normal play request: a
+            // Content-Disposition header so the browser saves the file to the
+            // viewer's own device instead of playing it inline - see
+            // GetDownloadUrl below, which is what actually hands this URL to
+            // clients. Header value is untrusted input (this endpoint is
+            // anonymous and callable directly), so strip anything that could
+            // inject an extra header/response-split rather than trusting it was
+            // already sanitized upstream.
+            if (download)
+            {
+                var safeName = string.IsNullOrWhiteSpace(fileName) ? "download" : fileName;
+                safeName = safeName.Replace("\r", string.Empty).Replace("\n", string.Empty).Replace("\"", string.Empty);
+                Response.Headers["Content-Disposition"] = $"attachment; filename=\"{safeName}\"";
+            }
+
             await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio, requestingUserId).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        /// <summary>
+        /// Resolves a browser-downloadable URL for a federated item, given its
+        /// local Jellyfin item id: the same proxy stream URL playback already
+        /// uses (see <see cref="Stream"/> above), with <c>download=true</c> and a
+        /// filesystem-safe filename appended so the browser saves it to the
+        /// viewer's own device instead of playing it inline. Distinct from
+        /// <see cref="StartDownload"/>, which downloads a permanent copy onto
+        /// *this server's* disk instead - this never touches server storage at
+        /// all, it just streams straight to whoever asked.
+        /// <para>
+        /// Deliberately <see cref="AuthorizeAttribute"/> alone rather than the
+        /// <c>RequiresElevation</c> every other endpoint on this controller uses:
+        /// the underlying bytes are already reachable anonymously through
+        /// <see cref="Stream"/> above with no per-user gating at all, so this
+        /// adds no new exposure - it is a filename/header convenience wrapper
+        /// around an already-anonymous URL, not a new access boundary, and
+        /// gating it to admins only would make "save this to my phone" a
+        /// feature only the admin could ever use. Does not yet check the
+        /// caller's own <c>EnableContentDownloading</c> user policy the way
+        /// Jellyfin's native per-item downloads do - a known gap, not a
+        /// deliberate design choice.
+        /// </para>
+        /// </summary>
+        [HttpGet("DownloadUrl/{localItemId}")]
+        [Authorize]
+        public IActionResult GetDownloadUrl(string localItemId)
+        {
+            var (success, message, url, fileName) = _downloadService.GetDownloadUrl(localItemId);
+            if (!success)
+            {
+                return BadRequest(new { success, message });
+            }
+
+            return Ok(new { success, message, url, fileName });
         }
 
         /// <summary>

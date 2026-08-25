@@ -37,6 +37,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationUserSessionTokenService>();
             serviceCollection.AddSingleton<FederationPeerAccessService>();
             serviceCollection.AddSingleton<FederationNowWatchingService>();
+            serviceCollection.AddSingleton<PlexStrmExportService>();
 
             // Scoped, not Singleton: needs IAuthenticationManager, which Jellyfin
             // registers scoped. FederationSyncService (a singleton) resolves it

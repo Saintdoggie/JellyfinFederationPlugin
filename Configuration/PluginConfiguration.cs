@@ -88,6 +88,32 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool AllowFriendsOfFriends { get; set; } = false;
 
         /// <summary>
+        /// Gets or sets a value indicating whether federated movies/episodes are
+        /// exported as <c>.strm</c> files - plain text files containing just the
+        /// item's existing proxy stream URL - so a *different* media server that
+        /// can only scan a filesystem (Plex has no equivalent of Jellyfin's plugin
+        /// system any more) can play the same federated content without this
+        /// server ever downloading or duplicating it. Off by default: this writes
+        /// files under <see cref="PlexStrmExportPath"/> on every refresh, which is
+        /// meaningless (and pointless disk churn) for an install that isn't
+        /// sharing its media folder with another server. Skips any source whose
+        /// server has <see cref="RemoteServer.FriendUserAccessRules"/> configured,
+        /// same as <see cref="Services.FederationLibraryManager.BuildStaticPath"/> -
+        /// a per-remote-user restriction can't be enforced through a static file
+        /// another, unrelated media server just reads off disk.
+        /// </summary>
+        public bool EnablePlexStrmExport { get; set; } = false;
+
+        /// <summary>
+        /// Gets or sets the directory <c>.strm</c> files are written under (this
+        /// server's own filesystem view - e.g. inside its container). Must be a
+        /// path another media server also has mounted (read-only is enough) for
+        /// the exported files to actually be reachable there. Subfolders "Movies"
+        /// and "Shows" are created underneath it automatically.
+        /// </summary>
+        public string PlexStrmExportPath { get; set; } = "/media/federated";
+
+        /// <summary>
         /// Gets or sets the list of remote Jellyfin servers.
         /// </summary>
         public List<RemoteServer> RemoteServers { get; set; } = new List<RemoteServer>();
