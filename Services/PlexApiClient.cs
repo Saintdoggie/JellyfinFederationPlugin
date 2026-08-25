@@ -438,6 +438,16 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 dto.Container = GetString(med, "container");
 
+                // Plex reports one combined bitrate for the whole Media entry, in
+                // kbps, not split per stream. Attributed to the video stream since
+                // it normally accounts for the large majority of it - an
+                // approximation, but a large improvement over the alternative:
+                // leaving BitRate unset left Jellyfin with no idea what this
+                // content's real data rate is at all, which is what made its own
+                // client-side quality selector fall back to a low, generic default
+                // regardless of the source's actual quality.
+                var bitrateKbps = GetInt(med, "bitrate");
+
                 var streams = new List<MediaStream>();
                 var videoCodec = GetString(med, "videoCodec");
                 if (videoCodec != null)
@@ -448,6 +458,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         Codec = videoCodec,
                         Width = GetInt(med, "width"),
                         Height = GetInt(med, "height"),
+                        BitRate = bitrateKbps.HasValue ? bitrateKbps.Value * 1000 : null,
                         Index = 0,
                         IsDefault = true
                     });

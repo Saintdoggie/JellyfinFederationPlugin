@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.98",
-  "changelog": "Fix: what looked like mass duplicate items after a sync was actually mass mislabeling. Federated items never had any MetadataField locked, so Jellyfin's own local metadata providers (TMDb, OMDb, ...) were free to run their own 'identify' search against them and overwrite fields this plugin already populated from the remote's own canonical data. Confirmed live: dozens of Plex-sourced movies with weak source metadata all ended up displaying the exact same wrong, unrelated title from one bad shared search match - looking like the same movie duplicated a dozen times, when they were actually a dozen distinct movies (different IMDb ids, confirmed correct in this plugin's own cache) all mislabeled identically. Every field this plugin sets (Name, Overview, OfficialRating, Genres, Studios, Tags, Runtime) is now locked on materialization, and a self-heal pass restamps the correct Name (and backfills the lock) on any already-affected item from before this fix, without losing its watch history. 266 tests, all green.",
+  "version": "0.0.99",
+  "changelog": "Fix: Plex-sourced content's media quality (bitrate) was never reported to Jellyfin at all, which is what made its own client-side quality selector fall back to a low, generic default regardless of the source's actual quality - looking like every Plex item was capped around 1Mbps no matter how good the real file was. Plex reports one combined bitrate per Media entry, in kbps, that ApplyMediaDetails simply never read; it's now attributed to the video stream (converted to bps), the same approximation used elsewhere when a precise per-stream split isn't available. A backfill pass fixes already-synced Plex items with this fix too, not just future syncs. 267 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-25T20:58:36Z",
+  "timestamp": "2026-08-25T21:09:52Z",
   "imageUrl": "thumb.png"
 }
