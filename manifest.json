@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.96",
+        "changelog": "Fix: a newly-federated item's real codec/resolution/audio data (from ApplyMediaDetails/ToDto) was never actually being saved, on any source, Plex or Jellyfin - only ever appearing to fail silently as a 'falling back to a live probe' warning. The cause: MaterializeItem tried to save an item's media streams immediately, before ILibraryManager.CreateItems had ever persisted that item's own database row - and MediaStreamInfos has a foreign key on it, so the save reliably hit a FOREIGN KEY constraint failure for every item's first sync, every time. Confirmed live: hundreds of freshly-synced items hit this in one sync pass. The practical effect went beyond a log warning - falling back to a live ffprobe means using whatever the source file's own (sometimes wrong) container metadata says, e.g. a plain stereo AAC track whose internal title incorrectly reads 'Surround 5.1', which is exactly the kind of mislabeling this fix now avoids for anything synced from here on. Media streams are now saved only after the item's tier has actually been created. 257 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.96/Jellyfin.Federation.zip",
+        "checksum": "ec5e91dde88725a54834557fe15befd7",
+        "timestamp": "2026-08-25T20:37:13Z"
+      },
+      {
         "version": "0.0.95",
         "changelog": "Fix: a server's Kind (Jellyfin vs Plex) silently reset to Jellyfin on the very next unrelated config save. The main config page's Save form has no field for Kind - it's set once when a server is added - but the save endpoint's per-server preservation block (which already exists to protect fields like FederationId and IssuedApiKey from the same fate) never covered it, and the sanitized server shape returned to the UI never included it either, so there was no way to even see it get lost. Confirmed live: a freshly-added Plex server had its Kind wiped back to Jellyfin within the same session it was created in, which would have made the sync treat it as an ordinary (and non-functional) Jellyfin peer. Kind is now preserved across saves and included in the API response. 256 tests, all green.",
         "targetAbi": "10.11.0.0",
