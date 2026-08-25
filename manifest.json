@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.92",
+        "changelog": "Two additions. (1) Federated movies/episodes can now be exported as .strm files (Advanced settings → \"Export federated content as .strm files for Plex\") - plain text files containing just the item's existing proxy stream URL, written under a configurable path on every refresh. Plex has no plugin system for browsing a remote catalog the way this plugin does for Jellyfin, so this is how federated content becomes visible to it: point a Plex library at the exported Movies/Shows folders and it scans and streams them like any other file, through the same relay every other federated play already uses - nothing is downloaded or duplicated. (2) A new \"Download to device\" action-sheet entry alongside the existing \"Download\" (to server): resolves the same proxy stream URL with a Content-Disposition header so the browser saves a copy straight to the viewer's own device, without this server ever writing it to disk. 256 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.92/Jellyfin.Federation.zip",
+        "checksum": "a4a3835212cfb9ada328f6f6b72f8764",
+        "timestamp": "2026-08-25T16:28:01Z"
+      },
+      {
         "version": "0.0.91",
         "changelog": "Fixed federated playback permanently stalling partway through long streams (most visible on clients like Safari/iOS that need an audio transcode - e.g. an EAC-3/Dolby Digital+ track Safari can't play natively - since that's the only path that routes the stream through FederationStreamHandler's relay as FFmpeg's transcode input). The relay retries a stalled/dropped upstream read, but its retry budget (3 attempts) was a lifetime cap for the whole stream instead of resetting as the transfer made progress: any 4th hiccup anywhere across a long WAN relay to a friend's server - not unusual over the runtime of a 90+ minute movie - permanently aborted the connection with no way to recover, silently killing the HLS segment feed and leaving the player buffering forever. The budget now resets on every chunk actually relayed, so only repeated stalls with no progress in between exhaust it. 244 tests, all green.",
         "targetAbi": "10.11.0.0",
