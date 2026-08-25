@@ -34,9 +34,19 @@ namespace Jellyfin.Plugin.Federation.Services
         // silently hanging for up to the 3-hour HttpClient timeout above.
         private static readonly TimeSpan IdleReadTimeout = TimeSpan.FromSeconds(20);
 
-        // One initial attempt plus up to two resumes. A dropped/stalled connection
-        // resumes with a Range request from the last byte actually written to the
-        // client instead of failing the whole stream outright.
+        // One initial attempt plus up to two resumes for any given stall. This
+        // budget resets every time a chunk is actually relayed (see
+        // `consecutiveFailures` in RelayAsync) rather than being spent once for
+        // the whole stream - a multi-hour federated relay (the common case for
+        // FFmpeg reading a proxied stream as its transcode input, e.g. whenever
+        // a client needs audio transcoding and the video is otherwise Direct
+        // Streamed) would otherwise only tolerate 3 hiccups total across its
+        // entire runtime before permanently dying, which for a home-hosted
+        // friend server on an ordinary WAN link is often just a few minutes in -
+        // FFmpeg's input then errors out with no further HLS segments ever
+        // produced, and the player is left buffering forever with no way to
+        // recover on its own. Resetting on progress means only *repeated*
+        // stalls with no successful bytes in between exhaust the budget.
         private const int MaxAttempts = 3;
 
         private readonly ILogger<FederationStreamHandler> _logger;
@@ -260,7 +270,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // and seek-heavy HLS segment fetching through the two-hop chain.
                 var buffer = new byte[262144];
 
-                for (var attempt = 1; attempt <= MaxAttempts; attempt++)
+                // Consecutive failures with no successful byte relayed in between -
+                // reset to 0 on every chunk actually written to the client, so a
+                // long-running relay's retry budget doesn't get spent down over its
+                // whole lifetime (see MaxAttempts).
+                var consecutiveFailures = 0;
+
+                while (true)
                 {
                     try
                     {
@@ -371,22 +387,20 @@ namespace Jellyfin.Plugin.Federation.Services
                             // overhead on the hot path of every byte relayed.
                             await response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                             rangeStart += read;
+                            consecutiveFailures = 0;
                         }
                     }
-                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ++consecutiveFailures < MaxAttempts)
                     {
                         _logger.LogWarning(
                             ex,
-                            "[Federation] Relayed stream for {Url} stalled/dropped at byte {Offset} (attempt {Attempt}/{Max}), retrying",
+                            "[Federation] Relayed stream for {Url} stalled/dropped at byte {Offset} (consecutive failure {Attempt}/{Max}), retrying",
                             url,
                             rangeStart,
-                            attempt,
+                            consecutiveFailures,
                             MaxAttempts);
                     }
                 }
-
-                // Retries exhausted without a clean upstream status to report.
-                return null;
             }
             catch (OperationCanceledException)
             {

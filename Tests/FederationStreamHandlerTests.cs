@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -435,6 +436,145 @@ public class FederationStreamHandlerTests : IDisposable
             {
                 if (_position >= _data.Length)
                 {
+                    throw new IOException("Simulated connection stall");
+                }
+
+                var toCopy = Math.Min(_data.Length - _position, buffer.Length);
+                _data.AsSpan(_position, toCopy).CopyTo(buffer.Span);
+                _position += toCopy;
+                return ValueTask.FromResult(toCopy);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+    }
+
+    [Fact]
+    public async Task RepeatedStallsWithProgressBetweenThem_CompleteInsteadOfAbortingAfterThreeTotal()
+    {
+        // Regression test: MaxAttempts (3) used to be a lifetime budget for the
+        // whole relay, so a long-running stream that hit its 4th stall anywhere
+        // in its runtime - even after successfully relaying plenty of data in
+        // between - died permanently and aborted the response. This is exactly
+        // the shape a long federated relay hits in practice (e.g. FFmpeg reading
+        // a proxied stream as its transcode input over a WAN link with ordinary
+        // hiccups): the retry budget must reset on forward progress so more than
+        // MaxAttempts stalls succeed, as long as each is followed by a
+        // successfully relayed chunk before the next one.
+        const int totalLength = 500;
+        const int chunkSize = 100;
+        var full = new byte[totalLength];
+        new Random(7).NextBytes(full);
+
+        var callCount = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            callCount++;
+            var start = 0;
+            if (req.Headers.TryGetValues("Range", out var values))
+            {
+                start = int.Parse(values.First().Substring("bytes=".Length).TrimEnd('-'));
+            }
+
+            var thisChunk = Math.Min(chunkSize, totalLength - start);
+            var isFinal = start + thisChunk >= totalLength;
+            var data = full.AsSpan(start, thisChunk).ToArray();
+
+            var resp = new HttpResponseMessage(start == 0 ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
+            {
+                Content = new StallAfterOneChunkContent(data, totalLength, isFinal)
+            };
+            if (start > 0)
+            {
+                resp.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(start, totalLength - 1, totalLength);
+            }
+
+            return resp;
+        }));
+
+        var (request, response, body) = MakeContext(null);
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(full, body.ToArray());
+        Assert.True(callCount > 3, $"expected more than MaxAttempts (3) upstream requests across the full relay, got {callCount}");
+    }
+
+    /// <summary>
+    /// HttpContent whose body stream hands back exactly one chunk of bytes, then
+    /// either signals a clean end-of-stream (the final chunk) or throws a plain
+    /// (non-cancellation) IOException on the next read - standing in for a
+    /// remote connection that stalls/drops right after delivering one chunk,
+    /// requiring the caller to reconnect and resume from where it left off.
+    /// </summary>
+    private sealed class StallAfterOneChunkContent : HttpContent
+    {
+        private readonly byte[] _data;
+        private readonly long _totalLength;
+        private readonly bool _isFinal;
+
+        public StallAfterOneChunkContent(byte[] data, long totalLength, bool isFinal)
+        {
+            _data = data;
+            _totalLength = totalLength;
+            _isFinal = isFinal;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => throw new NotSupportedException();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _totalLength;
+            return true;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallAfterOneChunkStream(_data, _isFinal));
+
+        private sealed class StallAfterOneChunkStream : Stream
+        {
+            private readonly byte[] _data;
+            private readonly bool _isFinal;
+            private int _position;
+
+            public StallAfterOneChunkStream(byte[] data, bool isFinal)
+            {
+                _data = data;
+                _isFinal = isFinal;
+            }
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => false;
+
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_position >= _data.Length)
+                {
+                    if (_isFinal)
+                    {
+                        return ValueTask.FromResult(0);
+                    }
+
                     throw new IOException("Simulated connection stall");
                 }
 
