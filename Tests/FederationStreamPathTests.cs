@@ -535,4 +535,24 @@ public class FederationStreamPathTests : IDisposable
 
         Assert.True(string.IsNullOrEmpty(item.Path));
     }
+
+    /// <summary>
+    /// Regression test: without this, a local metadata provider (TMDb, OMDb, ...)
+    /// was free to run its own "identify" search against a federated item and
+    /// overwrite fields this plugin already populated from the remote's own
+    /// canonical data - confirmed live as dozens of Plex-sourced movies with weak
+    /// source metadata all ending up mislabeled with the exact same wrong,
+    /// unrelated title from one bad shared search match.
+    /// </summary>
+    [Fact]
+    public void MaterializeItem_LocksFieldsThisPluginPopulates_SoLocalMetadataProvidersCannotOverwriteThem()
+    {
+        AddServer();
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.Equal(
+            FederationLibraryManager.LockedMetadataFields.OrderBy(f => f),
+            item.LockedFields.OrderBy(f => f));
+    }
 }

@@ -472,6 +472,26 @@ namespace Jellyfin.Plugin.Federation.Services
                         changed = true;
                     }
 
+                    // Self-heals items whose Name was overwritten by a local metadata
+                    // provider's bad "identify" match before LockedFields below existed
+                    // to stop it (see FederationLibraryManager.MaterializeItem) - the
+                    // cache's own copy is always the source of truth, unaffected by
+                    // anything Jellyfin's local scrapers do.
+                    if (!string.IsNullOrEmpty(entry.Metadata.Name) && !string.Equals(x.Item.Name, entry.Metadata.Name, StringComparison.Ordinal))
+                    {
+                        x.Item.Name = entry.Metadata.Name;
+                        changed = true;
+                    }
+
+                    // One-time backfill for items created before this locking existed -
+                    // only when not already fully set, so this doesn't re-save on every
+                    // sync once it's already been backfilled.
+                    if (!FederationLibraryManager.LockedMetadataFields.All(x.Item.LockedFields.Contains))
+                    {
+                        x.Item.LockedFields = FederationLibraryManager.LockedMetadataFields;
+                        changed = true;
+                    }
+
                     // One-time backfill for items created before real stream data was
                     // tracked (see FederationLibraryManager.TryPersistMediaStreams) -
                     // only when the item doesn't have any yet, so this doesn't re-save
