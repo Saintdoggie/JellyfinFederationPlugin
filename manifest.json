@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.97",
+        "changelog": "Fix: cover art and backdrops never appeared for Plex-sourced federated content. FederationImageProvider only knew how to fetch images from another Jellyfin server running this same plugin - it hotlinked the remote's own '/Plugins/Federation/Peer/Images' route and minted a Federation peer image token, neither of which mean anything to a Plex server, so Plex items silently got no images at all. Images for a non-Jellyfin source now resolve through the same IExternalCatalogProvider abstraction already used for syncing and streaming: a new GetImagesAsync capability reads Plex's own thumb/art paths for an item and builds the token-bearing URL directly, mirroring how video streaming already resolves the file path. 265 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.97/Jellyfin.Federation.zip",
+        "checksum": "6d1df6f7a9d02e430d0261274c03c967",
+        "timestamp": "2026-08-25T20:45:48Z"
+      },
+      {
         "version": "0.0.96",
         "changelog": "Fix: a newly-federated item's real codec/resolution/audio data (from ApplyMediaDetails/ToDto) was never actually being saved, on any source, Plex or Jellyfin - only ever appearing to fail silently as a 'falling back to a live probe' warning. The cause: MaterializeItem tried to save an item's media streams immediately, before ILibraryManager.CreateItems had ever persisted that item's own database row - and MediaStreamInfos has a foreign key on it, so the save reliably hit a FOREIGN KEY constraint failure for every item's first sync, every time. Confirmed live: hundreds of freshly-synced items hit this in one sync pass. The practical effect went beyond a log warning - falling back to a live ffprobe means using whatever the source file's own (sometimes wrong) container metadata says, e.g. a plain stereo AAC track whose internal title incorrectly reads 'Surround 5.1', which is exactly the kind of mislabeling this fix now avoids for anything synced from here on. Media streams are now saved only after the item's tier has actually been created. 257 tests, all green.",
         "targetAbi": "10.11.0.0",

@@ -115,6 +115,26 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <inheritdoc />
+        public async Task<ExternalImageSet?> GetImagesAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            if (client == null)
+            {
+                return null;
+            }
+
+            var paths = await client.GetImagePathsAsync(nativeId, cancellationToken).ConfigureAwait(false);
+            if (paths == null)
+            {
+                return null;
+            }
+
+            return new ExternalImageSet(
+                paths.Value.Thumb == null ? null : client.BuildStreamUrl(paths.Value.Thumb),
+                paths.Value.Art == null ? null : client.BuildStreamUrl(paths.Value.Art));
+        }
+
+        /// <inheritdoc />
         public async Task<string?> TestConnectionAsync(RemoteServer server, CancellationToken cancellationToken)
         {
             var client = CreateClient(server);

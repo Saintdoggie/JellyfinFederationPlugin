@@ -24,16 +24,19 @@ namespace Jellyfin.Plugin.Federation.Providers
 
         private readonly ILogger<FederationImageProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;
+        private readonly Services.ExternalCatalogRegistry _externalCatalogs;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationImageProvider"/> class.
         /// </summary>
         public FederationImageProvider(
             ILogger<FederationImageProvider> logger,
-            Services.FederationLibraryManager federationManager)
+            Services.FederationLibraryManager federationManager,
+            Services.ExternalCatalogRegistry externalCatalogs)
         {
             _logger = logger;
             _federationManager = federationManager;
+            _externalCatalogs = externalCatalogs;
         }
 
         /// <inheritdoc />
@@ -69,14 +72,52 @@ namespace Jellyfin.Plugin.Federation.Providers
                 var key = Services.FederationLibraryManager.GetFederationKey(item);
                 var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
                 var primary = entry?.GetPrimarySource();
-                if (primary == null)
+                if (entry == null || primary == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
                 }
 
                 var server = _federationManager.GetServer(primary.ServerId);
+                if (server == null)
+                {
+                    return Enumerable.Empty<RemoteImageInfo>();
+                }
+
+                // A non-Jellyfin source (Plex today) has no "Peer" gateway of its
+                // own to hotlink through - it's a different product entirely -
+                // so its images are resolved directly against its own native API
+                // via the external-provider abstraction instead.
+                var externalProvider = _externalCatalogs.For(server);
+                if (externalProvider != null)
+                {
+                    var nativeId = entry.Metadata.RemoteNativeId;
+                    if (nativeId == null)
+                    {
+                        return Enumerable.Empty<RemoteImageInfo>();
+                    }
+
+                    var externalImages = await externalProvider.GetImagesAsync(server, nativeId, cancellationToken).ConfigureAwait(false);
+                    if (externalImages == null)
+                    {
+                        return Enumerable.Empty<RemoteImageInfo>();
+                    }
+
+                    var externalResult = new List<RemoteImageInfo>();
+                    if (externalImages.PrimaryUrl != null)
+                    {
+                        externalResult.Add(new RemoteImageInfo { Url = externalImages.PrimaryUrl, Type = ImageType.Primary, ProviderName = Name });
+                    }
+
+                    if (externalImages.BackdropUrl != null)
+                    {
+                        externalResult.Add(new RemoteImageInfo { Url = externalImages.BackdropUrl, Type = ImageType.Backdrop, ProviderName = Name });
+                    }
+
+                    return externalResult;
+                }
+
                 var client = _federationManager.GetClient(primary.ServerId);
-                if (server == null || client == null)
+                if (client == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
                 }

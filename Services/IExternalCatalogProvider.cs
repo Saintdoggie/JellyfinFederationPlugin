@@ -65,6 +65,17 @@ namespace Jellyfin.Plugin.Federation.Services
         Task<string?> ResolveStreamUrlAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Resolves cover art / backdrop URLs for an item, or null when the item
+        /// has none or couldn't be fetched. Like <see cref="ResolveStreamUrlAsync"/>,
+        /// resolved per request rather than cached at sync time, and the URLs
+        /// generally carry a credential for the whole remote server - safe to embed
+        /// because Jellyfin's image pipeline (<c>IRemoteImageProvider.GetImageResponse</c>)
+        /// fetches them server-side and caches the bytes locally; a client is never
+        /// handed the URL itself.
+        /// </summary>
+        Task<ExternalImageSet?> GetImagesAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Verifies the server is reachable and its credential works, returning
         /// its reported friendly name, or null when it isn't usable.
         /// </summary>
@@ -92,4 +103,10 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </para>
     /// </summary>
     public sealed record ExternalItem(BaseItemDto Dto, string NativeId);
+
+    /// <summary>
+    /// An item's cover art / backdrop, as absolute, credential-bearing URLs ready
+    /// to fetch. Either may be null when the source has no such image.
+    /// </summary>
+    public sealed record ExternalImageSet(string? PrimaryUrl, string? BackdropUrl);
 }
