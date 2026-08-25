@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.98",
+        "changelog": "Fix: what looked like mass duplicate items after a sync was actually mass mislabeling. Federated items never had any MetadataField locked, so Jellyfin's own local metadata providers (TMDb, OMDb, ...) were free to run their own 'identify' search against them and overwrite fields this plugin already populated from the remote's own canonical data. Confirmed live: dozens of Plex-sourced movies with weak source metadata all ended up displaying the exact same wrong, unrelated title from one bad shared search match - looking like the same movie duplicated a dozen times, when they were actually a dozen distinct movies (different IMDb ids, confirmed correct in this plugin's own cache) all mislabeled identically. Every field this plugin sets (Name, Overview, OfficialRating, Genres, Studios, Tags, Runtime) is now locked on materialization, and a self-heal pass restamps the correct Name (and backfills the lock) on any already-affected item from before this fix, without losing its watch history. 266 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.98/Jellyfin.Federation.zip",
+        "checksum": "0dc7c243e7e4c102df27d3f059258966",
+        "timestamp": "2026-08-25T20:58:36Z"
+      },
+      {
         "version": "0.0.97",
         "changelog": "Fix: cover art and backdrops never appeared for Plex-sourced federated content. FederationImageProvider only knew how to fetch images from another Jellyfin server running this same plugin - it hotlinked the remote's own '/Plugins/Federation/Peer/Images' route and minted a Federation peer image token, neither of which mean anything to a Plex server, so Plex items silently got no images at all. Images for a non-Jellyfin source now resolve through the same IExternalCatalogProvider abstraction already used for syncing and streaming: a new GetImagesAsync capability reads Plex's own thumb/art paths for an item and builds the token-bearing URL directly, mirroring how video streaming already resolves the file path. 265 tests, all green.",
         "targetAbi": "10.11.0.0",

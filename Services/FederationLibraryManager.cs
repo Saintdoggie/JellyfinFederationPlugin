@@ -22,6 +22,24 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationLibraryManager
     {
+        /// <summary>
+        /// Metadata fields this plugin itself populates on every federated item
+        /// (see <see cref="MaterializeItem"/>) - locked so Jellyfin's own local
+        /// metadata providers never overwrite them with an unrelated match.
+        /// Exposed for <see cref="FederationItemPersistenceService"/> to backfill
+        /// onto items created before this locking existed.
+        /// </summary>
+        public static readonly MetadataField[] LockedMetadataFields =
+        {
+            MetadataField.Name,
+            MetadataField.Overview,
+            MetadataField.OfficialRating,
+            MetadataField.Genres,
+            MetadataField.Studios,
+            MetadataField.Tags,
+            MetadataField.Runtime
+        };
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<FederationLibraryManager> _logger;
         private readonly IRemoteServerClientFactory _clientFactory;
@@ -177,6 +195,20 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             item.Tags = AppendServerTag(entry.Metadata.Tags, sourceServerName);
+
+            // Every field set above already came from the remote source's own
+            // metadata - locking them keeps Jellyfin's own local metadata
+            // providers (TMDb, OMDb, ...) from ever running an "identify" search
+            // against a federated item and overwriting it with an unrelated
+            // match. Confirmed live: dozens of Plex-sourced movies with weak
+            // source metadata (no clean title match) ended up all displaying the
+            // exact same wrong name from one bad shared search result - looking
+            // like mass duplication, but actually mass mislabeling of otherwise-
+            // distinct items whose own cached data (see FederatedCacheEntry) was
+            // correct the whole time. Cast/ProductionLocations are deliberately
+            // left unlocked - this plugin never sets either, so local enrichment
+            // there is harmless.
+            item.LockedFields = LockedMetadataFields;
 
             if (item is Episode ep)
             {
