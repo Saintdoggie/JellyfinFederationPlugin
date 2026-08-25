@@ -271,25 +271,19 @@ namespace Jellyfin.Plugin.Federation.Services
             // Stable local id derived from cache key so the same virtual item survives refreshes.
             item.Id = _libraryManager.GetNewItemId(entry.FederationPath, item.GetType());
 
-            // Persisted unconditionally now: the WAN-capped Direct transcode URL
-            // is internal-only (never served to a client), while every
-            // client-facing URL - the stamped proxy-gateway Path and the
-            // provider's token-gated DirectStream URL alike - serves the raw
-            // source file, so the remote's real stream data describes the bytes
-            // clients actually get, and direct play can be certified without a
-            // live probe. Must run after item.Id is assigned above, since that's
-            // the key this is saved under.
-            if (entry.Metadata.MediaStreams is { Length: > 0 } streams)
-            {
-                try
-                {
-                    _mediaStreamRepository.SaveMediaStreams(item.Id, streams, CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[Federation] Could not save media streams for {Name}; playback will fall back to a live probe", item.Name);
-                }
-            }
+            // Media streams are intentionally NOT saved here. MediaStreamInfos rows have
+            // a foreign key on the item's own BaseItems row, which for a brand-new item
+            // doesn't exist yet at this point - MaterializeItem only builds the in-memory
+            // BaseItem; ILibraryManager.CreateItems is what actually persists it, and that
+            // always happens later (see FederationItemPersistenceService, which batches
+            // items tier-by-tier before calling CreateItems). Saving here reliably threw
+            // a FOREIGN KEY constraint failure for every newly-created item's first sync,
+            // silently caught and downgraded to "fall back to a live probe" - which
+            // produces confusing metadata for anything the source's own container
+            // mislabels (e.g. a plain stereo track whose internal title says "Surround
+            // 5.1"), rather than the clean data ToDto/ApplyMediaDetails actually built.
+            // The caller persists these via TryPersistMediaStreams once CreateItems has
+            // run for this item's tier.
 
             // Explicit rather than relying on BaseItem's lazy default (Id.ToString("N"))
             // - Series.CreatePresentationUniqueKey() can diverge from that default when

@@ -456,6 +456,26 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void MaterializeItem_DoesNotSaveMediaStreamsItself_BecauseTheItemDoesNotExistInTheDbYet()
+    {
+        // MediaStreamInfos has a foreign key on the item's own BaseItems row, which for
+        // a brand-new item is only persisted later by ILibraryManager.CreateItems (see
+        // FederationItemPersistenceService) - never inside MaterializeItem itself.
+        // Saving here used to throw a FOREIGN KEY constraint failure on every new
+        // item's first sync, every time, silently swallowed into a "fall back to a
+        // live probe" warning.
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off;
+        var streams = new[] { new MediaStream { Type = MediaStreamType.Video, Codec = "h264", Index = 0 } };
+
+        _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mp4", mediaStreams: streams));
+
+        _mediaStreamRepository.Verify(
+            r => r.SaveMediaStreams(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<MediaStream>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public void RemoteMediaStreams_ArePersistedOnTheItem_SoPlaybackCanCertifyDirectPlayWithoutALiveProbe()
     {
         var server = AddServer();
@@ -467,8 +487,14 @@ public class FederationStreamPathTests : IDisposable
             new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Index = 1 }
         };
 
-        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId, container: "mp4", mediaStreams: streams));
+        var entry = AddEntry("Movie", remoteId, container: "mp4", mediaStreams: streams);
+        var item = _manager.MaterializeItem(entry);
 
+        // Mirrors what FederationItemPersistenceService actually does: persist media
+        // streams only once ILibraryManager.CreateItems has saved the item for real.
+        var persisted = _manager.TryPersistMediaStreams(item, entry);
+
+        Assert.True(persisted);
         _mediaStreamRepository.Verify(
             r => r.SaveMediaStreams(
                 item.Id,
@@ -490,7 +516,9 @@ public class FederationStreamPathTests : IDisposable
         server.WanMaxBitrateMbps = 12;
         var streams = new[] { new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Index = 0 } };
 
-        _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid(), container: "mkv", mediaStreams: streams));
+        var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv", mediaStreams: streams);
+        var item = _manager.MaterializeItem(entry);
+        _manager.TryPersistMediaStreams(item, entry);
 
         _mediaStreamRepository.Verify(
             r => r.SaveMediaStreams(It.IsAny<Guid>(), It.Is<IReadOnlyList<MediaStream>>(s => s.Count == 1 && s[0].Codec == "hevc"), It.IsAny<CancellationToken>()),

@@ -301,7 +301,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // either already persisted or still in the cache and not itself a
                 // local-dedup match - otherwise it would get a ParentId pointing at
                 // an item that will never exist (parent skipped/removed).
-                var toCreate = new List<(BaseItem Item, int Depth)>();
+                var toCreate = new List<(BaseItem Item, FederatedCacheEntry Entry, int Depth)>();
                 var skipExisting = 0;
                 var skipLocalMatch = 0;
                 var skipHidden = 0;
@@ -365,7 +365,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     var item = _federationManager.MaterializeItem(e);
                     item.ParentId = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
-                    toCreate.Add((item, depth));
+                    toCreate.Add((item, e, depth));
                 }
 
                 _logger.LogInformation(
@@ -582,7 +582,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     // proves it's the same failure again, but it's the same shape.
                     foreach (var tier in toCreate.GroupBy(x => x.Depth).OrderBy(g => g.Key))
                     {
-                        _libraryManager.CreateItems(tier.Select(x => x.Item).ToList(), itemParent, cancellationToken);
+                        var tierList = tier.ToList();
+                        _libraryManager.CreateItems(tierList.Select(x => x.Item).ToList(), itemParent, cancellationToken);
+
+                        // Only safe now that CreateItems has actually persisted this
+                        // tier's BaseItems rows - MediaStreamInfos has a foreign key on
+                        // them, so saving any earlier (e.g. inside MaterializeItem, before
+                        // any tier is created) always fails.
+                        foreach (var (item, entry, _) in tierList)
+                        {
+                            _federationManager.TryPersistMediaStreams(item, entry);
+                        }
                     }
 
                     itemParent.Children = null;
