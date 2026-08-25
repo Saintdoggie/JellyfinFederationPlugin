@@ -390,6 +390,34 @@ namespace Jellyfin.Plugin.Federation.Configuration
     }
 
     /// <summary>
+    /// What kind of media server a <see cref="RemoteServer"/> entry points at.
+    /// Deliberately a field on the existing RemoteServer rather than a separate
+    /// config list: every lookup, access-control check, library mapping and
+    /// stream-proxy path already keys off RemoteServer.Id, so a parallel type
+    /// would mean duplicating all of it. Only the two places that actually speak
+    /// a server's native protocol - catalog sync and stream-URL construction -
+    /// branch on this.
+    /// </summary>
+    public enum ServerKind
+    {
+        /// <summary>
+        /// Another Jellyfin server running this same federation plugin, reached
+        /// through its <c>/Plugins/Federation/...</c> endpoints. The default, and
+        /// what every entry written before Plex support existed deserializes as.
+        /// </summary>
+        Jellyfin = 0,
+
+        /// <summary>
+        /// A Plex Media Server, reached through its own HTTP API with an
+        /// <c>X-Plex-Token</c>. Always proxied (never Direct): the Plex token is
+        /// a real credential for that whole server, so it must never reach a
+        /// client, and Plex has no equivalent of this plugin's scoped
+        /// per-item playback tokens.
+        /// </summary>
+        Plex = 1
+    }
+
+    /// <summary>
     /// Represents a remote Jellyfin server configuration.
     /// </summary>
     public class RemoteServer
@@ -398,6 +426,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Gets or sets the unique identifier for this server.
         /// </summary>
         public string Id { get; set; } = Guid.NewGuid().ToString();
+
+        /// <summary>
+        /// Gets or sets what kind of media server this entry points at. Defaults
+        /// to <see cref="ServerKind.Jellyfin"/>, so every server configured
+        /// before Plex support existed keeps behaving exactly as before.
+        /// </summary>
+        public ServerKind Kind { get; set; } = ServerKind.Jellyfin;
 
         /// <summary>
         /// Gets or sets the friendly name for this server.

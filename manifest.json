@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.94",
+        "changelog": "Adds Plex as a federation source, alongside other Jellyfin servers. This plugin now talks to a Plex Media Server's own HTTP API and translates its libraries/items into the same shape as any other federated content, so a friend's Plex catalog flows through the existing sync, cache and stream-relay pipeline unchanged - merging with (and deduplicating against, via IMDb/TMDB/TVDB ids) content from Jellyfin sources in the same local library. Built as a pluggable provider (IExternalCatalogProvider) rather than a Plex-specific path, so supporting another non-Jellyfin product later is a matter of implementing that interface, not touching the sync/stream pipeline again. Verified end-to-end against a real Plex server over Tailscale Funnel: library listing, movie/show/episode metadata (including provider-id extraction for dedup and codec/container details for direct-play checks), and stream resolution all confirmed correct. No UI yet for adding a Plex server - that's next; for now it's configured directly. 256 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.94/Jellyfin.Federation.zip",
+        "checksum": "192bff09f73ee434dfb8593fccd4f61d",
+        "timestamp": "2026-08-25T17:55:19Z"
+      },
+      {
         "version": "0.0.93",
         "changelog": "Fix: the plugin's own assembly version had been left at 0.0.90.0 in the project file for the last two releases (0.0.91, 0.0.92) - only meta.json's version was being bumped, not the .csproj's Version/AssemblyVersion/FileVersion. Jellyfin identifies an installed plugin's version from the loaded assembly itself, not the folder it was extracted into, so the server kept seeing '0.0.90.0' installed no matter which zip it had actually unpacked - permanently mismatched against whatever the repository manifest advertised, which is what made 0.0.92 (and technically 0.0.91) refuse to reconcile as installed. The assembly now correctly reports 0.0.93. 256 tests, all green.",
         "targetAbi": "10.11.0.0",

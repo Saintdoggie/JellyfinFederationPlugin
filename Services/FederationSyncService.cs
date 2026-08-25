@@ -23,6 +23,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationItemPersistenceService _persistence;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly IServiceProvider _serviceProvider;
+        private readonly ExternalCatalogRegistry _externalCatalogs;
 
         // Guards SyncAllAsync/SyncServerAsync against running concurrently with each
         // other (e.g. the 5s-after-startup sync overlapping the hourly scheduled
@@ -64,7 +65,8 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationItemCache cache,
             FederationItemPersistenceService persistence,
             WanBandwidthMonitor bandwidthMonitor,
-            IServiceProvider serviceProvider)
+            IServiceProvider serviceProvider,
+            ExternalCatalogRegistry externalCatalogs)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -73,6 +75,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _persistence = persistence;
             _bandwidthMonitor = bandwidthMonitor;
             _serviceProvider = serviceProvider;
+            _externalCatalogs = externalCatalogs;
         }
 
         /// <summary>
@@ -551,6 +554,17 @@ namespace Jellyfin.Plugin.Federation.Services
             PluginConfiguration config,
             CancellationToken cancellationToken)
         {
+            // A server that isn't another Jellyfin federation peer (Plex today,
+            // see IExternalCatalogProvider) speaks its own protocol and has no
+            // federation plugin to probe for, so it takes a separate path
+            // entirely - it still lands in the same cache through the same
+            // UpsertRemoteItem below.
+            var externalProvider = _externalCatalogs.For(server);
+            if (externalProvider != null)
+            {
+                return await RefreshExternalSourceAsync(mapping, server, source, config, externalProvider, cancellationToken).ConfigureAwait(false);
+            }
+
             var client = _clientFactory.GetClient(server);
             if (client == null)
             {
@@ -619,6 +633,87 @@ namespace Jellyfin.Plugin.Federation.Services
             return new SourceSyncResult(total, false, false, seen);
         }
 
+        /// <summary>
+        /// Sync path for a non-Jellyfin server (see
+        /// <see cref="IExternalCatalogProvider"/>). The provider handles paging
+        /// and protocol and hands back items already translated into
+        /// <see cref="MediaBrowser.Model.Dto.BaseItemDto"/>, so from here on this
+        /// is the same upsert - dedup, episode/season nesting, incoming filter -
+        /// that a Jellyfin peer's items go through.
+        /// </summary>
+        private async Task<SourceSyncResult> RefreshExternalSourceAsync(
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            IExternalCatalogProvider provider,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyList<ExternalItem>? items;
+            try
+            {
+                items = await provider.GetItemsAsync(server, source.RemoteLibraryId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Failed to fetch items from {Kind} server {Server}", server.Kind, server.Name);
+                return SourceSyncResult.Failure();
+            }
+
+            if (items == null)
+            {
+                // Distinct from an empty library: a failed fetch preserves the
+                // cache instead of pruning this server's whole catalog.
+                return SourceSyncResult.Failure();
+            }
+
+            var seen = new HashSet<Guid>();
+            var total = 0;
+
+            foreach (var item in items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, item.Dto))
+                    {
+                        continue;
+                    }
+
+                    var entry = UpsertRemoteItem(mapping, item.Dto, server, config, seen);
+                    if (entry == null)
+                    {
+                        // Orphaned episode (its series wasn't synced this cycle) -
+                        // deliberately not marked seen, same as the Jellyfin path.
+                        continue;
+                    }
+
+                    // The provider's own id for this item, which the stream path
+                    // needs because the Guid above is derived from it one-way.
+                    entry.Metadata.RemoteNativeId = item.NativeId;
+                    seen.Add(item.Dto.Id);
+                    total++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Failed to upsert {Kind} item {Name}", server.Kind, item.Dto.Name);
+                }
+            }
+
+            _logger.LogInformation(
+                "[Federation] Refreshed {Count} items from {Kind} server {Server}/{Library}",
+                total,
+                server.Kind,
+                server.Name,
+                source.RemoteLibraryName);
+            return new SourceSyncResult(total, false, false, seen);
+        }
+
         private async Task<int?> FetchAndUpsertPagesAsync(
             LibraryMapping mapping,
             RemoteServer server,
@@ -681,7 +776,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             continue;
                         }
 
-                        if (UpsertRemoteItem(mapping, remoteItem, server, config, seen))
+                        if (UpsertRemoteItem(mapping, remoteItem, server, config, seen) != null)
                         {
                             seen.Add(remoteItem.Id);
                             total++;
@@ -717,13 +812,14 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Upserts a single remote item into the cache. Returns false without
-        /// upserting anything when this is an Episode whose series has not been
-        /// synced yet this cycle (see <see cref="UpsertEpisodeSeason"/>) - skipped
-        /// rather than materialized as a loose item at the library root with no
-        /// SeriesId/SeasonId, which nothing afterward would ever notice or repair.
+        /// Upserts a single remote item into the cache, returning the resulting
+        /// cache entry. Returns null without upserting anything when this is an
+        /// Episode whose series has not been synced yet this cycle (see
+        /// <see cref="UpsertEpisodeSeason"/>) - skipped rather than materialized
+        /// as a loose item at the library root with no SeriesId/SeasonId, which
+        /// nothing afterward would ever notice or repair.
         /// </summary>
-        private bool UpsertRemoteItem(
+        private FederatedCacheEntry? UpsertRemoteItem(
             LibraryMapping mapping,
             MediaBrowser.Model.Dto.BaseItemDto remoteItem,
             RemoteServer server,
@@ -736,7 +832,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (isEpisode && parentKey == null)
             {
-                return false;
+                return null;
             }
 
             var providerIds = remoteItem.ProviderIds;
@@ -764,7 +860,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (matchedProvider != null && matchedId != null)
             {
-                _cache.UpsertByProviderId(
+                return _cache.UpsertByProviderId(
                     mappingName: mapping.LocalLibraryName,
                     providerName: matchedProvider,
                     providerId: matchedId,
@@ -775,19 +871,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     itemType: itemType,
                     parentKey: parentKey);
             }
-            else
-            {
-                _cache.UpsertRaw(
-                    mappingName: mapping.LocalLibraryName,
-                    serverId: server.Id,
-                    remoteItemId: remoteItem.Id,
-                    remoteItem: remoteItem,
-                    serverPriority: server.Priority,
-                    itemType: itemType,
-                    parentKey: parentKey);
-            }
 
-            return true;
+            return _cache.UpsertRaw(
+                mappingName: mapping.LocalLibraryName,
+                serverId: server.Id,
+                remoteItemId: remoteItem.Id,
+                remoteItem: remoteItem,
+                serverPriority: server.Priority,
+                itemType: itemType,
+                parentKey: parentKey);
         }
 
         /// <summary>

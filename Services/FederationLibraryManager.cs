@@ -482,7 +482,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            if (server.StreamingMode == StreamingMode.Proxy)
+            // A non-Jellyfin server is always proxied regardless of the configured
+            // mode: Direct mode below builds a Jellyfin-specific streaming URL
+            // that means nothing to another product, and these servers'
+            // credentials authenticate against the whole remote server (no scoped
+            // per-item token equivalent), so they must never reach a client.
+            if (server.StreamingMode == StreamingMode.Proxy || server.Kind != ServerKind.Jellyfin)
             {
                 return BuildProxyStreamUrl(itemType, src);
             }
