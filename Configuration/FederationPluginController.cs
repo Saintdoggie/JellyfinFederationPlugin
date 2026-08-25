@@ -224,6 +224,16 @@ namespace Jellyfin.Plugin.Federation.Api
                         // Confirmed live: a single config save broke an otherwise-working
                         // fresh handshake this same session.
                         server.IssuedApiKey = oldServer.IssuedApiKey;
+
+                        // Kind is set once at creation (Servers POST) and has no field
+                        // in the main Save form - same class of bug as the rest of this
+                        // block. Without this, every unrelated config save silently
+                        // reset every Plex (or other non-Jellyfin) server back to
+                        // ServerKind.Jellyfin, since that's the property's C# default
+                        // when the incoming JSON has no Kind at all. Confirmed live:
+                        // this happened to a freshly-added Plex server within the same
+                        // session it was created in.
+                        server.Kind = oldServer.Kind;
                     }
                 }
 
@@ -2798,6 +2808,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.Url,
                 s.Enabled,
                 s.UserId,
+                Kind = (int)s.Kind,
                 StreamingMode = (int)s.StreamingMode,
                 s.Priority,
                 s.RequireApiKeyForImages,
