@@ -480,43 +480,82 @@ namespace Jellyfin.Plugin.Federation.Services
 
             int total = 0;
             int failedSources = 0;
-            foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
-            {
-                if (onlyServerId != null && source.ServerId != onlyServerId)
-                {
-                    continue;
-                }
 
-                var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
+            // Grouped by server, not iterated source-by-source: PruneServerSources
+            // only scopes by (mapping, serverId), not by which specific
+            // RemoteLibrarySource an item came from. Pruning after each individual
+            // source - the old shape of this loop - meant a mapping with more than
+            // one source from the same friend (e.g. two of their folders both
+            // feeding this one local library, or one shared and one since declined)
+            // would wipe out whatever the OTHER source for that same server had
+            // just synced moments earlier in the same cycle, since it isn't in the
+            // "just synced" source's own seen set - and the next cycle would
+            // flip the deletion the other way. Grouping and pruning once per
+            // server, after every one of its sources for this mapping has been
+            // attempted, is what actually lets two sources from the same server
+            // coexist without erasing each other.
+            var sourcesByServer = (mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+                .Where(s => onlyServerId == null || s.ServerId == onlyServerId)
+                .GroupBy(s => s.ServerId);
+
+            foreach (var serverSources in sourcesByServer)
+            {
+                var server = config.RemoteServers?.Find(s => s.Id == serverSources.Key);
                 if (server == null || !server.Enabled)
                 {
-                    _logger.LogWarning("[Federation] Skipping disabled/missing server {ServerId}", source.ServerId);
+                    _logger.LogWarning("[Federation] Skipping disabled/missing server {ServerId}", serverSources.Key);
                     continue;
                 }
 
-                SourceSyncResult result;
-                try
+                var seenAcrossServer = new HashSet<Guid>();
+                var anyFailed = false;
+                var pluginMissing = false;
+
+                foreach (var source in serverSources)
                 {
-                    result = await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
-                    failedSources++;
-                    continue;
+                    SourceSyncResult result;
+                    try
+                    {
+                        result = await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
+                        anyFailed = true;
+                        continue;
+                    }
+
+                    if (result.PluginMissing)
+                    {
+                        // Only ever set for a server that answered as a live
+                        // Jellyfin without Federation installed - never for an
+                        // unreachable one (see GetFederationPeerStatusAsync,
+                        // which reports anything it cannot verify as Unknown,
+                        // handled as an ordinary failure below). The same for
+                        // every source on this server within one cycle, so
+                        // there's no need to keep checking its other sources.
+                        pluginMissing = true;
+                        break;
+                    }
+
+                    if (result.Failed)
+                    {
+                        anyFailed = true;
+                        continue;
+                    }
+
+                    total += result.Count;
+                    seenAcrossServer.UnionWith(result.SeenRemoteItemIds);
                 }
 
-                if (result.PluginMissing)
+                if (pluginMissing)
                 {
-                    // Only ever set for a server that answered as a live Jellyfin
-                    // without Federation installed - never for an unreachable one
-                    // (see GetFederationPeerStatusAsync, which reports anything it
-                    // cannot verify as Unknown, handled as an ordinary failure
-                    // below). A confirmed absence means "this server is no longer a
+                    // A confirmed absence means "this server is no longer a
                     // federation peer", so its items are actively removed rather
                     // than left stale, same as if the server had been deleted
-                    // outright (see DeleteServer).
-                    var removedForMissingPlugin = _cache.PruneServerSources(mapping.LocalLibraryName, source.ServerId, new HashSet<Guid>());
+                    // outright (see DeleteServer) - regardless of what its other
+                    // sources for this mapping reported.
+                    var removedForMissingPlugin = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, new HashSet<Guid>());
                     if (removedForMissingPlugin > 0)
                     {
                         _logger.LogInformation(
@@ -529,17 +568,19 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                if (result.Failed)
+                if (anyFailed)
                 {
-                    // Keep the existing cache for this server untouched.
+                    // Keep the existing cache for this whole server untouched:
+                    // pruning with a partial seen set (only the sources that
+                    // happened to succeed) would delete the failed source's
+                    // content as a side effect of an unrelated fetch's success -
+                    // exactly the kind of stale/ambiguous situation this
+                    // failure-preserves-cache design exists to avoid.
                     failedSources++;
                     continue;
                 }
 
-                total += result.Count;
-
-                // The source synced successfully: drop its stale entries.
-                var pruned = _cache.PruneServerSources(mapping.LocalLibraryName, source.ServerId, result.SeenRemoteItemIds);
+                var pruned = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, seenAcrossServer);
                 if (pruned > 0)
                 {
                     _logger.LogInformation("[Federation] Pruned {Count} stale entries for {Server} in {Mapping}", pruned, server.Name, mapping.LocalLibraryName);

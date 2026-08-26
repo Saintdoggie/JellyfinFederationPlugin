@@ -181,6 +181,73 @@ public class FederationSyncServiceTests
     }
 
     /// <summary>
+    /// Regression test for a bug where PruneServerSources - scoped only by
+    /// (mapping, serverId), with no notion of which RemoteLibrarySource a cached
+    /// item came from - ran once per source instead of once per server: a
+    /// mapping with two sources from the same friend's server (e.g. two of their
+    /// folders both feeding this one local library) had each source's prune
+    /// step delete whatever the OTHER source had just synced moments earlier in
+    /// the very same cycle, since it was never in that source's own "seen" set.
+    /// Both sources' content must survive a single refresh of this mapping.
+    /// </summary>
+    [Fact]
+    public async Task RefreshMapping_TwoSourcesFromSameServer_NeitherPrunesTheOther()
+    {
+        var movieAId = Guid.NewGuid();
+        var movieBId = Guid.NewGuid();
+
+        var movieAJson = $"{{\"Items\":[{{\"Id\":\"{movieAId}\",\"Name\":\"Movie A\",\"Type\":\"Movie\"}}],\"TotalRecordCount\":1}}";
+        var movieBJson = $"{{\"Items\":[{{\"Id\":\"{movieBId}\",\"Name\":\"Movie B\",\"Type\":\"Movie\"}}],\"TotalRecordCount\":1}}";
+
+        var httpClient = new HttpClient(new ParentIdScriptedHandler(("lib1", movieAJson), ("lib2", movieBJson)))
+        {
+            BaseAddress = new Uri("http://fake.local")
+        };
+
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "key", UserId = "user1", Enabled = true, WanCapMode = WanCapMode.Off };
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
+
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager);
+        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, bandwidthMonitor, new Mock<IServiceProvider>().Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+
+        var mapping = new LibraryMapping
+        {
+            LocalLibraryName = "Movies",
+            MediaType = "Movie",
+            Enabled = true,
+            RemoteLibrarySources = new List<RemoteLibrarySource>
+            {
+                new RemoteLibrarySource { ServerId = "serverA", RemoteLibraryId = "lib1", RemoteLibraryName = "Folder 1" },
+                new RemoteLibrarySource { ServerId = "serverA", RemoteLibraryId = "lib2", RemoteLibraryName = "Folder 2" }
+            }
+        };
+        var config = new PluginConfiguration
+        {
+            EnableDedup = false,
+            RemoteServers = new List<RemoteServer> { server }
+        };
+
+        var method = typeof(FederationSyncService).GetMethod("RefreshMappingAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(syncService, new object?[] { mapping, config, CancellationToken.None, null })!;
+
+        var entries = cache.GetEntriesForMapping("Movies").ToList();
+
+        Assert.Contains(entries, e => e.Metadata.Name == "Movie A");
+        Assert.Contains(entries, e => e.Metadata.Name == "Movie B");
+    }
+
+    /// <summary>
     /// Regression test for an ultra-review finding: when an episode's series was
     /// not synced this cycle (fetch error, missing from this mapping's pages,
     /// etc.), <c>UpsertEpisodeSeason</c> already correctly returns null per its own
@@ -322,6 +389,43 @@ public class FederationSyncServiceTests
                 : query.Contains("mediaType=Episode", StringComparison.OrdinalIgnoreCase)
                     ? _episodeJson
                     : "{\"Items\":[],\"TotalRecordCount\":0}";
+
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            return Task.FromResult(response);
+        }
+    }
+
+    /// <summary>
+    /// Scripts a response body by the request's parentId query parameter,
+    /// standing in for two different remote library folders on the same
+    /// server. Anything else (including the Federation-peer-status probe)
+    /// gets an empty-items 200 OK, which is all ProbeFederationPeerStatusAsync
+    /// looks at.
+    /// </summary>
+    private sealed class ParentIdScriptedHandler : HttpMessageHandler
+    {
+        private readonly (string ParentId, string Body)[] _scripts;
+
+        public ParentIdScriptedHandler(params (string ParentId, string Body)[] scripts)
+        {
+            _scripts = scripts;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var query = request.RequestUri?.Query ?? string.Empty;
+            var body = "{\"Items\":[],\"TotalRecordCount\":0}";
+            foreach (var (parentId, scriptedBody) in _scripts)
+            {
+                if (query.Contains($"parentId={parentId}", StringComparison.OrdinalIgnoreCase))
+                {
+                    body = scriptedBody;
+                    break;
+                }
+            }
 
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
