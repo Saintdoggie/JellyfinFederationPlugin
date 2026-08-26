@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -830,9 +832,37 @@ namespace Jellyfin.Plugin.Federation.Services
             var isEpisode = string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase);
             var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server, seen) : null;
 
-            if (isEpisode && parentKey == null)
+            if (isEpisode)
             {
-                return null;
+                if (parentKey == null)
+                {
+                    return null;
+                }
+
+                // Merges across servers by (season, episode number) rather than
+                // each source getting its own raw-keyed episode - otherwise the
+                // same real episode synced from two servers (the same show
+                // available from two federated friends) shows up twice. Safe
+                // unlike matching episodes by provider id independently (the
+                // risk an earlier version of this comment warned about, where
+                // two unrelated shows could share a provider id scheme): this is
+                // scoped to a season key that is itself only ever produced by
+                // UpsertEpisodeSeason once the episode's *series* already
+                // matched via its own confirmed provider id, so there is no
+                // arbitrary cross-show collision risk.
+                var episodeNumber = remoteItem.IndexNumber ?? 0;
+                var episodeEntry = _cache.UpsertByProviderId(
+                    mappingName: mapping.LocalLibraryName,
+                    providerName: "federation-episode",
+                    providerId: $"{HashKey(parentKey)}:{episodeNumber}",
+                    remoteItem: remoteItem,
+                    serverId: server.Id,
+                    remoteItemId: remoteItem.Id,
+                    serverPriority: server.Priority,
+                    itemType: itemType,
+                    parentKey: parentKey);
+
+                return episodeEntry;
             }
 
             var providerIds = remoteItem.ProviderIds;
@@ -841,11 +871,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string? matchedProvider = null;
             string? matchedId = null;
 
-            // Episodes never dedup by provider id across servers: series-level
-            // dedup already prevents duplicate shows, and matching episodes by
-            // provider id independently could nest an episode under the wrong
-            // server's season if two shows shared a provider id scheme.
-            if (!isEpisode && providerIds != null && dedupKeys.Count > 0)
+            if (providerIds != null && dedupKeys.Count > 0)
             {
                 foreach (var key in dedupKeys)
                 {
@@ -910,11 +936,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 IndexNumber = remoteItem.ParentIndexNumber
             };
 
-            var seasonEntry = _cache.UpsertRaw(
+            // Merges across servers by (series, season number) rather than each
+            // source getting its own raw-keyed season under the one (already
+            // provider-id-deduped) series - otherwise the same real show synced
+            // from two servers ends up with two parallel season/episode trees,
+            // showing every episode twice. Scoped to a series key that has
+            // already independently been confirmed to match (via its own real
+            // provider id), so this carries none of the "two unrelated shows
+            // could share an id scheme" risk that keeps episode/series matching
+            // itself restricted to real provider ids.
+            var seasonNumber = remoteItem.ParentIndexNumber ?? 0;
+            var seasonEntry = _cache.UpsertByProviderId(
                 mappingName: mapping.LocalLibraryName,
+                providerName: "federation-season",
+                providerId: $"{HashKey(seriesKey)}:{seasonNumber}",
+                remoteItem: seasonDto,
                 serverId: server.Id,
                 remoteItemId: remoteItem.SeasonId.Value,
-                remoteItem: seasonDto,
                 serverPriority: server.Priority,
                 itemType: "Season",
                 parentKey: seriesKey);
@@ -930,6 +968,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return seasonEntry.Key;
         }
+
+        /// <summary>
+        /// Deterministic, fixed-format token for a cache key, used to embed one
+        /// key inside another (season-within-series, episode-within-season)
+        /// without risking a false match in <c>FederationItemCache</c>'s raw-key
+        /// substring check - an embedded key can itself be raw-shaped (e.g. a
+        /// series with no real provider id still gets a valid raw key), which
+        /// would otherwise make the composite key look like a raw key too.
+        /// </summary>
+        private static string HashKey(string key)
+            => Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(key)));
 
         private static SyncResult Failed(string message, string? operationId = null)
         {
