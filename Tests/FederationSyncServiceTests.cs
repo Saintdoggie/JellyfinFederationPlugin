@@ -93,6 +93,94 @@ public class FederationSyncServiceTests
     }
 
     /// <summary>
+    /// Regression test: the same real show, synced from two different federated
+    /// servers, used to end up with two parallel season/episode trees under the
+    /// one (correctly provider-id-deduped) series - every episode showing up
+    /// twice - because seasons and episodes were always keyed by (server, remote
+    /// id) with no merge step of their own, unlike series/movies. Confirmed
+    /// live: a show present on both a Jellyfin peer and a Plex friend had every
+    /// episode duplicated. Seasons and episodes now merge by (series key, season
+    /// number) and (season key, episode number) respectively, so a season/
+    /// episode already seen from one server gains the second server as an
+    /// additional source on the same entry instead of a sibling duplicate.
+    /// </summary>
+    [Fact]
+    public async Task RefreshMapping_SameShowFromTwoServers_MergesSeasonAndEpisodeInsteadOfDuplicating()
+    {
+        var seriesIdA = Guid.NewGuid();
+        var seasonIdA = Guid.NewGuid();
+        var episodeIdA = Guid.NewGuid();
+        var seriesIdB = Guid.NewGuid();
+        var seasonIdB = Guid.NewGuid();
+        var episodeIdB = Guid.NewGuid();
+
+        var seriesJsonA = $"{{\"Items\":[{{\"Id\":\"{seriesIdA}\",\"Name\":\"Test Show\",\"Type\":\"Series\",\"ProviderIds\":{{\"Imdb\":\"tt9999999\"}}}}],\"TotalRecordCount\":1}}";
+        var episodeJsonA = $"{{\"Items\":[{{\"Id\":\"{episodeIdA}\",\"Name\":\"Pilot\",\"Type\":\"Episode\",\"SeriesId\":\"{seriesIdA}\",\"SeasonId\":\"{seasonIdA}\",\"SeasonName\":\"Season 1\",\"ParentIndexNumber\":1,\"IndexNumber\":1}}],\"TotalRecordCount\":1}}";
+        var seriesJsonB = $"{{\"Items\":[{{\"Id\":\"{seriesIdB}\",\"Name\":\"Test Show\",\"Type\":\"Series\",\"ProviderIds\":{{\"Imdb\":\"tt9999999\"}}}}],\"TotalRecordCount\":1}}";
+        var episodeJsonB = $"{{\"Items\":[{{\"Id\":\"{episodeIdB}\",\"Name\":\"Pilot\",\"Type\":\"Episode\",\"SeriesId\":\"{seriesIdB}\",\"SeasonId\":\"{seasonIdB}\",\"SeasonName\":\"Season 1\",\"ParentIndexNumber\":1,\"IndexNumber\":1}}],\"TotalRecordCount\":1}}";
+
+        var serverA = new RemoteServer { Id = "serverA", Name = "RemoteA", Url = "http://fake-a.local", ApiKey = "key", UserId = "user1", Enabled = true, WanCapMode = WanCapMode.Off };
+        var serverB = new RemoteServer { Id = "serverB", Name = "RemoteB", Url = "http://fake-b.local", ApiKey = "key", UserId = "user1", Enabled = true, WanCapMode = WanCapMode.Off };
+
+        var httpClientA = new HttpClient(new FakeHttpMessageHandler(seriesJsonA, episodeJsonA)) { BaseAddress = new Uri("http://fake-a.local") };
+        var httpClientB = new HttpClient(new FakeHttpMessageHandler(seriesJsonB, episodeJsonB)) { BaseAddress = new Uri("http://fake-b.local") };
+        var remoteClientA = new RemoteServerClient(serverA, NullLogger.Instance, httpClientA);
+        var remoteClientB = new RemoteServerClient(serverB, NullLogger.Instance, httpClientB);
+
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(serverA)).Returns(remoteClientA);
+        clientFactory.Setup(f => f.GetClient(serverB)).Returns(remoteClientB);
+
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
+
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager);
+        var syncService = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, bandwidthMonitor, new Mock<IServiceProvider>().Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+
+        var mapping = new LibraryMapping
+        {
+            LocalLibraryName = "Shows",
+            MediaType = "Series",
+            Enabled = true,
+            RemoteLibrarySources = new List<RemoteLibrarySource>
+            {
+                new RemoteLibrarySource { ServerId = "serverA", RemoteLibraryId = "lib1", RemoteLibraryName = "Shows" },
+                new RemoteLibrarySource { ServerId = "serverB", RemoteLibraryId = "lib1", RemoteLibraryName = "Shows" }
+            }
+        };
+        var config = new PluginConfiguration
+        {
+            EnableDedup = true,
+            DedupProviderIds = new List<string> { "imdb" },
+            RemoteServers = new List<RemoteServer> { serverA, serverB }
+        };
+
+        var method = typeof(FederationSyncService).GetMethod("RefreshMappingAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(syncService, new object?[] { mapping, config, CancellationToken.None, null })!;
+
+        var entries = cache.GetEntriesForMapping("Shows").ToList();
+
+        var seriesEntries = entries.Where(e => e.ItemType == "Series").ToList();
+        var seasonEntries = entries.Where(e => e.ItemType == "Season").ToList();
+        var episodeEntries = entries.Where(e => e.ItemType == "Episode").ToList();
+
+        Assert.Single(seriesEntries);
+        Assert.Equal(2, seriesEntries[0].Sources.Count);
+
+        var season = Assert.Single(seasonEntries);
+        Assert.Equal(2, season.Sources.Count);
+
+        var episode = Assert.Single(episodeEntries);
+        Assert.Equal(2, episode.Sources.Count);
+        Assert.Equal(season.Key, episode.ParentKey);
+    }
+
+    /// <summary>
     /// Regression test for an ultra-review finding: when an episode's series was
     /// not synced this cycle (fetch error, missing from this mapping's pages,
     /// etc.), <c>UpsertEpisodeSeason</c> already correctly returns null per its own

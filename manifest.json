@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.100",
+        "changelog": "Fix: the same real show, synced from two different federated servers, ended up with two full parallel season/episode trees under the one (correctly deduped) series - every episode of the show showing up twice. Series and movies dedup across servers by provider id (IMDb/TMDb/TVDB), but seasons and episodes never had a merge step of their own - each was always keyed by (server, remote id), so a second server providing the same show just added a sibling season and a full second set of episodes rather than being recognized as the same content. Seasons now merge by (series key, season number) and episodes by (season key, episode number) - scoped to an already-confirmed matching series/season, not an independent provider-id lookup, so this carries none of the cross-show collision risk that keeps episode matching itself off provider ids directly. A server no longer providing its copy still leaves the other server's copy intact, same as any other multi-source federated item. 268 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.100/Jellyfin.Federation.zip",
+        "checksum": "e93f01797d8e027b44cb8686a8caf124",
+        "timestamp": "2026-08-26T00:35:28Z"
+      },
+      {
         "version": "0.0.99",
         "changelog": "Fix: Plex-sourced content's media quality (bitrate) was never reported to Jellyfin at all, which is what made its own client-side quality selector fall back to a low, generic default regardless of the source's actual quality - looking like every Plex item was capped around 1Mbps no matter how good the real file was. Plex reports one combined bitrate per Media entry, in kbps, that ApplyMediaDetails simply never read; it's now attributed to the video stream (converted to bps), the same approximation used elsewhere when a precise per-stream split isn't available. A backfill pass fixes already-synced Plex items with this fix too, not just future syncs. 267 tests, all green.",
         "targetAbi": "10.11.0.0",
