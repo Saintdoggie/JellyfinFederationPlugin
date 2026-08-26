@@ -850,19 +850,39 @@ namespace Jellyfin.Plugin.Federation.Services
                 // UpsertEpisodeSeason once the episode's *series* already
                 // matched via its own confirmed provider id, so there is no
                 // arbitrary cross-show collision risk.
-                var episodeNumber = remoteItem.IndexNumber ?? 0;
-                var episodeEntry = _cache.UpsertByProviderId(
+                //
+                // Only when a real episode number is reported. Falling back to a
+                // shared placeholder (e.g. 0) for every episode missing one was
+                // tried and is exactly what production was showing: every
+                // episode in a season lacking numbering (multi-part specials,
+                // some sources' metadata gaps - confirmed live on several shows)
+                // collided onto the identical key, silently merging dozens of
+                // genuinely distinct episodes into one and deleting the rest as
+                // "superseded". Without a number to key on, each source's copy
+                // stays its own raw-keyed entry instead - occasionally still
+                // duplicated across servers, but never destructive.
+                if (remoteItem.IndexNumber.HasValue)
+                {
+                    return _cache.UpsertByProviderId(
+                        mappingName: mapping.LocalLibraryName,
+                        providerName: "federation-episode",
+                        providerId: $"{HashKey(parentKey)}:{remoteItem.IndexNumber.Value}",
+                        remoteItem: remoteItem,
+                        serverId: server.Id,
+                        remoteItemId: remoteItem.Id,
+                        serverPriority: server.Priority,
+                        itemType: itemType,
+                        parentKey: parentKey);
+                }
+
+                return _cache.UpsertRaw(
                     mappingName: mapping.LocalLibraryName,
-                    providerName: "federation-episode",
-                    providerId: $"{HashKey(parentKey)}:{episodeNumber}",
-                    remoteItem: remoteItem,
                     serverId: server.Id,
                     remoteItemId: remoteItem.Id,
+                    remoteItem: remoteItem,
                     serverPriority: server.Priority,
                     itemType: itemType,
                     parentKey: parentKey);
-
-                return episodeEntry;
             }
 
             var providerIds = remoteItem.ProviderIds;
@@ -945,17 +965,29 @@ namespace Jellyfin.Plugin.Federation.Services
             // provider id), so this carries none of the "two unrelated shows
             // could share an id scheme" risk that keeps episode/series matching
             // itself restricted to real provider ids.
-            var seasonNumber = remoteItem.ParentIndexNumber ?? 0;
-            var seasonEntry = _cache.UpsertByProviderId(
-                mappingName: mapping.LocalLibraryName,
-                providerName: "federation-season",
-                providerId: $"{HashKey(seriesKey)}:{seasonNumber}",
-                remoteItem: seasonDto,
-                serverId: server.Id,
-                remoteItemId: remoteItem.SeasonId.Value,
-                serverPriority: server.Priority,
-                itemType: "Season",
-                parentKey: seriesKey);
+            //
+            // Only when a real season number is reported - see the matching
+            // guard in UpsertRemoteItem's episode branch for why a shared
+            // placeholder number is not safe to merge on.
+            var seasonEntry = remoteItem.ParentIndexNumber.HasValue
+                ? _cache.UpsertByProviderId(
+                    mappingName: mapping.LocalLibraryName,
+                    providerName: "federation-season",
+                    providerId: $"{HashKey(seriesKey)}:{remoteItem.ParentIndexNumber.Value}",
+                    remoteItem: seasonDto,
+                    serverId: server.Id,
+                    remoteItemId: remoteItem.SeasonId.Value,
+                    serverPriority: server.Priority,
+                    itemType: "Season",
+                    parentKey: seriesKey)
+                : _cache.UpsertRaw(
+                    mappingName: mapping.LocalLibraryName,
+                    serverId: server.Id,
+                    remoteItemId: remoteItem.SeasonId.Value,
+                    remoteItem: seasonDto,
+                    serverPriority: server.Priority,
+                    itemType: "Season",
+                    parentKey: seriesKey);
 
             // The season is synthesized from fields on episodes, not returned as
             // its own item from GetItemsAsync, so nothing else ever marks its

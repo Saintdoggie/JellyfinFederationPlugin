@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -188,7 +189,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         pageCount++;
                         var ratingKey = GetString(m, "ratingKey");
-                        var dto = ToDto(m);
+                        var dto = await ToDtoAsync(m, cancellationToken).ConfigureAwait(false);
                         if (dto != null && ratingKey != null)
                         {
                             items.Add(new ExternalItem(dto, ratingKey));
@@ -347,7 +348,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Returns null for anything without the fields the sync pipeline needs
         /// (a ratingKey and a title), or of a type this plugin doesn't federate.
         /// </summary>
-        private static BaseItemDto? ToDto(JsonElement m)
+        private async Task<BaseItemDto?> ToDtoAsync(JsonElement m, CancellationToken cancellationToken)
         {
             var ratingKey = GetString(m, "ratingKey");
             var title = GetString(m, "title");
@@ -386,7 +387,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 case "movie":
                     dto.Type = Jellyfin.Data.Enums.BaseItemKind.Movie;
-                    ApplyMediaDetails(m, dto);
+                    await ApplyMediaDetailsAsync(ratingKey, m, dto, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case "show":
@@ -409,7 +410,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     dto.SeasonId = SeasonGuid(showRatingKey, seasonNumber.Value);
                     dto.ParentIndexNumber = seasonNumber;
                     dto.IndexNumber = GetInt(m, "index");
-                    ApplyMediaDetails(m, dto);
+                    await ApplyMediaDetailsAsync(ratingKey, m, dto, cancellationToken).ConfigureAwait(false);
                     break;
 
                 default:
@@ -420,13 +421,20 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Copies container/codec/resolution details off the Plex media entry so
+        /// Copies container/codec/resolution/HDR details off the Plex item so
         /// Jellyfin's own client-compatibility check can certify direct play
         /// without probing the remote file first - the same reason
         /// <c>FederationMediaSourceProvider.FetchRemoteSourceAsync</c> carries
-        /// them across for Jellyfin sources.
+        /// them across for Jellyfin sources. Fetches the item's own detail
+        /// endpoint for a real per-stream breakdown (HDR/Dolby Vision color
+        /// data and every audio track), because the bulk section-listing
+        /// endpoint this method's caller already used to fetch <paramref
+        /// name="m"/> only ever reports one summarized codec/channel pair for
+        /// the whole item, never real color/HDR data at all - confirmed
+        /// against a real 4K Dolby Vision/HDR10 remux, which the summary
+        /// endpoint doesn't distinguish from an ordinary SDR file.
         /// </summary>
-        private static void ApplyMediaDetails(JsonElement m, BaseItemDto dto)
+        private async Task ApplyMediaDetailsAsync(string ratingKey, JsonElement m, BaseItemDto dto, CancellationToken cancellationToken)
         {
             if (!m.TryGetProperty("Media", out var media)
                 || media.ValueKind != JsonValueKind.Array)
@@ -438,44 +446,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 dto.Container = GetString(med, "container");
 
-                // Plex reports one combined bitrate for the whole Media entry, in
-                // kbps, not split per stream. Attributed to the video stream since
-                // it normally accounts for the large majority of it - an
-                // approximation, but a large improvement over the alternative:
-                // leaving BitRate unset left Jellyfin with no idea what this
-                // content's real data rate is at all, which is what made its own
-                // client-side quality selector fall back to a low, generic default
-                // regardless of the source's actual quality.
-                var bitrateKbps = GetInt(med, "bitrate");
-
-                var streams = new List<MediaStream>();
-                var videoCodec = GetString(med, "videoCodec");
-                if (videoCodec != null)
-                {
-                    streams.Add(new MediaStream
-                    {
-                        Type = MediaStreamType.Video,
-                        Codec = videoCodec,
-                        Width = GetInt(med, "width"),
-                        Height = GetInt(med, "height"),
-                        BitRate = bitrateKbps.HasValue ? bitrateKbps.Value * 1000 : null,
-                        Index = 0,
-                        IsDefault = true
-                    });
-                }
-
-                var audioCodec = GetString(med, "audioCodec");
-                if (audioCodec != null)
-                {
-                    streams.Add(new MediaStream
-                    {
-                        Type = MediaStreamType.Audio,
-                        Codec = audioCodec,
-                        Channels = GetInt(med, "audioChannels"),
-                        Index = streams.Count,
-                        IsDefault = true
-                    });
-                }
+                var streams = await FetchDetailedStreamsAsync(ratingKey, cancellationToken).ConfigureAwait(false)
+                    ?? BuildSummaryStreams(med);
 
                 if (streams.Count > 0)
                 {
@@ -485,6 +457,221 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
         }
+
+        /// <summary>
+        /// Fallback used when the detail endpoint couldn't be reached or
+        /// didn't return a per-stream breakdown: the coarse video/audio
+        /// summary already present on the section-listing entry every caller
+        /// already has - no color/HDR data, but still enough for direct-play
+        /// container/codec/channel compatibility checks.
+        /// </summary>
+        private static List<MediaStream> BuildSummaryStreams(JsonElement med)
+        {
+            // Plex reports one combined bitrate for the whole Media entry, in
+            // kbps, not split per stream. Attributed to the video stream since
+            // it normally accounts for the large majority of it.
+            var bitrateKbps = GetInt(med, "bitrate");
+
+            var streams = new List<MediaStream>();
+            var videoCodec = GetString(med, "videoCodec");
+            if (videoCodec != null)
+            {
+                streams.Add(new MediaStream
+                {
+                    Type = MediaStreamType.Video,
+                    Codec = videoCodec,
+                    Width = GetInt(med, "width"),
+                    Height = GetInt(med, "height"),
+                    BitRate = bitrateKbps.HasValue ? bitrateKbps.Value * 1000 : null,
+                    Index = 0,
+                    IsDefault = true
+                });
+            }
+
+            var audioCodec = GetString(med, "audioCodec");
+            if (audioCodec != null)
+            {
+                streams.Add(new MediaStream
+                {
+                    Type = MediaStreamType.Audio,
+                    Codec = audioCodec,
+                    Channels = GetInt(med, "audioChannels"),
+                    Index = streams.Count,
+                    IsDefault = true
+                });
+            }
+
+            return streams;
+        }
+
+        /// <summary>
+        /// Fetches the item's own detail endpoint and extracts a full
+        /// per-stream breakdown (every video and audio track, with real
+        /// color/HDR/Dolby Vision data on the video track) from its first
+        /// media part. Returns null - distinct from an empty list - when the
+        /// fetch failed or the response didn't have the expected shape, so
+        /// the caller falls back to the coarser section-listing summary
+        /// instead of leaving the item with no stream data at all.
+        /// </summary>
+        private async Task<List<MediaStream>?> FetchDetailedStreamsAsync(string ratingKey, CancellationToken cancellationToken)
+        {
+            var doc = await GetJsonAsync($"/library/metadata/{ratingKey}", cancellationToken).ConfigureAwait(false);
+            if (doc == null)
+            {
+                return null;
+            }
+
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("MediaContainer", out var container)
+                    || !container.TryGetProperty("Metadata", out var metadataArr)
+                    || metadataArr.ValueKind != JsonValueKind.Array)
+                {
+                    return null;
+                }
+
+                foreach (var meta in metadataArr.EnumerateArray())
+                {
+                    if (!meta.TryGetProperty("Media", out var mediaArr) || mediaArr.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    foreach (var med in mediaArr.EnumerateArray())
+                    {
+                        if (!med.TryGetProperty("Part", out var parts) || parts.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+
+                        foreach (var part in parts.EnumerateArray())
+                        {
+                            if (!part.TryGetProperty("Stream", out var streamsJson) || streamsJson.ValueKind != JsonValueKind.Array)
+                            {
+                                continue;
+                            }
+
+                            var streams = new List<MediaStream>();
+                            var index = 0;
+                            var sawDefaultAudio = false;
+                            foreach (var s in streamsJson.EnumerateArray())
+                            {
+                                var streamType = GetInt(s, "streamType");
+                                if (streamType == 1)
+                                {
+                                    streams.Add(BuildVideoStream(s, index++));
+                                }
+                                else if (streamType == 2)
+                                {
+                                    var audio = BuildAudioStream(s, index++);
+                                    sawDefaultAudio |= audio.IsDefault;
+                                    streams.Add(audio);
+                                }
+                            }
+
+                            if (!sawDefaultAudio)
+                            {
+                                // Neither Plex's own "default" (the file's embedded
+                                // flag) nor "selected" (this server's own current
+                                // choice) was set on any track - certifying zero
+                                // audio streams as default would leave clients with
+                                // no track to fall back to.
+                                var firstAudio = streams.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
+                                if (firstAudio != null)
+                                {
+                                    firstAudio.IsDefault = true;
+                                }
+                            }
+
+                            return streams;
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Builds the video <see cref="MediaStream"/> from a Plex Stream
+        /// element, including real HDR/Dolby Vision data - the whole reason
+        /// this plugin fetches per-item detail instead of using the bulk
+        /// section-listing summary, which only ever reports a bare codec name
+        /// with no color/HDR information at all. Only the raw fields
+        /// (ColorTransfer, the Dv* Dolby Vision fields) are set here -
+        /// <see cref="MediaStream.VideoRange"/>/<see cref="MediaStream.VideoRangeType"/>
+        /// are read-only, computed by Jellyfin itself from exactly these
+        /// fields, confirmed by direct inspection (e.g. ColorTransfer=
+        /// "smpte2084" alone already resolves to VideoRangeType.HDR10; adding
+        /// DvProfile resolves to DOVIWithHDR10).
+        /// </summary>
+        private static MediaStream BuildVideoStream(JsonElement s, int index)
+        {
+            return new MediaStream
+            {
+                Type = MediaStreamType.Video,
+                Codec = GetString(s, "codec") ?? string.Empty,
+                Width = GetInt(s, "width"),
+                Height = GetInt(s, "height"),
+                BitRate = GetInt(s, "bitrate") is int kbps ? kbps * 1000 : null,
+                BitDepth = GetInt(s, "bitDepth"),
+                Profile = GetString(s, "profile"),
+                Level = GetInt(s, "level"),
+                RefFrames = GetInt(s, "refFrames"),
+                ColorPrimaries = GetString(s, "colorPrimaries"),
+                ColorSpace = GetString(s, "colorSpace"),
+                ColorTransfer = GetString(s, "colorTrc"),
+                ColorRange = GetString(s, "colorRange"),
+                DvProfile = GetInt(s, "DOVIProfile"),
+                DvLevel = GetInt(s, "DOVILevel"),
+                DvBlSignalCompatibilityId = GetInt(s, "DOVIBLCompatID"),
+                BlPresentFlag = BoolToFlag(GetBool(s, "DOVIBLPresent")),
+                RpuPresentFlag = BoolToFlag(GetBool(s, "DOVIRPUPresent")),
+                ElPresentFlag = BoolToFlag(GetBool(s, "DOVIELPresent")),
+                Index = index,
+                IsDefault = true
+            };
+        }
+
+        /// <summary>
+        /// Builds one audio <see cref="MediaStream"/> from a Plex Stream
+        /// element. Unlike the bulk section-listing summary (one codec/
+        /// channel pair for the whole item), the detail endpoint's Part.Stream
+        /// array lists every audio track, so a file with several dubs/mixes -
+        /// e.g. a 5.1 default plus a stereo commentary track - is no longer
+        /// reduced to just one of them.
+        /// </summary>
+        private static MediaStream BuildAudioStream(JsonElement s, int index)
+        {
+            return new MediaStream
+            {
+                Type = MediaStreamType.Audio,
+                Codec = GetString(s, "codec") ?? string.Empty,
+                Channels = GetInt(s, "channels"),
+                BitRate = GetInt(s, "bitrate") is int kbps ? kbps * 1000 : null,
+                SampleRate = GetInt(s, "samplingRate"),
+                BitDepth = GetInt(s, "bitDepth"),
+                Profile = GetString(s, "profile"),
+                Language = GetString(s, "languageTag"),
+                Title = GetString(s, "title"),
+                ChannelLayout = GetString(s, "audioChannelLayout"),
+                Index = index,
+
+                // "selected" is this Plex server's own current pick for the
+                // track to play by default; "default" is the file's own
+                // embedded flag. Either is a reasonable signal - prefer
+                // "selected" since it reflects what actually plays there today.
+                IsDefault = GetBool(s, "selected") == true || GetBool(s, "default") == true
+            };
+        }
+
+        /// <summary>
+        /// Converts a Plex boolean flag to the 1/0 int Jellyfin's Dolby Vision
+        /// presence fields use, or null when Plex didn't report it at all -
+        /// distinct from "reported false", since Plex only includes these
+        /// fields on the file's actual base/enhancement/RPU layers.
+        /// </summary>
+        private static int? BoolToFlag(bool? value) => value.HasValue ? (value.Value ? 1 : 0) : null;
 
         /// <summary>
         /// Reads Plex's external id list (<c>includeGuids=1</c>) into the same
@@ -609,6 +796,22 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 JsonValueKind.Number when v.TryGetDouble(out var d) => d,
                 JsonValueKind.String when double.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var s) => s,
+                _ => null
+            };
+        }
+
+        private static bool? GetBool(JsonElement e, string name)
+        {
+            if (!e.TryGetProperty(name, out var v))
+            {
+                return null;
+            }
+
+            return v.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String when bool.TryParse(v.GetString(), out var b) => b,
                 _ => null
             };
         }
