@@ -91,4 +91,106 @@ public class PlexCatalogProviderTests : IDisposable
 
         Assert.Null(images);
     }
+
+    private const string TwoSectionsBody = "{\"MediaContainer\":{\"Directory\":["
+        + "{\"key\":\"1\",\"title\":\"Movies\",\"type\":\"movie\"},"
+        + "{\"key\":\"2\",\"title\":\"Home Videos (personal)\",\"type\":\"movie\"}"
+        + "]}}";
+
+    /// <summary>
+    /// Regression coverage for the "a friend's declined-to-share library is
+    /// hidden from the picker but still gets synced anyway" bug: unlike a
+    /// Jellyfin friend (whose own server enforces sharing remotely - see
+    /// FederationPeerAccessService), a Plex access token has no per-library
+    /// scope, so RemoteServer.AllowedExternalLibraryIds is this side's only
+    /// enforcement point.
+    /// </summary>
+    [Fact]
+    public async Task GetLibrariesAsync_FiltersOutSectionsNotInAllowList()
+    {
+        PlexCatalogProvider.HttpClientOverride = new HttpClient(new ScriptedHandler(TwoSectionsBody));
+        var provider = new PlexCatalogProvider(NullLogger<PlexCatalogProvider>.Instance);
+        var server = PlexServer();
+        server.AllowedExternalLibraryIds = new System.Collections.Generic.List<string> { "1" };
+
+        var libraries = await provider.GetLibrariesAsync(server, CancellationToken.None);
+
+        var library = Assert.Single(libraries);
+        Assert.Equal("1", library.Id);
+    }
+
+    [Fact]
+    public async Task GetLibrariesAsync_ReturnsEverySection_WhenAllowListIsNull()
+    {
+        // Null must mean "no restriction recorded" - a server configured before
+        // this field existed (or without ever using the connect-code handshake
+        // that would populate it) must keep working exactly as before.
+        PlexCatalogProvider.HttpClientOverride = new HttpClient(new ScriptedHandler(TwoSectionsBody));
+        var provider = new PlexCatalogProvider(NullLogger<PlexCatalogProvider>.Instance);
+        var server = PlexServer();
+        Assert.Null(server.AllowedExternalLibraryIds);
+
+        var libraries = await provider.GetLibrariesAsync(server, CancellationToken.None);
+
+        Assert.Equal(2, libraries.Count);
+    }
+
+    [Fact]
+    public async Task GetItemsAsync_RefusesToSync_WhenLibraryNotInAllowList()
+    {
+        // Must return null (the existing "keep cached content" outcome), never
+        // an empty list - an empty list would read as "this library is now
+        // empty" and delete everything already synced from it, which would turn
+        // a friend declining to share a library into a destructive data loss
+        // event instead of just freezing the last-allowed state.
+        PlexCatalogProvider.HttpClientOverride = new HttpClient(new ScriptedHandler(TwoSectionsBody));
+        var provider = new PlexCatalogProvider(NullLogger<PlexCatalogProvider>.Instance);
+        var server = PlexServer();
+        server.AllowedExternalLibraryIds = new System.Collections.Generic.List<string> { "1" };
+
+        var items = await provider.GetItemsAsync(server, "2", CancellationToken.None);
+
+        Assert.Null(items);
+    }
+
+    [Fact]
+    public async Task GetItemsAsync_Syncs_WhenLibraryIsInAllowList()
+    {
+        const string itemsBody = "{\"MediaContainer\":{\"Metadata\":[{"
+            + "\"ratingKey\":\"300\",\"title\":\"Some Movie\",\"type\":\"movie\","
+            + "\"Media\":[{\"container\":\"mp4\",\"videoCodec\":\"h264\",\"width\":1920,\"height\":1080,"
+            + "\"audioCodec\":\"aac\",\"audioChannels\":2,\"Part\":[{\"key\":\"/library/parts/1/1/file.mp4\"}]}]"
+            + "}]}}";
+        PlexCatalogProvider.HttpClientOverride = new HttpClient(new PathScriptedHandler(TwoSectionsBody, itemsBody));
+        var provider = new PlexCatalogProvider(NullLogger<PlexCatalogProvider>.Instance);
+        var server = PlexServer();
+        server.AllowedExternalLibraryIds = new System.Collections.Generic.List<string> { "1" };
+
+        var items = await provider.GetItemsAsync(server, "1", CancellationToken.None);
+
+        Assert.NotNull(items);
+        Assert.Single(items!);
+    }
+
+    private sealed class PathScriptedHandler : HttpMessageHandler
+    {
+        private readonly string _sectionsBody;
+        private readonly string _itemsBody;
+
+        public PathScriptedHandler(string sectionsBody, string itemsBody)
+        {
+            _sectionsBody = sectionsBody;
+            _itemsBody = itemsBody;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            var body = path == "/library/sections" ? _sectionsBody : _itemsBody;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+        }
+    }
 }

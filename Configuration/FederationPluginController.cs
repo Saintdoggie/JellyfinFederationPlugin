@@ -54,6 +54,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationPeerAccessService _peerAccess;
         private readonly IServerApplicationHost _applicationHost;
         private readonly FederationNowWatchingService _nowWatching;
+        private readonly ExternalCatalogRegistry _externalCatalogs;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -73,7 +74,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationUserSessionTokenService userSessionTokens,
             FederationPeerAccessService peerAccess,
             IServerApplicationHost applicationHost,
-            FederationNowWatchingService nowWatching)
+            FederationNowWatchingService nowWatching,
+            ExternalCatalogRegistry externalCatalogs)
         {
             _logger = logger;
             _syncService = syncService;
@@ -93,6 +95,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _peerAccess = peerAccess;
             _applicationHost = applicationHost;
             _nowWatching = nowWatching;
+            _externalCatalogs = externalCatalogs;
         }
 
         /// <summary>
@@ -234,6 +237,15 @@ namespace Jellyfin.Plugin.Federation.Api
                         // this happened to a freshly-added Plex server within the same
                         // session it was created in.
                         server.Kind = oldServer.Kind;
+
+                        // Same class of bug as Kind immediately above, for the same
+                        // reason: no field in the main Save form, so without this an
+                        // already-recorded allow-list would silently reset to null
+                        // (meaning "allow everything") on every unrelated save -
+                        // exactly the sharing-consent regression this field exists
+                        // to prevent, just triggered by Save instead of never being
+                        // enforced at all.
+                        server.AllowedExternalLibraryIds = oldServer.AllowedExternalLibraryIds;
                     }
                 }
 
@@ -1530,6 +1542,31 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 try
                 {
+                    // A non-Jellyfin peer (Plex today) has no Peer/Libraries endpoint
+                    // to ask - RemoteServerClient.GetLibrariesAsync would just fail
+                    // to connect against it, which is why this always silently
+                    // showed "Failed to connect" for a Plex server instead of an
+                    // actual library list. Route through the same external-catalog
+                    // abstraction streaming/images/sync already use instead.
+                    var externalProvider = _externalCatalogs.For(server);
+                    if (externalProvider != null)
+                    {
+                        var externalLibraries = await externalProvider.GetLibrariesAsync(server, cancellationToken).ConfigureAwait(false);
+                        results.Add(new
+                        {
+                            serverId = server.Id,
+                            serverName = server.Name,
+                            libraries = externalLibraries.Select(lib => new
+                            {
+                                id = lib.Id,
+                                name = lib.Name,
+                                collectionType = lib.MediaType,
+                                itemCount = 0
+                            }).ToList()
+                        });
+                        continue;
+                    }
+
                     var client = _clientFactory.GetClient(server);
                     var libraries = await client.GetLibrariesAsync(cancellationToken).ConfigureAwait(false);
                     results.Add(new
@@ -1558,6 +1595,37 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok(new { success = true, servers = results });
+        }
+
+        /// <summary>
+        /// Admin-triggered: sets the exact list of a non-Jellyfin (Plex) server's
+        /// own library/section ids allowed to be synced from - see
+        /// <see cref="RemoteServer.AllowedExternalLibraryIds"/> for why this has to
+        /// be recorded and enforced here rather than trusted to the remote, and
+        /// <see cref="Services.PlexCatalogProvider"/> for the enforcement itself.
+        /// An empty (not null) list means "allow nothing", matching how leaving
+        /// every checkbox unchecked in the picker UI should behave; omit the field
+        /// entirely (or pass a Jellyfin server's id) to make no change.
+        /// </summary>
+        [HttpPost("Servers/{id}/AllowedLibraries")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetAllowedLibraries(string id, [FromBody] SetAllowedLibrariesBody body)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { error = "Server not found" });
+            }
+
+            if (server.Kind == ServerKind.Jellyfin)
+            {
+                return BadRequest(new { error = "A Jellyfin friend's sharing is controlled by their own server - see Friends/{id}/Sharing instead." });
+            }
+
+            server.AllowedExternalLibraryIds = body?.LibraryIds ?? new List<string>();
+            Plugin.Instance?.SaveConfiguration();
+            return Ok(new { success = true, allowedLibraryIds = server.AllowedExternalLibraryIds });
         }
 
         #endregion
@@ -2809,6 +2877,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.Enabled,
                 s.UserId,
                 Kind = (int)s.Kind,
+                s.AllowedExternalLibraryIds,
                 StreamingMode = (int)s.StreamingMode,
                 s.Priority,
                 s.RequireApiKeyForImages,
@@ -2847,6 +2916,11 @@ namespace Jellyfin.Plugin.Federation.Api
     public class RefreshServerRequest
     {
         public string? ServerId { get; set; }
+    }
+
+    public class SetAllowedLibrariesBody
+    {
+        public List<string>? LibraryIds { get; set; }
     }
 
     public class SendFriendRequestBody
