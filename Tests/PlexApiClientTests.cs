@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -158,5 +159,91 @@ public class PlexApiClientTests
         var item = Assert.Single(items);
         var videoStream = Assert.Single(item.Dto.MediaStreams!, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
         Assert.Equal(2043 * 1000, videoStream.BitRate);
+    }
+
+    private sealed class ScriptedSectionAndDetailHandler : HttpMessageHandler
+    {
+        private readonly string _sectionBody;
+        private readonly string _detailBody;
+
+        public ScriptedSectionAndDetailHandler(string sectionBody, string detailBody)
+        {
+            _sectionBody = sectionBody;
+            _detailBody = detailBody;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            var query = request.RequestUri?.Query ?? string.Empty;
+
+            string body;
+            if (path.StartsWith("/library/metadata/", StringComparison.Ordinal))
+            {
+                body = _detailBody;
+            }
+            else if (query.Contains("type=1", StringComparison.Ordinal))
+            {
+                body = _sectionBody;
+            }
+            else
+            {
+                body = "{\"MediaContainer\":{\"Metadata\":[]}}";
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
+    /// <summary>
+    /// Regression test: the bulk section-listing endpoint (used to sync every
+    /// item) never reports color/HDR/Dolby Vision data at all - only the
+    /// per-item detail endpoint's Part.Stream array does, confirmed against a
+    /// real 4K Dolby Vision/HDR10 remux that the listing endpoint reported no
+    /// differently from an ordinary SDR file. ApplyMediaDetailsAsync fetches
+    /// that detail endpoint and uses its real per-stream breakdown - both for
+    /// HDR classification and for listing every audio track, not just one.
+    /// </summary>
+    [Fact]
+    public async Task GetSectionItemsAsync_CapturesHdrDolbyVisionAndAllAudioTracks_FromDetailEndpoint()
+    {
+        const string sectionBody = "{\"MediaContainer\":{\"Metadata\":[{" +
+            "\"ratingKey\":\"400\",\"title\":\"Some Remux\",\"type\":\"movie\"," +
+            "\"Media\":[{\"container\":\"mkv\",\"bitrate\":50000,\"videoCodec\":\"hevc\",\"width\":3840,\"height\":2160," +
+            "\"audioCodec\":\"truehd\",\"audioChannels\":8,\"Part\":[{\"key\":\"/library/parts/9/9/file.mkv\"}]}]" +
+            "}]}}";
+
+        const string detailBody = "{\"MediaContainer\":{\"Metadata\":[{" +
+            "\"ratingKey\":\"400\",\"title\":\"Some Remux\",\"type\":\"movie\"," +
+            "\"Media\":[{\"Part\":[{\"key\":\"/library/parts/9/9/file.mkv\",\"Stream\":[" +
+            "{\"streamType\":1,\"codec\":\"hevc\",\"width\":3840,\"height\":2160,\"bitrate\":49000,\"bitDepth\":10," +
+            "\"colorPrimaries\":\"bt2020\",\"colorSpace\":\"bt2020nc\",\"colorTrc\":\"smpte2084\",\"colorRange\":\"tv\"," +
+            "\"DOVIPresent\":true,\"DOVIProfile\":8,\"DOVIBLCompatID\":1,\"DOVIBLPresent\":true,\"DOVIRPUPresent\":true,\"DOVIELPresent\":false}," +
+            "{\"streamType\":2,\"codec\":\"truehd\",\"channels\":8,\"bitrate\":5000,\"languageTag\":\"ja\",\"audioChannelLayout\":\"7.1\"}," +
+            "{\"streamType\":2,\"codec\":\"ac3\",\"channels\":6,\"bitrate\":448,\"languageTag\":\"en\",\"audioChannelLayout\":\"5.1\",\"selected\":true}" +
+            "]}]}]" +
+            "}]}}";
+
+        var client = BuildClient(new ScriptedSectionAndDetailHandler(sectionBody, detailBody));
+
+        var items = await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None);
+
+        var item = Assert.Single(items);
+        var streams = item.Dto.MediaStreams!;
+
+        var video = Assert.Single(streams, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
+        Assert.Equal("smpte2084", video.ColorTransfer);
+        Assert.Equal(8, video.DvProfile);
+        Assert.Equal(Jellyfin.Data.Enums.VideoRangeType.DOVIWithHDR10, video.VideoRangeType);
+        Assert.Equal(Jellyfin.Data.Enums.VideoRange.HDR, video.VideoRange);
+
+        var audioStreams = streams.Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio).ToList();
+        Assert.Equal(2, audioStreams.Count);
+        Assert.Contains(audioStreams, s => s.Codec == "truehd" && s.Channels == 8);
+        var acStream = Assert.Single(audioStreams, s => s.Codec == "ac3");
+        Assert.True(acStream.IsDefault);
     }
 }
