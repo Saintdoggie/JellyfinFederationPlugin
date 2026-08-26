@@ -289,6 +289,18 @@ namespace Jellyfin.Plugin.Federation.Api
                     // same class of field as the friend-request lists above.
                     config.Pools = existing.Pools;
 
+                    // Same class of field again, found while adding the two above:
+                    // pending pool invites were never preserved, so any unrelated
+                    // config save silently dropped every invite a friend was still
+                    // deciding on (and every invite this server itself had sent and
+                    // was still waiting on) with no way to get it back.
+                    config.OutgoingPoolInvites = existing.OutgoingPoolInvites;
+                    config.IncomingPoolInvites = existing.IncomingPoolInvites;
+
+                    // Set through its own Setup/Connectivity endpoint, not the main
+                    // Save form - same class of field as Pools above.
+                    config.ConnectivityMode = existing.ConnectivityMode;
+
                     // This server's own real Jellyfin API key, minted once (see
                     // FederationFriendService.GetOrCreateInternalRelayApiKeyAsync) and
                     // used only locally, over loopback, to relay Direct-mode playback
@@ -1268,6 +1280,38 @@ namespace Jellyfin.Plugin.Federation.Api
         #region Pools
 
         /// <summary>
+        /// Gets this server's own connectivity mode - see
+        /// <see cref="PluginConfiguration.ConnectivityMode"/>.
+        /// </summary>
+        [HttpGet("Setup/Connectivity")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetConnectivityMode()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            return Ok(new { mode = config.ConnectivityMode.ToString() });
+        }
+
+        /// <summary>
+        /// Admin-triggered: records how this server is reachable from the
+        /// internet. Self-saves immediately, same as the other Setup/Pools
+        /// actions - not part of the main Save form.
+        /// </summary>
+        [HttpPost("Setup/Connectivity")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetConnectivityMode([FromBody] SetConnectivityModeBody body)
+        {
+            if (!Enum.TryParse<ServerConnectivityMode>(body?.Mode, ignoreCase: true, out var mode))
+            {
+                return BadRequest(new { error = "Mode must be one of: PublicFacing, Tailscale" });
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            config.ConnectivityMode = mode;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, mode = config.ConnectivityMode.ToString() });
+        }
+
+        /// <summary>
         /// Admin-triggered: lists the multi-server pools this server owns or belongs to.
         /// </summary>
         [HttpGet("Pools")]
@@ -1297,6 +1341,17 @@ namespace Jellyfin.Plugin.Federation.Api
             if (string.IsNullOrWhiteSpace(body?.Name))
             {
                 return BadRequest(new { error = "Pool name is required" });
+            }
+
+            // A pool only works if the other members can actually reach this
+            // server to connect - see PluginConfiguration.ConnectivityMode. Unset
+            // (every install predating this setting) is refused rather than
+            // allowed, the same conservative default the field's own doc comment
+            // describes.
+            var config = Plugin.Instance?.Configuration;
+            if (config?.ConnectivityMode != ServerConnectivityMode.PublicFacing)
+            {
+                return BadRequest(new { error = "Only a public-facing server can create a pool - set this under Connectivity on the Pools tab first." });
             }
 
             var pool = _friends.CreatePool(body.Name);
@@ -2931,6 +2986,11 @@ namespace Jellyfin.Plugin.Federation.Api
     public class CreatePoolBody
     {
         public string? Name { get; set; }
+    }
+
+    public class SetConnectivityModeBody
+    {
+        public string? Mode { get; set; }
     }
 
     public class AddFriendToPoolBody
