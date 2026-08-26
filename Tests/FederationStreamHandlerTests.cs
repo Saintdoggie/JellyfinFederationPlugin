@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -64,7 +65,7 @@ public class FederationStreamHandlerTests : IDisposable
         var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), bandwidthMonitor);
     }
 
     private static HttpResponseMessage Json(string body)
@@ -142,6 +143,41 @@ public class FederationStreamHandlerTests : IDisposable
 
         Assert.Equal(remoteBytes.Length, response.ContentLength);
         Assert.Equal(remoteBytes.Length, body.Length);
+    }
+
+    [Fact]
+    public async Task ManualWanCap_ThrottlesRelayToTheConfiguredRate()
+    {
+        // A Manual WAN cap must be enforced as an actual byte-rate throttle for a
+        // proxied source: unlike a Direct-mode Jellyfin peer (which gets asked to
+        // transcode down to a lower bitrate via a querystring - see
+        // FederationLibraryManager.BuildPlaybackUrl), a proxied relay has no
+        // remote transcode endpoint to negotiate with, so RelayAsync itself has
+        // to pace writes to stay under the configured rate.
+        var server = _plugin.Configuration.RemoteServers.Single(s => s.Id == "serverA");
+        server.WanCapMode = WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 1; // 125,000 bytes/sec
+
+        var remoteBytes = new byte[400_000];
+        new Random(11).NextBytes(remoteBytes);
+
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(remoteBytes) }));
+
+        var (request, response, body) = MakeContext(null);
+
+        var stopwatch = Stopwatch.StartNew();
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+        stopwatch.Stop();
+
+        Assert.Equal(remoteBytes.Length, body.Length);
+
+        // At 125,000 bytes/sec, 400,000 bytes should take ~3.2s - a 2s floor
+        // leaves generous headroom for scheduling jitter on a loaded CI box
+        // while still being far above the near-instant relay an unthrottled
+        // in-memory run would otherwise produce (proving the cap actually did
+        // something, not just that it didn't crash).
+        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2), $"expected the capped relay to take at least 2s, took {stopwatch.Elapsed}");
     }
 
     [Fact]
@@ -231,12 +267,13 @@ public class FederationStreamHandlerTests : IDisposable
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Moq.Mock.Of<IRemoteServerClientFactory>());
         var federationManager = new FederationLibraryManager(
             Moq.Mock.Of<MediaBrowser.Controller.Library.ILibraryManager>(),
             NullLogger<FederationLibraryManager>.Instance,
             Moq.Mock.Of<IRemoteServerClientFactory>(),
             cache,
-            new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Moq.Mock.Of<IRemoteServerClientFactory>()),
+            bandwidthMonitor,
             Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var handlerWithFreshClient = new FederationStreamHandler(
@@ -244,7 +281,8 @@ public class FederationStreamHandlerTests : IDisposable
             federationManager,
             new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance),
             clientFactory.Object,
-            new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+            new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()),
+            bandwidthMonitor);
 
         FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
         {

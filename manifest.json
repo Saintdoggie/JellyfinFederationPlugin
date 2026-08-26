@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.103",
+        "changelog": "Feature: WAN bandwidth capping (WanCapMode/WanMaxBitrateMbps) previously only worked for a Direct-mode Jellyfin peer, where it asks the remote to transcode down to a lower bitrate via a querystring - it silently did nothing for a Plex source or any Jellyfin peer explicitly set to Proxy mode, since neither has a remote transcoder to ask. Manual mode now enforces an actual byte-rate throttle in the proxy relay itself, so a fixed bandwidth limit works for any proxied source. Auto (which relies on a Jellyfin-only bandwidth probe) is now an explicit no-op for a non-Jellyfin peer instead of settling permanently on a 10Mbps placeholder it could never move past - config page copy updated to match. 276 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.103/Jellyfin.Federation.zip",
+        "checksum": "91a8dd09b969805ab7c8f9b63c8a8ea4",
+        "timestamp": "2026-08-26T16:28:53Z"
+      },
+      {
         "version": "0.0.102",
         "changelog": "Fix: 0.0.101's HDR/Dolby Vision and full-audio-track capture only ever reached brand-new items - an already-synced item that already had some media stream data saved never got re-checked. The existing-item backfill pass now also catches a stored video stream missing color/HDR data, or fewer audio tracks stored than the source actually has, and re-persists from the richer per-item detail fetch. 269 tests, all green.",
         "targetAbi": "10.11.0.0",

@@ -29,6 +29,12 @@ namespace Jellyfin.Plugin.Federation.Services
     ///    mechanism jellyfin-web itself uses client-side. If that measurement is
     ///    generously above what any real source is likely to need, the cap is skipped
     ///    entirely rather than pointlessly capping a connection that didn't need it.
+    ///
+    /// A Manual cap also applies to proxied/non-Jellyfin (Plex) peers, enforced as an
+    /// actual byte-rate throttle in <see cref="FederationStreamHandler"/>'s relay loop
+    /// rather than the transcode-bitrate querystring <see cref="FederationLibraryManager.BuildPlaybackUrl"/>
+    /// uses for a Direct-mode Jellyfin peer - Auto has no meaning there (see
+    /// <see cref="GetEffectiveCapMbps"/>), since there's no bandwidth probe to run.
     /// </summary>
     public class WanBandwidthMonitor
     {
@@ -88,6 +94,21 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 case WanCapMode.Auto:
                 default:
+                    // Auto's measurement half relies on a bandwidth probe endpoint
+                    // (this plugin's own Peer/BitrateTest, or Jellyfin's native
+                    // Playback/BitrateTest - see MeasureBandwidthMbpsAsync) that only
+                    // exists on a Jellyfin peer. A non-Jellyfin server (Plex) can
+                    // never get a MeasuredMbps value, which would otherwise mean
+                    // settling permanently on PendingMeasurementCapMbps instead of
+                    // the "still waiting to find out" placeholder it's meant to be -
+                    // worse than today's uncapped behavior, not better. Manual (an
+                    // explicit value the user sets themselves) is the only cap mode
+                    // that makes sense for a non-Jellyfin peer.
+                    if (server.Kind != ServerKind.Jellyfin)
+                    {
+                        return null;
+                    }
+
                     if (!_cache.TryGetValue(server.Id, out var info) || info.IsLocalNetwork != false)
                     {
                         // Not classified yet, or positively confirmed same-network:
@@ -132,7 +153,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task RefreshIfDueAsync(RemoteServer server, CancellationToken cancellationToken = default)
         {
-            if (server.WanCapMode != WanCapMode.Auto || !server.Enabled)
+            // Auto is a no-op for a non-Jellyfin server (see GetEffectiveCapMbps) -
+            // skip the classification/measurement work entirely rather than issuing
+            // a probe request every cycle that can only ever fail (a Plex server has
+            // no BitrateTest endpoint to hit).
+            if (server.WanCapMode != WanCapMode.Auto || !server.Enabled || server.Kind != ServerKind.Jellyfin)
             {
                 return;
             }

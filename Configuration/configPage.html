@@ -1331,7 +1331,7 @@
                         html += '</div>';
 
                         html += '<div class="fed-inline">';
-                        html += '<div class="fed-input-container"><label class="fed-label">WAN bitrate cap (Direct mode only)</label>';
+                        html += '<div class="fed-input-container"><label class="fed-label">WAN bitrate cap</label>';
                         html += '<select class="emby-select fed-select fedSrvWanMode" data-i="' + i + '">';
                         html += '<option value="0"' + ((server.WanCapMode || 0) === 0 ? ' selected' : '') + '>Auto (recommended)</option>';
                         html += '<option value="1"' + (server.WanCapMode === 1 ? ' selected' : '') + '>Manual</option>';
@@ -1339,10 +1339,10 @@
                         html += '</select></div>';
                         html += '<div class="fed-input-container"><label class="fed-label">Manual bitrate, Mbps (Manual mode only)</label>';
                         html += '<input type="number" min="0" class="emby-input fed-input fedSrvWanBitrate" data-i="' + i + '" value="' + (server.WanMaxBitrateMbps || 0) + '" /></div>';
-                        html += '<div class="fed-input-container"><label class="fed-label">Max height, px (Auto or Manual, 0 = no cap)</label>';
+                        html += '<div class="fed-input-container"><label class="fed-label">Max height, px (Direct mode only, 0 = no cap)</label>';
                         html += '<input type="number" min="0" class="emby-input fed-input fedSrvWanHeight" data-i="' + i + '" value="' + (server.WanMaxHeight === undefined || server.WanMaxHeight === null ? 1080 : server.WanMaxHeight) + '" /></div>';
                         html += '</div>';
-                        html += '<p class="fed-muted">Only matters when this friend is Direct mode and reached over the internet (not the same local network) - direct play (the raw source file, best quality) is always used otherwise. <strong>Auto</strong> detects same-network vs. internet-only automatically and, only for a confirmed internet link, measures what it can actually sustain and caps to the largest bitrate that fits - never guesses, and stays uncapped until it has real evidence a cap is needed. <strong>Manual</strong> always caps to the fixed value below, useful to pin a known-good number. <strong>Off</strong> always streams the raw source file.</p>';
+                        html += '<p class="fed-muted">For a Direct-mode connection to another Jellyfin server, this asks that server to transcode down to the capped bitrate before it crosses the WAN - direct play (the raw source file, best quality) is used otherwise. For a Proxy connection (including any Plex source, which is always proxied), there is no remote transcoder to ask, so this instead throttles the relayed byte rate itself. <strong>Auto</strong> only has an effect on a Direct-mode Jellyfin connection: it detects same-network vs. internet-only automatically and, only for a confirmed internet link, measures what it can actually sustain and caps to the largest bitrate that fits - never guesses, and stays uncapped until it has real evidence a cap is needed. It has no way to measure a Proxy connection, so a Proxy/Plex source under Auto always stays uncapped. <strong>Manual</strong> always caps to the fixed bitrate below, for a connection of either mode - the only way to cap a Proxy/Plex source. <strong>Off</strong> always streams the raw source file. Max height only applies to the Direct-mode transcode request and has no effect on a Proxy/Plex connection.</p>';
 
                         html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSrvEnabled" data-i="' + i + '" ' + (server.Enabled !== false ? 'checked' : '') + ' /> Enabled — sync and play from this friend</label>';
                         html += '</div></details>';

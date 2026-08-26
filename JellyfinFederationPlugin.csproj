@@ -6,9 +6,9 @@
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Nullable>enable</Nullable>
-    <Version>0.0.102</Version>
-    <AssemblyVersion>0.0.102.0</AssemblyVersion>
-    <FileVersion>0.0.102.0</FileVersion>
+    <Version>0.0.103</Version>
+    <AssemblyVersion>0.0.103.0</AssemblyVersion>
+    <FileVersion>0.0.103.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,6 +19,13 @@
   <ItemGroup>
     <Compile Remove="Tests\**" />
     <None Remove="Tests\**" />
+    <!-- Companion is a separate standalone app (its own .csproj) living in a
+         subdirectory of this repo, not part of this plugin - without this
+         exclusion the default SDK glob also sweeps up its source *and* its
+         own build output (obj\**\*.AssemblyInfo.cs etc.), which collides with
+         this project's own generated assembly attributes. -->
+    <Compile Remove="Companion\**" />
+    <None Remove="Companion\**" />
   </ItemGroup>
 
   <ItemGroup>

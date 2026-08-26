@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -54,6 +55,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly RemoteAccessControlService _accessControl;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly ExternalCatalogRegistry _externalCatalogs;
+        private readonly WanBandwidthMonitor _bandwidthMonitor;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
@@ -63,13 +65,15 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationLibraryManager federationManager,
             RemoteAccessControlService accessControl,
             IRemoteServerClientFactory clientFactory,
-            ExternalCatalogRegistry externalCatalogs)
+            ExternalCatalogRegistry externalCatalogs,
+            WanBandwidthMonitor bandwidthMonitor)
         {
             _logger = logger;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _accessControl = accessControl;
             _externalCatalogs = externalCatalogs;
+            _bandwidthMonitor = bandwidthMonitor;
         }
 
         /// <summary>
@@ -224,7 +228,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
-                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+                // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
+                // a Direct-mode Jellyfin peer: real-world audio bitrates are already
+                // far below anything worth throttling.
+                var capMbps = isAudio ? null : _bandwidthMonitor.GetEffectiveCapMbps(server);
+                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps).ConfigureAwait(false);
 
                 // A rejected token is almost always the remote having restarted:
                 // both of its in-memory token stores were wiped, while this side
@@ -248,7 +256,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
                         remoteItemId,
                         server.Name);
-                    await RelayAsync(url, request, response, cancellationToken).ConfigureAwait(false);
+                    await RelayAsync(url, request, response, cancellationToken, capMbps).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -299,11 +307,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// other outcome.
         /// </para>
         /// </summary>
+        /// <param name="capMbps">
+        /// When set, paces writes to <paramref name="response"/> so this relay
+        /// never sustains more than this many megabits per second - the only place
+        /// a WAN bandwidth cap can be enforced for a proxied source (Plex, or any
+        /// Jellyfin peer explicitly set to Proxy mode), since unlike a Direct-mode
+        /// Jellyfin peer there is no remote transcode endpoint to ask for a lower
+        /// bitrate instead. Null (the common case) relays at whatever rate the
+        /// remote and this connection can sustain, exactly as before this existed.
+        /// </param>
         private async Task<int?> RelayAsync(
             string url,
             HttpRequest request,
             HttpResponse response,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int? capMbps = null)
         {
             try
             {
@@ -323,6 +341,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 // long-running relay's retry budget doesn't get spent down over its
                 // whole lifetime (see MaxAttempts).
                 var consecutiveFailures = 0;
+
+                // Mbps -> bytes/sec. A single Stopwatch spanning the whole relay
+                // (including any mid-stream stall/retry) rather than per-attempt:
+                // time spent stalled counts against nothing, since no bytes flowed
+                // during it, which is exactly the "don't punish downtime" behavior
+                // wanted - it naturally lets a resumed relay catch up to the target
+                // average rate instead of adding an extra artificial delay on top
+                // of a stall that already happened.
+                var capBytesPerSecond = capMbps.HasValue ? capMbps.Value * 1_000_000L / 8 : (long?)null;
+                var throttle = capBytesPerSecond.HasValue ? Stopwatch.StartNew() : null;
+                long bytesRelayed = 0;
 
                 while (true)
                 {
@@ -436,6 +465,17 @@ namespace Jellyfin.Plugin.Federation.Services
                             await response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                             rangeStart += read;
                             consecutiveFailures = 0;
+
+                            if (capBytesPerSecond.HasValue)
+                            {
+                                bytesRelayed += read;
+                                var targetElapsed = TimeSpan.FromSeconds(bytesRelayed / (double)capBytesPerSecond.Value);
+                                var actualElapsed = throttle!.Elapsed;
+                                if (targetElapsed > actualElapsed)
+                                {
+                                    await Task.Delay(targetElapsed - actualElapsed, cancellationToken).ConfigureAwait(false);
+                                }
+                            }
                         }
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ++consecutiveFailures < MaxAttempts)
