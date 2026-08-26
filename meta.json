@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.105",
-  "changelog": "Fix: a local library mapping fed by two RemoteLibrarySources on the *same* friend's server (two of their folders both feeding one local library) could have each source's sync cycle prune the other's just-synced content, since PruneServerSources only ever scoped by (mapping, server) - never by which specific source an item came from. Sources from the same server are now synced together and pruned once per server, using the combined set of everything all of that server's sources actually reported this cycle, so neither one erases the other. Investigated after a report that a Jellyfin friend's declined-to-share content was still coming through; the core per-library enforcement (FederationPeerAccessService, Peer/Libraries, Peer/Items) traced out correct on direct review, and this is the one concrete bug found - it may or may not be the exact case reported, so please confirm once this is running. 281 tests, all green.",
+  "version": "0.0.106",
+  "changelog": "Feature: first step of the public-facing/Tailscale setup split. Added PluginConfiguration.ConnectivityMode (Public-facing vs Tailscale, set on the Pools tab) and gated pool creation on it - only a server that's actually port-forwarded to its own domain can create a pool, since every other member needs to be able to reach it directly; an install that's never made the choice (Unset) is treated the same as Tailscale, not as 'trust it'. Also fixed a real config-save bug found while wiring this up: pending pool invites (both incoming and outgoing) were never preserved across an unrelated main-page Save, so saving any other setting silently dropped them. The Tailscale auto-install/Funnel/invite-key side of the original ask is not built yet - this release only adds the connectivity choice and the pool gate. 281 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-26T23:47:28Z",
+  "timestamp": "2026-08-26T23:56:08Z",
   "imageUrl": "thumb.png"
 }

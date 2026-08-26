@@ -51,6 +51,24 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string CachePath { get; set; } = string.Empty;
 
         /// <summary>
+        /// Gets or sets how this server is reachable from the internet - a one-time
+        /// choice made on the Pools tab, not part of the main Save form (see the
+        /// preservation block in <see cref="Configuration.FederationPluginController.UpdateConfiguration"/>).
+        /// <see cref="ServerConnectivityMode.PublicFacing"/> means genuinely
+        /// port-forwarded to a stable address of its own (a real domain, not a
+        /// Cloudflare-style tunnel) - only a server in this mode can create a new
+        /// pool (see <see cref="Services.FederationFriendService.CreatePool"/>),
+        /// since a pool only works if every member is reachable enough for the
+        /// others to connect to it directly. <see cref="ServerConnectivityMode.Unset"/>
+        /// is the default for every install predating this setting; it is treated
+        /// the same as <see cref="ServerConnectivityMode.Tailscale"/> for that gate
+        /// rather than as "trust it" - an install that never made the choice
+        /// explicitly should not silently inherit a capability that assumes real
+        /// public reachability.
+        /// </summary>
+        public ServerConnectivityMode ConnectivityMode { get; set; } = ServerConnectivityMode.Unset;
+
+        /// <summary>
         /// Gets or sets a value indicating whether duplicate items across servers are
         /// merged into a single federated item (deduplicated by provider ID).
         /// </summary>
@@ -415,6 +433,29 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// per-item playback tokens.
         /// </summary>
         Plex = 1
+    }
+
+    /// <summary>
+    /// How this server (not a friend's) is reachable from the internet. See
+    /// <see cref="PluginConfiguration.ConnectivityMode"/> for what it gates.
+    /// </summary>
+    public enum ServerConnectivityMode
+    {
+        /// <summary>Never chosen by this install. See <see cref="PluginConfiguration.ConnectivityMode"/>.</summary>
+        Unset = 0,
+
+        /// <summary>
+        /// Port-forwarded to a stable address of its own - a real domain, not a
+        /// Cloudflare-style tunnel (which routes through Cloudflare's own edge
+        /// rather than this server having a directly dialable address).
+        /// </summary>
+        PublicFacing = 1,
+
+        /// <summary>
+        /// Reachable only through Tailscale (optionally with Funnel), not
+        /// directly from the open internet.
+        /// </summary>
+        Tailscale = 2
     }
 
     /// <summary>

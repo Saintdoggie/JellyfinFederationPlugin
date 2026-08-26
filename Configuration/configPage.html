@@ -285,6 +285,20 @@
 
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedConnectivityMode">This server's connectivity</label>
+                            <select class="emby-select fed-select" id="fedConnectivityMode">
+                                <option value="Unset">Not set yet</option>
+                                <option value="PublicFacing">Public-facing — port-forwarded to my own domain</option>
+                                <option value="Tailscale">Not public-facing — reachable through Tailscale</option>
+                            </select>
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="save-connectivity">Save</button>
+                    </div>
+                    <p class="fed-hint" id="fedConnectivityHint"></p>
+                    <div id="fedConnectivityStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
                             <label class="inputLabel" for="fedNewPoolName">New pool name</label>
                             <input type="text" id="fedNewPoolName" class="emby-input" placeholder="e.g. Movie Night Crew" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
@@ -1765,6 +1779,76 @@
                         el.textContent = msg;
                     }
 
+                    function setConnectivityStatus(msg, kind) {
+                        var el = q('#fedConnectivityStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function renderConnectivityHint(mode) {
+                        var hintEl = q('#fedConnectivityHint');
+                        if (!hintEl) {
+                            return;
+                        }
+
+                        if (mode === 'PublicFacing') {
+                            hintEl.textContent = 'You can create pools. Make sure this is actually port-forwarded to a domain you control - not a Cloudflare-style tunnel, which other pool members can\'t dial directly.';
+                        } else if (mode === 'Tailscale') {
+                            hintEl.textContent = 'Pool creation is off, since other members need to be able to reach this server directly. You can still be invited into someone else\'s pool, and ordinary friend connections work the same either way.';
+                        } else {
+                            hintEl.textContent = 'Choose how this server is reachable before creating a pool of your own. This has no effect on ordinary friend connections.';
+                        }
+                    }
+
+                    function loadConnectivityMode() {
+                        return fedFetch('/Plugins/Federation/Setup/Connectivity')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            var sel = q('#fedConnectivityMode');
+                            var mode = (res && res.mode) || 'Unset';
+                            if (sel) {
+                                sel.value = mode;
+                            }
+
+                            renderConnectivityHint(mode);
+                        })
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function saveConnectivityMode() {
+                        var sel = q('#fedConnectivityMode');
+                        var mode = sel ? sel.value : 'Unset';
+                        if (mode === 'Unset') {
+                            setConnectivityStatus('Choose Public-facing or Tailscale first.', 'err');
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/Setup/Connectivity', {
+                            method: 'POST',
+                            body: JSON.stringify({ Mode: mode })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (res.success) {
+                                setConnectivityStatus('Saved.', 'ok');
+                                renderConnectivityHint(res.mode);
+                            } else {
+                                setConnectivityStatus(res.error || 'Failed to save.', 'err');
+                            }
+                        })
+                        .catch(function (e) { setConnectivityStatus('Failed: ' + e.message, 'err'); });
+                    }
+
                     function renderPools(pools) {
                         var list = q('#fedPoolList');
                         if (!list) {
@@ -1982,7 +2066,7 @@
                                     nameEl.value = '';
                                 }
                             } else {
-                                setPoolStatus('Failed to create pool.', 'err');
+                                setPoolStatus(res.error || 'Failed to create pool.', 'err');
                             }
 
                             loadPools();
@@ -3258,6 +3342,9 @@
                                 case 'cancel-friend':
                                     cancelFriendRequest(friendId);
                                     break;
+                                case 'save-connectivity':
+                                    saveConnectivityMode();
+                                    break;
                                 case 'create-pool':
                                     createPool();
                                     break;
@@ -3577,6 +3664,7 @@
                         switchTab(savedTab || TAB_NAMES[0]);
 
                         loadFriendRequests();
+                        loadConnectivityMode();
                         loadPools();
                         loadPoolInvites();
                         loadConfiguration(false).then(function () {
