@@ -37,13 +37,30 @@
     padding: 24px;
     margin-bottom: 20px;
   }
+  .card.done { border-color: #2a4a33; }
   .card h2 {
     margin: 0 0 12px;
     font-size: 15px;
     text-transform: uppercase;
     letter-spacing: .04em;
     color: #9a9fa6;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
+  .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #2a2e33;
+    color: #e6e6e6;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .card.done .step-num { background: #2f8f4e; color: #fff; }
   button {
     background: #4c8dff;
     color: #fff;
@@ -60,15 +77,16 @@
     border: 1px solid #3a3f47;
     color: #e6e6e6;
   }
+  button.danger { background: #a13c3c; }
   .status-line { color: #9a9fa6; font-size: 13px; margin-top: 10px; }
-  .library-row {
+  .library-row, .peer-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 10px 0;
     border-bottom: 1px solid #23262b;
   }
-  .library-row:last-child { border-bottom: none; }
+  .library-row:last-child, .peer-row:last-child { border-bottom: none; }
   .library-title { font-size: 14px; }
   .library-type { color: #9a9fa6; font-size: 12px; margin-left: 8px; }
   .switch {
@@ -101,6 +119,38 @@
   input:checked + .slider::before { transform: translateX(18px); }
   .hidden { display: none; }
   .empty-state { color: #9a9fa6; font-size: 13px; }
+  code.cmd {
+    display: block;
+    background: #0b0c0e;
+    border: 1px solid #23262b;
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 13px;
+    color: #7ee787;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 10px 0;
+  }
+  input[type=text] {
+    width: 100%;
+    box-sizing: border-box;
+    background: #0b0c0e;
+    border: 1px solid #3a3f47;
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: #e6e6e6;
+    font-size: 14px;
+    margin-bottom: 10px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .badge.ok { background: #2f8f4e33; color: #7ee787; }
+  .badge.warn { background: #8f6e2f33; color: #f0c674; }
 </style>
 </head>
 <body>
@@ -109,8 +159,21 @@
   <p>Controls what your Plex server shares with federated Jellyfin friends.</p>
 </header>
 <main>
+  <div class="card" id="tailscaleCard">
+    <h2><span class="step-num">1</span> Tailscale</h2>
+    <div id="tailscaleContent"><p class="empty-state">Checking…</p></div>
+  </div>
+
+  <div class="card" id="publicUrlCard">
+    <h2><span class="step-num">2</span> Your public address</h2>
+    <p class="status-line">This is how Jellyfin servers reach you - your Tailscale Funnel URL for this app (e.g. <code>https://yourname.tailXXXXX.ts.net</code>).</p>
+    <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
+    <button class="secondary" id="savePublicUrlBtn">Save</button>
+    <div class="status-line" id="publicUrlStatus"></div>
+  </div>
+
   <div class="card" id="connectCard">
-    <h2>Plex Connection</h2>
+    <h2><span class="step-num">3</span> Plex Connection</h2>
     <div id="notConnected">
       <p class="empty-state">Not connected yet.</p>
       <button id="connectBtn">Sign in with Plex</button>
@@ -123,11 +186,27 @@
   </div>
 
   <div class="card hidden" id="librariesCard">
-    <h2>Libraries to share</h2>
+    <h2><span class="step-num">4</span> Libraries to share</h2>
     <div id="libraryList"></div>
+  </div>
+
+  <div class="card hidden" id="shareCard">
+    <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
+    <p class="status-line">Generate a one-time code and send it to your friend. They'll paste it into their Jellyfin Federation plugin to link automatically - no copying tokens by hand.</p>
+    <button id="generateCodeBtn">Generate connect code</button>
+    <code class="cmd hidden" id="connectCode"></code>
+    <div class="status-line" id="codeStatus"></div>
+
+    <h2 style="margin-top:24px">Connected friends</h2>
+    <div id="peerList"><p class="empty-state">No one connected yet.</p></div>
   </div>
 </main>
 <script>
+const tailscaleContent = document.getElementById('tailscaleContent');
+const tailscaleCard = document.getElementById('tailscaleCard');
+const publicUrlInput = document.getElementById('publicUrlInput');
+const savePublicUrlBtn = document.getElementById('savePublicUrlBtn');
+const publicUrlStatus = document.getElementById('publicUrlStatus');
 const notConnected = document.getElementById('notConnected');
 const connected = document.getElementById('connected');
 const serverNameEl = document.getElementById('serverName');
@@ -136,6 +215,32 @@ const connectBtn = document.getElementById('connectBtn');
 const refreshBtn = document.getElementById('refreshBtn');
 const librariesCard = document.getElementById('librariesCard');
 const libraryList = document.getElementById('libraryList');
+const shareCard = document.getElementById('shareCard');
+const generateCodeBtn = document.getElementById('generateCodeBtn');
+const connectCode = document.getElementById('connectCode');
+const codeStatus = document.getElementById('codeStatus');
+const peerList = document.getElementById('peerList');
+
+async function loadTailscale() {
+  const res = await fetch('/api/tailscale/status');
+  const data = await res.json();
+  if (data.signedIn) {
+    tailscaleCard.classList.add('done');
+    tailscaleContent.innerHTML = '<span class="badge ok">Connected</span>';
+  } else if (data.installed) {
+    tailscaleContent.innerHTML = '<span class="badge warn">Installed, not signed in</span><p class="status-line">Run this, then sign in when your browser opens:</p><code class="cmd">tailscale up</code>';
+  } else {
+    tailscaleContent.innerHTML = `<span class="badge warn">Not installed</span><p class="status-line">Copy and run this, then sign in when your browser opens:</p><code class="cmd">${escapeHtml(data.installCommand)}</code>`;
+  }
+}
+
+async function loadPublicUrl() {
+  const res = await fetch('/api/public-url');
+  const data = await res.json();
+  if (data.publicUrl) {
+    publicUrlInput.value = data.publicUrl;
+  }
+}
 
 async function loadStatus() {
   const res = await fetch('/api/status');
@@ -145,12 +250,37 @@ async function loadStatus() {
     connected.classList.remove('hidden');
     serverNameEl.textContent = data.serverName || 'Plex server';
     librariesCard.classList.remove('hidden');
+    shareCard.classList.remove('hidden');
     renderLibraries(data.libraries || []);
+    loadPeers();
   } else {
     notConnected.classList.remove('hidden');
     connected.classList.add('hidden');
     librariesCard.classList.add('hidden');
+    shareCard.classList.add('hidden');
   }
+}
+
+async function loadPeers() {
+  const res = await fetch('/api/peers');
+  const peers = await res.json();
+  if (peers.length === 0) {
+    peerList.innerHTML = '<p class="empty-state">No one connected yet.</p>';
+    return;
+  }
+  peerList.innerHTML = '';
+  for (const peer of peers) {
+    const row = document.createElement('div');
+    row.className = 'peer-row';
+    row.innerHTML = `<span>${escapeHtml(peer.name)}</span><button class="danger" data-id="${escapeHtml(peer.id)}">Revoke</button>`;
+    peerList.appendChild(row);
+  }
+  peerList.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/peers/${btn.dataset.id}`, { method: 'DELETE' });
+      loadPeers();
+    });
+  });
 }
 
 function renderLibraries(libraries) {
@@ -182,7 +312,7 @@ function renderLibraries(libraries) {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 connectBtn.addEventListener('click', async () => {
@@ -212,6 +342,35 @@ refreshBtn.addEventListener('click', async () => {
   refreshBtn.disabled = false;
 });
 
+savePublicUrlBtn.addEventListener('click', async () => {
+  savePublicUrlBtn.disabled = true;
+  const res = await fetch('/api/public-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: publicUrlInput.value.trim() })
+  });
+  const data = await res.json();
+  publicUrlStatus.textContent = res.ok ? 'Saved.' : (data.error || 'Could not save.');
+  savePublicUrlBtn.disabled = false;
+});
+
+generateCodeBtn.addEventListener('click', async () => {
+  generateCodeBtn.disabled = true;
+  codeStatus.textContent = '';
+  const res = await fetch('/api/connect/generate', { method: 'POST' });
+  const data = await res.json();
+  if (res.ok) {
+    connectCode.textContent = data.code;
+    connectCode.classList.remove('hidden');
+    codeStatus.textContent = `Expires in ${data.expiresInMinutes} minutes. Send this to your friend now.`;
+  } else {
+    codeStatus.textContent = data.error || 'Could not generate a code.';
+  }
+  generateCodeBtn.disabled = false;
+});
+
+loadTailscale();
+loadPublicUrl();
 loadStatus();
 </script>
 </body>

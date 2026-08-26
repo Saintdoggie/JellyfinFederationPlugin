@@ -1,0 +1,69 @@
+name: Companion release
+
+# Builds self-contained Federation Companion binaries for Windows, macOS, and
+# Linux, and publishes them to a single rolling "companion-latest" GitHub
+# release. Kept separate from the plugin's own per-version releases (tagged
+# with plain version numbers like "0.0.102") so publishing a new plugin
+# version never touches, and is never confused with, these binaries -
+# Companion/install.sh and install.ps1 always point at this fixed tag.
+on:
+  push:
+    paths:
+      - "Companion/**"
+    branches:
+      - master
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        rid: [win-x64, linux-x64, osx-x64, osx-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Publish ${{ matrix.rid }}
+        run: |
+          dotnet publish Companion/FederationCompanion.csproj \
+            -c Release -r ${{ matrix.rid }} --self-contained true \
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
+            -o dist/${{ matrix.rid }}
+          rm -f dist/${{ matrix.rid }}/*.pdb
+
+      - name: Zip
+        run: |
+          cd dist/${{ matrix.rid }}
+          zip -r ../../FederationCompanion-${{ matrix.rid }}.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FederationCompanion-${{ matrix.rid }}
+          path: FederationCompanion-${{ matrix.rid }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete companion-latest --repo "$GITHUB_REPOSITORY" --yes || true
+          gh release create companion-latest artifacts/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Federation Companion (latest)" \
+            --notes "Automated build from ${GITHUB_SHA::7}. Installed via Companion/install.sh or install.ps1 - see Companion/README.md." \
+            --latest=false

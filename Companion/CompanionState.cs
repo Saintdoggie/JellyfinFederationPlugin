@@ -41,6 +41,17 @@ public sealed class CompanionState
     public string? ServerName { get; set; }
 
     /// <summary>
+    /// This app's own externally-reachable address (a Tailscale Funnel
+    /// hostname in the common case) - what a Jellyfin Federation server
+    /// calls to complete a connect-code exchange. Set once, during the
+    /// Tailscale setup step; unrelated to <see cref="ServerBaseUrl"/>, which
+    /// is Plex's own address and may differ (its own Funnel port, or a
+    /// private tailnet address if the Jellyfin peer happens to share this
+    /// user's tailnet).
+    /// </summary>
+    public string? PublicUrl { get; set; }
+
+    /// <summary>
     /// Every library section this Plex server has, with whether the user has
     /// chosen to share it. Refreshed from Plex on demand; a section already
     /// present keeps its existing Shared flag, so re-scanning doesn't reset
