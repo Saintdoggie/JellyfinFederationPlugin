@@ -10,3 +10,5 @@ Disclaimer: this fork has been primarily written by AI, and has not had a human-
 ## Aims
 The goal of this plugin is to sync Jellyfin servers together, merging connected servers' libraries together as seemlessly as possible. This is NOT a true federation plugin. It does not let you federate with unknown public jellyfin servers.
 
+## Plex
+Note: this also contains a *very* experimental Plex plugin. Use at your own risk.
