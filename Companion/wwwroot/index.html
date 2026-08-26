@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Federation Companion</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #101214;
+    color: #e6e6e6;
+  }
+  header {
+    padding: 24px 32px;
+    border-bottom: 1px solid #23262b;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
+  header p {
+    margin: 4px 0 0;
+    color: #9a9fa6;
+    font-size: 13px;
+  }
+  main {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  .card {
+    background: #17191c;
+    border: 1px solid #23262b;
+    border-radius: 10px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #9a9fa6;
+  }
+  button {
+    background: #4c8dff;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary {
+    background: transparent;
+    border: 1px solid #3a3f47;
+    color: #e6e6e6;
+  }
+  .status-line { color: #9a9fa6; font-size: 13px; margin-top: 10px; }
+  .library-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #23262b;
+  }
+  .library-row:last-child { border-bottom: none; }
+  .library-title { font-size: 14px; }
+  .library-type { color: #9a9fa6; font-size: 12px; margin-left: 8px; }
+  .switch {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute;
+    inset: 0;
+    background: #3a3f47;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .slider::before {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform .15s;
+  }
+  input:checked + .slider { background: #4c8dff; }
+  input:checked + .slider::before { transform: translateX(18px); }
+  .hidden { display: none; }
+  .empty-state { color: #9a9fa6; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Federation Companion</h1>
+  <p>Controls what your Plex server shares with federated Jellyfin friends.</p>
+</header>
+<main>
+  <div class="card" id="connectCard">
+    <h2>Plex Connection</h2>
+    <div id="notConnected">
+      <p class="empty-state">Not connected yet.</p>
+      <button id="connectBtn">Sign in with Plex</button>
+      <div class="status-line" id="connectStatus"></div>
+    </div>
+    <div id="connected" class="hidden">
+      <p>Connected to <strong id="serverName"></strong></p>
+      <button class="secondary" id="refreshBtn">Refresh libraries</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="librariesCard">
+    <h2>Libraries to share</h2>
+    <div id="libraryList"></div>
+  </div>
+</main>
+<script>
+const notConnected = document.getElementById('notConnected');
+const connected = document.getElementById('connected');
+const serverNameEl = document.getElementById('serverName');
+const connectStatus = document.getElementById('connectStatus');
+const connectBtn = document.getElementById('connectBtn');
+const refreshBtn = document.getElementById('refreshBtn');
+const librariesCard = document.getElementById('librariesCard');
+const libraryList = document.getElementById('libraryList');
+
+async function loadStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  if (data.serverConnected) {
+    notConnected.classList.add('hidden');
+    connected.classList.remove('hidden');
+    serverNameEl.textContent = data.serverName || 'Plex server';
+    librariesCard.classList.remove('hidden');
+    renderLibraries(data.libraries || []);
+  } else {
+    notConnected.classList.remove('hidden');
+    connected.classList.add('hidden');
+    librariesCard.classList.add('hidden');
+  }
+}
+
+function renderLibraries(libraries) {
+  libraryList.innerHTML = '';
+  if (libraries.length === 0) {
+    libraryList.innerHTML = '<p class="empty-state">No movie or show libraries found.</p>';
+    return;
+  }
+  for (const lib of libraries) {
+    const row = document.createElement('div');
+    row.className = 'library-row';
+    row.innerHTML = `
+      <div><span class="library-title">${escapeHtml(lib.title)}</span><span class="library-type">${lib.type}</span></div>
+      <label class="switch">
+        <input type="checkbox" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''}>
+        <span class="slider"></span>
+      </label>`;
+    libraryList.appendChild(row);
+  }
+  libraryList.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      await fetch('/api/libraries/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sectionKey: cb.dataset.key, shared: cb.checked })
+      });
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+connectBtn.addEventListener('click', async () => {
+  connectBtn.disabled = true;
+  connectStatus.textContent = 'Opening Plex sign-in…';
+  const res = await fetch('/api/plex/start-signin', { method: 'POST' });
+  const data = await res.json();
+  window.open(data.signInUrl, '_blank');
+  connectStatus.textContent = 'Waiting for you to approve in the Plex tab…';
+
+  const poll = setInterval(async () => {
+    const pollRes = await fetch('/api/plex/poll-signin');
+    const pollData = await pollRes.json();
+    if (pollData.complete) {
+      clearInterval(poll);
+      connectStatus.textContent = '';
+      connectBtn.disabled = false;
+      loadStatus();
+    }
+  }, 2000);
+});
+
+refreshBtn.addEventListener('click', async () => {
+  refreshBtn.disabled = true;
+  await fetch('/api/libraries/refresh', { method: 'POST' });
+  await loadStatus();
+  refreshBtn.disabled = false;
+});
+
+loadStatus();
+</script>
+</body>
+</html>
