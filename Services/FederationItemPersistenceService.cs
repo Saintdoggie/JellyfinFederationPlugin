@@ -495,21 +495,29 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     // Backfill for items created before real stream data was tracked
                     // at all (see FederationLibraryManager.TryPersistMediaStreams), or
-                    // before a Plex source's video BitRate was captured (Plex reports
-                    // one combined bitrate per Media entry that ApplyMediaDetails used
-                    // to drop entirely, leaving Jellyfin's own client-side quality
-                    // selector with no idea what the item's real data rate was and
-                    // falling back to a low, generic default regardless of the
-                    // source's actual quality). Only when actually missing something
-                    // the cache now has, so this doesn't re-save on every sync once
-                    // it's already been backfilled.
+                    // before a Plex source's video BitRate/HDR data or full audio
+                    // track list was captured. Plex's bulk section-listing endpoint
+                    // (what a sync used to rely on entirely) reports one combined
+                    // bitrate and one audio codec for the whole item and no color/
+                    // HDR information at all; ApplyMediaDetailsAsync now fetches each
+                    // item's own detail endpoint for the real per-stream breakdown,
+                    // but only for whatever gets (re-)persisted here - an item whose
+                    // streams were already saved under an earlier version keeps
+                    // whatever it has until one of these gaps is actually detected.
+                    // Only when actually missing something the cache now has, so
+                    // this doesn't re-save on every sync once it's already caught up.
                     var storedStreams = x.Item.GetMediaStreams();
                     var cachedStreams = entry.Metadata.MediaStreams;
                     var missingBitrate = cachedStreams != null
                         && storedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate == null)
                         && cachedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate.HasValue);
+                    var missingColorData = cachedStreams != null
+                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && string.IsNullOrEmpty(s.ColorTransfer))
+                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && !string.IsNullOrEmpty(s.ColorTransfer));
+                    var missingAudioTracks = cachedStreams != null
+                        && storedStreams.Count(s => s.Type == MediaStreamType.Audio) < cachedStreams.Count(s => s.Type == MediaStreamType.Audio);
 
-                    if (storedStreams.Count == 0 || missingBitrate)
+                    if (storedStreams.Count == 0 || missingBitrate || missingColorData || missingAudioTracks)
                     {
                         _federationManager.TryPersistMediaStreams(x.Item, entry);
                     }
