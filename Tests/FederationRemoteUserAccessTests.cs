@@ -386,7 +386,7 @@ public class FederationStreamHandlerAccessControlTests : IDisposable
         var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), bandwidthMonitor);
     }
 
     public void Dispose()
