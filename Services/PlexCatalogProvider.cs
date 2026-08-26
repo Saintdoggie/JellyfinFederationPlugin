@@ -69,6 +69,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var sections = await client.GetSectionsAsync(cancellationToken).ConfigureAwait(false);
             return sections
                 .Where(s => MediaTypeByPlexType.ContainsKey(s.Type))
+                .Where(s => IsAllowed(server, s.Key))
                 .Select(s => new ExternalLibrary(s.Key, s.Title, MediaTypeByPlexType[s.Type]))
                 .ToList();
         }
@@ -87,6 +88,23 @@ namespace Jellyfin.Plugin.Federation.Services
             // mapping - and a library that has since been deleted on the remote
             // must read as a failure (preserve the cache), not as "now empty"
             // (delete everything).
+            if (!IsAllowed(server, libraryId))
+            {
+                // Deliberately the same "keep cached content, sync nothing new"
+                // outcome as the section-not-found case below, not an empty list:
+                // an empty list would read to the caller as "this library is now
+                // empty" and delete everything already synced from it, whereas
+                // this is "not allowed to sync this library at all" - the two
+                // must never be confused, or revoking a friend's sharing consent
+                // would destructively wipe content that was legitimately synced
+                // while it was still allowed.
+                _logger.LogWarning(
+                    "[Federation] Refusing to sync Plex library {LibraryId} from {Server} - not in this server's allowed-library list",
+                    libraryId,
+                    server.Name);
+                return null;
+            }
+
             var sections = await client.GetSectionsAsync(cancellationToken).ConfigureAwait(false);
             var section = sections.FirstOrDefault(s => string.Equals(s.Key, libraryId, StringComparison.Ordinal));
             if (section == null)
@@ -99,6 +117,18 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return await client.GetSectionItemsAsync(section, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="libraryId"/> is OK to sync from
+        /// <paramref name="server"/>, per <see cref="RemoteServer.AllowedExternalLibraryIds"/>.
+        /// Null means no restriction is on record - see that property's own doc
+        /// comment for why that has to mean "allow", not "deny".
+        /// </summary>
+        private static bool IsAllowed(RemoteServer server, string libraryId)
+        {
+            return server.AllowedExternalLibraryIds == null
+                || server.AllowedExternalLibraryIds.Contains(libraryId);
         }
 
         /// <inheritdoc />

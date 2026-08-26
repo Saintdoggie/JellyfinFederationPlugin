@@ -435,6 +435,25 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public ServerKind Kind { get; set; } = ServerKind.Jellyfin;
 
         /// <summary>
+        /// Gets or sets the exact set of this <see cref="Kind"/> server's own
+        /// library/section ids that are allowed to be synced from, or null for "no
+        /// restriction on record" (a server configured before this existed, or
+        /// added manually without one). Only meaningful for a non-Jellyfin peer
+        /// (Plex today): unlike a Jellyfin friend, whose sharing choice is
+        /// enforced remotely by their own server (see
+        /// <see cref="Services.FederationPeerAccessService"/> - a library they
+        /// don't share with us is simply invisible to every Peer/* call we make),
+        /// a Plex access token has no per-library scope at all, so whichever
+        /// libraries this admin was told are OK to sync have to be recorded and
+        /// enforced on <em>this</em> side instead (see
+        /// <see cref="Services.PlexCatalogProvider"/>). Null must mean "allow
+        /// everything" rather than "allow nothing", or every server configured
+        /// before this field existed would silently lose access to content it
+        /// already had a working sync for.
+        /// </summary>
+        public List<string>? AllowedExternalLibraryIds { get; set; }
+
+        /// <summary>
         /// Gets or sets the friendly name for this server.
         /// </summary>
         public string Name { get; set; } = string.Empty;

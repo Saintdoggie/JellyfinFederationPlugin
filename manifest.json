@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.104",
+        "changelog": "Fix: a Plex friend's declined-to-share library could still get synced. Unlike a Jellyfin friend (whose own server enforces sharing remotely - a library they don't share is invisible to every check we make), a Plex access token has no per-library scope at all, so nothing on this side ever recorded or enforced which of a friend's Plex libraries were actually OK to sync - GetRemoteLibraries also silently failed to connect for any Plex server at all, so the picker never even worked for one. Added RemoteServer.AllowedExternalLibraryIds, a per-server allow-list enforced directly in PlexCatalogProvider (both the library picker and the actual sync refuse anything not on it), a Servers/{id}/AllowedLibraries endpoint to set it, and fixed the picker to actually list a Plex server's libraries. Null (no allow-list on record) still means unrestricted, so no existing setup silently loses access. 280 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.104/Jellyfin.Federation.zip",
+        "checksum": "f2df1062fe9d28a27b93b0ce8fc3f46e",
+        "timestamp": "2026-08-26T23:25:51Z"
+      },
+      {
         "version": "0.0.103",
         "changelog": "Feature: WAN bandwidth capping (WanCapMode/WanMaxBitrateMbps) previously only worked for a Direct-mode Jellyfin peer, where it asks the remote to transcode down to a lower bitrate via a querystring - it silently did nothing for a Plex source or any Jellyfin peer explicitly set to Proxy mode, since neither has a remote transcoder to ask. Manual mode now enforces an actual byte-rate throttle in the proxy relay itself, so a fixed bandwidth limit works for any proxied source. Auto (which relies on a Jellyfin-only bandwidth probe) is now an explicit no-op for a non-Jellyfin peer instead of settling permanently on a 10Mbps placeholder it could never move past - config page copy updated to match. 276 tests, all green.",
         "targetAbi": "10.11.0.0",
