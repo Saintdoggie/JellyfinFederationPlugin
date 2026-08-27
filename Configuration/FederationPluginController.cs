@@ -1382,7 +1382,7 @@ namespace Jellyfin.Plugin.Federation.Api
         public async Task<IActionResult> GetTailscaleEnvironment(CancellationToken cancellationToken)
         {
             var check = await _tailscale.CheckEnvironmentAsync(cancellationToken).ConfigureAwait(false);
-            return Ok(new { canAutoInstall = check.CanAutoInstall, reason = check.Reason });
+            return Ok(new { canAutoInstall = check.CanAutoInstall, reason = check.Reason, command = check.Command });
         }
 
         /// <summary>Reads Tailscale's current login/connection state.</summary>

@@ -81,7 +81,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 return new TailscaleEnvironmentCheck(
                     false,
-                    "This Jellyfin process isn't running as root, so it can't install system packages or configure networking. Install Tailscale yourself, then come back here to set up Funnel.");
+                    "This Jellyfin process isn't running as root, so it can't install system packages or configure networking. Run this yourself as root wherever this Jellyfin process actually runs (inside its container, if it's containerized), then come back here to set up Funnel.",
+                    "curl -fsSL https://tailscale.com/install.sh | sudo sh");
             }
 
             if (!File.Exists("/dev/net/tun"))
@@ -299,9 +300,16 @@ namespace Jellyfin.Plugin.Federation.Services
 
     /// <summary>
     /// Whether this process can plausibly install/drive Tailscale itself - see
-    /// <see cref="TailscaleService.CheckEnvironmentAsync"/>.
+    /// <see cref="TailscaleService.CheckEnvironmentAsync"/>. <paramref name="Command"/>
+    /// is a copy-pasteable shell command the admin can run themselves to fix the
+    /// blocking condition, when one genuinely exists - null when it doesn't (e.g.
+    /// "run as root" always resolves to the same install command regardless of
+    /// deployment, but "add --device=/dev/net/tun to your container" doesn't reduce
+    /// to a single runnable command without knowing the rest of the admin's own
+    /// container invocation, so fabricating one there would be actively misleading
+    /// rather than helpful).
     /// </summary>
-    public sealed record TailscaleEnvironmentCheck(bool CanAutoInstall, string? Reason);
+    public sealed record TailscaleEnvironmentCheck(bool CanAutoInstall, string? Reason, string? Command = null);
 
     /// <summary>
     /// Coarse view of <c>tailscale status --json</c>'s BackendState.

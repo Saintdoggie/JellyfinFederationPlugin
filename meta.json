@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.112",
-  "changelog": "Closed out the remaining lightly-examined areas from the last few bug-sweep passes (PlexApiClient.cs and a few configPage.html UI elements) - the Plex client and the config page's double-init/handler-attach guards both checked out correctly wired on close review, no changes needed there. Found and fixed one real gap: TailscaleService.InstallAsync's own doc comment says it must only be called once CheckEnvironmentAsync confirms this host can actually run Tailscale (Linux, root, /dev/net/tun present) - but its only caller, the Setup/Tailscale/Install endpoint, never did that check. The config page's Install button is disabled based on it client-side, but starts enabled by default until that async check resolves, and a direct API call skips the UI entirely - so nothing server-side ever stopped curl|sh from running unconditionally on a host that can't actually use the result. The endpoint now runs the same environment check the UI already relies on before installing. 301 tests, all green, run 2x.",
+  "version": "0.0.113",
+  "changelog": "QoL: verified live on a real server for the first time (rootless container, so it genuinely can't auto-install) that the 'not running as root' Tailscale setup message was correct but unhelpful - it told the admin to 'install it yourself' without saying how. The environment check now also returns a copy-pasteable install command (curl -fsSL https://tailscale.com/install.sh | sudo sh) for that specific case, shown with a one-click Copy button on the config page. Left the other failure reasons (non-Linux, missing /dev/net/tun) as explanatory text only - unlike the root case, neither reduces to a single command without knowing the rest of the admin's own setup, so a fabricated one would mislead rather than help. 301 tests, all green, run 2x.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-27T16:10:00Z",
+  "timestamp": "2026-08-27T16:40:00Z",
   "imageUrl": "thumb.png"
 }
