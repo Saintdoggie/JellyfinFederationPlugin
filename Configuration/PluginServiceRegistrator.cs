@@ -38,6 +38,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationPeerAccessService>();
             serviceCollection.AddSingleton<FederationNowWatchingService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
+            serviceCollection.AddSingleton<IProcessRunner, ProcessRunner>();
+            serviceCollection.AddSingleton<TailscaleService>();
 
             // Catalog providers for non-Jellyfin servers. Registering another
             // product means adding its IExternalCatalogProvider here and nowhere
