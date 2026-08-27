@@ -60,6 +60,8 @@ public class TailscaleServiceTests
 
         Assert.False(check.CanAutoInstall);
         Assert.Contains("root", check.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(check.Command);
+        Assert.Contains("tailscale.com/install.sh", check.Command, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

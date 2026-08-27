@@ -1925,11 +1925,37 @@
                                 if (installBtn) { installBtn.disabled = false; }
                             } else {
                                 warn.style.display = 'block';
-                                warn.textContent = (res && res.reason) || 'Auto-install is not available on this host.';
+                                var reason = (res && res.reason) || 'Auto-install is not available on this host.';
+                                var html = escapeHtml(reason);
+                                if (res && res.command) {
+                                    html += '<div class="fed-inline" style="margin-top:0.5em;">'
+                                        + '<code style="user-select:all;">' + escapeHtml(res.command) + '</code>'
+                                        + '<button is="emby-button" type="button" class="raised emby-button fed-btn-sm" '
+                                        + 'data-fed-action="copy-tailscale-cmd" data-cmd="' + escapeHtml(res.command) + '">Copy</button>'
+                                        + '</div>';
+                                }
+
+                                warn.innerHTML = html;
                                 if (installBtn) { installBtn.disabled = true; }
                             }
                         })
                         .catch(function () { /* best-effort */ });
+                    }
+
+                    function copyTailscaleCommand(cmd, btn) {
+                        if (!navigator.clipboard || !cmd) {
+                            return;
+                        }
+
+                        navigator.clipboard.writeText(cmd).then(function () {
+                            if (!btn) {
+                                return;
+                            }
+
+                            var original = btn.textContent;
+                            btn.textContent = 'Copied';
+                            setTimeout(function () { btn.textContent = original; }, 1500);
+                        }).catch(function () { /* best-effort */ });
                     }
 
                     function tailscaleStateLabel(state, dnsName) {
@@ -3564,6 +3590,9 @@
                                     break;
                                 case 'tailscale-install':
                                     installTailscale();
+                                    break;
+                                case 'copy-tailscale-cmd':
+                                    copyTailscaleCommand(t.getAttribute('data-cmd'), t);
                                     break;
                                 case 'tailscale-login':
                                     startTailscaleLogin();
