@@ -323,11 +323,12 @@ namespace Jellyfin.Plugin.Federation.Services
             CancellationToken cancellationToken,
             int? capMbps = null)
         {
+            var rangeStart = 0L;
             try
             {
                 var range = request.Headers["Range"].FirstOrDefault();
                 var (rangeStartInit, rangeEnd) = ParseRange(range);
-                var rangeStart = rangeStartInit;
+                rangeStart = rangeStartInit;
                 var headersSent = false;
 
                 // 256 KB: the relay is a pure copy loop, so a larger buffer means
@@ -510,7 +511,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 // start, then stutters every ~20s" actually was. When nothing was
                 // sent yet, aborting is still safe: the client is already gone
                 // either way.
-                _logger.LogInformation("[Federation] Relayed stream cancelled by client");
+                // This also catches the case where the retry loop above gave up
+                // after MaxAttempts consecutive idle-timeout stalls (its own
+                // `when` guard stops matching once the attempt count is
+                // exhausted, so that OperationCanceledException falls through to
+                // here) - cancellationToken is the caller's own token, not the
+                // per-read idle timeout's, so checking it tells the two apart
+                // rather than blaming the client for what was actually the
+                // remote server repeatedly stalling.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation("[Federation] Relayed stream cancelled by client");
+                }
+                else
+                {
+                    _logger.LogWarning("[Federation] Relayed stream for {Url} gave up after {Max} consecutive stalls at byte {Offset}", url, MaxAttempts, rangeStart);
+                }
+
                 response.HttpContext.Abort();
                 return null;
             }

@@ -947,8 +947,19 @@
                     }
 
                     function loadRemoteUsersFor(server) {
-                        if (remoteUsersCache[server.Id]) {
-                            return Promise.resolve(remoteUsersCache[server.Id]);
+                        var existing = remoteUsersCache[server.Id];
+
+                        // A cached error is intentionally NOT treated as "already
+                        // loaded" - unlike a real (possibly empty) user list, an
+                        // error is transient by nature (the friend's server being
+                        // briefly unreachable, a timeout, ...) and nothing else in
+                        // this file ever invalidates the cache, so without this a
+                        // single blip permanently froze both the "their own
+                        // people" panel and the catalog picker's user dropdown for
+                        // the rest of the admin's session, with no way to retry
+                        // short of a full page reload.
+                        if (existing && !existing.error) {
+                            return Promise.resolve(existing);
                         }
 
                         remoteUsersCache[server.Id] = { loading: true, users: [] };
@@ -969,6 +980,17 @@
                             remoteUsersCache[server.Id] = { loading: false, users: [], error: 'Failed: ' + e.message };
                             renderFriends();
                         });
+                    }
+
+                    function retryRemoteUsersFor(serverId) {
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === serverId; })[0];
+                        if (!server) {
+                            return;
+                        }
+
+                        delete remoteUsersCache[serverId];
+                        loadRemoteUsersFor(server);
+                        renderFriends();
                     }
 
                     function existingUserRule(server, remoteUserId) {
@@ -1013,7 +1035,8 @@
                         }
 
                         if (cached.error) {
-                            html += '<p class="fed-muted">' + escapeHtml(cached.error) + '</p></div>';
+                            html += '<p class="fed-muted">' + escapeHtml(cached.error) + ' '
+                                + '<a href="#" data-fed-action="retry-remote-users" data-server="' + escapeHtml(server.Id) + '">Retry</a></p></div>';
                             return html;
                         }
 
@@ -2979,16 +3002,38 @@
                             return;
                         }
 
+                        // customMappings can be spliced (add/remove) while this
+                        // fetch is in flight, which shifts every later index and
+                        // re-renders the whole mapping list - by the time this
+                        // resolves, `i` may point at a different mapping than the
+                        // one actually clicked, and the container captured above
+                        // may already be detached from the document. The mapping
+                        // is re-found by object identity (not index) below, and
+                        // its container is looked up fresh by whatever index it
+                        // currently has, rather than trusting either of these
+                        // captured-before-the-fetch values.
+                        var targetMapping = customMappings[i];
+
                         c.innerHTML = '<p class="fed-muted">Loading…</p>';
                         fedFetch('/Plugins/Federation/GetRemoteLibraries')
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
-                            if (!res.success || !res.servers) {
-                                c.innerHTML = '<p class="fed-muted">No servers available.</p>';
+                            var currentIndex = customMappings.indexOf(targetMapping);
+                            if (currentIndex === -1) {
                                 return;
                             }
 
-                            var mp = customMappings[i];
+                            var container = q('#fedMapLibs' + currentIndex);
+                            if (!container) {
+                                return;
+                            }
+
+                            if (!res.success || !res.servers) {
+                                container.innerHTML = '<p class="fed-muted">No servers available.</p>';
+                                return;
+                            }
+
+                            var mp = targetMapping;
                             if (!mp.RemoteLibrarySources) {
                                 mp.RemoteLibrarySources = [];
                             }
@@ -3002,13 +3047,19 @@
 
                                 (srv.libraries || []).forEach(function (lib) {
                                     var checked = mp.RemoteLibrarySources.some(function (x) { return x.ServerId === srv.serverId && x.RemoteLibraryId === lib.id; });
-                                    html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChkLib" data-mi="' + i + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + ' (' + escapeHtml(lib.collectionType) + ', ' + (lib.itemCount || 0) + ')</label>';
+                                    html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChkLib" data-mi="' + currentIndex + '" data-sid="' + escapeHtml(srv.serverId) + '" data-sname="' + escapeHtml(srv.serverName) + '" data-lid="' + escapeHtml(lib.id) + '" data-lname="' + escapeHtml(lib.name) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + ' (' + escapeHtml(lib.collectionType) + ', ' + (lib.itemCount || 0) + ')</label>';
                                 });
                             });
-                            html += '</div><button is="emby-button" type="button" class="raised emby-button" data-fed-action="apply-libs" data-i="' + i + '" style="margin-top:0.6em;">Apply</button>';
-                            c.innerHTML = html;
+                            html += '</div><button is="emby-button" type="button" class="raised emby-button" data-fed-action="apply-libs" data-i="' + currentIndex + '" style="margin-top:0.6em;">Apply</button>';
+                            container.innerHTML = html;
                         })
-                        .catch(function (e) { c.innerHTML = '<p class="fed-muted">' + escapeHtml(e.message) + '</p>'; });
+                        .catch(function (e) {
+                            var currentIndex = customMappings.indexOf(targetMapping);
+                            var container = currentIndex === -1 ? null : q('#fedMapLibs' + currentIndex);
+                            if (container) {
+                                container.innerHTML = '<p class="fed-muted">' + escapeHtml(e.message) + '</p>';
+                            }
+                        });
                     }
 
                     function applyLibraries(i) {
@@ -3504,6 +3555,9 @@
                                     break;
                                 case 'cancel-friend':
                                     cancelFriendRequest(friendId);
+                                    break;
+                                case 'retry-remote-users':
+                                    retryRemoteUsersFor(t.getAttribute('data-server'));
                                     break;
                                 case 'save-connectivity':
                                     saveConnectivityMode();
