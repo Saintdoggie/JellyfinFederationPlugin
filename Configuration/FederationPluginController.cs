@@ -1402,6 +1402,21 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> InstallTailscale(CancellationToken cancellationToken)
         {
+            // InstallAsync's own doc comment says it must only be called once
+            // CheckEnvironmentAsync reports true - it runs no environment checks
+            // of its own. The only caller was this action, and it never actually
+            // did that check: the config page's Install button is disabled based
+            // on it client-side, but starts enabled by default until that async
+            // fetch resolves, and a direct API call skips the UI entirely - so
+            // nothing server-side ever stopped curl|sh from running on a host
+            // that can't actually use the result (non-root, no /dev/net/tun, a
+            // non-Linux OS).
+            var check = await _tailscale.CheckEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+            if (!check.CanAutoInstall)
+            {
+                return Ok(new { success = false, message = check.Reason ?? "Auto-install is not available on this host." });
+            }
+
             var (success, message) = await _tailscale.InstallAsync(cancellationToken).ConfigureAwait(false);
             return Ok(new { success, message });
         }
