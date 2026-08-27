@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.112",
+        "changelog": "Closed out the remaining lightly-examined areas from the last few bug-sweep passes (PlexApiClient.cs and a few configPage.html UI elements) - the Plex client and the config page's double-init/handler-attach guards both checked out correctly wired on close review, no changes needed there. Found and fixed one real gap: TailscaleService.InstallAsync's own doc comment says it must only be called once CheckEnvironmentAsync confirms this host can actually run Tailscale (Linux, root, /dev/net/tun present) - but its only caller, the Setup/Tailscale/Install endpoint, never did that check. The config page's Install button is disabled based on it client-side, but starts enabled by default until that async check resolves, and a direct API call skips the UI entirely - so nothing server-side ever stopped curl|sh from running unconditionally on a host that can't actually use the result. The endpoint now runs the same environment check the UI already relies on before installing. 301 tests, all green, run 2x.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.112/Jellyfin.Federation.zip",
+        "checksum": "805e7c4358ff15624694f312f503c34c",
+        "timestamp": "2026-08-27T16:10:00Z"
+      },
+      {
         "version": "0.0.111",
         "changelog": "Did the systematic config-save preservation audit flagged as overdue after this same bug class kept being found one field at a time across many releases: enumerated every PluginConfiguration/RemoteServer field and checked each against both the GET response (Sanitize/SanitizeServer) and the save-preservation block. Found one real, live instance: EnablePlexStrmExport and PlexStrmExportPath (the .strm export feature added in 0.0.92) were never included in the GET response the config page uses to populate its form - so the checkbox and path field always rendered as off/default on page load regardless of the real saved state, and saving any unrelated setting would silently re-disable strm export and reset its path back to the default the very next time. Both fields are now included in the GET response. Every other field was confirmed already correctly wired (either round-tripped through the main Save form, or preserved via its own dedicated endpoint). 301 tests, all green, run 2x.",
         "targetAbi": "10.11.0.0",
