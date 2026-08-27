@@ -64,13 +64,24 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Our own timeout fired, not the caller's token - kill rather than
-                // leave an install script or "tailscale up" running forever
-                // unattended.
+                // Either our own timeout fired, or the caller's token did (e.g. an
+                // aborted HTTP request) - either way, the point of waiting was to
+                // report on this process, so there is no correct outcome that
+                // leaves it running unsupervised in the background. Killed
+                // unconditionally before deciding how to report the cancellation,
+                // otherwise only our own timeout branch used to kill it and a
+                // caller-cancelled install script or tailscale command was
+                // silently orphaned to run to completion on its own.
                 TryKill(process);
-                return new ProcessRunResult(true, -1, stdOut.ToString(), stdErr.ToString(), true);
+
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    return new ProcessRunResult(true, -1, stdOut.ToString(), stdErr.ToString(), true);
+                }
+
+                throw;
             }
 
             return new ProcessRunResult(true, process.ExitCode, stdOut.ToString(), stdErr.ToString(), false);
@@ -100,6 +111,14 @@ namespace Jellyfin.Plugin.Federation.Services
             process.OutputDataReceived += (_, e) => { if (e.Data != null) { onStdOutLine(e.Data); } };
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) { onStdOutLine(e.Data); } };
 
+            // This Process object is deliberately not wrapped in `using` (it has
+            // to outlive this method - see the comment below), so nothing would
+            // otherwise ever call Dispose() on it. Freed as soon as the real OS
+            // process exits, whether that's from the admin finishing login or the
+            // admin never doing so and the command eventually giving up - without
+            // this, every "Log in" click permanently leaked one Process handle.
+            process.Exited += (_, _) => process.Dispose();
+
             try
             {
                 process.Start();
@@ -107,6 +126,7 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Win32Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Could not launch {FileName}", fileName);
+                process.Dispose();
                 return;
             }
 

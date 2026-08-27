@@ -21,10 +21,17 @@ public class TailscaleServiceTests
     {
         public Func<string, string, ProcessRunResult>? OnRun { get; set; }
 
+        public Func<string, string, Task<ProcessRunResult>>? OnRunAsync { get; set; }
+
         public Action<string, string, Action<string>>? OnStream { get; set; }
 
         public Task<ProcessRunResult> RunAsync(string fileName, string arguments, TimeSpan timeout, CancellationToken cancellationToken)
         {
+            if (OnRunAsync != null)
+            {
+                return OnRunAsync(fileName, arguments);
+            }
+
             var result = OnRun?.Invoke(fileName, arguments) ?? new ProcessRunResult(false, -1, string.Empty, string.Empty, false);
             return Task.FromResult(result);
         }
@@ -193,5 +200,46 @@ public class TailscaleServiceTests
 
         Assert.False(result.Success);
         Assert.Null(result.FunnelUrl);
+    }
+
+    /// <summary>
+    /// Regression coverage for a "stress test this" review finding: nothing
+    /// stopped a second admin click (or a second browser tab) from starting a
+    /// second install while the first was still mid-flight - two install
+    /// scripts, or two tailscale up processes, racing each other. Install and
+    /// Funnel share one mutual-exclusion gate for exactly this reason; this
+    /// exercises Install's side of it since the mechanism is identical for both.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_RefusesSecondCall_WhileFirstIsStillRunning()
+    {
+        var firstCallStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstCall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callCount = 0;
+
+        var runner = new FakeProcessRunner
+        {
+            OnRunAsync = async (_, _) =>
+            {
+                Interlocked.Increment(ref callCount);
+                firstCallStarted.TrySetResult();
+                await releaseFirstCall.Task;
+                return new ProcessRunResult(true, 0, "Installed.", string.Empty, false);
+            }
+        };
+        var service = new TailscaleService(runner, NullLogger<TailscaleService>.Instance);
+
+        var firstInstall = service.InstallAsync(CancellationToken.None);
+        await firstCallStarted.Task;
+
+        var (secondSuccess, secondMessage) = await service.InstallAsync(CancellationToken.None);
+
+        Assert.False(secondSuccess);
+        Assert.Contains("already running", secondMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, callCount);
+
+        releaseFirstCall.TrySetResult();
+        var (firstSuccess, _) = await firstInstall;
+        Assert.True(firstSuccess);
     }
 }

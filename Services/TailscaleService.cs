@@ -35,6 +35,16 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IProcessRunner _processRunner;
         private readonly ILogger<TailscaleService> _logger;
 
+        // Guards Install/Login/Funnel specifically - the three actions that
+        // actually mutate this host's Tailscale state - against a second admin
+        // click (or a second browser tab) landing while the first is still
+        // in flight. Two overlapping installs/logins are exactly the kind of
+        // thing that turns "click a button" into a genuinely confusing state
+        // (two install scripts racing, two tailscale up processes, ...), and
+        // there is no cost to just refusing the second one outright rather than
+        // queuing it - see WaitAsync(0, ...) below, which never blocks.
+        private readonly SemaphoreSlim _mutationLock = new(1, 1);
+
         public TailscaleService(IProcessRunner processRunner, ILogger<TailscaleService> logger)
         {
             _processRunner = processRunner;
@@ -122,24 +132,36 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<(bool Success, string Message)> InstallAsync(CancellationToken cancellationToken)
         {
-            var result = await _processRunner.RunAsync(
-                "bash",
-                "-c \"curl -fsSL https://tailscale.com/install.sh | sh\"",
-                InstallTimeout,
-                cancellationToken).ConfigureAwait(false);
-
-            if (result.TimedOut)
+            if (!await _mutationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             {
-                return (false, "Timed out waiting for the Tailscale install script to finish.");
+                return (false, "Another Tailscale setup action is already running - wait for it to finish first.");
             }
 
-            if (!result.Started || result.ExitCode != 0)
+            try
             {
-                var detail = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
-                return (false, string.IsNullOrWhiteSpace(detail) ? "Install script failed." : detail.Trim());
-            }
+                var result = await _processRunner.RunAsync(
+                    "bash",
+                    "-c \"curl -fsSL https://tailscale.com/install.sh | sh\"",
+                    InstallTimeout,
+                    cancellationToken).ConfigureAwait(false);
 
-            return (true, "Tailscale installed.");
+                if (result.TimedOut)
+                {
+                    return (false, "Timed out waiting for the Tailscale install script to finish.");
+                }
+
+                if (!result.Started || result.ExitCode != 0)
+                {
+                    var detail = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
+                    return (false, string.IsNullOrWhiteSpace(detail) ? "Install script failed." : detail.Trim());
+                }
+
+                return (true, "Tailscale installed.");
+            }
+            finally
+            {
+                _mutationLock.Release();
+            }
         }
 
         /// <summary>
@@ -151,39 +173,61 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<TailscaleLoginResult> StartLoginAsync(CancellationToken cancellationToken)
         {
-            var urlSource = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!await _mutationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                return new TailscaleLoginResult(false, null, "Another Tailscale setup action is already running - wait for it to finish first.");
+            }
 
-            await _processRunner.StartStreamingAsync(
-                "tailscale",
-                "up",
-                line =>
-                {
-                    var match = LoginUrlRegex.Match(line);
-                    if (match.Success)
+            try
+            {
+                var urlSource = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                await _processRunner.StartStreamingAsync(
+                    "tailscale",
+                    "up",
+                    line =>
                     {
-                        urlSource.TrySetResult(match.Value);
-                    }
-                },
-                cancellationToken).ConfigureAwait(false);
+                        var match = LoginUrlRegex.Match(line);
+                        if (match.Success)
+                        {
+                            urlSource.TrySetResult(match.Value);
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
 
-            var urlTask = urlSource.Task;
-            var winner = await Task.WhenAny(urlTask, Task.Delay(LoginUrlWaitTimeout, cancellationToken)).ConfigureAwait(false);
-            if (winner == urlTask)
-            {
-                return new TailscaleLoginResult(true, urlTask.Result, "Open the link to finish logging in, then check status.");
+                var urlTask = urlSource.Task;
+                var winner = await Task.WhenAny(urlTask, Task.Delay(LoginUrlWaitTimeout, cancellationToken)).ConfigureAwait(false);
+                if (winner == urlTask)
+                {
+                    return new TailscaleLoginResult(true, urlTask.Result, "Open the link to finish logging in, then check status.");
+                }
+
+                // No URL appeared - most likely this server was already logged in
+                // from a previous run (tailscale up is then a same-config no-op
+                // that prints nothing), not a failure. Check the actual state
+                // instead of guessing which one happened.
+                var status = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (status.State == TailscaleBackendState.Running)
+                {
+                    return new TailscaleLoginResult(true, null, "Already logged in.");
+                }
+
+                return new TailscaleLoginResult(false, null, "Timed out waiting for a login link from tailscale up.");
             }
-
-            // No URL appeared - most likely this server was already logged in
-            // from a previous run (tailscale up is then a same-config no-op that
-            // prints nothing), not a failure. Check the actual state instead of
-            // guessing which one happened.
-            var status = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (status.State == TailscaleBackendState.Running)
+            finally
             {
-                return new TailscaleLoginResult(true, null, "Already logged in.");
+                // tailscale up itself is intentionally left running in the
+                // background past this point (see StartStreamingAsync) - only
+                // this method's own bookkeeping is done, not the login flow
+                // the admin still has to finish in their browser. Releasing
+                // here (rather than only once tailscale up actually exits) is a
+                // deliberate choice: the alternative would block every other
+                // Tailscale action - including just checking status - for
+                // however long the admin takes to click through the login page,
+                // which is worse than the narrow window this leaves for a
+                // second "Log in" click to start a redundant process.
+                _mutationLock.Release();
             }
-
-            return new TailscaleLoginResult(false, null, "Timed out waiting for a login link from tailscale up.");
         }
 
         /// <summary>
@@ -194,21 +238,33 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<TailscaleFunnelResult> SetUpFunnelAsync(int localPort, CancellationToken cancellationToken)
         {
-            var result = await _processRunner.RunAsync("tailscale", $"funnel --bg {localPort}", FunnelSetupTimeout, cancellationToken).ConfigureAwait(false);
-            if (!result.Started || result.ExitCode != 0)
+            if (!await _mutationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             {
-                var detail = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
-                return new TailscaleFunnelResult(false, null, string.IsNullOrWhiteSpace(detail) ? "tailscale funnel failed." : detail.Trim());
+                return new TailscaleFunnelResult(false, null, "Another Tailscale setup action is already running - wait for it to finish first.");
             }
 
-            var status = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(status.DnsName))
+            try
             {
-                return new TailscaleFunnelResult(false, null, "Funnel command succeeded but this server's Tailscale DNS name is not available yet - try checking status again in a moment.");
-            }
+                var result = await _processRunner.RunAsync("tailscale", $"funnel --bg {localPort}", FunnelSetupTimeout, cancellationToken).ConfigureAwait(false);
+                if (!result.Started || result.ExitCode != 0)
+                {
+                    var detail = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
+                    return new TailscaleFunnelResult(false, null, string.IsNullOrWhiteSpace(detail) ? "tailscale funnel failed." : detail.Trim());
+                }
 
-            var funnelUrl = $"https://{status.DnsName.TrimEnd('.')}/";
-            return new TailscaleFunnelResult(true, funnelUrl, "Funnel is live.");
+                var status = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(status.DnsName))
+                {
+                    return new TailscaleFunnelResult(false, null, "Funnel command succeeded but this server's Tailscale DNS name is not available yet - try checking status again in a moment.");
+                }
+
+                var funnelUrl = $"https://{status.DnsName.TrimEnd('.')}/";
+                return new TailscaleFunnelResult(true, funnelUrl, "Funnel is live.");
+            }
+            finally
+            {
+                _mutationLock.Release();
+            }
         }
 
         private static TailscaleBackendState ParseBackendState(string? raw)
