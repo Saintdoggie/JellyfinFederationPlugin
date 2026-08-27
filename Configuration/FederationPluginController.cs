@@ -5,8 +5,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using Jellyfin.Plugin.Federation.Tasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -56,6 +58,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationNowWatchingService _nowWatching;
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly TailscaleService _tailscale;
+        private readonly ITaskManager _taskManager;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -77,7 +80,8 @@ namespace Jellyfin.Plugin.Federation.Api
             IServerApplicationHost applicationHost,
             FederationNowWatchingService nowWatching,
             ExternalCatalogRegistry externalCatalogs,
-            TailscaleService tailscale)
+            TailscaleService tailscale,
+            ITaskManager taskManager)
         {
             _logger = logger;
             _syncService = syncService;
@@ -99,6 +103,41 @@ namespace Jellyfin.Plugin.Federation.Api
             _nowWatching = nowWatching;
             _externalCatalogs = externalCatalogs;
             _tailscale = tailscale;
+            _taskManager = taskManager;
+        }
+
+        /// <summary>
+        /// Pushes this plugin's own scheduled task's trigger back in sync with
+        /// whatever RefreshIntervalHours was just saved. IScheduledTaskWorker.
+        /// Triggers is only ever seeded from GetDefaultTriggers() the very first
+        /// time a task is registered - every save afterward is otherwise
+        /// invisible to Jellyfin's task scheduler, since it treats a task's live
+        /// trigger set as admin-owned state from then on, not something to keep
+        /// re-deriving. Without this, changing "Refresh interval" in this
+        /// plugin's own Advanced settings silently did nothing after first
+        /// install; the admin had to go find "Refresh Federation Cache" under
+        /// Jellyfin's own Dashboard - Scheduled Tasks and edit its trigger by
+        /// hand to actually change the cadence. Best-effort: a failure here just
+        /// means the interval takes until a server restart to apply, same as
+        /// before this existed, so it never blocks the save itself.
+        /// </summary>
+        private void SyncRefreshTaskTrigger()
+        {
+            try
+            {
+                var worker = _taskManager.ScheduledTasks.FirstOrDefault(w => w.ScheduledTask is FederationRefreshTask);
+                if (worker?.ScheduledTask is not FederationRefreshTask task)
+                {
+                    return;
+                }
+
+                worker.Triggers = task.GetDefaultTriggers().ToList();
+                worker.ReloadTriggerEvents();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not refresh the live schedule for the refresh task after a config change");
+            }
         }
 
         /// <summary>
@@ -322,6 +361,16 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.HiddenFederatedItemIds = existing.HiddenFederatedItemIds;
                     config.IncomingFilter = existing.IncomingFilter ?? new IncomingContentFilter();
                     config.MigratedIncomingFilterV12 = existing.MigratedIncomingFilterV12;
+
+                    // Same class of field again, the sending-side counterpart to
+                    // HiddenFederatedItemIds above: managed exclusively through
+                    // the Sharing/Disable, Sharing/Enable and Sharing/Excluded
+                    // endpoints (see the "Outgoing sharing" region below), never
+                    // sent by the main Save form. Without this, an item an admin
+                    // explicitly stopped sharing with every friend would silently
+                    // become visible to all of them again on the next unrelated
+                    // config save - enforced in FederationPeerAccessService.IsItemVisible.
+                    config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                 }
 
                 // DedupProviderIds is a free-form comma-separated text field on the
@@ -353,6 +402,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 _logger.LogInformation("[Federation] Updating configuration with {ServerCount} servers", config.RemoteServers?.Count ?? 0);
                 Plugin.Instance?.UpdateConfiguration(config);
                 _clientFactory.InvalidateAll();
+                SyncRefreshTaskTrigger();
 
                 // A mapping deleted from config used to orphan everything it ever
                 // created, forever: its library folder, every virtual item in it,

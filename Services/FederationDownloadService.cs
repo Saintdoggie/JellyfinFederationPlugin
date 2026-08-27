@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -220,13 +221,35 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 await client.DownloadToFileAsync(source.RemoteItemId.ToString(), destinationPath, progress, cancellationToken).ConfigureAwait(false);
 
-                EnsureDownloadsLibrary(downloadsRoot);
+                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
 
                 var item = _libraryManager.GetItemById(itemGuid);
                 if (item != null)
                 {
                     _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = false });
+                }
+
+                // Without this, the very next scheduled refresh sees the friend
+                // still reporting this item (nothing about a local download tells
+                // them to stop), re-upserts it into the federation cache, and
+                // recreates the same virtual item right back - now duplicated
+                // alongside the real downloaded file. Reuses the existing
+                // "admin hid this federated item" suppression list (see
+                // PluginConfiguration.HiddenFederatedItemIds and
+                // FederationItemPersistenceService's hiddenKeys) rather than
+                // inventing separate "downloaded" state - a downloaded item
+                // should never be re-materialized as a virtual one, exactly the
+                // same outcome an admin hiding it by hand already gets.
+                var config = Plugin.Instance?.Configuration;
+                if (config != null)
+                {
+                    config.HiddenFederatedItemIds ??= new List<string>();
+                    if (!config.HiddenFederatedItemIds.Contains(entry.Key, StringComparer.OrdinalIgnoreCase))
+                    {
+                        config.HiddenFederatedItemIds.Add(entry.Key);
+                        Plugin.Instance?.SaveConfiguration();
+                    }
                 }
 
                 _logger.LogInformation("[Federation] Downloaded {Name} to {Path}", entry.Metadata.Name, destinationPath);
@@ -273,7 +296,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private void EnsureDownloadsLibrary(string downloadsRoot)
+        private async Task EnsureDownloadsLibraryAsync(string downloadsRoot)
         {
             var existing = _libraryManager.GetVirtualFolders()?
                 .FirstOrDefault(vf => string.Equals(vf.Name, DownloadsLibraryName, StringComparison.OrdinalIgnoreCase));
@@ -287,10 +310,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 PathInfos = new[] { new MediaPathInfo { Path = downloadsRoot } }
             };
 
-            // Fire-and-forget: this runs inside the same background Task as the
-            // download itself, so blocking here doesn't hold up any HTTP request.
-            _libraryManager.AddVirtualFolder(DownloadsLibraryName, CollectionTypeOptions.mixed, libraryOptions, refreshLibrary: false)
-                .GetAwaiter().GetResult();
+            await _libraryManager.AddVirtualFolder(DownloadsLibraryName, CollectionTypeOptions.mixed, libraryOptions, refreshLibrary: false)
+                .ConfigureAwait(false);
         }
 
         private static string SafeFileName(string name)
