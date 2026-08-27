@@ -100,8 +100,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
-                },
-                EnableRaisingEvents = true
+                }
             };
 
             // tailscale up prints its login URL to stderr, not stdout, on every
@@ -110,14 +109,6 @@ namespace Jellyfin.Plugin.Federation.Services
             // which stream it arrived on.
             process.OutputDataReceived += (_, e) => { if (e.Data != null) { onStdOutLine(e.Data); } };
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) { onStdOutLine(e.Data); } };
-
-            // This Process object is deliberately not wrapped in `using` (it has
-            // to outlive this method - see the comment below), so nothing would
-            // otherwise ever call Dispose() on it. Freed as soon as the real OS
-            // process exits, whether that's from the admin finishing login or the
-            // admin never doing so and the command eventually giving up - without
-            // this, every "Log in" click permanently leaked one Process handle.
-            process.Exited += (_, _) => process.Dispose();
 
             try
             {
@@ -133,11 +124,25 @@ namespace Jellyfin.Plugin.Federation.Services
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            // Deliberately not awaiting process exit: tailscale up blocks until the
-            // admin finishes logging in in their browser, which this call must not
-            // block on - the login URL callers actually want arrives on stdout/
-            // stderr long before that. The process is intentionally left running;
+            // Deliberately not awaited inline: tailscale up blocks until the admin
+            // finishes logging in in their browser, which this call must not block
+            // on - the login URL callers actually want arrives on stdout/stderr
+            // long before that. The process is intentionally left running;
             // Dispose() alone (no Kill()) doesn't stop it.
+            //
+            // Disposal is chained off WaitForExitAsync rather than the Exited
+            // event: Exited can fire before the redirected stdout/stderr readers
+            // have finished delivering their last buffered line(s) (documented
+            // .NET behavior), so disposing from it raced ahead of final output on
+            // occasion - intermittently, worse under system load, exactly the
+            // kind of thing "stress test it" was asked to catch. WaitForExitAsync
+            // only completes once those readers are actually done.
+            _ = process.WaitForExitAsync(CancellationToken.None).ContinueWith(
+                _ => process.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
             await Task.CompletedTask.ConfigureAwait(false);
         }
 

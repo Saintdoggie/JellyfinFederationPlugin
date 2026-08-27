@@ -162,6 +162,57 @@ public class FederationRemoteUserAccessTests : IDisposable
 
         Assert.False(accessControl.IsAllowed(server, localUserId, "SomeUnmappedLibrary", Guid.NewGuid()));
     }
+
+    /// <summary>
+    /// Regression coverage: TryResolveRating used to unconditionally return null
+    /// (a documented, deliberate stub - "a future cache-indexed lookup can fill
+    /// this in if needed"), which made a per-user MaxAllowedRating ceiling a
+    /// permanent no-op for AllLibraries/CertainItems/CertainLibraries even
+    /// though it looked fully configured in the UI. It now resolves the item's
+    /// actual cached OfficialRating via FederationItemCache instead of the
+    /// stub's unconditional null.
+    /// </summary>
+    [Fact]
+    public void IsAllowed_AllLibraries_BlocksItem_AboveThatUsersRatingCeiling()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var localUserId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        cache.UpsertRaw("Movies", "server-a", remoteItemId, new MediaBrowser.Model.Dto.BaseItemDto { Name = "R-Rated Movie", OfficialRating = "R" }, 0, "Movie");
+
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = localUserId.ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries,
+            MaxAllowedRating = "PG-13"
+        });
+
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
+
+        Assert.False(accessControl.IsAllowed(server, localUserId, "Movies", remoteItemId));
+    }
+
+    [Fact]
+    public void IsAllowed_AllLibraries_AllowsItem_WithinThatUsersRatingCeiling()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var localUserId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        cache.UpsertRaw("Movies", "server-a", remoteItemId, new MediaBrowser.Model.Dto.BaseItemDto { Name = "PG Movie", OfficialRating = "PG" }, 0, "Movie");
+
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = localUserId.ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries,
+            MaxAllowedRating = "PG-13"
+        });
+
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
+
+        Assert.True(accessControl.IsAllowed(server, localUserId, "Movies", remoteItemId));
+    }
 }
 
 /// <summary>

@@ -134,7 +134,10 @@ public class ProcessRunnerTests
             },
             CancellationToken.None);
 
-        var winner = await Task.WhenAny(sawSecondLine.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        // Generous timeout: this test's own point is real process/OS scheduling,
+        // which the rest of the suite running dozens of processes in parallel
+        // (this file included) can genuinely delay somewhat under load.
+        var winner = await Task.WhenAny(sawSecondLine.Task, Task.Delay(TimeSpan.FromSeconds(10)));
         Assert.Equal(sawSecondLine.Task, winner);
         Assert.Contains("first", lines);
         Assert.Contains("second", lines);

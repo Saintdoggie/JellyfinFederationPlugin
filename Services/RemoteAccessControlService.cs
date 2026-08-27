@@ -121,7 +121,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // ceiling and download gate below.
                     if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
                     {
-                        var rating = TryResolveRating(server, mappingName, remoteItemId);
+                        var rating = TryResolveRating(server, remoteItemId);
                         if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
                         {
                             _logger.LogInformation(
@@ -149,7 +149,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                     else if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
                     {
-                        var rating = TryResolveRating(server, mappingName, remoteItemId);
+                        var rating = TryResolveRating(server, remoteItemId);
                         if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
                         {
                             _logger.LogInformation(
@@ -176,7 +176,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                     else if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
                     {
-                        var rating = TryResolveRating(server, mappingName, remoteItemId);
+                        var rating = TryResolveRating(server, remoteItemId);
                         if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
                         {
                             _logger.LogInformation(
@@ -245,22 +245,20 @@ namespace Jellyfin.Plugin.Federation.Services
             return true;
         }
 
-        private static string? TryResolveRating(RemoteServer server, string? mappingName, Guid remoteItemId)
+        private string? TryResolveRating(RemoteServer server, Guid remoteItemId)
         {
             try
             {
-                if (string.IsNullOrEmpty(mappingName))
-                {
-                    return null;
-                }
-
-                // This path is only hit for the AllLibraries rating-ceiling gate,
-                // which is rarely configured. We don't have the cache entry key here
-                // without reconstructing it; fail open and let the sync-time incoming
-                // filter and the peer-visibility path (which already enforces rating)
-                // handle the common case. A future cache-indexed lookup can fill this
-                // in if needed without changing the public API.
-                return null;
+                // An episode/season's own remote id was never upserted as its own
+                // top-level entry key (raw or provider-id) - only its parent Series
+                // is - so this can come back empty for one; that's already covered
+                // by the sync-time incoming filter and the peer-visibility path,
+                // which check ratings up front rather than needing this
+                // reconstruction at all. This fills in the one path that couldn't:
+                // a per-user MaxAllowedRating ceiling checked lazily, after the item
+                // is already cached, with only (server, remote item id) in hand.
+                var key = _cache.TryGetLocalKeyForRemoteItem(server.Id, remoteItemId);
+                return key == null ? null : _cache.GetEntryByKey(key)?.Metadata.OfficialRating;
             }
             catch
             {
