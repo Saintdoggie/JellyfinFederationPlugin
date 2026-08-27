@@ -55,6 +55,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly IServerApplicationHost _applicationHost;
         private readonly FederationNowWatchingService _nowWatching;
         private readonly ExternalCatalogRegistry _externalCatalogs;
+        private readonly TailscaleService _tailscale;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -75,7 +76,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationPeerAccessService peerAccess,
             IServerApplicationHost applicationHost,
             FederationNowWatchingService nowWatching,
-            ExternalCatalogRegistry externalCatalogs)
+            ExternalCatalogRegistry externalCatalogs,
+            TailscaleService tailscale)
         {
             _logger = logger;
             _syncService = syncService;
@@ -96,6 +98,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _applicationHost = applicationHost;
             _nowWatching = nowWatching;
             _externalCatalogs = externalCatalogs;
+            _tailscale = tailscale;
         }
 
         /// <summary>
@@ -1309,6 +1312,67 @@ namespace Jellyfin.Plugin.Federation.Api
             config.ConnectivityMode = mode;
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, mode = config.ConnectivityMode.ToString() });
+        }
+
+        /// <summary>
+        /// Checks whether this process can plausibly install/drive Tailscale
+        /// itself - see <see cref="TailscaleService.CheckEnvironmentAsync"/>.
+        /// </summary>
+        [HttpGet("Setup/Tailscale/Environment")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetTailscaleEnvironment(CancellationToken cancellationToken)
+        {
+            var check = await _tailscale.CheckEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { canAutoInstall = check.CanAutoInstall, reason = check.Reason });
+        }
+
+        /// <summary>Reads Tailscale's current login/connection state.</summary>
+        [HttpGet("Setup/Tailscale/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetTailscaleStatus(CancellationToken cancellationToken)
+        {
+            var status = await _tailscale.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { state = status.State.ToString(), dnsName = status.DnsName, message = status.Message });
+        }
+
+        /// <summary>
+        /// Admin-triggered, explicit consent point: runs Tailscale's official
+        /// install script on this host.
+        /// </summary>
+        [HttpPost("Setup/Tailscale/Install")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> InstallTailscale(CancellationToken cancellationToken)
+        {
+            var (success, message) = await _tailscale.InstallAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: starts <c>tailscale up</c> and returns the login link
+        /// for the admin to open, if one was needed.
+        /// </summary>
+        [HttpPost("Setup/Tailscale/Login")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> StartTailscaleLogin(CancellationToken cancellationToken)
+        {
+            var result = await _tailscale.StartLoginAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { success = result.Success, loginUrl = result.LoginUrl, message = result.Message });
+        }
+
+        /// <summary>
+        /// Admin-triggered: turns on Funnel for this server's own local Jellyfin
+        /// port, so it is reachable at an https://*.ts.net address without any
+        /// port-forwarding.
+        /// </summary>
+        [HttpPost("Setup/Tailscale/Funnel")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> SetUpTailscaleFunnel(CancellationToken cancellationToken)
+        {
+            var baseUrl = _federationManager.GetInternalPlaybackBaseUrl();
+            var port = Uri.TryCreate(baseUrl, UriKind.Absolute, out var parsed) ? parsed.Port : 8096;
+
+            var result = await _tailscale.SetUpFunnelAsync(port, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success = result.Success, funnelUrl = result.FunnelUrl, message = result.Message });
         }
 
         /// <summary>

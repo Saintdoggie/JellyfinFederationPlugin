@@ -81,6 +81,7 @@
                 #federationConfigPage .fed-srvstatus-ok { color: var(--fed-ok-text); }
                 #federationConfigPage .fed-srvstatus-err { color: var(--fed-err-text); }
                 #federationConfigPage .fed-srvstatus-info { opacity: 0.8; }
+                #federationConfigPage .fed-tailscale-panel { border-top: 1px solid var(--fed-border-soft); border-bottom: 1px solid var(--fed-border-soft); padding: 0.9em 0; margin: 0.6em 0 1.2em; }
 
                 /* Roster rows: friends, friend requests, pools, hidden items - a
                    plain list separated by a hairline, not individually boxed cards. */
@@ -296,6 +297,25 @@
                     </div>
                     <p class="fed-hint" id="fedConnectivityHint"></p>
                     <div id="fedConnectivityStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                    <div id="fedTailscalePanel" class="fed-tailscale-panel" style="display:none;">
+                        <p class="fed-hint">
+                            Tailscale gives this server a private address reachable from anywhere, without port-forwarding.
+                            Funnel then exposes that address to the public internet so friends can actually connect - access
+                            past that point is still gated by this plugin's own friend-token system, the same as any other
+                            connectivity choice.
+                        </p>
+                        <div id="fedTailscaleEnvWarning" class="fed-srvstatus fed-srvstatus-err" style="display:none;"></div>
+                        <div class="fed-inline">
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="tailscale-install">Install Tailscale</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="tailscale-login">Log in</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="tailscale-funnel">Set up Funnel</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="tailscale-refresh">Refresh status</button>
+                        </div>
+                        <p class="fed-hint" id="fedTailscaleStatusLine"></p>
+                        <div id="fedTailscaleLoginLink"></div>
+                        <div id="fedTailscaleStatus" class="fed-srvstatus" style="display:none;"></div>
+                    </div>
 
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
@@ -1821,6 +1841,7 @@
                             }
 
                             renderConnectivityHint(mode);
+                            updateTailscalePanelVisibility();
                         })
                         .catch(function () { /* best-effort */ });
                     }
@@ -1847,6 +1868,148 @@
                             }
                         })
                         .catch(function (e) { setConnectivityStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Tailscale ---------------- */
+
+                    function updateTailscalePanelVisibility() {
+                        var sel = q('#fedConnectivityMode');
+                        var panel = q('#fedTailscalePanel');
+                        if (!sel || !panel) {
+                            return;
+                        }
+
+                        var show = sel.value === 'Tailscale';
+                        panel.style.display = show ? '' : 'none';
+                        if (show) {
+                            checkTailscaleEnvironment();
+                            refreshTailscaleStatus();
+                        }
+                    }
+
+                    function checkTailscaleEnvironment() {
+                        return fedFetch('/Plugins/Federation/Setup/Tailscale/Environment')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            var warn = q('#fedTailscaleEnvWarning');
+                            var installBtn = q('[data-fed-action="tailscale-install"]');
+                            if (!warn) {
+                                return;
+                            }
+
+                            if (res && res.canAutoInstall) {
+                                warn.style.display = 'none';
+                                if (installBtn) { installBtn.disabled = false; }
+                            } else {
+                                warn.style.display = 'block';
+                                warn.textContent = (res && res.reason) || 'Auto-install is not available on this host.';
+                                if (installBtn) { installBtn.disabled = true; }
+                            }
+                        })
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function tailscaleStateLabel(state, dnsName) {
+                        switch (state) {
+                            case 'NotInstalled': return 'Tailscale is not installed on this host yet.';
+                            case 'NeedsLogin': return 'Tailscale is installed but not logged in.';
+                            case 'Stopped': return 'Tailscale is logged in but not connected.';
+                            case 'Running': return 'Tailscale is connected' + (dnsName ? ' as ' + dnsName : '') + '.';
+                            default: return 'Could not determine Tailscale\'s status.';
+                        }
+                    }
+
+                    function refreshTailscaleStatus() {
+                        return fedFetch('/Plugins/Federation/Setup/Tailscale/Status')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            var line = q('#fedTailscaleStatusLine');
+                            if (line) {
+                                line.textContent = tailscaleStateLabel(res && res.state, res && res.dnsName);
+                            }
+                        })
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function setTailscaleStatus(msg, kind) {
+                        var el = q('#fedTailscaleStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function installTailscale() {
+                        if (!window.confirm('This will download and run Tailscale\'s official install script (curl | sh) on this server, with this Jellyfin process\'s own privileges. Continue?')) {
+                            return;
+                        }
+
+                        setTailscaleStatus('Installing... this can take a minute.', 'info');
+                        fedFetch('/Plugins/Federation/Setup/Tailscale/Install', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            setTailscaleStatus(res.message, res.success ? 'ok' : 'err');
+                            refreshTailscaleStatus();
+                        })
+                        .catch(function (e) { setTailscaleStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function startTailscaleLogin() {
+                        setTailscaleStatus('Starting login...', 'info');
+                        fedFetch('/Plugins/Federation/Setup/Tailscale/Login', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            var linkEl = q('#fedTailscaleLoginLink');
+                            if (linkEl) {
+                                linkEl.innerHTML = '';
+                            }
+
+                            if (res.success && res.loginUrl) {
+                                setTailscaleStatus('Open the link below to finish logging in, then click "Refresh status".', 'info');
+                                if (linkEl) {
+                                    var a = document.createElement('a');
+                                    a.href = res.loginUrl;
+                                    a.target = '_blank';
+                                    a.rel = 'noopener noreferrer';
+                                    a.textContent = res.loginUrl;
+                                    linkEl.appendChild(a);
+                                }
+                            } else {
+                                setTailscaleStatus(res.message, res.success ? 'ok' : 'err');
+                            }
+
+                            refreshTailscaleStatus();
+                        })
+                        .catch(function (e) { setTailscaleStatus('Failed: ' + e.message, 'err'); });
+                    }
+
+                    function setUpTailscaleFunnel() {
+                        setTailscaleStatus('Setting up Funnel...', 'info');
+                        fedFetch('/Plugins/Federation/Setup/Tailscale/Funnel', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (res.success && res.funnelUrl) {
+                                var urlEl = q('#fedTxtServerUrl');
+                                if (urlEl) {
+                                    urlEl.value = res.funnelUrl;
+                                }
+
+                                setTailscaleStatus('Funnel is live at ' + res.funnelUrl + ' - filled into "This server\'s public URL" under Advanced settings. Click Save there to apply it.', 'ok');
+                            } else {
+                                setTailscaleStatus(res.message, 'err');
+                            }
+
+                            refreshTailscaleStatus();
+                        })
+                        .catch(function (e) { setTailscaleStatus('Failed: ' + e.message, 'err'); });
                     }
 
                     function renderPools(pools) {
@@ -3345,6 +3508,18 @@
                                 case 'save-connectivity':
                                     saveConnectivityMode();
                                     break;
+                                case 'tailscale-install':
+                                    installTailscale();
+                                    break;
+                                case 'tailscale-login':
+                                    startTailscaleLogin();
+                                    break;
+                                case 'tailscale-funnel':
+                                    setUpTailscaleFunnel();
+                                    break;
+                                case 'tailscale-refresh':
+                                    refreshTailscaleStatus();
+                                    break;
                                 case 'create-pool':
                                     createPool();
                                     break;
@@ -3646,6 +3821,14 @@
                             form.addEventListener('submit', function (e) {
                                 e.preventDefault();
                                 saveConfiguration();
+                            });
+                        }
+
+                        var connectivitySel = page.querySelector('#fedConnectivityMode');
+                        if (connectivitySel) {
+                            connectivitySel.addEventListener('change', function () {
+                                renderConnectivityHint(connectivitySel.value);
+                                updateTailscalePanelVisibility();
                             });
                         }
                     }

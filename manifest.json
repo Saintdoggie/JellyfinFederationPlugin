@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.107",
+        "changelog": "Feature: the Tailscale half of the connectivity wizard. Selecting 'Tailscale' on the Pools tab now shows a panel that shells out to the real tailscale CLI: checks whether this host can even run it (Linux, root, /dev/net/tun present - refuses with a clear reason otherwise, e.g. most unprivileged Docker Jellyfin containers), installs it via the official script (explicit confirm first), starts login and surfaces the login link, and turns on Funnel for this server's own local Jellyfin port, filling the resulting https://*.ts.net address into 'This server's public URL'. IMPORTANT CAVEAT: Funnel forwards the whole Jellyfin server, not just this plugin's routes - anyone who finds the URL reaches your normal Jellyfin login, not merely the federation API. This plugin's own Peer/* endpoints are still gated by per-friend federation tokens either way, same as any other connectivity mode. Also: this was built and unit-tested against scripted CLI output modeled on Tailscale's documented behavior - there is no real tailscale binary in this dev environment, so the very first live run is the real first test of it. The invite-key gating from the original ask isn't separate work - it's this same existing per-friend token system, not something new to build. 292 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.107/Jellyfin.Federation.zip",
+        "checksum": "23e1769983abc37287e9695aa817d068",
+        "timestamp": "2026-08-27T00:09:58Z"
+      },
+      {
         "version": "0.0.106",
         "changelog": "Feature: first step of the public-facing/Tailscale setup split. Added PluginConfiguration.ConnectivityMode (Public-facing vs Tailscale, set on the Pools tab) and gated pool creation on it - only a server that's actually port-forwarded to its own domain can create a pool, since every other member needs to be able to reach it directly; an install that's never made the choice (Unset) is treated the same as Tailscale, not as 'trust it'. Also fixed a real config-save bug found while wiring this up: pending pool invites (both incoming and outgoing) were never preserved across an unrelated main-page Save, so saving any other setting silently dropped them. The Tailscale auto-install/Funnel/invite-key side of the original ask is not built yet - this release only adds the connectivity choice and the pool gate. 281 tests, all green.",
         "targetAbi": "10.11.0.0",
