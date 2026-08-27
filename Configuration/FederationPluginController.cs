@@ -3038,6 +3038,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.AutoProvisionLibraries,
                 config.AllowFriendsOfFriends,
                 config.RefreshIntervalHours,
+                config.EnablePlexStrmExport,
+                config.PlexStrmExportPath,
                 config.IncomingFilter,
                 config.MigratedIncomingFilterV12,
                 RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(SanitizeServer).ToList(),

@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.111",
+        "changelog": "Did the systematic config-save preservation audit flagged as overdue after this same bug class kept being found one field at a time across many releases: enumerated every PluginConfiguration/RemoteServer field and checked each against both the GET response (Sanitize/SanitizeServer) and the save-preservation block. Found one real, live instance: EnablePlexStrmExport and PlexStrmExportPath (the .strm export feature added in 0.0.92) were never included in the GET response the config page uses to populate its form - so the checkbox and path field always rendered as off/default on page load regardless of the real saved state, and saving any unrelated setting would silently re-disable strm export and reset its path back to the default the very next time. Both fields are now included in the GET response. Every other field was confirmed already correctly wired (either round-tripped through the main Save form, or preserved via its own dedicated endpoint). 301 tests, all green, run 2x.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.111/Jellyfin.Federation.zip",
+        "checksum": "724b9d203e8ae3649e12c87927243522",
+        "timestamp": "2026-08-27T15:45:00Z"
+      },
+      {
         "version": "0.0.110",
         "changelog": "Continued the dedicated bug-sweep pass, this time targeting the areas flagged as only lightly sampled last round (the admin config page's JS and the stream relay handler), each traced and verified before fixing: (1) The config page permanently cached a failed 'fetch this friend's users' call as if it were a successful empty result - one transient blip (a friend's server briefly unreachable) froze both the friend-access panel and the catalog picker's user dropdown for the rest of the admin's session, with no way to recover short of a full page reload. Errors are no longer treated as cached, and a Retry link is now shown. (2) The 'browse remote libraries to map into a custom catalog' picker captured the mapping's array index before its network fetch; if the admin added/removed a mapping while that fetch was in flight, the index shifted underneath it and the response could render into the wrong mapping's UI (or a detached one). Now re-resolves the mapping by object identity, not index, once the fetch returns. (3) A relayed stream that gave up after repeatedly stalling against a remote server was logged identically to a client-initiated cancel ('cancelled by client'), making a real remote-side reliability problem invisible in the logs. Now distinguishes the two by checking which cancellation token actually fired. 301 tests, all green, run 3x to check for flakiness given how much of this pass touched retry/async logic.",
         "targetAbi": "10.11.0.0",
