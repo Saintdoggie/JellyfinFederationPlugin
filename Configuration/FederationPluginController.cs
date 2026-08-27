@@ -1303,7 +1303,16 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult SetConnectivityMode([FromBody] SetConnectivityModeBody body)
         {
-            if (!Enum.TryParse<ServerConnectivityMode>(body?.Mode, ignoreCase: true, out var mode))
+            // Enum.TryParse alone isn't enough validation here: C# enums accept
+            // any underlying integer ("99", "-5") and even comma-combined names
+            // ("PublicFacing, Tailscale") as "successfully parsed" even though
+            // none of those are valid members - Enum.IsDefined only rules out the
+            // numeric case, so the two real choices are checked explicitly
+            // instead. Unset is deliberately not settable here either: it is
+            // this field's un-migrated default, not something an admin should be
+            // able to choose back into once they've made a real choice.
+            if (!Enum.TryParse<ServerConnectivityMode>(body?.Mode, ignoreCase: true, out var mode)
+                || (mode != ServerConnectivityMode.PublicFacing && mode != ServerConnectivityMode.Tailscale))
             {
                 return BadRequest(new { error = "Mode must be one of: PublicFacing, Tailscale" });
             }
