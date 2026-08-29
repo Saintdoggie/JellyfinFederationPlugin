@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.113",
-  "changelog": "QoL: verified live on a real server for the first time (rootless container, so it genuinely can't auto-install) that the 'not running as root' Tailscale setup message was correct but unhelpful - it told the admin to 'install it yourself' without saying how. The environment check now also returns a copy-pasteable install command (curl -fsSL https://tailscale.com/install.sh | sudo sh) for that specific case, shown with a one-click Copy button on the config page. Left the other failure reasons (non-Linux, missing /dev/net/tun) as explanatory text only - unlike the root case, neither reduces to a single command without knowing the rest of the admin's own setup, so a fabricated one would mislead rather than help. 301 tests, all green, run 2x.",
+  "version": "0.0.114",
+  "changelog": "Fixes two live causes of federated playback dying with 'Playback Error' even though the content was playable. (1) When the primary source's server refused to mint a playback token (content unshared or deleted on the friend since the last sync, or the friend temporarily down), the stream hard-failed - even when the exact same movie/show sat on a second federated server via dedup. That redundancy was the whole point of dedup, but nothing ever fell back to it. The proxy stream path now tries the same cache entry's other sources, with per-remote-user access rules re-checked against each candidate server, both on the initial build and on the 401/403 re-mint path. Verified against the exact live failure: a token-mint 403 from one friend now transparently serves from the sibling source instead of killing ffmpeg with exit code 8. (2) 'No cached Plex item id ... a library refresh is needed' could permanently break a Plex item whose stamped URL no longer matched the cache index after a dedup re-key left the (server, item) pair unindexed - the native id was intact in the entry, only the lookup path was stale. The lookup now self-heals by scanning for the entry by remote item id and re-indexing it, so the next play is O(1) again. 301 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-27T16:40:00Z",
+  "timestamp": "2026-08-29T16:00:00Z",
   "imageUrl": "thumb.png"
 }

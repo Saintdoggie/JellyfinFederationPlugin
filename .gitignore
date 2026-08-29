@@ -363,3 +363,7 @@ MigrationBackup/
 FodyWeavers.xsd
 /.gitattributes
 /.gitignore
+
+.dotnet/
+.local/
+.nuget/
