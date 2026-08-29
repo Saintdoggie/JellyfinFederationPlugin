@@ -80,6 +80,67 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Adds or overwrites the (server, remote item id) -> cache key index
+        /// entry without touching the entry itself. Used by the stream path's
+        /// stale-lookup self-heal (see
+        /// <see cref="FederationStreamHandler.BuildDirectStreamUrlAsync"/>): a
+        /// dedup re-key can leave an item's stamped URL pointing at a
+        /// (server, item) pair the index no longer contains, and this restores
+        /// the mapping so later lookups are exact again. No-op when the entry
+        /// does not actually have that remote item as one of its sources.
+        /// </summary>
+        public void IndexRemoteItem(string serverId, Guid remoteItemId, string key)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                return;
+            }
+
+            _entries.TryGetValue(key, out var entry);
+            if (entry == null)
+            {
+                return;
+            }
+
+            var sources = entry.GetSourcesSnapshot();
+            for (int i = 0; i < sources.Length; i++)
+            {
+                if (sources[i].ServerId == serverId && sources[i].RemoteItemId == remoteItemId)
+                {
+                    _remoteIndex[(serverId, remoteItemId)] = key;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Finds the entry whose sources contain the given remote item id from
+        /// ANY server, or null. Used by the proxy stream path to self-heal a
+        /// stale stamped URL whose (server, item) pair no longer matches how
+        /// the entry is indexed - most commonly the surviving artifact of a
+        /// dedup re-key, where item.Path kept one server's id while the cache
+        /// entry was re-keyed under another source. Scans rather than using an
+        /// index because this only runs on an otherwise-failed lookup, not per
+        /// request.
+        /// </summary>
+        public FederatedCacheEntry? TryFindEntryByRemoteItemId(Guid remoteItemId)
+        {
+            foreach (var kvp in _entries)
+            {
+                var sources = kvp.Value.GetSourcesSnapshot();
+                for (int i = 0; i < sources.Length; i++)
+                {
+                    if (sources[i].RemoteItemId == remoteItemId)
+                    {
+                        return kvp.Value;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Gets all entries for a mapping (by mapping name).
         /// </summary>
         public IEnumerable<FederatedCacheEntry> GetEntriesForMapping(string mappingName)

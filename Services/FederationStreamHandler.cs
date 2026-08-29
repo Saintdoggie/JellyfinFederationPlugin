@@ -109,18 +109,38 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException($"Server not found: {serverId}");
             }
 
-            // A non-Jellyfin server (Plex today) has no federation playback-token
-            // concept at all - its provider resolves a credential-bearing URL
-            // against that product's own API instead. Resolved per play rather
-            // than cached, so a rescan on their side that moves the file doesn't
-            // leave a permanently broken link. The URL is internal-only: it
-            // carries a whole-server credential, which is exactly why these
-            // sources are always proxied and never handed to a client.
+            // Non-Jellyfin servers (Plex today) resolve their native id through
+            // the cache rather than a token mint. A failed lookup here used to
+            // be fatal ("no cached id - a library refresh is needed"), but the
+            // stamped item.Path URLs survive across syncs while the cache is
+            // re-keyed underneath them (a dedup merge re-keys an entry under a
+            // different server's source id, or a refresh drops and re-adds the
+            // entry), so a perfectly playable item could be left permanently
+            // unplayable until the *next* successful refresh happened to fix
+            // the index. Self-heal instead: fall back to scanning the cache
+            // for any entry sourcing this remote item id, and if one is found
+            // under a different local key, index it under this (server, item)
+            // pair so every later lookup is O(1) again.
             var externalProvider = _externalCatalogs.For(server);
             if (externalProvider != null)
             {
                 var nativeId = ResolveExternalNativeId(serverId, remoteItemId);
-                if (nativeId == null)
+                if (nativeId == null
+                    && Guid.TryParse(remoteItemId, out var staleGuid)
+                    && _federationManager.Cache.TryFindEntryByRemoteItemId(staleGuid) is { } healed)
+                {
+                    nativeId = healed.Metadata.RemoteNativeId;
+                    if (!string.IsNullOrEmpty(nativeId))
+                    {
+                        _federationManager.Cache.IndexRemoteItem(serverId, staleGuid, healed.Key);
+                        _logger.LogInformation(
+                            "[Federation] Re-indexed stale stream lookup for item {ItemId} onto cache key {Key}",
+                            remoteItemId,
+                            healed.Key);
+                    }
+                }
+
+                if (string.IsNullOrEmpty(nativeId))
                 {
                     throw new InvalidOperationException(
                         $"No cached {server.Kind} item id for {remoteItemId} on {server.Name}; a library refresh is needed before it can be streamed.");
@@ -173,8 +193,85 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
+            // Exact (server, item) index first; on miss, fall back to finding
+            // the entry by remote item id alone. A stamped item.Path can go
+            // stale in exactly this shape when a dedup re-key leaves the URL's
+            // server/item pair no longer matching how the entry is indexed
+            // (observed live: a proxy URL carrying a Plex serverId with another
+            // server's item id), which previously hard-failed playback with
+            // "No cached Plex item id" even though the entry - and its native
+            // id - were perfectly intact.
             var key = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteGuid);
-            return key == null ? null : _federationManager.Cache.GetEntryByKey(key)?.Metadata.RemoteNativeId;
+            var entry = key == null
+                ? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid)
+                : _federationManager.Cache.GetEntryByKey(key) ?? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid);
+            return entry?.Metadata.RemoteNativeId;
+        }
+
+        /// <summary>
+        /// Builds a playback URL from one of the same cache entry's OTHER
+        /// sources, when the requested source itself cannot serve the item
+        /// (token mint refused - typically the friend deleted or unshared the
+        /// content after our last sync - or the server is unreachable). This
+        /// is what turns a mid-transcode dead primary from "Playback Error"
+        /// into "plays from the other server", which is exactly what dedup's
+        /// redundancy exists for. Returns null when no sibling source can
+        /// produce a URL either. The per-remote-user access check is re-run
+        /// against each candidate server, since the rule that allowed the
+        /// original source says nothing about a different one.
+        /// </summary>
+        private async Task<string?> BuildFallbackSiblingUrlAsync(
+            string failedServerId,
+            string remoteItemId,
+            bool isAudio,
+            CancellationToken cancellationToken,
+            Guid? requestingUserGuid,
+            string? mappingName)
+        {
+            if (!Guid.TryParse(remoteItemId, out var remoteGuid))
+            {
+                return null;
+            }
+
+            var key = _federationManager.Cache.TryGetLocalKeyForRemoteItem(failedServerId, remoteGuid);
+            var entry = (key == null ? null : _federationManager.Cache.GetEntryByKey(key))
+                ?? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid);
+            if (entry == null)
+            {
+                return null;
+            }
+
+            mappingName ??= entry.MappingName;
+            foreach (var src in entry.GetSourcesSnapshot())
+            {
+                if (src.ServerId == failedServerId)
+                {
+                    continue;
+                }
+
+                var server = _federationManager.GetServer(src.ServerId);
+                if (server == null || !server.Enabled)
+                {
+                    continue;
+                }
+
+                if (requestingUserGuid.HasValue
+                    && !_accessControl.IsAllowed(server, requestingUserGuid, mappingName, src.RemoteItemId))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    return await BuildDirectStreamUrlAsync(src.ServerId, src.RemoteItemId.ToString("N"), isAudio, cancellationToken, requestingUserGuid?.ToString("N")).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Fallback source {ServerId} for item {ItemId} also failed", src.ServerId, remoteItemId);
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -198,6 +295,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
+                Guid? requestingUserGuid = null;
+                string? mappingName = null;
+                if (!string.IsNullOrEmpty(requestingUserId) && Guid.TryParse(requestingUserId, out var parsedUserGuid))
+                {
+                    requestingUserGuid = parsedUserGuid;
+                }
+
+                var hasRemoteItemGuid = Guid.TryParse(remoteItemId, out var remoteItemGuid);
+                if (hasRemoteItemGuid)
+                {
+                    mappingName = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemGuid) is string key
+                        ? _federationManager.Cache.GetEntryByKey(key)?.MappingName
+                        : null;
+                }
+
                 // Redundant with FederationMediaSourceProvider already having decided
                 // whether to hand this URL out in the first place (see its comment on
                 // requestingUserFlag) - re-checked here so a URL that outlived the
@@ -205,14 +317,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // admin tightens an override) is still denied. No requestingUserId at
                 // all (an older client, or a URL minted before this feature existed)
                 // behaves exactly as before - only a URL that does carry one is
-                // subject to this check.
-                if (!string.IsNullOrEmpty(requestingUserId)
-                    && Guid.TryParse(requestingUserId, out var requestingUserGuid)
-                    && Guid.TryParse(remoteItemId, out var remoteItemGuid))
+                // subject to this check. A null mappingName still runs the check
+                // (IsAllowed treats it as "unknown library", failing
+                // CertainLibraries-style rules closed rather than open).
+                if (requestingUserGuid.HasValue && hasRemoteItemGuid)
                 {
-                    var mappingName = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemGuid) is string key
-                        ? _federationManager.Cache.GetEntryByKey(key)?.MappingName
-                        : null;
                     if (!_accessControl.IsAllowed(server, requestingUserGuid, mappingName, remoteItemGuid))
                     {
                         _logger.LogInformation(
@@ -225,7 +334,32 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                string url;
+                try
+                {
+                    url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+                {
+                    // The requested source cannot serve this item right now
+                    // (token mint refused - content unshared/deleted on the
+                    // friend, or the friend is down). Before giving up, try the
+                    // same cache entry's OTHER sources: on a deduped item that
+                    // is exactly the redundancy dedup exists to provide, and
+                    // without this the client sees "Playback Error" while an
+                    // identical copy sits on a second server.
+                    var fallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
+                    if (fallbackUrl == null)
+                    {
+                        throw;
+                    }
+
+                    url = fallbackUrl;
+                    _logger.LogInformation(
+                        "[Federation] Primary source refused item {ItemId}; serving from a sibling source instead",
+                        remoteItemId);
+                }
+
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
 
                 // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
@@ -241,7 +375,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 // this point (the old code just passed the 403 through, and player
                 // retries re-sent the same dead token). Drop the cached token,
                 // mint a fresh one, and relay once more. A genuinely unauthorized
-                // request simply gets rejected a second time.
+                // request simply gets rejected a second time. If the re-mint
+                // itself is refused (the friend genuinely won't serve this item
+                // anymore), a sibling source gets one shot too before the stream
+                // dies - same rationale as the primary-path catch above.
                 if (upstreamStatus is 401 or 403 && !response.HasStarted)
                 {
                     RemoteServerClient.InvalidateUserSessionToken(serverId, requestingUserId);
@@ -251,7 +388,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     // retry below would pull the exact rejected token straight
                     // back out of the cache and fail identically forever.
                     RemoteServerClient.InvalidateItemPlaybackToken(serverId, remoteItemId, requestingUserId);
-                    url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                    try
+                    {
+                        url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+                    {
+                        var retryFallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
+                        if (retryFallbackUrl == null)
+                        {
+                            throw;
+                        }
+
+                        url = retryFallbackUrl;
+                    }
+
                     _logger.LogInformation(
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
                         remoteItemId,
