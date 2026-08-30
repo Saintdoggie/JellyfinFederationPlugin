@@ -616,6 +616,81 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Admin-triggered: registers a non-Jellyfin consumer of our own catalog
+        /// (<see cref="ServerKind.Companion"/>) - today, a Federation Companion
+        /// instance a Plex-owning friend runs to import our content as
+        /// <c>.strm</c> files. Unlike <see cref="AcceptFriendRequestAsync"/>
+        /// there is no reciprocal server to hand this token to automatically
+        /// (a Companion instance has no Federation plugin of its own to receive
+        /// a handshake call), so this mints the token and hands back a
+        /// connect code for the admin to copy to their friend directly - the
+        /// same <c>{ url, token, name }</c> base64 shape Companion's own
+        /// <c>/api/connect/generate</c> already produces, for symmetry.
+        /// </summary>
+        public (bool Success, string Message, string? ConnectCode) CreateCompanionFriend(string name, bool shareAllLibraries, List<string>? sharedLibraryFolderIds)
+        {
+            var localUrl = ResolveLocalUrl();
+            if (string.IsNullOrEmpty(localUrl))
+            {
+                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first, since your friend's Companion app needs it to reach back.", null);
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return (false, "Plugin not initialized.", null);
+            }
+
+            var token = FederationTokenAuth.GenerateToken();
+            var friendlyName = string.IsNullOrWhiteSpace(name) ? "Plex friend" : name.Trim();
+            var server = new RemoteServer
+            {
+                Id = Guid.NewGuid().ToString(),
+                Kind = ServerKind.Companion,
+                Name = friendlyName,
+                IssuedApiKey = token,
+                Enabled = true,
+                ShareAllLibraries = shareAllLibraries,
+                SharedLibraryFolderIds = sharedLibraryFolderIds ?? new List<string>()
+            };
+
+            config.RemoteServers ??= new List<RemoteServer>();
+            config.RemoteServers.Add(server);
+            Plugin.Instance!.SaveConfiguration();
+
+            return (true, $"Connect code generated for {friendlyName}.", BuildConnectCode(localUrl, token, friendlyName));
+        }
+
+        /// <summary>
+        /// Reconstructs the same connect code <see cref="CreateCompanionFriend"/>
+        /// returns, from an already-stored <see cref="RemoteServer.IssuedApiKey"/> -
+        /// so an admin who lost the copied text can pull it up again without
+        /// rotating the token (and breaking their friend's existing Companion
+        /// setup in the process).
+        /// </summary>
+        public (bool Success, string Message, string? ConnectCode) GetCompanionConnectCode(RemoteServer server)
+        {
+            var localUrl = ResolveLocalUrl();
+            if (string.IsNullOrEmpty(localUrl))
+            {
+                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first.", null);
+            }
+
+            if (string.IsNullOrEmpty(server.IssuedApiKey))
+            {
+                return (false, "This friend has no issued token yet.", null);
+            }
+
+            return (true, "Connect code ready.", BuildConnectCode(localUrl, server.IssuedApiKey, server.Name));
+        }
+
+        private static string BuildConnectCode(string url, string token, string name)
+        {
+            var payload = JsonSerializer.Serialize(new { url, token, name });
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+        }
+
+        /// <summary>
         /// Admin-triggered: creates a new pool owned by this server, with this server
         /// as its sole initial member.
         /// </summary>
