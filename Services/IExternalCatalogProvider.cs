@@ -41,6 +41,16 @@ namespace Jellyfin.Plugin.Federation.Services
         Task<IReadOnlyList<ExternalLibrary>> GetLibrariesAsync(RemoteServer server, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Same as <see cref="GetLibrariesAsync"/>, except NOT filtered through
+        /// <see cref="RemoteServer.AllowedExternalLibraryIds"/> - every library
+        /// the remote currently exposes, allowed or not. Backs the admin UI's
+        /// library-visibility picker for external servers, which needs to offer
+        /// the currently-disallowed sections too (otherwise a library declined
+        /// once could never be re-allowed). Empty when unreachable.
+        /// </summary>
+        Task<IReadOnlyList<ExternalLibrary>> GetAllLibrariesAsync(RemoteServer server, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Fetches every item in one remote library. Implementations are
         /// responsible for their own paging, and must return parents before
         /// children (series before their episodes), because the sync pipeline
