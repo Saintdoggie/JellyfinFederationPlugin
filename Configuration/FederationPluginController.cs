@@ -1983,6 +1983,56 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: registers a non-Jellyfin consumer of our own
+        /// catalog (<see cref="ServerKind.Companion"/>) - a Federation
+        /// Companion instance a Plex-owning friend runs to import our content
+        /// as <c>.strm</c> files. Returns a one-time connect code the admin
+        /// copies to their friend; see <see cref="FederationFriendService.CreateCompanionFriend"/>.
+        /// </summary>
+        [HttpPost("Servers/Companion")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult AddCompanionFriend([FromBody] AddCompanionFriendBody? body)
+        {
+            var (success, message, connectCode) = _friends.CreateCompanionFriend(
+                body?.Name ?? string.Empty,
+                body?.ShareAllLibraries ?? true,
+                body?.SharedLibraryFolderIds);
+
+            if (!success)
+            {
+                return BadRequest(new { success, message });
+            }
+
+            _clientFactory.InvalidateAll();
+            var created = Plugin.Instance?.Configuration?.RemoteServers?.LastOrDefault(s => s.Kind == ServerKind.Companion);
+            return Ok(new { success, message, connectCode, server = created == null ? null : SanitizeServer(created) });
+        }
+
+        /// <summary>
+        /// Re-derives the same connect code <see cref="AddCompanionFriend"/>
+        /// returned, from the token already on file - so an admin who lost the
+        /// copied text can pull it up again without rotating the token.
+        /// </summary>
+        [HttpGet("Servers/{id}/CompanionConnectCode")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetCompanionConnectCode(string id)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null || server.Kind != ServerKind.Companion)
+            {
+                return NotFound(new { error = "Companion friend not found" });
+            }
+
+            var (success, message, connectCode) = _friends.GetCompanionConnectCode(server);
+            if (!success)
+            {
+                return BadRequest(new { success, message });
+            }
+
+            return Ok(new { success, connectCode });
+        }
+
+        /// <summary>
         /// Admin-triggered: fetches the live library/section list from a
         /// non-Jellyfin (Plex) server, merged with this side's recorded
         /// sharing consent (see <see cref="RemoteServer.AllowedExternalLibraryIds"/>),
@@ -3369,6 +3419,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.WanMaxBitrateMbps,
                 s.WanMaxHeight,
                 HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
+                HasIssuedApiKey = !string.IsNullOrEmpty(s.IssuedApiKey),
                 s.ShareAllLibraries,
                 s.SharedLibraryFolderIds,
                 s.ExcludedItemIds,
@@ -3419,6 +3470,15 @@ namespace Jellyfin.Plugin.Federation.Api
     public class SetExternalServerTokenBody
     {
         public string? Token { get; set; }
+    }
+
+    public class AddCompanionFriendBody
+    {
+        public string? Name { get; set; }
+
+        public bool ShareAllLibraries { get; set; } = true;
+
+        public List<string>? SharedLibraryFolderIds { get; set; }
     }
 
     public class SendFriendRequestBody

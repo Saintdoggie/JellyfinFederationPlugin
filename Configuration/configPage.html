@@ -231,6 +231,7 @@
             <div class="fed-tabs" id="fedTabs" role="tablist">
                 <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="companion" role="tab" aria-selected="false">Companion</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
@@ -331,6 +332,46 @@
                     <div id="fedPoolInvitesOutgoing"></div>
 
                     <div id="fedPoolList"></div>
+                </div>
+            </div>
+
+            <div class="fed-tabpanel" data-tab-panel="companion" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
+                    <p class="fieldDescription">
+                        Have a Jellyfin friend whose Federation Companion app generated a connect code for you? Paste it
+                        below to add their Plex server as a source - the same as any other federated library, just backed
+                        by Plex instead of Jellyfin.
+                    </p>
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedPlexConnectCode">Connect code</label>
+                            <textarea id="fedPlexConnectCode" class="emby-textarea fed-input" rows="2" placeholder="Paste the code your friend copied from their Companion app"></textarea>
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="connect-plex-source">Connect</button>
+                    </div>
+                    <div id="fedPlexConnectStatus" class="fed-srvstatus" style="display:none;"></div>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Let a Plex friend import from you</h3>
+                    <p class="fieldDescription">
+                        Generate a connect code for a Plex-owning friend to paste into their own Federation Companion app.
+                        Their Companion instance pulls whatever you share below and keeps it in sync automatically - Plex
+                        never talks to this server directly, and no Plex credential of theirs ever reaches you.
+                    </p>
+
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedNewCompanionName">Friend's name</label>
+                            <input type="text" id="fedNewCompanionName" class="emby-input" placeholder="e.g. Alex's Plex" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="create-companion">Generate connect code</button>
+                    </div>
+                    <div id="fedCompanionStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedCompanionNewCode"></div>
+
+                    <div id="fedCompanionList"></div>
                 </div>
             </div>
 
@@ -1414,14 +1455,23 @@
                             return;
                         }
 
-                        var s = currentConfig.RemoteServers || [];
+                        // Plex sources and Companion consumers get their own tab
+                        // (they don't have the Url/StreamingMode/etc. shape this
+                        // roster renders) - keep original array indices even
+                        // after filtering, since every action below (test-server,
+                        // manage-friend, remove-friend) addresses a server by its
+                        // index into the full, unfiltered currentConfig.RemoteServers.
+                        var s = (currentConfig.RemoteServers || [])
+                            .map(function (server, i) { return { server: server, i: i }; })
+                            .filter(function (x) { return !x.server.Kind; });
                         if (s.length === 0) {
                             c.innerHTML = '<p class="fed-muted">No friends connected yet - add one above.</p>';
                             return;
                         }
 
                         var html = '';
-                        s.forEach(function (server, i) {
+                        s.forEach(function (entry) {
+                            var server = entry.server, i = entry.i;
                             var title = server.Name || server.Url || ('Friend ' + (i + 1));
                             var isOpen = expandedFriends[server.Id] === true;
                             var isOff = server.Enabled === false;
@@ -1473,6 +1523,164 @@
                         });
                         c.innerHTML = html;
                         loadLocalLibraries();
+                        renderCompanion();
+                    }
+
+                    /* ---------------- Companion (Plex import/export) ---------------- */
+
+                    function setFedStatus(id, msg, kind) {
+                        var el = q('#' + id);
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function renderCompanion() {
+                        var listEl = q('#fedCompanionList');
+                        if (!listEl) {
+                            return;
+                        }
+
+                        var entries = (currentConfig.RemoteServers || [])
+                            .map(function (server, i) { return { server: server, i: i }; })
+                            .filter(function (x) { return x.server.Kind === 2; });
+
+                        if (entries.length === 0) {
+                            listEl.innerHTML = '<p class="fed-muted">No Plex friends connected yet - generate a code above.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        entries.forEach(function (entry) {
+                            var server = entry.server;
+                            var isOpen = expandedFriends[server.Id] === true;
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<strong>' + escapeHtml(server.Name || 'Plex friend') + '</strong>';
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="copy-companion-code" data-id="' + escapeHtml(server.Id) + '">Copy connect code</button>';
+                            html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="manage-friend" data-i="' + entry.i + '">' + (isOpen ? 'Close' : 'Manage') + '</button>';
+                            html += '</div>';
+                            if (isOpen) {
+                                html += '<div class="fed-friendpanel">';
+                                html += '<p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>';
+                                html += renderSharingBlock(server);
+                                html += '<div style="margin-top:0.9em;">';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-friend" data-i="' + entry.i + '">Remove</button>';
+                                html += '</div>';
+                                html += '</div>';
+                            }
+
+                            html += '</div>';
+                        });
+                        listEl.innerHTML = html;
+                    }
+
+                    function createCompanionFriend() {
+                        var nameInput = q('#fedNewCompanionName');
+                        var name = nameInput ? nameInput.value.trim() : '';
+                        setFedStatus('fedCompanionStatus', 'Generating…', 'info');
+                        fedFetch('/Plugins/Federation/Servers/Companion', {
+                            method: 'POST',
+                            body: JSON.stringify({ Name: name, ShareAllLibraries: true, SharedLibraryFolderIds: [] })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success) {
+                                setFedStatus('fedCompanionStatus', res.message || 'Could not generate a connect code.', 'err');
+                                return;
+                            }
+
+                            setFedStatus('fedCompanionStatus', '', null);
+                            if (nameInput) {
+                                nameInput.value = '';
+                            }
+
+                            currentConfig.RemoteServers.push(res.server);
+                            showCompanionCode(res.connectCode, res.server.Name);
+                            renderFriends();
+                        })
+                        .catch(function (e) { setFedStatus('fedCompanionStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function showCompanionCode(code, name) {
+                        var el = q('#fedCompanionNewCode');
+                        if (!el) {
+                            return;
+                        }
+
+                        el.innerHTML = '<div class="fed-subcard">'
+                            + '<h4 class="fed-subhead">Connect code for ' + escapeHtml(name || 'this friend') + '</h4>'
+                            + '<p class="fed-hint">Copy this to your friend - they paste it into their Federation Companion app\'s "Import from Jellyfin" step.</p>'
+                            + '<div class="fed-inline"><textarea class="emby-textarea fed-input" rows="2" readonly>' + escapeHtml(code) + '</textarea>'
+                            + '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="copy-companion-code-text" data-code="' + escapeHtml(code) + '">Copy</button></div>'
+                            + '</div>';
+                    }
+
+                    function copyCompanionCode(id, btn) {
+                        fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(id) + '/CompanionConnectCode')
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success) {
+                                showError(res.message || 'Could not fetch connect code.');
+                                return;
+                            }
+
+                            copyTailscaleCommand(res.connectCode, btn);
+                        })
+                        .catch(function (e) { showError('Error: ' + e.message); });
+                    }
+
+                    function connectPlexSource() {
+                        var input = q('#fedPlexConnectCode');
+                        var raw = input ? input.value.trim() : '';
+                        if (!raw) {
+                            setFedStatus('fedPlexConnectStatus', 'Paste a connect code first.', 'err');
+                            return;
+                        }
+
+                        var decoded;
+                        try {
+                            decoded = JSON.parse(atob(raw));
+                        } catch (e) {
+                            setFedStatus('fedPlexConnectStatus', 'That code could not be read - check it was copied in full.', 'err');
+                            return;
+                        }
+
+                        if (!decoded || !decoded.url || !decoded.token) {
+                            setFedStatus('fedPlexConnectStatus', 'That code is missing an address or token.', 'err');
+                            return;
+                        }
+
+                        setFedStatus('fedPlexConnectStatus', 'Connecting…', 'info');
+                        fedFetch('/Plugins/Federation/ExternalServers', {
+                            method: 'POST',
+                            body: JSON.stringify({ Name: decoded.name, Url: decoded.url, Token: decoded.token })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success) {
+                                setFedStatus('fedPlexConnectStatus', res.error || res.message || 'Could not connect.', 'err');
+                                return;
+                            }
+
+                            setFedStatus('fedPlexConnectStatus', 'Connected to ' + (decoded.name || decoded.url) + '.', 'ok');
+                            if (input) {
+                                input.value = '';
+                            }
+
+                            return loadConfiguration(true);
+                        })
+                        .catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Error: ' + e.message, 'err'); });
                     }
 
                     function collectServer(i) {
@@ -3606,6 +3814,18 @@
                                     break;
                                 case 'create-pool':
                                     createPool();
+                                    break;
+                                case 'create-companion':
+                                    createCompanionFriend();
+                                    break;
+                                case 'copy-companion-code':
+                                    copyCompanionCode(t.getAttribute('data-id'), t);
+                                    break;
+                                case 'copy-companion-code-text':
+                                    copyTailscaleCommand(t.getAttribute('data-code'), t);
+                                    break;
+                                case 'connect-plex-source':
+                                    connectPlexSource();
                                     break;
                                 case 'invite-pool':
                                     invitePool(t.getAttribute('data-pool'));

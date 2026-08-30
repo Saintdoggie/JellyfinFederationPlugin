@@ -535,6 +535,72 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Null(_service.FindByFederationId(null));
     }
 
+    [Fact]
+    public void CreateCompanionFriend_Success_AddsCompanionServer_AndReturnsConnectCode()
+    {
+        var (success, message, connectCode) = _service.CreateCompanionFriend("Alex's Plex", false, new List<string> { "folder-1" });
+
+        Assert.True(success, message);
+        Assert.False(string.IsNullOrEmpty(connectCode));
+
+        var server = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.Equal(ServerKind.Companion, server.Kind);
+        Assert.Equal("Alex's Plex", server.Name);
+        Assert.False(server.ShareAllLibraries);
+        Assert.Equal(new List<string> { "folder-1" }, server.SharedLibraryFolderIds);
+        Assert.False(string.IsNullOrEmpty(server.IssuedApiKey));
+        Assert.True(server.Enabled);
+
+        var decoded = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(connectCode!)).RootElement;
+        Assert.Equal("http://local.test:8096", decoded.GetProperty("url").GetString());
+        Assert.Equal(server.IssuedApiKey, decoded.GetProperty("token").GetString());
+        Assert.Equal("Alex's Plex", decoded.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public void CreateCompanionFriend_NoLocalUrlConfigured_Fails()
+    {
+        _plugin.Configuration.ServerUrl = string.Empty;
+
+        var (success, _, connectCode) = _service.CreateCompanionFriend("Alex's Plex", true, null);
+
+        Assert.False(success);
+        Assert.Null(connectCode);
+        Assert.Empty(_plugin.Configuration.RemoteServers);
+    }
+
+    [Fact]
+    public void CreateCompanionFriend_BlankName_DefaultsToPlexFriend()
+    {
+        var (success, _, _) = _service.CreateCompanionFriend(string.Empty, true, null);
+
+        Assert.True(success);
+        Assert.Equal("Plex friend", Assert.Single(_plugin.Configuration.RemoteServers).Name);
+    }
+
+    [Fact]
+    public void GetCompanionConnectCode_ReconstructsFromStoredToken_WithoutRotatingIt()
+    {
+        var (_, _, firstCode) = _service.CreateCompanionFriend("Alex's Plex", true, null);
+        var server = Assert.Single(_plugin.Configuration.RemoteServers);
+
+        var (success, message, secondCode) = _service.GetCompanionConnectCode(server);
+
+        Assert.True(success, message);
+        Assert.Equal(firstCode, secondCode);
+    }
+
+    [Fact]
+    public void GetCompanionConnectCode_NoIssuedToken_Fails()
+    {
+        var server = new RemoteServer { Kind = ServerKind.Companion, Name = "Alex's Plex" };
+
+        var (success, _, connectCode) = _service.GetCompanionConnectCode(server);
+
+        Assert.False(success);
+        Assert.Null(connectCode);
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

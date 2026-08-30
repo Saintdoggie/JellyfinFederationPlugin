@@ -432,7 +432,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// client, and Plex has no equivalent of this plugin's scoped
         /// per-item playback tokens.
         /// </summary>
-        Plex = 1
+        Plex = 1,
+
+        /// <summary>
+        /// A non-Jellyfin consumer of our own catalog - today, a Federation
+        /// Companion instance a Plex-owning friend runs to import our federated
+        /// content as <c>.strm</c> files. Never dialed out to (<see cref="RemoteServer.Url"/>/
+        /// <see cref="RemoteServer.ApiKey"/> stay empty): this kind of entry only
+        /// ever exists to be the target of <see cref="Services.FederationTokenAuth.ResolveCaller"/>
+        /// on inbound <c>Peer/*</c> calls, the mirror image of every other kind
+        /// which we call outward to pull content from. Sharing scope
+        /// (<see cref="RemoteServer.ShareAllLibraries"/>/<see cref="RemoteServer.SharedLibraryFolderIds"/>)
+        /// and the issued token work exactly the same as a real Jellyfin friend.
+        /// </summary>
+        Companion = 2
     }
 
     /// <summary>

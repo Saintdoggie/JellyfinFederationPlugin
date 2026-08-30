@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.115",
-  "changelog": "TestServer and GetRemoteUsers now give Plex-aware messaging (routed through IExternalCatalogProvider.TestConnectionAsync) instead of a generic 'failed to connect'/'no federation token' when the configured server is a pasted-token Plex source, not a Jellyfin friend. PlexCatalogProvider gained GetAllLibrariesAsync, an unfiltered sibling of GetLibrariesAsync that will back an upcoming library-visibility picker - it needs to offer the currently-disallowed sections too, or a library declined once could never be re-allowed. This version also fixes a build-breaking regression picked up mid-development: a botched edit had deleted the try/using block backing GetRemoteUsers' user list fetch (leaving its own success path referencing an undeclared variable) and dropped the #region Server Management opener paired with an #endregion later in the file, so the whole plugin failed to compile. Both are restored; 301 tests, all green.",
+  "version": "0.0.116",
+  "changelog": "New Companion tab: a Jellyfin admin can now generate a one-time connect code for a Plex-owning friend to paste into their own Federation Companion app, letting that friend's Companion instance import this server's federated catalog and keep it in sync automatically (added ServerKind.Companion - a consumer-only peer that's only ever the target of the existing Peer/* API, never dialed out to). The same tab also closes a gap in the other direction: pasting a Companion-generated connect code now actually adds the friend's Plex server here (POST ExternalServers was already built but had no admin-UI screen calling it). 306 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-30T23:30:00Z",
+  "timestamp": "2026-08-30T23:45:00Z",
   "imageUrl": "thumb.png"
 }
