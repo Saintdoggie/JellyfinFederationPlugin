@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 // user action, never a sustained media stream, so one client is plenty.
 builder.Services.AddSingleton(new HttpClient());
 builder.Services.AddSingleton<PlexClient>();
+builder.Services.AddSingleton<JellyfinImportService>();
 
 // Loaded once at startup rather than per-request: every request in this app
 // either reads or mutates the same single-user state, and concurrent writes
@@ -17,6 +18,8 @@ builder.Services.AddSingleton<PlexClient>();
 var state = await CompanionState.LoadAsync();
 builder.Services.AddSingleton(state);
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
+
+builder.Services.AddHostedService<ImportSyncBackgroundService>();
 
 var app = builder.Build();
 
@@ -205,6 +208,85 @@ app.MapDelete("/api/peers/{id}", async (string id, CompanionState s) =>
     return Results.Ok();
 });
 
+app.MapGet("/api/import/peers", (CompanionState s) => Results.Ok(s.ImportPeers));
+
+app.MapPost("/api/import/connect", async (ImportConnectRequest body, CompanionState s, JellyfinImportService jellyfin, PlexClient plex, ILogger<Program> logger, CancellationToken ct) =>
+{
+    ConnectCodePayload? decoded;
+    try
+    {
+        decoded = JsonSerializer.Deserialize<ConnectCodePayload>(
+            Convert.FromBase64String(body.Code ?? string.Empty),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (Exception ex) when (ex is FormatException or JsonException)
+    {
+        return Results.BadRequest(new { error = "That code could not be read - check it was copied in full." });
+    }
+
+    if (decoded == null || string.IsNullOrWhiteSpace(decoded.Url) || string.IsNullOrWhiteSpace(decoded.Token))
+    {
+        return Results.BadRequest(new { error = "That code is missing an address or token." });
+    }
+
+    var peer = new JellyfinImportPeer
+    {
+        Name = string.IsNullOrWhiteSpace(decoded.Name) ? decoded.Url : decoded.Name,
+        Url = decoded.Url.TrimEnd('/'),
+        Token = decoded.Token
+    };
+    peer.ExportPath = Path.Combine(AppContext.BaseDirectory, "imported", peer.Id);
+
+    s.ImportPeers.Add(peer);
+    await s.SaveAsync().ConfigureAwait(false);
+
+    // Immediate first sync so the admin sees results right away rather than
+    // waiting up to 30 minutes for the background timer's first tick.
+    await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
+
+    return Results.Ok(peer);
+});
+
+app.MapPost("/api/import/peers/{id}/plex-section", async (string id, SetPlexSectionRequest body, CompanionState s) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null)
+    {
+        return Results.NotFound();
+    }
+
+    peer.PlexSectionKey = string.IsNullOrWhiteSpace(body.SectionKey) ? null : body.SectionKey;
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(peer);
+});
+
+app.MapPost("/api/import/peers/{id}/sync", async (string id, CompanionState s, JellyfinImportService jellyfin, PlexClient plex, ILogger<Program> logger, CancellationToken ct) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null)
+    {
+        return Results.NotFound();
+    }
+
+    await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
+    return Results.Ok(peer);
+});
+
+app.MapDelete("/api/import/peers/{id}", async (string id, CompanionState s) =>
+{
+    // Stops tracking/syncing only - already-written .strm files are left on
+    // disk untouched, so removing a peer here never silently deletes media
+    // Plex still has scanned in.
+    var removed = s.ImportPeers.RemoveAll(p => p.Id == id) > 0;
+    if (!removed)
+    {
+        return Results.NotFound();
+    }
+
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok();
+});
+
 app.Run();
 
 static void MergeLibraries(CompanionState s, List<CompanionLibrary> fresh)
@@ -233,3 +315,16 @@ internal sealed record ToggleLibraryRequest(string SectionKey, bool Shared);
 internal sealed record SetPublicUrlRequest(string Url);
 
 internal sealed record LinkCompleteRequest(string Token, string? RequesterName);
+
+internal sealed record ImportConnectRequest(string? Code);
+
+internal sealed record SetPlexSectionRequest(string? SectionKey);
+
+internal sealed class ConnectCodePayload
+{
+    public string? Url { get; set; }
+
+    public string? Token { get; set; }
+
+    public string? Name { get; set; }
+}
