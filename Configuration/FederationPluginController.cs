@@ -555,7 +555,33 @@ namespace Jellyfin.Plugin.Federation.Api
                 autoProvisionLibraries = config.AutoProvisionLibraries,
                 enableDedup = config.EnableDedup,
                 dedupProviderIds = config.DedupProviderIds,
-                refreshIntervalHours = config.RefreshIntervalHours
+                refreshIntervalHours = config.RefreshIntervalHours,
+                // Assembly version (the csproj Version, same one shipped in
+                // meta.json) for the config page's footer - the runtime source
+                // of truth for "what am I actually running", rather than the
+                // page guessing from a hardcoded string that would drift. The
+                // plugin auto-updates through Jellyfin's own plugin catalog
+                // whenever the manifest ships a newer version, so the footer
+                // doubles as the "did my update land yet?" check.
+                pluginVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+            });
+        }
+
+        /// <summary>
+        /// Returns the plugin's own current assembly version, for the config
+        /// page's footer ("plugin vX.Y.Z" line + releases link). Separate tiny
+        /// endpoint rather than overloading <see cref="GetSystemInfo"/> with
+        /// it: that shape is mirrored in tests and consumed piecemeal, and a
+        /// version-only route can also be added to the config page's initial
+        /// load without pulling the whole diagnostics payload.
+        /// </summary>
+        [HttpGet("PluginVersion")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetPluginVersion()
+        {
+            return Ok(new
+            {
+                version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown"
             });
         }
 
@@ -563,6 +589,14 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #region Server Management
 
+        /// <summary>
+        /// Tests reachability and credential validity for a configured server.
+        /// A Jellyfin friend goes through the full Peer/SystemInfo path below;
+        /// a non-Jellyfin server (Plex) is routed through its
+        /// <see cref="IExternalCatalogProvider"/> instead, since it has no
+        /// Peer/* endpoints to ask - previously a Plex server here could only
+        /// ever report "Failed to connect".
+        /// </summary>
         [HttpPost("TestServer")]
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> TestServer([FromBody] RemoteServer server, CancellationToken cancellationToken)
@@ -574,13 +608,10 @@ namespace Jellyfin.Plugin.Federation.Api
 
             // The config page never holds saved federation tokens; when testing
             // an existing server with a blank one, fall back to the stored one.
-            if (string.IsNullOrEmpty(server.ApiKey) && !string.IsNullOrEmpty(server.Id))
+            var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+            if (string.IsNullOrEmpty(server.ApiKey) && configured != null)
             {
-                var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
-                if (configured != null)
-                {
-                    server.ApiKey = configured.ApiKey;
-                }
+                server.ApiKey = configured.ApiKey;
             }
 
             if (string.IsNullOrWhiteSpace(server.ApiKey))
@@ -589,13 +620,58 @@ namespace Jellyfin.Plugin.Federation.Api
                 // ever minted automatically during the friend-request handshake.
                 // Reaching this means the handshake for this entry never actually
                 // completed (or its token was since revoked) - send/accept a
-                // friend request rather than editing this field by hand.
-                return BadRequest(new { success = false, message = "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically." });
+                // friend request rather than editing this field by hand. For a
+                // non-Jellyfin server (Plex) the same field holds that server's
+                // own token instead, which IS pasted by hand from the Plex card,
+                // so it gets its own wording rather than friend-handshake advice.
+                return BadRequest(new
+                {
+                    success = false,
+                    message = configured?.Kind != ServerKind.Jellyfin
+                        ? "No token on file for this server yet - paste one into the Plex servers card, or re-add the server there."
+                        : "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically."
+                });
             }
 
             if (!ConfigValidator.IsValidServerUrl(server.Url))
             {
                 return BadRequest(new { success = false, message = "Server URL must be an absolute http(s) URL" });
+            }
+
+            // A non-Jellyfin server (Plex today) doesn't speak this plugin's own
+            // Peer/* protocol at all, so the RemoteServerClient path below can
+            // only ever fail against it - route through the same external-
+            // catalog abstraction sync/streaming already use instead, so the
+            // Test button (both the People row's and the Plex card's) gives a
+            // real reachable/token-valid answer for a Plex server too.
+            if (configured != null && configured.Kind != ServerKind.Jellyfin)
+            {
+                var externalProvider = _externalCatalogs.For(configured);
+                if (externalProvider == null)
+                {
+                    return Ok(new { success = false, message = $"This server kind ({configured.Kind}) isn't supported." });
+                }
+
+                var friendlyName = await externalProvider.TestConnectionAsync(server, cancellationToken).ConfigureAwait(false);
+                if (friendlyName == null)
+                {
+                    return Ok(new { success = false, message = $"Could not reach {server.Name}, or its token was rejected. Check the address is reachable from this server and the token is still valid." });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Connection successful",
+                    serverInfo = new
+                    {
+                        name = friendlyName,
+                        version = "-",
+                        operatingSystem = configured.Kind.ToString(),
+                        serverId = configured.Id,
+                        suggestedUserId = (string?)null,
+                        federationPluginVersion = (string?)null
+                    }
+                });
             }
 
             try
@@ -702,14 +778,30 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(server.ApiKey))
+            // Per-remote-user overrides are pushed to the friend's own server
+            // through this plugin's Peer/* endpoints (see SetRemoteUserAccessRule)
+            // - a non-Jellyfin server (Plex) has none, so asking it for a user
+            // list can only ever produce a confusing "failed to connect" a
+            // moment later. Say what's actually wrong instead.
+            var kindOnFile = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+            if (kindOnFile != null && kindOnFile.Kind != ServerKind.Jellyfin)
             {
-                return BadRequest(new { success = false, message = "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically." });
+                return Ok(new { success = false, message = "Per-user permissions only apply to Jellyfin friends - a Plex server's own logins aren't visible through this plugin." });
             }
 
-            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            if (string.IsNullOrWhiteSpace(server.ApiKey))
             {
-                return BadRequest(new { success = false, message = "Server URL must be an absolute http(s) URL" });
+                // Same reasoning as TestServer's Plex-aware wording above: for a
+                // non-Jellyfin server the "token" is pasted by hand from that
+                // server's own card, not minted by the friend handshake.
+                var configuredKind = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id)?.Kind;
+                return BadRequest(new
+                {
+                    success = false,
+                    message = configuredKind != ServerKind.Jellyfin
+                        ? "No token on file for this server yet - paste one into the Plex servers card, or re-add the server there."
+                        : "No federation token on file for this friend yet - send or accept a friend request first, it's minted automatically."
+                });
             }
 
             try
@@ -1800,6 +1892,141 @@ namespace Jellyfin.Plugin.Federation.Api
         /// every checkbox unchecked in the picker UI should behave; omit the field
         /// entirely (or pass a Jellyfin server's id) to make no change.
         /// </summary>
+        /// <summary>
+        /// Adds a non-Jellyfin (Plex) media server. Kept deliberately separate
+        /// from the friend handshake: a Plex server has no admin on the other
+        /// end clicking Accept, so the ordinary <c>Friends/Send</c> flow can
+        /// never complete against one - the token is the whole credential and
+        /// is pasted by hand, exactly once, here.
+        /// </summary>
+        [HttpPost("ExternalServers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult AddExternalServer([FromBody] AddExternalServerBody body)
+        {
+            if (body == null || string.IsNullOrWhiteSpace(body.Url) || string.IsNullOrWhiteSpace(body.Token))
+            {
+                return BadRequest(new { error = "Server URL and token are required" });
+            }
+
+            if (!ConfigValidator.IsValidServerUrl(body.Url))
+            {
+                return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return BadRequest(new { error = "Plugin not initialized" });
+            }
+
+            // Same duplicate-guard the friend flow gets for free from the
+            // handshake: re-adding a server that's already configured (a
+            // double-clicked Add, a forgotten paste from last week) used to
+            // silently create a second entry with a fresh id, and the two then
+            // fought over the same federated library.
+            var normalized = body.Url.TrimEnd('/');
+            if (config.RemoteServers.Any(s => string.Equals(s.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                return BadRequest(new { error = "A server with this address is already configured - edit it in the list instead of adding it again." });
+            }
+
+            var server = new RemoteServer
+            {
+                Id = Guid.NewGuid().ToString(),
+                Kind = ServerKind.Plex,
+                Name = string.IsNullOrWhiteSpace(body.Name) ? body.Url : body.Name,
+                Url = body.Url,
+                ApiKey = body.Token,
+                // Always proxied - see ServerKind.Plex's doc comment: the Plex
+                // token is a real credential for that whole server and must
+                // never reach a client, and Plex has no equivalent of this
+                // plugin's scoped per-item playback tokens to use instead.
+                StreamingMode = StreamingMode.Proxy,
+                Enabled = true
+            };
+            config.RemoteServers.Add(server);
+            Plugin.Instance?.SaveConfiguration();
+            _clientFactory.InvalidateAll();
+            return Ok(new { success = true, server = SanitizeServer(server) });
+        }
+
+        /// <summary>
+        /// Replaces a non-Jellyfin (Plex) server's pasted token in place. Kind,
+        /// name and every other field survive untouched - this is the "the token
+        // expired, here's the new one" path, not a re-add.
+        /// </summary>
+        [HttpPost("ExternalServers/{id}/Token")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetExternalServerToken(string id, [FromBody] SetExternalServerTokenBody body)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { error = "Server not found" });
+            }
+
+            if (server.Kind == ServerKind.Jellyfin)
+            {
+                return BadRequest(new { error = "A Jellyfin friend's token is minted by the friend handshake - use Send friend request instead." });
+            }
+
+            if (string.IsNullOrWhiteSpace(body?.Token))
+            {
+                return BadRequest(new { error = "Token is required" });
+            }
+
+            server.ApiKey = body.Token;
+            Plugin.Instance?.SaveConfiguration();
+            _clientFactory.Invalidate(server.Id);
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Admin-triggered: fetches the live library/section list from a
+        /// non-Jellyfin (Plex) server, merged with this side's recorded
+        /// sharing consent (see <see cref="RemoteServer.AllowedExternalLibraryIds"/>),
+        /// for the Plex management card's library-visibility picker. Sections
+        /// the admin already declined are still returned (flagged), so consent
+        /// can be revised rather than only ever granted.
+        /// </summary>
+        [HttpGet("ExternalServers/{id}/Libraries")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetExternalServerLibraries(string id, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { error = "Server not found" });
+            }
+
+            if (server.Kind == ServerKind.Jellyfin)
+            {
+                return BadRequest(new { error = "A Jellyfin friend's sharing is controlled by their own server - see Friends/{id}/Sharing instead." });
+            }
+
+            var provider = _externalCatalogs.For(server);
+            if (provider == null)
+            {
+                return BadRequest(new { error = $"This server kind ({server.Kind}) isn't supported." });
+            }
+
+            var libraries = await provider.GetLibrariesAsync(server, cancellationToken).ConfigureAwait(false);
+            var allowed = server.AllowedExternalLibraryIds;
+            var result = libraries.Select(lib => new
+            {
+                id = lib.Id,
+                name = lib.Name,
+                mediaType = lib.MediaType,
+                // Null allow-list means "no restriction on record" (a server
+                // configured before this existed) - see the field's doc comment.
+                allowed = allowed == null || allowed.Contains(lib.Id)
+            }).ToList();
+
+            return Ok(result);
+        }
+
         [HttpPost("Servers/{id}/AllowedLibraries")]
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult SetAllowedLibraries(string id, [FromBody] SetAllowedLibrariesBody body)
@@ -1819,6 +2046,46 @@ namespace Jellyfin.Plugin.Federation.Api
             server.AllowedExternalLibraryIds = body?.LibraryIds ?? new List<string>();
             Plugin.Instance?.SaveConfiguration();
             return Ok(new { success = true, allowedLibraryIds = server.AllowedExternalLibraryIds });
+        }
+
+        /// <summary>
+        /// Admin-triggered: lists EVERY library/section a non-Jellyfin (Plex)
+        /// server currently exposes - deliberately NOT filtered through this
+        /// server's allow list, unlike <see cref="GetRemoteLibraries"/> (which
+        /// routes through IExternalCatalogProvider.GetLibrariesAsync and only
+        /// ever returns already-allowed libraries). Backs the Plex management
+        /// card's library-visibility picker, which by definition needs to offer
+        /// the currently-disallowed sections too - otherwise a library declined
+        /// once could never be re-allowed from the UI.
+        /// </summary>
+        [HttpGet("Servers/{id}/ExternalLibraries")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetExternalLibraries(string id, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { error = "Server not found" });
+            }
+
+            if (server.Kind == ServerKind.Jellyfin)
+            {
+                return BadRequest(new { error = "A Jellyfin friend's sharing is controlled by their own server - see Friends/{id}/Sharing instead." });
+            }
+
+            var provider = _externalCatalogs.For(server);
+            if (provider == null)
+            {
+                return BadRequest(new { error = $"Unsupported server kind ({server.Kind})." });
+            }
+
+            var libraries = await provider.GetAllLibrariesAsync(server, cancellationToken).ConfigureAwait(false);
+            return Ok(new
+            {
+                libraries = libraries.Select(l => new { id = l.Id, name = l.Name, mediaType = l.MediaType }),
+                allowed = server.AllowedExternalLibraryIds ?? new List<string>()
+            });
         }
 
         #endregion
@@ -2829,11 +3096,20 @@ namespace Jellyfin.Plugin.Federation.Api
         public IActionResult GetStatus()
         {
             var config = Plugin.Instance?.Configuration;
+
+            // Assembly version, not meta.json - meta is the repository's release
+            // manifest (never shipped inside the plugin), while the assembly
+            // version is what's actually running, set from the same number in the
+            // .csproj on every build. GetPeerSystemInfo already uses this exact
+            // pattern for the remote-side version it reports on Test.
+            var pluginVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+
             return Ok(new
             {
                 totalServers = config?.RemoteServers?.Count ?? 0,
                 activeServers = config?.RemoteServers?.Count(s => s.Enabled) ?? 0,
                 federatedItems = _federationManager.Cache.Count,
+                pluginVersion,
 
                 // Never refreshed comes back as DateTime.MinValue, not null - null it
                 // here so the config page's "d.lastRefresh ? ... : 'Never'" check
@@ -3019,15 +3295,28 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 try
                 {
-                    var client = _clientFactory.GetClient(server);
-                    var online = await client.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
-                    var info = online ? await client.GetSystemInfoAsync(cancellationToken).ConfigureAwait(false) : null;
+                    // A non-Jellyfin server (Plex) has no /System/Info/Public the
+                    // way Jellyfin defines it - RemoteServerClient would report it
+                    // offline even when it's perfectly reachable. Route external
+                    // kinds through their provider (which also validates the
+                    // token), same as TestServer above.
+                    bool online;
+                    if (server.Kind != ServerKind.Jellyfin)
+                    {
+                        online = await _externalCatalogs.For(server)!
+                            .TestConnectionAsync(server, cancellationToken).ConfigureAwait(false) != null;
+                    }
+                    else
+                    {
+                        var client = _clientFactory.GetClient(server);
+                        online = await client.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
                     results.Add(new
                     {
                         serverId = server.Id,
                         serverName = server.Name,
-                        online,
-                        systemInfo = info != null ? new { name = info.ServerName, version = info.Version } : null
+                        online
                     });
                 }
                 catch (Exception ex)
@@ -3116,6 +3405,20 @@ namespace Jellyfin.Plugin.Federation.Api
     public class SetAllowedLibrariesBody
     {
         public List<string>? LibraryIds { get; set; }
+    }
+
+    public class AddExternalServerBody
+    {
+        public string? Name { get; set; }
+
+        public string? Url { get; set; }
+
+        public string? Token { get; set; }
+    }
+
+    public class SetExternalServerTokenBody
+    {
+        public string? Token { get; set; }
     }
 
     public class SendFriendRequestBody

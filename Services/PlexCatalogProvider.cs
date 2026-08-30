@@ -60,6 +60,20 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public async Task<IReadOnlyList<ExternalLibrary>> GetLibrariesAsync(RemoteServer server, CancellationToken cancellationToken)
         {
+            // Same listing as GetAllLibrariesAsync, minus anything this server's
+            // admin hasn't consented to sync (see AllowedExternalLibraryIds) -
+            // this is the shape every sync/mapping path consumes, so it must
+            // never offer a section the allow list excludes.
+            var all = await GetAllLibrariesAsync(server, cancellationToken).ConfigureAwait(false);
+            return all.Where(s => IsAllowed(server, s.Id)).ToList();
+        }
+
+        /// <inheritdoc />
+        public async Task<IReadOnlyList<ExternalLibrary>> GetAllLibrariesAsync(RemoteServer server, CancellationToken cancellationToken)
+        {
+            // Unfiltered by design (see the interface doc): the admin UI's
+            // library-visibility picker needs the disallowed sections too, or a
+            // library declined once could never be re-allowed from the UI.
             var client = CreateClient(server);
             if (client == null)
             {
@@ -69,7 +83,6 @@ namespace Jellyfin.Plugin.Federation.Services
             var sections = await client.GetSectionsAsync(cancellationToken).ConfigureAwait(false);
             return sections
                 .Where(s => MediaTypeByPlexType.ContainsKey(s.Type))
-                .Where(s => IsAllowed(server, s.Key))
                 .Select(s => new ExternalLibrary(s.Key, s.Title, MediaTypeByPlexType[s.Type]))
                 .ToList();
         }

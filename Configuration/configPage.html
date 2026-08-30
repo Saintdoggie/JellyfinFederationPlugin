@@ -15,14 +15,15 @@
                 :where(#federationConfigPage) { color: var(--theme-body-text-color, var(--primary-text-color, #eee)); }
 
                 /* Everything below fills gaps Jellyfin's own dashboard classes don't
-                   cover (tab row, roster rows, progress bar). Deliberately plain to
-                   match the look of other Jellyfin plugin settings pages (Trakt,
-                   Webhook, etc.): no card backgrounds, no coloured pill/dot badges,
-                   no boxed callouts - just native sectionTitle/fieldDescription/
-                   inputContainer/emby-input/emby-select/emby-checkbox/raised/
-                   button-submit/button-flat structure, plain list rows separated by a
-                   hairline border, and colour reserved for the few things that
-                   genuinely need it: errors, warnings and one accent for tabs/progress. */
+                   cover (tab row, roster rows, progress bar). Structure is still
+                   native sectionTitle/fieldDescription/inputContainer/emby-input/
+                   emby-select/emby-checkbox/raised/button-submit/button-flat, but
+                   roster rows and the summary cards now sit on soft translucent
+                   cards with status pills, skeletons and toasts (see the fed-card/
+                   fed-pill/fed-skeleton/fed-toast rules below). Every colour still
+                   comes from a CSS variable or a translucent gray that sits fine
+                   on both light and dark themes - the black-text-on-dark lesson
+                   from the :where() fix above is not relearned here. */
                 #federationConfigPage {
                     --fed-accent: var(--theme-primary-color, var(--primary-accent-color, #00a4dc));
                     --fed-border: rgba(128,128,128,0.30);
