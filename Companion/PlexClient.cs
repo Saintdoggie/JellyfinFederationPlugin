@@ -37,6 +37,22 @@ public sealed class PlexClient
             .ToList();
     }
 
+    /// <summary>
+    /// Kicks off a partial scan of one library section, so Plex picks up a
+    /// sync's changes without waiting for its own scheduled scan interval.
+    /// Best-effort: a failure here (Plex restarting, section already mid-scan)
+    /// isn't worth failing the whole import sync over - Plex's own schedule
+    /// still catches it eventually.
+    /// </summary>
+    public async Task RefreshSectionAsync(string baseUrl, string token, string sectionKey, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}/library/sections/{sectionKey}/refresh");
+        request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
+
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+    }
+
     private sealed class PlexSectionsResponse
     {
         [JsonPropertyName("MediaContainer")]

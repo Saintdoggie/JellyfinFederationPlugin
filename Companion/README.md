@@ -49,6 +49,8 @@ The app is a single page, worked top to bottom:
 
 ![Connect code and connected friends list](docs/screenshots/companion-connect-friend.jpg)
 
+**6. Import from a Jellyfin friend.** The other direction: paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab, and this app pulls whatever they share into a local `.strm` export - point a Plex library at the export path shown for that friend, and Plex plays it straight through their server, same as any other federated title. A background sync keeps the export current (additions and removals) every 30 minutes, or use "Sync now" to force one immediately. Pick a Plex section per friend to have Plex re-scan automatically right after a sync that changed something. Removing a friend here only stops syncing - it never deletes files already written, so nothing already scanned into Plex disappears out from under it.
+
 ## Status
 
 - [x] Standalone Kestrel web app, runs on a local port
@@ -58,6 +60,7 @@ The app is a single page, worked top to bottom:
 - [x] Public URL configuration
 - [x] Connect-code exchange - linking to a Jellyfin server is approved from this side, not just the admin's
 - [x] Peer list with revoke
+- [x] Import from a Jellyfin friend - connect-code exchange in the other direction, with an automatic `.strm` export and Plex section refresh
 - [ ] Phase 3: pool invites (send/receive/accept) and richer peer management
 - [ ] Bandwidth limit control (raised as a real requirement by a prospective federation friend)
 

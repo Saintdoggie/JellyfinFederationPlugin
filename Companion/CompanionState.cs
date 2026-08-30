@@ -67,6 +67,14 @@ public sealed class CompanionState
     /// </summary>
     public List<CompanionPeer> Peers { get; set; } = new();
 
+    /// <summary>
+    /// Jellyfin Federation servers this app imports content *from*, via a
+    /// connect code the Jellyfin admin generated in their own Companion tab -
+    /// the mirror image of <see cref="Peers"/> (servers that import *from*
+    /// this app's own Plex library).
+    /// </summary>
+    public List<JellyfinImportPeer> ImportPeers { get; set; } = new();
+
     private static string PathOnDisk => Path.Combine(AppContext.BaseDirectory, "companion-state.json");
 
     public static async Task<CompanionState> LoadAsync()
@@ -136,4 +144,28 @@ public sealed class CompanionPeer
     public string Name { get; set; } = string.Empty;
 
     public DateTime AddedUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class JellyfinImportPeer
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    public string Name { get; set; } = string.Empty;
+
+    public string Url { get; set; } = string.Empty;
+
+    /// <summary>The federation token from the connect code - sent as X-Federation-Token on every Peer/* call to this friend.</summary>
+    public string Token { get; set; } = string.Empty;
+
+    /// <summary>Local folder this peer's .strm files are written into - point a Plex library at this path.</summary>
+    public string ExportPath { get; set; } = string.Empty;
+
+    /// <summary>Which of this app's own Plex sections to refresh after a sync that changed something - null until the user picks one.</summary>
+    public string? PlexSectionKey { get; set; }
+
+    public DateTime? LastSyncUtc { get; set; }
+
+    public int LastItemCount { get; set; }
+
+    public string? LastError { get; set; }
 }

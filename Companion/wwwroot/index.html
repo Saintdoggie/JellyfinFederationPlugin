@@ -200,6 +200,16 @@
     <h2 style="margin-top:24px">Connected friends</h2>
     <div id="peerList"><p class="empty-state">No one connected yet.</p></div>
   </div>
+
+  <div class="card" id="importCard">
+    <h2><span class="step-num">6</span> Import from a Jellyfin friend</h2>
+    <p class="status-line">Paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab. This pulls whatever they share and keeps a local <code>.strm</code> export in sync automatically - point a Plex library at the export path shown below for each friend.</p>
+    <input type="text" id="importCodeInput" placeholder="Paste the connect code">
+    <button id="importConnectBtn">Connect</button>
+    <div class="status-line" id="importConnectStatus"></div>
+
+    <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
+  </div>
 </main>
 <script>
 const tailscaleContent = document.getElementById('tailscaleContent');
@@ -220,6 +230,11 @@ const generateCodeBtn = document.getElementById('generateCodeBtn');
 const connectCode = document.getElementById('connectCode');
 const codeStatus = document.getElementById('codeStatus');
 const peerList = document.getElementById('peerList');
+const importCodeInput = document.getElementById('importCodeInput');
+const importConnectBtn = document.getElementById('importConnectBtn');
+const importConnectStatus = document.getElementById('importConnectStatus');
+const importPeerList = document.getElementById('importPeerList');
+let knownPlexLibraries = [];
 
 async function loadTailscale() {
   const res = await fetch('/api/tailscale/status');
@@ -245,6 +260,7 @@ async function loadPublicUrl() {
 async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
+  knownPlexLibraries = data.libraries || [];
   if (data.serverConnected) {
     notConnected.classList.add('hidden');
     connected.classList.remove('hidden');
@@ -259,6 +275,72 @@ async function loadStatus() {
     librariesCard.classList.add('hidden');
     shareCard.classList.add('hidden');
   }
+
+  loadImportPeers();
+}
+
+async function loadImportPeers() {
+  const res = await fetch('/api/import/peers');
+  const peers = await res.json();
+  if (peers.length === 0) {
+    importPeerList.innerHTML = '<p class="empty-state">Not importing from anyone yet.</p>';
+    return;
+  }
+
+  importPeerList.innerHTML = '';
+  for (const peer of peers) {
+    const row = document.createElement('div');
+    row.className = 'peer-row';
+    row.style.flexDirection = 'column';
+    row.style.alignItems = 'stretch';
+    row.style.gap = '6px';
+
+    const sectionOptions = ['<option value="">Don\'t refresh a Plex section</option>']
+      .concat(knownPlexLibraries.map(l => `<option value="${escapeHtml(l.sectionKey)}"${l.sectionKey === peer.plexSectionKey ? ' selected' : ''}>${escapeHtml(l.title)}</option>`))
+      .join('');
+
+    const lastSync = peer.lastSyncUtc ? new Date(peer.lastSyncUtc).toLocaleString() : 'never';
+    const errorLine = peer.lastError ? `<div class="status-line" style="color:#f0c674">${escapeHtml(peer.lastError)}</div>` : '';
+
+    row.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <strong>${escapeHtml(peer.name)}</strong>
+        <div>
+          <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}">Sync now</button>
+          <button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
+        </div>
+      </div>
+      <div class="status-line">Last synced ${lastSync} &middot; ${peer.lastItemCount} item(s) &middot; exporting to <code>${escapeHtml(peer.exportPath)}</code></div>
+      ${errorLine}
+      <div>
+        <label class="status-line">Refresh this Plex section after a sync: </label>
+        <select data-action="plex-section" data-id="${escapeHtml(peer.id)}">${sectionOptions}</select>
+      </div>`;
+    importPeerList.appendChild(row);
+  }
+
+  importPeerList.querySelectorAll('button[data-action="sync"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      await fetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' });
+      await loadImportPeers();
+    });
+  });
+  importPeerList.querySelectorAll('button[data-action="remove"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/import/peers/${btn.dataset.id}`, { method: 'DELETE' });
+      loadImportPeers();
+    });
+  });
+  importPeerList.querySelectorAll('select[data-action="plex-section"]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await fetch(`/api/import/peers/${sel.dataset.id}/plex-section`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sectionKey: sel.value })
+      });
+    });
+  });
 }
 
 async function loadPeers() {
@@ -367,6 +449,35 @@ generateCodeBtn.addEventListener('click', async () => {
     codeStatus.textContent = data.error || 'Could not generate a code.';
   }
   generateCodeBtn.disabled = false;
+});
+
+importConnectBtn.addEventListener('click', async () => {
+  const code = importCodeInput.value.trim();
+  if (!code) {
+    importConnectStatus.textContent = 'Paste a connect code first.';
+    return;
+  }
+
+  importConnectBtn.disabled = true;
+  importConnectStatus.textContent = 'Connecting and running the first sync…';
+  try {
+    const res = await fetch('/api/import/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      importCodeInput.value = '';
+      importConnectStatus.textContent = `Connected to ${data.name}.`;
+      await loadImportPeers();
+    } else {
+      importConnectStatus.textContent = data.error || 'Could not connect.';
+    }
+  } catch (e) {
+    importConnectStatus.textContent = 'Error: ' + e.message;
+  }
+  importConnectBtn.disabled = false;
 });
 
 loadTailscale();
