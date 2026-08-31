@@ -636,19 +636,31 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Appends a "🌐 ServerName" tag identifying the source server, replacing any
-        /// previous server tag of the same shape so re-materializing after a primary
-        /// source change doesn't leave stale server tags behind.
+        /// The constant tag stamped on every federated item, always as the
+        /// first tag so it renders at the front of the item's tag list. Lets
+        /// every federated title - from every server - be filtered as one
+        /// group in any Jellyfin client's tag filter, independent of the
+        /// per-server "🌐 ServerName" tag below (which varies per source).
+        /// </summary>
+        public const string FederationTagName = "Federated";
+
+        /// <summary>
+        /// Builds a federated item's tag list: the constant
+        /// <see cref="FederationTagName"/> first (see its doc comment), then the
+        /// remote item's own tags, then a "🌐 ServerName" tag identifying the
+        /// source server - replacing any previous tag of either known shape so
+        /// re-materializing after a primary source change doesn't leave stale
+        /// server tags (or duplicate "Federated" markers) behind.
         /// </summary>
         public static string[] AppendServerTag(string[]? tags, string? serverName)
         {
-            var kept = (tags ?? Array.Empty<string>()).Where(t => !t.StartsWith(ServerTagPrefix, StringComparison.Ordinal));
-            if (string.IsNullOrEmpty(serverName))
-            {
-                return kept.ToArray();
-            }
-
-            return kept.Append(ServerTagPrefix + serverName).ToArray();
+            var kept = (tags ?? Array.Empty<string>())
+                .Where(t => !t.StartsWith(ServerTagPrefix, StringComparison.Ordinal)
+                    && !string.Equals(t, FederationTagName, StringComparison.OrdinalIgnoreCase));
+            var withMarker = kept.Prepend(FederationTagName);
+            return string.IsNullOrEmpty(serverName)
+                ? withMarker.ToArray()
+                : withMarker.Append(ServerTagPrefix + serverName).ToArray();
         }
 
         private const string ServerTagPrefix = "🌐 ";

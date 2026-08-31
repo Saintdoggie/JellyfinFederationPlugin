@@ -38,6 +38,14 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private static readonly Version MinimumFederationTokenVersion = new(0, 0, 70);
 
+        /// <summary>
+        /// Upper bound for one internal page fetch while filling a single
+        /// <see cref="GetPeerItems"/> response. The response is filled through as
+        /// many of these as filtering requires, so a caller's page never comes
+        /// back short just because some raw items were filtered out of it.
+        /// </summary>
+        private const int InternalPeerItemPageSize = 500;
+
         private readonly ILogger<FederationController> _logger;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
@@ -2247,6 +2255,13 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
+            // An entry whose FederationId was never captured (Companion friends
+            // from 0.0.116, older friendships) otherwise minted every playback
+            // token bound to an empty id - unresolvable at stream time, so the
+            // friend browsed fine but every stream 403'd. Heal the entry here so
+            // the token minted just below binds to something resolvable.
+            _friends.EnsureFederationId(caller);
+
             if (!Guid.TryParse(request?.ItemId, out var itemGuid))
             {
                 return BadRequest(new { error = "Invalid item id" });
@@ -2292,6 +2307,11 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 return BadRequest(new { error = "Remote user id is required" });
             }
+
+            // Same missing-FederationId heal as IssuePlaybackToken: a session
+            // token bound to an empty id could never be re-resolved at stream
+            // time, leaving every user of such a friend unable to play anything.
+            _friends.EnsureFederationId(caller);
 
             // A Blocked rule denies everything regardless of item, so checking it
             // against a synthetic empty item id here (rather than duplicating the
@@ -2587,6 +2607,18 @@ namespace Jellyfin.Plugin.Federation.Api
         /// own library folder ids (from <see cref="GetPeerLibraries"/>), so the
         /// whole-library scope check uses it directly rather than resolving each
         /// item's own top parent.
+        /// <para>
+        /// Filtering happens AFTER the internal page is fetched, which previously
+        /// broke every client's paging contract: they page until a response comes
+        /// back with fewer than <c>limit</c> items, but a filtered page comes
+        /// back short even when more content remained - so a friend whose caller
+        /// had anything excluded (hidden items, per-user rules, library scope)
+        /// silently stopped importing at the first partially-filtered page,
+        /// dropping every later item from their sync entirely. Pages here are
+        /// therefore filled by over-fetching internally until <c>limit</c>
+        /// visible items have accumulated or the source is exhausted, restoring
+        /// "a short page means there is genuinely nothing left".
+        /// </para>
         /// </summary>
         [HttpGet("Peer/Items")]
         [AllowAnonymous]
@@ -2634,45 +2666,80 @@ namespace Jellyfin.Plugin.Federation.Api
                 queryParams.Add($"ParentId={Uri.EscapeDataString(parentId)}");
             }
 
-            if (startIndex.HasValue)
-            {
-                queryParams.Add($"StartIndex={startIndex.Value}");
-            }
-
-            if (limit.HasValue)
-            {
-                queryParams.Add($"Limit={limit.Value}");
-            }
-
-            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", queryParams)}", cancellationToken).ConfigureAwait(false);
-            if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
-            {
-                return StatusCode(StatusCodes.Status502BadGateway);
-            }
+            // No limit in the request means "everything", exactly as before: an
+            // effectively-unbounded target keeps the loop running until the
+            // internal source is exhausted.
+            var target = limit.HasValue && limit.Value > 0 ? limit.Value : int.MaxValue;
 
             var remoteUserId = RequestingRemoteUserId();
-            var toRemove = new List<System.Text.Json.Nodes.JsonNode>();
-            foreach (var item in items)
+            var pageItems = new System.Text.Json.Nodes.JsonArray();
+            var cursor = Math.Max(0, startIndex ?? 0);
+            var safetyPage = 0;
+
+            while (pageItems.Count < target)
             {
-                if (item == null || !Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
-                    || !_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid, parentId))
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (++safetyPage > 10_000)
                 {
-                    if (item != null)
+                    _logger.LogWarning("[Federation] Peer/Items hit the internal paging safety cap for {Caller} (library {Library}); returning what was collected", caller.Name, parentId ?? "(none)");
+                    break;
+                }
+
+                // Internal pages are bounded independently of the caller's limit:
+                // fewer visible items than asked for just means another internal
+                // round, not an unbounded single query against our own API.
+                var requestCount = Math.Min(target - pageItems.Count, InternalPeerItemPageSize);
+
+                var pageParams = new List<string>(queryParams)
+                {
+                    $"StartIndex={cursor}",
+                    $"Limit={requestCount}"
+                };
+
+                var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
+                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items || items.Count == 0)
+                {
+                    break;
+                }
+
+                var rawCount = items.Count;
+
+                // Removing each kept node detaches it from the fetched page's
+                // array, so it can be re-parented into the response array below
+                // (a JsonNode may only ever have one parent).
+                foreach (var item in items.ToList())
+                {
+                    if (item != null
+                        && Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
+                        && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid, parentId))
                     {
-                        toRemove.Add(item);
+                        items.Remove(item);
+                        pageItems.Add(item);
                     }
+                }
+
+                cursor += rawCount;
+                if (rawCount < requestCount)
+                {
+                    // The internal source returned fewer raw items than asked -
+                    // there is nothing further to fill the page from.
+                    break;
                 }
             }
 
-            foreach (var item in toRemove)
+            while (pageItems.Count > target)
             {
-                items.Remove(item);
+                pageItems.RemoveAt(pageItems.Count - 1);
             }
 
-            json["TotalRecordCount"] = items.Count;
             return new ContentResult
             {
-                Content = json.ToJsonString(),
+                Content = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["Items"] = pageItems,
+                    ["TotalRecordCount"] = pageItems.Count
+                }.ToJsonString(),
                 ContentType = "application/json",
                 StatusCode = StatusCodes.Status200OK
             };

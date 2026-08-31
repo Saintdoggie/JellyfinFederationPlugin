@@ -484,6 +484,21 @@ namespace Jellyfin.Plugin.Federation.Services
                         changed = true;
                     }
 
+                    // Backfill the constant "Federated" filter tag onto items
+                    // materialized before it existed, via the same in-place
+                    // restamp path (no delete/recreate, so watch progress is
+                    // preserved). Items created from 0.0.117 on already carry it
+                    // through AppendServerTag, so this is a no-op for them; the
+                    // existing per-server tag (if any) is preserved as-is.
+                    var currentTags = x.Item.Tags ?? Array.Empty<string>();
+                    if (!currentTags.Contains(FederationLibraryManager.FederationTagName, StringComparer.OrdinalIgnoreCase))
+                    {
+                        x.Item.Tags = FederationLibraryManager.AppendServerTag(
+                            currentTags,
+                            FederationLibraryManager.GetServerNameFromTags(currentTags));
+                        changed = true;
+                    }
+
                     // One-time backfill for items created before this locking existed -
                     // only when not already fully set, so this doesn't re-save on every
                     // sync once it's already been backfilled.

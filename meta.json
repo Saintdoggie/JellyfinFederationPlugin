@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.116",
-  "changelog": "New Companion tab: a Jellyfin admin can now generate a one-time connect code for a Plex-owning friend to paste into their own Federation Companion app, letting that friend's Companion instance import this server's federated catalog and keep it in sync automatically (added ServerKind.Companion - a consumer-only peer that's only ever the target of the existing Peer/* API, never dialed out to). The same tab also closes a gap in the other direction: pasting a Companion-generated connect code now actually adds the friend's Plex server here (POST ExternalServers was already built but had no admin-UI screen calling it). 306 tests, all green.",
+  "version": "0.0.117",
+  "changelog": "Fixes 'other servers can't stream our federated content' - two root causes, both reproduced from the Companion/Plex connect-code flow. (1) Every playback token minted for a friend whose entry had no FederationId (all Companion friends, some older friendships) was bound to an empty id, which stream-time validation could never re-resolve - so browsing and sync worked fine but every single stream 403'd. Companion friends now get a federation id at creation, and token minting self-heals any existing entry that's missing one, so the fix lands without re-generating connect codes or re-friending. (2) Peer/Items filled each page before applying access filtering, so a partially-filtered page came back short and every paging client (friend sync, the Companion's Plex import) stopped early and silently dropped the rest of the library - pages are now filled through as many internal fetches as filtering requires. Also: a constant 'Federated' tag is now stamped first on every federated item (existing items are backfilled on the next sync, watch progress preserved), so all federated content from every server can be filtered as one group in any client's tag filter. 313 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-08-30T23:45:00Z",
+  "timestamp": "2026-08-31T00:00:00Z",
   "imageUrl": "thumb.png"
 }
