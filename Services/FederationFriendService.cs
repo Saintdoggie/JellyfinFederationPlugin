@@ -649,6 +649,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 Kind = ServerKind.Companion,
                 Name = friendlyName,
                 IssuedApiKey = token,
+                // Playback/session tokens minted for this peer are bound to its
+                // FederationId at mint time and re-resolved through
+                // FindByFederationId at stream time (see
+                // FederationController.IsStreamTokenAuthorized). Leaving this
+                // empty - as entries created by 0.0.116 were - made every
+                // DirectStream request from the Companion's .strm files 403,
+                // because an empty id can never be re-resolved to a friend.
+                FederationId = Guid.NewGuid().ToString(),
                 Enabled = true,
                 ShareAllLibraries = shareAllLibraries,
                 SharedLibraryFolderIds = sharedLibraryFolderIds ?? new List<string>()
@@ -688,6 +696,31 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var payload = JsonSerializer.Serialize(new { url, token, name });
             return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+        }
+
+        /// <summary>
+        /// Backfills a missing <see cref="RemoteServer.FederationId"/> on an
+        /// existing friend entry, generating and persisting one when empty.
+        /// Streaming tokens are minted bound to the caller's FederationId and
+        /// re-resolved through it at stream time (see
+        /// <see cref="FederationController.IsStreamTokenAuthorized"/>) - an
+        /// entry created before that binding existed (older friendships,
+        /// Companion friends before 0.0.117) holds an empty id, which makes
+        /// every token it ever mints unresolvable at stream time and therefore
+        /// unplayable, while browsing and sync (which only need the
+        /// IssuedApiKey) keep working. Called at token-mint time, so the entry
+        /// heals itself on the friend's very next playback without any admin
+        /// action; a no-op once the id is present.
+        /// </summary>
+        public void EnsureFederationId(RemoteServer server)
+        {
+            if (!string.IsNullOrEmpty(server.FederationId))
+            {
+                return;
+            }
+
+            server.FederationId = Guid.NewGuid().ToString();
+            Plugin.Instance?.SaveConfiguration();
         }
 
         /// <summary>

@@ -579,6 +579,59 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public void CreateCompanionFriend_AssignsFederationId_SoMintedPlaybackTokensResolve()
+    {
+        var (success, _, _) = _service.CreateCompanionFriend("Alex's Plex", true, null);
+
+        Assert.True(success);
+        var server = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.False(string.IsNullOrEmpty(server.FederationId));
+    }
+
+    [Fact]
+    public void EnsureFederationId_EmptyId_BackfillsAndPersists()
+    {
+        var server = new RemoteServer { Kind = ServerKind.Companion, Name = "Legacy companion" };
+        _plugin.Configuration.RemoteServers.Add(server);
+
+        _service.EnsureFederationId(server);
+
+        Assert.False(string.IsNullOrEmpty(server.FederationId));
+        Assert.Equal(
+            server.FederationId,
+            _plugin.Configuration.RemoteServers.Single(s => s.Id == server.Id).FederationId);
+    }
+
+    [Fact]
+    public void EnsureFederationId_ExistingId_IsNoOp()
+    {
+        var server = new RemoteServer { FederationId = "keep-me" };
+
+        _service.EnsureFederationId(server);
+
+        Assert.Equal("keep-me", server.FederationId);
+    }
+
+    [Fact]
+    public void EnsureFederationId_AfterBackfill_PlaybackTokenBindsToResolvableFriend()
+    {
+        // Simulates the 0.0.116 Companion break end to end: an entry with an
+        // empty FederationId minted playback tokens bound to "", which
+        // FindByFederationId could never re-resolve at stream time - every
+        // DirectStream request from that friend 403'd. After the heal, the same
+        // mint/resolve round trip finds the friend again.
+        var server = new RemoteServer { Kind = ServerKind.Companion, Name = "Legacy companion" };
+        _plugin.Configuration.RemoteServers.Add(server);
+        _service.EnsureFederationId(server);
+
+        var tokenService = new FederationPlaybackTokenService();
+        var token = tokenService.Issue("item-1", server.FederationId);
+
+        Assert.True(tokenService.TryValidate(token, "item-1", out var ownerFederationId));
+        Assert.NotNull(_service.FindByFederationId(ownerFederationId));
+    }
+
+    [Fact]
     public void GetCompanionConnectCode_ReconstructsFromStoredToken_WithoutRotatingIt()
     {
         var (_, _, firstCode) = _service.CreateCompanionFriend("Alex's Plex", true, null);
