@@ -38,7 +38,8 @@ public class FederationDownloadServiceTests : IDisposable
         var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
         _federationManager = new FederationLibraryManager(_libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, _cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
-        _service = new FederationDownloadService(_libraryManager.Object, _federationManager, NullLogger<FederationDownloadService>.Instance);
+        var externalCatalogs = new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>());
+        _service = new FederationDownloadService(_libraryManager.Object, _federationManager, clientFactory.Object, externalCatalogs, NullLogger<FederationDownloadService>.Instance);
     }
 
     public void Dispose() => _plugin.Dispose();
@@ -295,5 +296,64 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.False(success);
         Assert.Null(url);
         Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void StartQualityReplace_InvalidItemId_Fails()
+    {
+        var (success, message, operationId) = _service.StartQualityReplace("not-a-guid", "server-1", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("Invalid item id", message);
+        Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void StartQualityReplace_ItemNotFound_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns((MediaBrowser.Controller.Entities.BaseItem?)null);
+
+        var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "server-1", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("not found", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void StartQualityReplace_ServerNotFound_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        var item = new Movie { Id = itemId };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+
+        var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "no-such-server", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("Server not found", message);
+        Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void StartQualityReplace_DownloadsDisabledForServer_Fails()
+    {
+        var itemId = Guid.NewGuid();
+        var item = new Movie { Id = itemId };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            Enabled = true,
+            AllowDownloads = false
+        });
+
+        var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "server-1", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("disabled", message);
+        Assert.Null(operationId);
     }
 }

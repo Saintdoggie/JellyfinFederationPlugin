@@ -200,6 +200,7 @@
             <div id="fedErrorContainer"></div>
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
+            <div id="fedQualityUpgradePanel"></div>
 
             <div class="fed-statusstrip verticalSection" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -234,6 +235,7 @@
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="companion" role="tab" aria-selected="false">Companion</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
+                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Browse</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
             </div>
@@ -475,6 +477,38 @@
                 </div>
             </div>
 
+            <div class="fed-tabpanel" data-tab-panel="browse" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Browse & Download</h3>
+                    <p class="fieldDescription">
+                        Browse a connected server's full catalog and pull individual items down to this server's disk -
+                        independent of the Libraries tab's whole-library sync above, so nothing needs to be shared or
+                        mapped first. Downloaded items land in a "Federation Downloads" library after the next scan.
+                    </p>
+
+                    <div class="fed-inline">
+                        <div class="fed-input-container fed-grow">
+                            <label class="fed-label">Server</label>
+                            <select class="emby-select fed-select" id="fedBrowseServer">
+                                <option value="">Select a server…</option>
+                            </select>
+                        </div>
+                        <div class="fed-input-container fed-grow">
+                            <label class="fed-label">Library</label>
+                            <select class="emby-select fed-select" id="fedBrowseLibrary" disabled>
+                                <option value="">Pick a server first</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="fedBrowseStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedBrowseList"></div>
+                    <div class="fed-picker-actions" id="fedBrowseMoreWrap" style="display:none;">
+                        <a data-fed-action="browse-more">Load more</a>
+                    </div>
+                </div>
+            </div>
+
             <form id="fedConfigForm">
                 <div class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
                     <div class="verticalSection">
@@ -542,6 +576,15 @@
                                 <label class="inputLabel" for="fedTxtDedupIds">Provider IDs used for merging</label>
                                 <input type="text" id="fedTxtDedupIds" class="emby-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Prefer higher-quality copies from other servers</label>
+                            <p class="fieldDescription">
+                                When on, this page checks your own locally-owned movies/episodes against the matching copy on a federated
+                                friend's server (matched the same way merging above matches "the same movie" across servers) and, every time
+                                you open this page, shows a review list of any where a friend's copy is meaningfully better - higher
+                                resolution, or a clearly higher bitrate at the same resolution. <strong>Nothing is ever removed
+                                automatically</strong> - the review list just offers a "download the better copy, then remove the old one"
+                                button per item, and you choose all, some, or none each time.
+                            </p>
                             <div class="inputContainer">
                                 <label class="inputLabel" for="fedTxtRefreshHours">Refresh interval (hours)</label>
                                 <input type="number" id="fedTxtRefreshHours" class="emby-input" min="1" max="168" />
@@ -2613,6 +2656,328 @@
                         .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
                     }
 
+                    /* ---------------- Browse & Download ---------------- */
+
+                    var browseLoaded = false;
+                    var browseState = { serverId: '', libraryId: '', startIndex: 0, pageSize: 60, items: [] };
+
+                    function setBrowseStatus(msg, kind) {
+                        var el = q('#fedBrowseStatus');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!msg) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    // Companion consumers (Kind 2) have no browsable catalog of
+                    // their own here - they pull from us, not the other way
+                    // around - so they're excluded the same way renderFriends
+                    // excludes them from the Friends roster.
+                    function loadBrowseServers() {
+                        var sel = q('#fedBrowseServer');
+                        if (!sel) {
+                            return;
+                        }
+
+                        var servers = (currentConfig.RemoteServers || []).filter(function (s) { return s.Kind !== 2 && s.Enabled !== false; });
+                        var html = '<option value="">Select a server…</option>';
+                        servers.forEach(function (s) {
+                            html += '<option value="' + escapeHtml(s.Id) + '">' + escapeHtml(s.Name || s.Url) + '</option>';
+                        });
+                        sel.innerHTML = html;
+                    }
+
+                    function onBrowseServerChange() {
+                        var sel = q('#fedBrowseServer');
+                        var libSel = q('#fedBrowseLibrary');
+                        var serverId = sel ? sel.value : '';
+                        browseState.serverId = serverId;
+                        browseState.libraryId = '';
+                        browseState.items = [];
+                        setBrowseStatus('', 'info');
+                        var list = q('#fedBrowseList');
+                        if (list) {
+                            list.innerHTML = '';
+                        }
+
+                        var moreWrap = q('#fedBrowseMoreWrap');
+                        if (moreWrap) {
+                            moreWrap.style.display = 'none';
+                        }
+
+                        if (!serverId) {
+                            libSel.innerHTML = '<option value="">Pick a server first</option>';
+                            libSel.disabled = true;
+                            return;
+                        }
+
+                        libSel.disabled = true;
+                        libSel.innerHTML = '<option value="">Loading…</option>';
+                        fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(serverId) + '/Libraries')
+                        .then(function (r) { return r.json(); })
+                        .then(function (libs) {
+                            libs = libs || [];
+                            if (libs.length === 0) {
+                                libSel.innerHTML = '<option value="">No libraries found - is the server reachable?</option>';
+                                return;
+                            }
+
+                            var html = '<option value="">Select a library…</option>';
+                            libs.forEach(function (l) {
+                                html += '<option value="' + escapeHtml(l.id) + '">' + escapeHtml(l.name) + '</option>';
+                            });
+                            libSel.innerHTML = html;
+                            libSel.disabled = false;
+                        })
+                        .catch(function (e) {
+                            libSel.innerHTML = '<option value="">Error loading libraries</option>';
+                            setBrowseStatus('Error: ' + e.message, 'err');
+                        });
+                    }
+
+                    function onBrowseLibraryChange() {
+                        var sel = q('#fedBrowseLibrary');
+                        browseState.libraryId = sel ? sel.value : '';
+                        browseState.items = [];
+                        var list = q('#fedBrowseList');
+                        if (list) {
+                            list.innerHTML = '';
+                        }
+
+                        if (browseState.libraryId) {
+                            loadBrowseItems(true);
+                        } else {
+                            var moreWrap = q('#fedBrowseMoreWrap');
+                            if (moreWrap) {
+                                moreWrap.style.display = 'none';
+                            }
+                        }
+                    }
+
+                    function loadBrowseItems(reset) {
+                        if (reset) {
+                            browseState.startIndex = 0;
+                            browseState.items = [];
+                        }
+
+                        setBrowseStatus('Loading…', 'info');
+                        var url = '/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId)
+                            + '/Items?libraryId=' + encodeURIComponent(browseState.libraryId)
+                            + '&startIndex=' + browseState.startIndex + '&limit=' + browseState.pageSize;
+                        fedFetch(url)
+                        .then(function (r) { return r.json(); })
+                        .then(function (items) {
+                            setBrowseStatus('', 'info');
+                            items = items || [];
+                            browseState.items = browseState.items.concat(items);
+                            browseState.startIndex += items.length;
+                            renderBrowseList();
+                            var moreWrap = q('#fedBrowseMoreWrap');
+                            if (moreWrap) {
+                                moreWrap.style.display = items.length >= browseState.pageSize ? 'block' : 'none';
+                            }
+                        })
+                        .catch(function (e) { setBrowseStatus('Error: ' + e.message, 'err'); });
+                    }
+
+                    function renderBrowseList() {
+                        var c = q('#fedBrowseList');
+                        if (!c) {
+                            return;
+                        }
+
+                        if (browseState.items.length === 0) {
+                            c.innerHTML = '<p class="fed-muted">No items in this library.</p>';
+                            return;
+                        }
+
+                        var html = '';
+                        browseState.items.forEach(function (item, i) {
+                            var title = (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
+                            html += '<div class="fed-server">';
+                            html += '<div class="fed-server-head">';
+                            html += '<strong>' + escapeHtml(title) + '</strong>';
+                            if (item.type) {
+                                html += '<span class="fed-pill">' + escapeHtml(item.type) + '</span>';
+                            }
+
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
+                            html += '</div>';
+                            html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
+                            html += '</div>';
+                        });
+                        c.innerHTML = html;
+                    }
+
+                    function setBrowseItemStatus(idx, msg, kind) {
+                        var el = q('#fedBrowseItemStatus' + idx);
+                        if (!el) {
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = msg;
+                    }
+
+                    function downloadBrowseItem(idx) {
+                        var item = browseState.items[idx];
+                        if (!item) {
+                            return;
+                        }
+
+                        setBrowseItemStatus(idx, 'Starting…', 'info');
+                        fedFetch('/Plugins/Federation/Browse/Download', {
+                            method: 'POST',
+                            body: JSON.stringify({ ServerId: browseState.serverId, ItemId: item.id, Name: item.name })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success) {
+                                setBrowseItemStatus(idx, res.message || 'Could not start download.', 'err');
+                                return;
+                            }
+
+                            setBrowseItemStatus(idx, 'Downloading… see the Downloads panel above for progress.', 'ok');
+                            loadDownloads();
+                        })
+                        .catch(function (e) { setBrowseItemStatus(idx, 'Error: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Prefer Higher Quality ---------------- */
+
+                    var qualityUpgradeCandidates = [];
+                    var qualityUpgradeSelected = {};
+
+                    // Re-checked every time the config page loads (not on a
+                    // timer, not automatically) - "ask each time you go to the
+                    // plugin tab" rather than a background job, so nothing ever
+                    // gets removed without an admin actually looking at the page
+                    // and clicking Apply.
+                    function loadQualityUpgrades() {
+                        if (!currentConfig.PreferHigherQualityRemotes) {
+                            qualityUpgradeCandidates = [];
+                            renderQualityUpgradePanel();
+                            return;
+                        }
+
+                        fedFetch('/Plugins/Federation/QualityUpgrades')
+                        .then(function (r) { return r.json(); })
+                        .then(function (candidates) {
+                            qualityUpgradeCandidates = candidates || [];
+                            qualityUpgradeCandidates.forEach(function (c) {
+                                if (!(c.localItemId in qualityUpgradeSelected)) {
+                                    qualityUpgradeSelected[c.localItemId] = true;
+                                }
+                            });
+                            renderQualityUpgradePanel();
+                        })
+                        .catch(function () { /* best-effort informational panel - a failed check here shouldn't block the rest of the page */ });
+                    }
+
+                    function formatQuality(height, bitrate) {
+                        var res = height ? height + 'p' : 'unknown resolution';
+                        var br = bitrate ? (Math.round(bitrate / 100000) / 10) + ' Mbps' : '';
+                        return br ? res + ', ' + br : res;
+                    }
+
+                    function renderQualityUpgradePanel() {
+                        var el = q('#fedQualityUpgradePanel');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!currentConfig.PreferHigherQualityRemotes || qualityUpgradeCandidates.length === 0) {
+                            el.innerHTML = '';
+                            return;
+                        }
+
+                        var count = qualityUpgradeCandidates.length;
+                        var html = '<div class="fed-warnbar fed-qualitypanel">';
+                        html += '<strong>' + count + ' item' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a higher-quality copy available on another server.</strong>';
+                        html += '<div style="margin:0.5em 0;">';
+                        html += '<a data-fed-action="quality-select-all" style="margin-right:1em;">Select all</a>';
+                        html += '<a data-fed-action="quality-select-none">Select none</a>';
+                        html += '</div>';
+                        qualityUpgradeCandidates.forEach(function (c) {
+                            var checked = qualityUpgradeSelected[c.localItemId] ? ' checked' : '';
+                            html += '<label class="fed-check-label" style="display:block;">';
+                            html += '<input type="checkbox" class="fed-check fedQualityPick" data-id="' + escapeHtml(c.localItemId) + '"' + checked + ' /> ';
+                            html += escapeHtml(c.name) + (c.year ? ' (' + c.year + ')' : '') + ' — ';
+                            html += 'yours: ' + formatQuality(c.localHeight, c.localBitrate);
+                            html += ', ' + escapeHtml(c.remoteServerName) + '\'s: ' + formatQuality(c.remoteHeight, c.remoteBitrate);
+                            html += '</label>';
+                        });
+                        html += '<div style="margin-top:0.6em;">';
+                        html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="quality-apply">Download selected &amp; remove old copies</button>';
+                        html += '</div>';
+                        html += '<div class="fed-srvstatus" id="fedQualityUpgradeStatus" style="display:none;"></div>';
+                        html += '</div>';
+                        el.innerHTML = html;
+                    }
+
+                    function setQualitySelection(id, checked) {
+                        qualityUpgradeSelected[id] = checked;
+                    }
+
+                    function setQualitySelectAll(value) {
+                        qualityUpgradeCandidates.forEach(function (c) { qualityUpgradeSelected[c.localItemId] = value; });
+                        renderQualityUpgradePanel();
+                    }
+
+                    function applyQualityUpgrades() {
+                        var ids = qualityUpgradeCandidates
+                            .filter(function (c) { return qualityUpgradeSelected[c.localItemId]; })
+                            .map(function (c) { return c.localItemId; });
+
+                        if (ids.length === 0) {
+                            // "Select none" then Apply just dismisses the list for
+                            // this visit - re-showing the identical items the
+                            // moment it's dismissed would defeat the point of
+                            // asking each time rather than nagging continuously.
+                            qualityUpgradeCandidates = [];
+                            renderQualityUpgradePanel();
+                            return;
+                        }
+
+                        var statusEl = q('#fedQualityUpgradeStatus');
+                        if (statusEl) {
+                            statusEl.style.display = 'block';
+                            statusEl.className = 'fed-srvstatus fed-srvstatus-info';
+                            statusEl.textContent = 'Starting downloads…';
+                        }
+
+                        fedFetch('/Plugins/Federation/QualityUpgrades/Apply', {
+                            method: 'POST',
+                            body: JSON.stringify({ ItemIds: ids })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function () {
+                            if (statusEl) {
+                                statusEl.textContent = 'Started - see the Downloads panel above for progress. The old copy for each is removed automatically once its replacement finishes downloading.';
+                            }
+
+                            loadDownloads();
+                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return ids.indexOf(c.localItemId) === -1; });
+                            renderQualityUpgradePanel();
+                        })
+                        .catch(function (e) {
+                            if (statusEl) {
+                                statusEl.className = 'fed-srvstatus fed-srvstatus-err';
+                                statusEl.textContent = 'Error: ' + e.message;
+                            }
+                        });
+                    }
+
                     /* ---------------- Discovery ---------------- */
 
                     var discoveryLoaded = false;
@@ -3722,12 +4087,14 @@
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
                             q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
                             q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
+                            q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
 
                             renderFriends();
                             renderMappings();
                             loadStatus();
                             loadDiagnostics();
                             loadHiddenItems();
+                            loadQualityUpgrades();
                             populateCatalogFriendPick();
 
                             if (newlyConnectedIds.length > 0) {
@@ -3759,6 +4126,7 @@
                             AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
                             EnablePlexStrmExport: q('#fedChkPlexStrmExport').checked,
                             PlexStrmExportPath: q('#fedTxtPlexStrmPath').value.trim(),
+                            PreferHigherQualityRemotes: q('#fedChkPreferQuality').checked,
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {
@@ -3800,7 +4168,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'catalog', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'browse', 'catalog', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
 
                     function switchTab(tab) {
@@ -3830,6 +4198,14 @@
                         // first time an admin opens this tab.
                         if (tab === 'discovery' && !discoveryLoaded) {
                             loadDiscovery(true);
+                        }
+
+                        // Lazy for the same reason: the server dropdown only
+                        // needs to reflect currentConfig once, the first time an
+                        // admin actually opens this tab, not on every load.
+                        if (tab === 'browse' && !browseLoaded) {
+                            browseLoaded = true;
+                            loadBrowseServers();
                         }
 
                         try {
@@ -4019,6 +4395,21 @@
                                 case 'catalog-more':
                                     loadCatalog(false);
                                     break;
+                                case 'browse-download':
+                                    downloadBrowseItem(parseInt(t.getAttribute('data-idx'), 10));
+                                    break;
+                                case 'browse-more':
+                                    loadBrowseItems(false);
+                                    break;
+                                case 'quality-select-all':
+                                    setQualitySelectAll(true);
+                                    break;
+                                case 'quality-select-none':
+                                    setQualitySelectAll(false);
+                                    break;
+                                case 'quality-apply':
+                                    applyQualityUpgrades();
+                                    break;
                                 case 'catalog-toggle':
                                     toggleCatalogSelect(t.getAttribute('data-id'));
                                     break;
@@ -4113,6 +4504,21 @@
 
                             if (t.id === 'fedCatalogFriendPick') {
                                 onCatalogFriendPickChange();
+                                return;
+                            }
+
+                            if (t.id === 'fedBrowseServer') {
+                                onBrowseServerChange();
+                                return;
+                            }
+
+                            if (t.id === 'fedBrowseLibrary') {
+                                onBrowseLibraryChange();
+                                return;
+                            }
+
+                            if (t.classList.contains('fedQualityPick')) {
+                                setQualitySelection(t.getAttribute('data-id'), t.checked);
                                 return;
                             }
 

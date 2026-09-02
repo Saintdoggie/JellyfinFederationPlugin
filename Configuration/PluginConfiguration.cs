@@ -80,6 +80,17 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> DedupProviderIds { get; set; } = new List<string> { "imdb", "tmdb", "tvdb" };
 
         /// <summary>
+        /// Gets or sets a value indicating whether the config page should compare
+        /// each locally-owned item against its federated dedup counterparts (see
+        /// <see cref="DedupProviderIds"/>) and surface any where a friend's server
+        /// holds a meaningfully higher-resolution or higher-bitrate copy. Off by
+        /// default - this only ever populates a review list on the config page
+        /// (see <see cref="Services.FederationQualityAdvisorService"/>); nothing is
+        /// ever deleted automatically, regardless of this setting.
+        /// </summary>
+        public bool PreferHigherQualityRemotes { get; set; } = false;
+
+        /// <summary>
         /// Gets or sets a value indicating whether virtual libraries should be
         /// auto-provisioned from the configured library mappings.
         /// </summary>
