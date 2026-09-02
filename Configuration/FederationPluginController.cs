@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -3443,6 +3444,81 @@ namespace Jellyfin.Plugin.Federation.Api
                 type = i.Type.ToString(),
                 year = i.ProductionYear
             }).ToList());
+        }
+
+        // Dedicated, short-timeout client for the browse-time image proxy below -
+        // a cover image is small and should fail fast rather than hang a page
+        // load; the long-timeout DownloadHttpClient equivalents elsewhere exist
+        // for whole media files, which this is not.
+        private static readonly HttpClient BrowseImageHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+
+        /// <summary>
+        /// Cover art for one item in the Browse tab's catalog grid, proxied
+        /// through this server so neither kind of remote credential ever reaches
+        /// the admin's browser directly: a Jellyfin peer's image is fetched using
+        /// a short-lived, single-item-scoped token (the same one
+        /// <see cref="FederationStreamHandler"/> mints for playback - see
+        /// <c>Peer/Images</c> on the receiving side), and a Plex source's image
+        /// URL carries a real, whole-server Plex token that must never leave the
+        /// server (see <see cref="IExternalCatalogProvider.GetImagesAsync"/>'s own
+        /// doc comment). Both are fetched here and the bytes streamed straight
+        /// back - the browser never sees either credential.
+        /// </summary>
+        [HttpGet("Browse/{serverId}/Image")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> BrowseImage(string serverId, [FromQuery] string itemId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(itemId))
+            {
+                return NotFound();
+            }
+
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return NotFound();
+            }
+
+            string? imageUrl;
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                var provider = _externalCatalogs.For(server);
+                var images = provider == null
+                    ? null
+                    : await provider.GetImagesAsync(server, itemId, cancellationToken).ConfigureAwait(false);
+                imageUrl = images?.PrimaryUrl;
+            }
+            else
+            {
+                var client = _clientFactory.GetClient(server);
+                var (token, _) = await client.GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+                imageUrl = token == null
+                    ? null
+                    : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{itemId}/Primary?token={Uri.EscapeDataString(token)}";
+            }
+
+            if (imageUrl == null)
+            {
+                return NotFound();
+            }
+
+            try
+            {
+                using var response = await BrowseImageHttpClient.GetAsync(imageUrl, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return NotFound();
+                }
+
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
+                return File(bytes, contentType);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Browse image fetch failed for {Server}/{Item}", server.Name, itemId);
+                return NotFound();
+            }
         }
 
         /// <summary>
