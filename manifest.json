@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.120",
+        "changelog": "Browse tab (added in 0.0.119) now shows an actual cover-art grid instead of a plain text list, matching the look of the Catalog tab - a new Browse/{serverId}/Image endpoint proxies each item's cover art through this server (a short-lived per-item token for a Jellyfin peer's own Peer/Images route; a server-side fetch-and-relay for a Plex source's own credential-bearing image URL, which must never reach the browser directly) so the grid can show real posters without exposing either kind of remote credential client-side.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.120/Jellyfin.Federation.zip",
+        "checksum": "04878393024f15122696490ab2c0bc98",
+        "timestamp": "2026-09-02T16:10:00Z"
+      },
+      {
         "version": "0.0.119",
         "changelog": "Two new features. (1) Browse & Download: a new tab lets an admin browse any connected server's full catalog by library, independent of the whole-library sync the Libraries tab already does, and pull individual items down to this server's disk on demand - useful for grabbing one title without mapping and syncing a friend's entire library for it. Works against both a Jellyfin peer (native Peer/Items) and a Plex source (its own catalog provider); downloads land in the existing 'Federation Downloads' library. (2) Prefer higher-quality copies: an opt-in Advanced setting (off by default) that checks your own locally-owned movies/episodes against the matching copy on a federated friend's server (matched the same way library-merge dedup already matches 'the same movie' across servers) and, every time the config page loads, shows a review list of any with a meaningfully better remote copy - clearly higher resolution, or higher bitrate at the same resolution. Nothing is ever removed automatically: the list is a plain checklist (select all, some, or none) and Apply downloads the better copy first, only removing the old local one after the replacement is confirmed safely on disk. 328 tests, all green.",
         "targetAbi": "10.11.0.0",

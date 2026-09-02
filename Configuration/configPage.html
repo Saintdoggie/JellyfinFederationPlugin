@@ -147,6 +147,7 @@
                 #federationConfigPage .fed-catalog-card-selected .fed-catalog-poster { outline-color: var(--fed-accent); }
                 #federationConfigPage .fed-catalog-name { font-size: 0.85em; margin-top: 0.35em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 #federationConfigPage .fed-catalog-state { font-size: 0.75em; color: var(--fed-warn-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                #federationConfigPage .fed-browse-dlbtn { display: block; width: 100%; margin-top: 0.35em; font-size: 0.8em; }
                 #federationConfigPage .fed-catalog-actionbar { margin-top: 1.2em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft); display: flex; flex-direction: column; gap: 0.7em; }
                 #federationConfigPage .fed-catalog-actionbar-row { display: flex; align-items: center; gap: 1.2em; }
                 #federationConfigPage .fed-catalog-actionbar-row a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
@@ -2788,6 +2789,15 @@
                         .catch(function (e) { setBrowseStatus('Error: ' + e.message, 'err'); });
                     }
 
+                    // Cover art can't just be an <img src="..."> pointing at
+                    // Browse/{serverId}/Image the way catalogPosterUrl points
+                    // straight at Jellyfin's own native image route - that route
+                    // needs the same X-Emby-Token header every other plugin call
+                    // gets via fedFetch, which a plain <img> tag has no way to
+                    // send. Fetched as an authenticated blob instead and turned
+                    // into an object URL, one item at a time after the grid
+                    // itself renders, so a slow or missing image never blocks the
+                    // list from showing.
                     function renderBrowseList() {
                         var c = q('#fedBrowseList');
                         if (!c) {
@@ -2796,26 +2806,41 @@
 
                         if (browseState.items.length === 0) {
                             c.innerHTML = '<p class="fed-muted">No items in this library.</p>';
+                            c.className = '';
                             return;
                         }
 
                         var html = '';
                         browseState.items.forEach(function (item, i) {
                             var title = (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
-                            html += '<div class="fed-server">';
-                            html += '<div class="fed-server-head">';
-                            html += '<strong>' + escapeHtml(title) + '</strong>';
-                            if (item.type) {
-                                html += '<span class="fed-pill">' + escapeHtml(item.type) + '</span>';
-                            }
-
-                            html += '<span class="fed-spacer"></span>';
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
-                            html += '</div>';
+                            html += '<div class="fed-catalog-card">';
+                            html += '<div class="fed-catalog-poster" id="fedBrowsePoster' + i + '"></div>';
+                            html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
                             html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
                             html += '</div>';
                         });
                         c.innerHTML = html;
+                        c.className = 'fed-catalog-grid';
+                        loadBrowsePosters();
+                    }
+
+                    function loadBrowsePosters() {
+                        browseState.items.forEach(function (item, i) {
+                            var el = q('#fedBrowsePoster' + i);
+                            if (!el) {
+                                return;
+                            }
+
+                            fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId) + '/Image?itemId=' + encodeURIComponent(item.id))
+                            .then(function (r) { return r.ok ? r.blob() : null; })
+                            .then(function (blob) {
+                                if (blob && el.isConnected) {
+                                    el.style.backgroundImage = "url('" + URL.createObjectURL(blob) + "')";
+                                }
+                            })
+                            .catch(function () { /* no cover art available - poster stays a blank placeholder, still fine to browse/download by name */ });
+                        });
                     }
 
                     function setBrowseItemStatus(idx, msg, kind) {
