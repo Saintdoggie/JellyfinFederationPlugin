@@ -351,6 +351,26 @@
                         <button is="emby-button" type="button" class="raised emby-button" data-fed-action="connect-plex-source">Connect</button>
                     </div>
                     <div id="fedPlexConnectStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                    <p class="fieldDescription" style="margin-top:1.2em;">
+                        No Companion app on their end - just a Plex server address and a token? Add it directly instead.
+                    </p>
+                    <div class="fed-inline">
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedPlexManualName">Name</label>
+                            <input type="text" id="fedPlexManualName" class="emby-input" placeholder="e.g. FreakBob's Plex" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedPlexManualUrl">Server address</label>
+                            <input type="text" id="fedPlexManualUrl" class="emby-input" placeholder="https://plex.example.com:32400" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <div class="inputContainer fed-grow">
+                            <label class="inputLabel" for="fedPlexManualToken">Plex token (X-Plex-Token)</label>
+                            <input type="text" id="fedPlexManualToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="connect-plex-source-manual">Connect</button>
+                    </div>
+                    <div id="fedPlexManualStatus" class="fed-srvstatus" style="display:none;"></div>
                 </div>
 
                 <div class="verticalSection">
@@ -1455,15 +1475,23 @@
                             return;
                         }
 
-                        // Plex sources and Companion consumers get their own tab
-                        // (they don't have the Url/StreamingMode/etc. shape this
-                        // roster renders) - keep original array indices even
-                        // after filtering, since every action below (test-server,
-                        // manage-friend, remove-friend) addresses a server by its
-                        // index into the full, unfiltered currentConfig.RemoteServers.
+                        // Companion consumers (Kind Companion, a Plex-owning friend
+                        // importing FROM us) get their own tab below via
+                        // renderCompanion() - excluded here. A Plex source (Kind
+                        // Plex, a Plex server we pull FROM, e.g. added via the
+                        // connect-code/manual form on the Companion tab) shares this
+                        // plugin's own RemoteServer shape - same Url/StreamingMode/
+                        // Enabled/etc. fields - and used to have no card anywhere on
+                        // this page at all once added, making it untestable and
+                        // unremovable from the UI. It belongs in this roster too, so
+                        // it's included alongside ordinary Jellyfin friends. Original
+                        // array indices are kept even after filtering, since every
+                        // action below (test-server, manage-friend, remove-friend)
+                        // addresses a server by its index into the full, unfiltered
+                        // currentConfig.RemoteServers.
                         var s = (currentConfig.RemoteServers || [])
                             .map(function (server, i) { return { server: server, i: i }; })
-                            .filter(function (x) { return !x.server.Kind; });
+                            .filter(function (x) { return x.server.Kind !== 2; });
                         if (s.length === 0) {
                             c.innerHTML = '<p class="fed-muted">No friends connected yet - add one above.</p>';
                             return;
@@ -1479,6 +1507,10 @@
                             html += '<div class="fed-server-head">';
                             html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
                             html += '<strong>' + escapeHtml(title) + '</strong>';
+                            if (server.Kind === 1) {
+                                html += '<span class="fed-pill">Plex</span>';
+                            }
+
                             if (isOff) {
                                 html += '<span class="fed-pill fed-pill-off">Disabled</span>';
                             }
@@ -1508,8 +1540,17 @@
                                 html += '</div>';
                                 if (advOpen) {
                                     html += renderSharingBlock(server);
-                                    html += renderRemoteUserAccessBlock(server);
-                                    html += renderFriendPoolsBlock(server);
+                                    // Per-user access rules are pushed to a friend's own
+                                    // server through this plugin's Peer/* endpoints, and
+                                    // pools are a federation-token concept - neither has
+                                    // an equivalent on a Plex source (see GetRemoteUsers'
+                                    // own "Per-user permissions only apply to Jellyfin
+                                    // friends" message server-side).
+                                    if (server.Kind !== 1) {
+                                        html += renderRemoteUserAccessBlock(server);
+                                        html += renderFriendPoolsBlock(server);
+                                    }
+
                                     html += renderFriendAdvanced(server, i);
                                 }
 
@@ -1681,6 +1722,45 @@
                             return loadConfiguration(true);
                         })
                         .catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    // Companion-free path: some Plex servers are added by hand with a
+                    // pasted address + token rather than a friend's generated connect
+                    // code (e.g. a server the admin runs themselves). Same backend
+                    // endpoint as connectPlexSource, just without the base64 decode
+                    // since there's no code to unwrap here.
+                    function connectPlexSourceManual() {
+                        var nameInput = q('#fedPlexManualName');
+                        var urlInput = q('#fedPlexManualUrl');
+                        var tokenInput = q('#fedPlexManualToken');
+                        var name = nameInput ? nameInput.value.trim() : '';
+                        var url = urlInput ? urlInput.value.trim() : '';
+                        var token = tokenInput ? tokenInput.value.trim() : '';
+
+                        if (!url || !token) {
+                            setFedStatus('fedPlexManualStatus', 'Server address and token are both required.', 'err');
+                            return;
+                        }
+
+                        setFedStatus('fedPlexManualStatus', 'Connecting…', 'info');
+                        fedFetch('/Plugins/Federation/ExternalServers', {
+                            method: 'POST',
+                            body: JSON.stringify({ Name: name, Url: url, Token: token })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            if (!res.success) {
+                                setFedStatus('fedPlexManualStatus', res.error || res.message || 'Could not connect.', 'err');
+                                return;
+                            }
+
+                            setFedStatus('fedPlexManualStatus', 'Connected to ' + (name || url) + '.', 'ok');
+                            if (urlInput) { urlInput.value = ''; }
+                            if (tokenInput) { tokenInput.value = ''; }
+                            if (nameInput) { nameInput.value = ''; }
+                            return loadConfiguration(true);
+                        })
+                        .catch(function (e) { setFedStatus('fedPlexManualStatus', 'Error: ' + e.message, 'err'); });
                     }
 
                     function collectServer(i) {
@@ -3826,6 +3906,9 @@
                                     break;
                                 case 'connect-plex-source':
                                     connectPlexSource();
+                                    break;
+                                case 'connect-plex-source-manual':
+                                    connectPlexSourceManual();
                                     break;
                                 case 'invite-pool':
                                     invitePool(t.getAttribute('data-pool'));
