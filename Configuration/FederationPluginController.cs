@@ -67,6 +67,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly TailscaleService _tailscale;
         private readonly ITaskManager _taskManager;
+        private readonly FederationQualityAdvisorService _qualityAdvisor;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -89,7 +90,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationNowWatchingService nowWatching,
             ExternalCatalogRegistry externalCatalogs,
             TailscaleService tailscale,
-            ITaskManager taskManager)
+            ITaskManager taskManager,
+            FederationQualityAdvisorService qualityAdvisor)
         {
             _logger = logger;
             _syncService = syncService;
@@ -112,6 +114,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _externalCatalogs = externalCatalogs;
             _tailscale = tailscale;
             _taskManager = taskManager;
+            _qualityAdvisor = qualityAdvisor;
         }
 
         /// <summary>
@@ -3355,6 +3358,200 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(downloads);
         }
 
+        #region Browse & Selective Download
+
+        /// <summary>
+        /// Lists the libraries a connected server exposes, for the Browse tab's
+        /// server picker. Works for a Jellyfin peer (native <c>Peer/Libraries</c>)
+        /// and an external kind (Plex today, via its <see cref="IExternalCatalogProvider"/>)
+        /// alike - the same duality <see cref="TestServer"/> already routes on.
+        /// </summary>
+        [HttpGet("Browse/{serverId}/Libraries")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> BrowseLibraries(string serverId, CancellationToken cancellationToken)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Server not found." });
+            }
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                var provider = _externalCatalogs.For(server);
+                var libs = provider == null
+                    ? new List<ExternalLibrary>()
+                    : (await provider.GetAllLibrariesAsync(server, cancellationToken).ConfigureAwait(false)).ToList();
+                return Ok(libs.Select(l => new { id = l.Id, name = l.Name }).ToList());
+            }
+
+            var client = _clientFactory.GetClient(server);
+            var views = await client.GetLibrariesAsync(cancellationToken).ConfigureAwait(false);
+            return Ok((views ?? new List<MediaBrowser.Model.Dto.BaseItemDto>()).Select(v => new { id = v.Id.ToString(), name = v.Name }).ToList());
+        }
+
+        /// <summary>
+        /// Lists the items under one library on a connected server, paginated -
+        /// backs the Browse tab's item grid. Native ids only: the returned
+        /// <c>id</c> is directly what <see cref="BrowseDownload"/> expects back,
+        /// whether that is a Jellyfin peer's own item Guid or a Plex
+        /// <see cref="ExternalItem.NativeId"/> rating key.
+        /// </summary>
+        [HttpGet("Browse/{serverId}/Items")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> BrowseItems(string serverId, [FromQuery] string libraryId, [FromQuery] int startIndex, [FromQuery] int? limit, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(libraryId))
+            {
+                return BadRequest(new { success = false, message = "libraryId is required." });
+            }
+
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Server not found." });
+            }
+
+            // Capped well below what a client could ask for - a friend's library
+            // can run into the tens of thousands of items, and this is a synchronous
+            // per-request fetch (unlike the paged background sync), not something
+            // to let balloon into a multi-minute remote call.
+            var pageSize = Math.Clamp(limit ?? 60, 1, 200);
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                var provider = _externalCatalogs.For(server);
+                var items = provider == null
+                    ? null
+                    : await provider.GetItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                var page = (items ?? new List<ExternalItem>()).Skip(startIndex).Take(pageSize);
+                return Ok(page.Select(i => new
+                {
+                    id = i.NativeId,
+                    name = i.Dto.Name,
+                    type = i.Dto.Type.ToString(),
+                    year = i.Dto.ProductionYear
+                }).ToList());
+            }
+
+            var client = _clientFactory.GetClient(server);
+            var jfItems = await client.GetItemsAsync(parentId: libraryId, startIndex: startIndex, limit: pageSize, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return Ok((jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>()).Select(i => new
+            {
+                id = i.Id.ToString(),
+                name = i.Name,
+                type = i.Type.ToString(),
+                year = i.ProductionYear
+            }).ToList());
+        }
+
+        /// <summary>
+        /// Downloads one item straight off a server's browsed catalog to this
+        /// server's disk - does not require the item to already be federated into
+        /// a mapped library first. Runs in the background; poll
+        /// <see cref="GetDownloadProgress"/> (same tracker <see cref="GetDownloads"/>
+        /// already lists) with the returned operation id.
+        /// </summary>
+        [HttpPost("Browse/Download")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult BrowseDownload([FromBody] BrowseDownloadBody body)
+        {
+            if (body == null || string.IsNullOrWhiteSpace(body.ServerId) || string.IsNullOrWhiteSpace(body.ItemId))
+            {
+                return BadRequest(new { success = false, message = "ServerId and ItemId are required." });
+            }
+
+            var (success, message, operationId) = _downloadService.StartBrowseDownload(body.ServerId, body.ItemId, body.Name ?? "download");
+            if (!success)
+            {
+                return BadRequest(new { success, message });
+            }
+
+            return Ok(new { success, message, operationId });
+        }
+
+        #endregion
+
+        #region Prefer Higher Quality
+
+        /// <summary>
+        /// Lists locally-owned items where a friend's server holds a meaningfully
+        /// better copy (see <see cref="FederationQualityAdvisorService"/>) - backs
+        /// the review list shown on the config page. Always empty when
+        /// <see cref="PluginConfiguration.PreferHigherQualityRemotes"/> is off,
+        /// regardless of what a caller asks for - this is never computed, let
+        /// alone acted on, without the admin having opted in first.
+        /// </summary>
+        [HttpGet("QualityUpgrades")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetQualityUpgrades()
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.PreferHigherQualityRemotes != true)
+            {
+                return Ok(new List<object>());
+            }
+
+            var candidates = _qualityAdvisor.FindUpgrades();
+            return Ok(candidates.Select(c => new
+            {
+                localItemId = c.LocalItemId,
+                name = c.Name,
+                year = c.Year,
+                localHeight = c.LocalHeight,
+                localBitrate = c.LocalBitrate,
+                remoteHeight = c.RemoteHeight,
+                remoteBitrate = c.RemoteBitrate,
+                remoteServerName = c.RemoteServerName
+            }).ToList());
+        }
+
+        /// <summary>
+        /// Admin-triggered from the review list: for each selected item,
+        /// downloads the friend's higher-quality copy and only then removes the
+        /// old local one (see <see cref="FederationDownloadService.StartQualityReplace"/>
+        /// for why in that order). Never runs on its own - this is the only path
+        /// that ever removes anything for a quality upgrade, and it only fires on
+        /// an explicit admin click naming exact item ids; "select all" on the
+        /// config page is just this same call with every candidate's id.
+        /// </summary>
+        [HttpPost("QualityUpgrades/Apply")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ApplyQualityUpgrades([FromBody] QualityUpgradeApplyBody body)
+        {
+            var itemIds = body?.ItemIds ?? new List<string>();
+            if (itemIds.Count == 0)
+            {
+                return Ok(new { success = true, message = "Nothing selected.", operations = new List<object>() });
+            }
+
+            var operations = new List<object>();
+            foreach (var itemId in itemIds)
+            {
+                var candidate = _qualityAdvisor.FindUpgradeFor(itemId);
+                if (candidate == null)
+                {
+                    // No longer a valid upgrade (local file already replaced by a
+                    // previous Apply, item deleted, or the remote no longer has a
+                    // better copy) - skip rather than fail the whole batch over
+                    // one stale selection.
+                    operations.Add(new { itemId, success = false, message = "No longer applicable - skipped." });
+                    continue;
+                }
+
+                var (success, message, operationId) = _downloadService.StartQualityReplace(
+                    candidate.LocalItemId,
+                    candidate.RemoteServerId,
+                    candidate.RemoteNativeItemId,
+                    candidate.Name);
+                operations.Add(new { itemId, success, message, operationId });
+            }
+
+            return Ok(new { success = true, operations });
+        }
+
+        #endregion
+
         /// <summary>
         /// Admin-triggered: lists every active session currently playing a federated
         /// item - backs the dashboard's "Now watching" indicator.
@@ -3576,6 +3773,20 @@ namespace Jellyfin.Plugin.Federation.Api
     public class DownloadItemBody
     {
         public string? ItemId { get; set; }
+    }
+
+    public class BrowseDownloadBody
+    {
+        public string? ServerId { get; set; }
+
+        public string? ItemId { get; set; }
+
+        public string? Name { get; set; }
+    }
+
+    public class QualityUpgradeApplyBody
+    {
+        public List<string>? ItemIds { get; set; }
     }
 
     public class IssuePlaybackTokenRequest

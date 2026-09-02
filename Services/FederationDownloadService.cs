@@ -3,8 +3,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
@@ -25,8 +27,15 @@ namespace Jellyfin.Plugin.Federation.Services
         private const string DownloadsSubFolder = "federation-downloads";
         private const string DownloadsLibraryName = "Federation Downloads";
 
+        // Mirrors RemoteServerClient's own DownloadHttpClient: a plain metadata
+        // HttpClient's default timeout is far too short for a whole movie, and
+        // this is a one-shot server-side fetch, not a live client-facing relay.
+        private static readonly HttpClient BrowseDownloadHttpClient = new HttpClient { Timeout = TimeSpan.FromHours(6) };
+
         private readonly ILibraryManager _libraryManager;
         private readonly FederationLibraryManager _federationManager;
+        private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly ILogger<FederationDownloadService> _logger;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationSources = new();
 
@@ -36,10 +45,14 @@ namespace Jellyfin.Plugin.Federation.Services
         public FederationDownloadService(
             ILibraryManager libraryManager,
             FederationLibraryManager federationManager,
+            IRemoteServerClientFactory clientFactory,
+            ExternalCatalogRegistry externalCatalogs,
             ILogger<FederationDownloadService> logger)
         {
             _libraryManager = libraryManager;
             _federationManager = federationManager;
+            _clientFactory = clientFactory;
+            _externalCatalogs = externalCatalogs;
             _logger = logger;
         }
 
@@ -110,6 +123,116 @@ namespace Jellyfin.Plugin.Federation.Services
             _cancellationSources[operationId] = cts;
 
             _ = Task.Run(() => RunDownloadAsync(operationId, itemGuid, entry, source, cts.Token));
+
+            return (true, "Download started.", operationId);
+        }
+
+        /// <summary>
+        /// Starts a background download of an item browsed straight off a remote
+        /// server's catalog (see <c>Browse/{serverId}/Items</c>) - distinct from
+        /// <see cref="StartDownload"/>, which requires the item to already be a
+        /// materialized federated item in a mapped library. This one only needs
+        /// the server and the remote's own native item id, so it works for
+        /// anything visible in the browse picker whether or not it has ever been
+        /// synced into a local library.
+        /// </summary>
+        public (bool Success, string Message, string? OperationId) StartBrowseDownload(string serverId, string nativeItemId, string itemName)
+        {
+            if (string.IsNullOrWhiteSpace(serverId) || string.IsNullOrWhiteSpace(nativeItemId))
+            {
+                return (false, "Server and item are required.", null);
+            }
+
+            var cfg = Plugin.Instance?.Configuration;
+            var server = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return (false, "Server not found.", null);
+            }
+
+            if (cfg?.IncomingFilter != null && !cfg.IncomingFilter.AllowDownloads)
+            {
+                return (false, "Downloads are disabled in Catalog → Incoming content filters.", null);
+            }
+
+            if (!server.AllowDownloads)
+            {
+                return (false, $"Downloads from {server.Name} are disabled (Catalog → {server.Name} → Download access).", null);
+            }
+
+            // Reuses the same tracker as StartDownload's per-item dedupe, keyed on
+            // a browse-specific string rather than a local item Guid since there
+            // is no local item yet - LocalItemId is just an opaque dedupe/display
+            // key to DownloadProgressTracker either way.
+            var dedupeKey = $"browse:{serverId}:{nativeItemId}";
+            if (DownloadProgressTracker.IsDownloadingItem(dedupeKey))
+            {
+                return (false, "Already downloading.", null);
+            }
+
+            var operationId = Guid.NewGuid().ToString();
+            DownloadProgressTracker.Start(operationId, dedupeKey, itemName);
+
+            var cts = new CancellationTokenSource();
+            _cancellationSources[operationId] = cts;
+
+            _ = Task.Run(() => RunBrowseDownloadAsync(operationId, server, nativeItemId, itemName, cts.Token));
+
+            return (true, "Download started.", operationId);
+        }
+
+        /// <summary>
+        /// "Prefer higher quality" review flow's Apply step (see
+        /// <see cref="FederationQualityAdvisorService"/>): downloads the
+        /// higher-quality remote copy first, and only once that fully succeeds
+        /// removes the old, lower-quality local item and its file. Never the
+        /// other way around - the old copy is never touched unless the new one
+        /// is confirmed safely on disk, so a failed or cancelled download always
+        /// leaves the admin with the copy they started with rather than neither.
+        /// </summary>
+        public (bool Success, string Message, string? OperationId) StartQualityReplace(string localItemId, string serverId, string nativeItemId, string itemName)
+        {
+            if (!Guid.TryParse(localItemId, out var itemGuid))
+            {
+                return (false, "Invalid item id.", null);
+            }
+
+            var item = _libraryManager.GetItemById(itemGuid);
+            if (item == null)
+            {
+                return (false, "Item not found.", null);
+            }
+
+            var cfg = Plugin.Instance?.Configuration;
+            var server = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return (false, "Server not found.", null);
+            }
+
+            if (cfg?.IncomingFilter != null && !cfg.IncomingFilter.AllowDownloads)
+            {
+                return (false, "Downloads are disabled in Catalog → Incoming content filters.", null);
+            }
+
+            if (!server.AllowDownloads)
+            {
+                return (false, $"Downloads from {server.Name} are disabled (Catalog → {server.Name} → Download access).", null);
+            }
+
+            var dedupeKey = $"qreplace:{localItemId}";
+            if (DownloadProgressTracker.IsDownloadingItem(dedupeKey))
+            {
+                return (false, "Already downloading.", null);
+            }
+
+            var operationId = Guid.NewGuid().ToString();
+            DownloadProgressTracker.Start(operationId, dedupeKey, itemName);
+
+            var cts = new CancellationTokenSource();
+            _cancellationSources[operationId] = cts;
+
+            _ = Task.Run(() => RunQualityReplaceAsync(operationId, itemGuid, server, nativeItemId, itemName, cts.Token));
 
             return (true, "Download started.", operationId);
         }
@@ -274,6 +397,193 @@ namespace Jellyfin.Plugin.Federation.Services
                     cts.Dispose();
                 }
             }
+        }
+
+        private async Task RunBrowseDownloadAsync(string operationId, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
+        {
+            string? destinationPath = null;
+            try
+            {
+                var downloadsRoot = GetDownloadsRoot();
+                if (string.IsNullOrEmpty(downloadsRoot))
+                {
+                    DownloadProgressTracker.Complete(operationId, false, "Plugin data path unavailable.");
+                    return;
+                }
+
+                Directory.CreateDirectory(downloadsRoot);
+
+                // The remote's real container isn't known up front the way
+                // RunDownloadAsync's federated-entry path knows it from synced
+                // metadata - mkv is a safe default container extension for
+                // whatever bytes come back; Jellyfin's own library scan probes
+                // the actual codecs regardless of the extension.
+                var fileName = SafeFileName(itemName) + ".mkv";
+                destinationPath = Path.Combine(downloadsRoot, fileName);
+                DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
+
+                DownloadProgressTracker.Update(operationId, "Downloading...");
+                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
+                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
+
+                if (server.Kind == ServerKind.Jellyfin)
+                {
+                    var client = _clientFactory.GetClient(server);
+                    await client.DownloadToFileAsync(nativeItemId, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var provider = _externalCatalogs.For(server);
+                    var url = provider == null
+                        ? null
+                        : await provider.ResolveStreamUrlAsync(server, nativeItemId, cancellationToken).ConfigureAwait(false);
+                    if (url == null)
+                    {
+                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
+                        return;
+                    }
+
+                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+
+                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
+                _libraryManager.QueueLibraryScan();
+
+                _logger.LogInformation("[Federation] Browse-downloaded {Name} from {Server} to {Path}", itemName, server.Name, destinationPath);
+                DownloadProgressTracker.Complete(operationId, true, "Downloaded. It will appear as a local item after the next library scan.");
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("[Federation] Browse download cancelled for {Name}", itemName);
+                DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
+                DeletePartialFile(destinationPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Browse download failed for {Name}", itemName);
+                DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
+                DeletePartialFile(destinationPath);
+            }
+            finally
+            {
+                if (_cancellationSources.TryRemove(operationId, out var cts))
+                {
+                    cts.Dispose();
+                }
+            }
+        }
+
+        private async Task RunQualityReplaceAsync(string operationId, Guid oldItemGuid, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
+        {
+            string? destinationPath = null;
+            try
+            {
+                var downloadsRoot = GetDownloadsRoot();
+                if (string.IsNullOrEmpty(downloadsRoot))
+                {
+                    DownloadProgressTracker.Complete(operationId, false, "Plugin data path unavailable.");
+                    return;
+                }
+
+                Directory.CreateDirectory(downloadsRoot);
+
+                var fileName = SafeFileName(itemName) + ".mkv";
+                destinationPath = Path.Combine(downloadsRoot, fileName);
+                DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
+
+                DownloadProgressTracker.Update(operationId, "Downloading higher-quality copy...");
+                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
+                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading higher-quality copy..."));
+
+                if (server.Kind == ServerKind.Jellyfin)
+                {
+                    var client = _clientFactory.GetClient(server);
+                    await client.DownloadToFileAsync(nativeItemId, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var provider = _externalCatalogs.For(server);
+                    var url = provider == null
+                        ? null
+                        : await provider.ResolveStreamUrlAsync(server, nativeItemId, cancellationToken).ConfigureAwait(false);
+                    if (url == null)
+                    {
+                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
+                        return;
+                    }
+
+                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+
+                // Only reachable once the higher-quality copy is fully and
+                // successfully on disk - see this method's own summary for why
+                // the old copy is never touched before that point.
+                DownloadProgressTracker.Update(operationId, "Removing old copy...");
+                var oldItem = _libraryManager.GetItemById(oldItemGuid);
+                if (oldItem != null)
+                {
+                    _libraryManager.DeleteItem(oldItem, new DeleteOptions { DeleteFileLocation = true });
+                }
+
+                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
+                _libraryManager.QueueLibraryScan();
+
+                _logger.LogInformation(
+                    "[Federation] Quality-replaced {Name}: downloaded a higher-quality copy from {Server} and removed the old local copy",
+                    itemName,
+                    server.Name);
+                DownloadProgressTracker.Complete(operationId, true, "Downloaded a higher-quality copy and removed the old one. It will appear as a local item after the next library scan.");
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("[Federation] Quality-replace cancelled for {Name}", itemName);
+                DownloadProgressTracker.Complete(operationId, false, "Cancelled. The old copy was not touched.");
+                DeletePartialFile(destinationPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Quality-replace failed for {Name}", itemName);
+                DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message + " The old copy was not touched.");
+                DeletePartialFile(destinationPath);
+            }
+            finally
+            {
+                if (_cancellationSources.TryRemove(operationId, out var cts))
+                {
+                    cts.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Streams an already-credentialed, absolute URL (see
+        /// <see cref="IExternalCatalogProvider.ResolveStreamUrlAsync"/>) straight to
+        /// disk. The Jellyfin-peer path has its own equivalent
+        /// (<see cref="RemoteServerClient.DownloadToFileAsync"/>) that goes through a
+        /// scoped playback token instead - this is the generic fallback for any
+        /// external provider, which hands back a complete fetchable URL rather than
+        /// a token to mint one from.
+        /// </summary>
+        private static async Task DownloadUrlToFileAsync(string url, string destinationPath, IProgress<(long BytesRead, long? TotalBytes)> progress, CancellationToken cancellationToken)
+        {
+            using var response = await BrowseDownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var totalBytes = response.Content.Headers.ContentLength;
+            await using var remoteStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+
+            var buffer = new byte[81920];
+            long totalRead = 0;
+            int read;
+            while ((read = await remoteStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                totalRead += read;
+                progress.Report((totalRead, totalBytes));
+            }
+
+            progress.Report((totalRead, totalBytes));
         }
 
         private void DeletePartialFile(string? path)

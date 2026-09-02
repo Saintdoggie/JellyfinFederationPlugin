@@ -37,6 +37,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationUserSessionTokenService>();
             serviceCollection.AddSingleton<FederationPeerAccessService>();
             serviceCollection.AddSingleton<FederationNowWatchingService>();
+            serviceCollection.AddSingleton<FederationQualityAdvisorService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
             serviceCollection.AddSingleton<IProcessRunner, ProcessRunner>();
             serviceCollection.AddSingleton<TailscaleService>();
