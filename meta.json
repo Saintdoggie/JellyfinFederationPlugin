@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.120",
-  "changelog": "Browse tab (added in 0.0.119) now shows an actual cover-art grid instead of a plain text list, matching the look of the Catalog tab - a new Browse/{serverId}/Image endpoint proxies each item's cover art through this server (a short-lived per-item token for a Jellyfin peer's own Peer/Images route; a server-side fetch-and-relay for a Plex source's own credential-bearing image URL, which must never reach the browser directly) so the grid can show real posters without exposing either kind of remote credential client-side.",
+  "version": "0.0.121",
+  "changelog": "Fix: downloading an already-synced Plex-sourced item from the Catalog tab (the normal Download button, not the newer Browse tab) silently failed - it always built a Jellyfin-only DirectStream URL regardless of the source server's kind. Now branches on server kind the same way the Browse tab's download already does, resolving a Plex item's real rating key from the synced cache entry and downloading through the external catalog provider.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-02T16:10:00Z",
+  "timestamp": "2026-09-02T18:20:00Z",
   "imageUrl": "thumb.png"
 }

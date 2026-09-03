@@ -317,8 +317,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? destinationPath = null;
             try
             {
-                var client = _federationManager.GetClient(source.ServerId);
-                if (client == null)
+                var srcServer = _federationManager.GetServer(source.ServerId);
+                if (srcServer == null)
                 {
                     DownloadProgressTracker.Complete(operationId, false, "Source server is not configured.");
                     return;
@@ -342,7 +342,46 @@ namespace Jellyfin.Plugin.Federation.Services
                 var progress = new Progress<(long BytesRead, long? TotalBytes)>(
                     p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
 
-                await client.DownloadToFileAsync(source.RemoteItemId.ToString(), destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                if (srcServer.Kind == ServerKind.Jellyfin)
+                {
+                    var client = _federationManager.GetClient(source.ServerId);
+                    if (client == null)
+                    {
+                        DownloadProgressTracker.Complete(operationId, false, "Source server is not configured.");
+                        return;
+                    }
+
+                    await client.DownloadToFileAsync(source.RemoteItemId.ToString(), destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    // Non-Jellyfin sources (Plex today) have no
+                    // Plugins/Federation/DirectStream route to hit - source.RemoteItemId
+                    // is only the deterministically-derived local Guid, not something
+                    // the remote itself understands. The real rating key/native id the
+                    // remote needs is what sync recorded on the entry at materialize
+                    // time (see FederatedItemMetadata.RemoteNativeId), same lookup
+                    // FederationStreamHandler's own external-source path already relies
+                    // on for playback - a null here means a stale entry from before that
+                    // field was recorded, fixed by a library refresh.
+                    if (string.IsNullOrEmpty(entry.Metadata.RemoteNativeId))
+                    {
+                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve this item's id on the remote server - try refreshing the library.");
+                        return;
+                    }
+
+                    var provider = _externalCatalogs.For(srcServer);
+                    var url = provider == null
+                        ? null
+                        : await provider.ResolveStreamUrlAsync(srcServer, entry.Metadata.RemoteNativeId, cancellationToken).ConfigureAwait(false);
+                    if (url == null)
+                    {
+                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
+                        return;
+                    }
+
+                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                }
 
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
