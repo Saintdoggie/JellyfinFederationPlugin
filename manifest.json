@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.122",
+        "changelog": "Two fixes/additions. (1) Fix: the Browse tab came back completely empty for a Plex source whose libraries aren't (yet) in its sync allow-list - the normal starting state for a freshly-connected Plex server, since nothing is allowed for auto-sync until the admin opts a library in on the Libraries tab. Browse wrongly reused the same sync-consent check GetItemsAsync applies for scheduled syncing; it now calls a new, unfiltered GetAllItemsAsync instead, since ad-hoc browsing/downloading one item was never supposed to require sync consent. (2) Prefer-higher-quality review list: each suggested title now has a 'Never ask about this one' link that permanently excludes just that title from future suggestions, plus a 'Manage exceptions' list under the Advanced setting to review or undo exclusions - a per-title override to the global prefer-higher-quality toggle. 329 tests, all green.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.122/Jellyfin.Federation.zip",
+        "checksum": "d3d0487c29d277928e930815cbb1ffe6",
+        "timestamp": "2026-09-03T05:45:00Z"
+      },
+      {
         "version": "0.0.121",
         "changelog": "Fix: downloading an already-synced Plex-sourced item from the Catalog tab (the normal Download button, not the newer Browse tab) silently failed - it always built a Jellyfin-only DirectStream URL regardless of the source server's kind. Now branches on server kind the same way the Browse tab's download already does, resolving a Plex item's real rating key from the synced cache entry and downloading through the external catalog provider. 328 tests, all green.",
         "targetAbi": "10.11.0.0",

@@ -91,6 +91,17 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool PreferHigherQualityRemotes { get; set; } = false;
 
         /// <summary>
+        /// Gets or sets the local item ids (see <see cref="MediaBrowser.Controller.Entities.BaseItem.Id"/>,
+        /// stringified) that <see cref="Services.FederationQualityAdvisorService.FindUpgrades"/>
+        /// must never surface, even when they would otherwise qualify - the
+        /// admin's per-title "keep this exact copy" override to
+        /// <see cref="PreferHigherQualityRemotes"/>. Excluding a title only stops
+        /// it being suggested; it never touches anything already downloaded via
+        /// an earlier Apply.
+        /// </summary>
+        public List<string> QualityUpgradeExcludedItemIds { get; set; } = new List<string>();
+
+        /// <summary>
         /// Gets or sets a value indicating whether virtual libraries should be
         /// auto-provisioned from the configured library mappings.
         /// </summary>

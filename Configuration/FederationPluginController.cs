@@ -3421,10 +3421,16 @@ namespace Jellyfin.Plugin.Federation.Api
 
             if (server.Kind != ServerKind.Jellyfin)
             {
+                // GetAllItemsAsync, not GetItemsAsync - Browse is ad-hoc exploration
+                // independent of AllowedExternalLibraryIds sync consent (see that
+                // interface method's own doc comment). Using the sync-gated variant
+                // here made Browse come back empty for any library not yet allowed
+                // for auto-sync, even though nothing about looking at it or
+                // downloading one item requires that consent.
                 var provider = _externalCatalogs.For(server);
                 var items = provider == null
                     ? null
-                    : await provider.GetItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                    : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
                 var page = (items ?? new List<ExternalItem>()).Skip(startIndex).Take(pageSize);
                 return Ok(page.Select(i => new
                 {
@@ -3624,6 +3630,75 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok(new { success = true, operations });
+        }
+
+        /// <summary>
+        /// Admin's per-title override to <see cref="PluginConfiguration.PreferHigherQualityRemotes"/>:
+        /// stop suggesting this exact local item, even if a friend's copy still
+        /// qualifies as an upgrade. Purely a "stop asking" list - never touches
+        /// anything already on disk.
+        /// </summary>
+        [HttpPost("QualityUpgrades/Exclude")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ExcludeQualityUpgrade([FromBody] QualityUpgradeExcludeBody body)
+        {
+            if (string.IsNullOrWhiteSpace(body?.ItemId))
+            {
+                return BadRequest(new { success = false, message = "ItemId is required." });
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            config.QualityUpgradeExcludedItemIds ??= new List<string>();
+            if (!config.QualityUpgradeExcludedItemIds.Contains(body.ItemId, StringComparer.OrdinalIgnoreCase))
+            {
+                config.QualityUpgradeExcludedItemIds.Add(body.ItemId);
+                Plugin.Instance.SaveConfiguration();
+            }
+
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Reverses <see cref="ExcludeQualityUpgrade"/> - this title is eligible
+        /// to be suggested again next time it qualifies.
+        /// </summary>
+        [HttpDelete("QualityUpgrades/Exclude/{itemId}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult UnexcludeQualityUpgrade(string itemId)
+        {
+            var config = Plugin.Instance!.Configuration;
+            config.QualityUpgradeExcludedItemIds?.RemoveAll(id => string.Equals(id, itemId, StringComparison.OrdinalIgnoreCase));
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Lists the current per-title exclusions, with names resolved for
+        /// display where the local item still exists - backs the "manage
+        /// exceptions" list on the config page.
+        /// </summary>
+        [HttpGet("QualityUpgrades/Excluded")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetExcludedQualityUpgrades()
+        {
+            var ids = Plugin.Instance?.Configuration?.QualityUpgradeExcludedItemIds ?? new List<string>();
+            var results = new List<object>();
+            foreach (var id in ids)
+            {
+                string name = id;
+                if (Guid.TryParse(id, out var guid))
+                {
+                    var item = _libraryManager.GetItemById(guid);
+                    if (item != null)
+                    {
+                        name = item.Name;
+                    }
+                }
+
+                results.Add(new { itemId = id, name });
+            }
+
+            return Ok(results);
         }
 
         #endregion
@@ -3863,6 +3938,11 @@ namespace Jellyfin.Plugin.Federation.Api
     public class QualityUpgradeApplyBody
     {
         public List<string>? ItemIds { get; set; }
+    }
+
+    public class QualityUpgradeExcludeBody
+    {
+        public string? ItemId { get; set; }
     }
 
     public class IssuePlaybackTokenRequest
