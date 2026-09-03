@@ -75,6 +75,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var servers = (config?.RemoteServers ?? new List<RemoteServer>()).ToDictionary(s => s.Id, s => s);
+            var excludedItemIds = new HashSet<string>(config?.QualityUpgradeExcludedItemIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
 
             IReadOnlyList<BaseItem> localItems;
             try
@@ -115,6 +116,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Already a federated virtual item (streamed from elsewhere) -
                 // nothing local to compare against or replace.
                 if (FederationLibraryManager.GetFederationKey(item) != null || item.ProviderIds == null)
+                {
+                    continue;
+                }
+
+                // Admin's per-title override: never suggest replacing this exact
+                // local copy, even though it would otherwise qualify.
+                if (excludedItemIds.Contains(item.Id.ToString()))
                 {
                     continue;
                 }

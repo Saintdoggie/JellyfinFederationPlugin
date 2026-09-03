@@ -586,6 +586,8 @@
                                 automatically</strong> - the review list just offers a "download the better copy, then remove the old one"
                                 button per item, and you choose all, some, or none each time.
                             </p>
+                            <a data-fed-action="quality-exclusions-toggle" style="cursor:pointer;">Manage exceptions (titles never suggested)</a>
+                            <div id="fedQualityExclusionsPanel" style="display:none;margin-top:0.4em;"></div>
                             <div class="inputContainer">
                                 <label class="inputLabel" for="fedTxtRefreshHours">Refresh interval (hours)</label>
                                 <input type="number" id="fedTxtRefreshHours" class="emby-input" min="1" max="168" />
@@ -2935,12 +2937,15 @@
                         html += '</div>';
                         qualityUpgradeCandidates.forEach(function (c) {
                             var checked = qualityUpgradeSelected[c.localItemId] ? ' checked' : '';
-                            html += '<label class="fed-check-label" style="display:block;">';
+                            html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5em;">';
+                            html += '<label class="fed-check-label" style="display:block;flex:1;">';
                             html += '<input type="checkbox" class="fed-check fedQualityPick" data-id="' + escapeHtml(c.localItemId) + '"' + checked + ' /> ';
                             html += escapeHtml(c.name) + (c.year ? ' (' + c.year + ')' : '') + ' — ';
                             html += 'yours: ' + formatQuality(c.localHeight, c.localBitrate);
                             html += ', ' + escapeHtml(c.remoteServerName) + '\'s: ' + formatQuality(c.remoteHeight, c.remoteBitrate);
                             html += '</label>';
+                            html += '<a data-fed-action="quality-exclude" data-id="' + escapeHtml(c.localItemId) + '" style="white-space:nowrap;font-size:0.85em;">Never ask about this one</a>';
+                            html += '</div>';
                         });
                         html += '<div style="margin-top:0.6em;">';
                         html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="quality-apply">Download selected &amp; remove old copies</button>';
@@ -2948,6 +2953,69 @@
                         html += '<div class="fed-srvstatus" id="fedQualityUpgradeStatus" style="display:none;"></div>';
                         html += '</div>';
                         el.innerHTML = html;
+                    }
+
+                    function toggleQualityExclusionsPanel() {
+                        var el = q('#fedQualityExclusionsPanel');
+                        if (!el) {
+                            return;
+                        }
+
+                        var showing = el.style.display !== 'none';
+                        if (showing) {
+                            el.style.display = 'none';
+                            return;
+                        }
+
+                        el.style.display = 'block';
+                        el.innerHTML = '<span class="fieldDescription">Loading…</span>';
+                        fedFetch('/Plugins/Federation/QualityUpgrades/Excluded')
+                        .then(function (r) { return r.json(); })
+                        .then(renderQualityExclusionsPanel)
+                        .catch(function () { el.innerHTML = '<span class="fieldDescription">Could not load.</span>'; });
+                    }
+
+                    function renderQualityExclusionsPanel(list) {
+                        var el = q('#fedQualityExclusionsPanel');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (!list || list.length === 0) {
+                            el.innerHTML = '<span class="fieldDescription">No exceptions - every title stays eligible.</span>';
+                            return;
+                        }
+
+                        var html = '';
+                        list.forEach(function (x) {
+                            html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5em;">';
+                            html += '<span>' + escapeHtml(x.name) + '</span>';
+                            html += '<a data-fed-action="quality-unexclude" data-id="' + escapeHtml(x.itemId) + '" style="white-space:nowrap;font-size:0.85em;">Remove exception</a>';
+                            html += '</div>';
+                        });
+                        el.innerHTML = html;
+                    }
+
+                    function unexcludeQualityUpgrade(id) {
+                        fedFetch('/Plugins/Federation/QualityUpgrades/Exclude/' + encodeURIComponent(id), { method: 'DELETE' })
+                        .then(function () {
+                            return fedFetch('/Plugins/Federation/QualityUpgrades/Excluded').then(function (r) { return r.json(); });
+                        })
+                        .then(renderQualityExclusionsPanel)
+                        .catch(function () { /* best-effort */ });
+                    }
+
+                    function excludeQualityUpgrade(id) {
+                        fedFetch('/Plugins/Federation/QualityUpgrades/Exclude', {
+                            method: 'POST',
+                            body: JSON.stringify({ ItemId: id })
+                        })
+                        .then(function () {
+                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return c.localItemId !== id; });
+                            delete qualityUpgradeSelected[id];
+                            renderQualityUpgradePanel();
+                        })
+                        .catch(function () { /* best-effort - it'll just be offered again next load */ });
                     }
 
                     function setQualitySelection(id, checked) {
@@ -4434,6 +4502,15 @@
                                     break;
                                 case 'quality-apply':
                                     applyQualityUpgrades();
+                                    break;
+                                case 'quality-exclude':
+                                    excludeQualityUpgrade(t.getAttribute('data-id'));
+                                    break;
+                                case 'quality-exclusions-toggle':
+                                    toggleQualityExclusionsPanel();
+                                    break;
+                                case 'quality-unexclude':
+                                    unexcludeQualityUpgrade(t.getAttribute('data-id'));
                                     break;
                                 case 'catalog-toggle':
                                     toggleCatalogSelect(t.getAttribute('data-id'));

@@ -90,12 +90,6 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public async Task<IReadOnlyList<ExternalItem>?> GetItemsAsync(RemoteServer server, string libraryId, CancellationToken cancellationToken)
         {
-            var client = CreateClient(server);
-            if (client == null)
-            {
-                return null;
-            }
-
             // The section's own type decides whether to walk shows+episodes or
             // just movies, so it has to be looked up rather than assumed from the
             // mapping - and a library that has since been deleted on the remote
@@ -115,6 +109,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     "[Federation] Refusing to sync Plex library {LibraryId} from {Server} - not in this server's allowed-library list",
                     libraryId,
                     server.Name);
+                return null;
+            }
+
+            return await FetchItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public Task<IReadOnlyList<ExternalItem>?> GetAllItemsAsync(RemoteServer server, string libraryId, CancellationToken cancellationToken)
+            => FetchItemsAsync(server, libraryId, cancellationToken);
+
+        private async Task<IReadOnlyList<ExternalItem>?> FetchItemsAsync(RemoteServer server, string libraryId, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            if (client == null)
+            {
                 return null;
             }
 

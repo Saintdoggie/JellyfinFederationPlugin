@@ -62,6 +62,17 @@ namespace Jellyfin.Plugin.Federation.Services
         Task<IReadOnlyList<ExternalItem>?> GetItemsAsync(RemoteServer server, string libraryId, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Same as <see cref="GetItemsAsync"/>, except NOT filtered through
+        /// <see cref="RemoteServer.AllowedExternalLibraryIds"/> - backs the admin
+        /// UI's ad-hoc Browse tab, which is specifically for looking at (and
+        /// optionally downloading) anything the remote exposes before ever
+        /// deciding to sync it, so it must not be gated on sync consent the way
+        /// <see cref="GetItemsAsync"/> is. Same null-vs-empty-list contract as
+        /// <see cref="GetItemsAsync"/>.
+        /// </summary>
+        Task<IReadOnlyList<ExternalItem>?> GetAllItemsAsync(RemoteServer server, string libraryId, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Resolves the absolute, credential-bearing URL this server should fetch
         /// an item's bytes from, at play time. Resolved per play rather than
         /// cached at sync time so a remote-side rescan that moves or re-ids the

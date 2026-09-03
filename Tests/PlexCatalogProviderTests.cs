@@ -154,6 +154,31 @@ public class PlexCatalogProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAllItemsAsync_IgnoresAllowList_UnlikeGetItemsAsync()
+    {
+        // Browse (backed by GetAllItemsAsync) is ad-hoc exploration, not sync -
+        // it must return items for a library that isn't (or isn't yet) in
+        // AllowedExternalLibraryIds, otherwise a freshly-connected Plex server
+        // with nothing allowed yet (the common starting state) shows a
+        // permanently empty Browse tab even though nothing there requires sync
+        // consent.
+        const string itemsBody = "{\"MediaContainer\":{\"Metadata\":[{"
+            + "\"ratingKey\":\"300\",\"title\":\"Some Movie\",\"type\":\"movie\","
+            + "\"Media\":[{\"container\":\"mp4\",\"videoCodec\":\"h264\",\"width\":1920,\"height\":1080,"
+            + "\"audioCodec\":\"aac\",\"audioChannels\":2,\"Part\":[{\"key\":\"/library/parts/1/1/file.mp4\"}]}]"
+            + "}]}}";
+        PlexCatalogProvider.HttpClientOverride = new HttpClient(new PathScriptedHandler(TwoSectionsBody, itemsBody));
+        var provider = new PlexCatalogProvider(NullLogger<PlexCatalogProvider>.Instance);
+        var server = PlexServer();
+        server.AllowedExternalLibraryIds = new System.Collections.Generic.List<string>();
+
+        var items = await provider.GetAllItemsAsync(server, "1", CancellationToken.None);
+
+        Assert.NotNull(items);
+        Assert.Single(items!);
+    }
+
+    [Fact]
     public async Task GetItemsAsync_Syncs_WhenLibraryIsInAllowList()
     {
         const string itemsBody = "{\"MediaContainer\":{\"Metadata\":[{"
