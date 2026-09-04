@@ -258,3 +258,16 @@ said explicitly not to start building it yet:
   complete on the build/test criteria; the two-server integration matrix and
   interactive UI smoke test criteria were explicitly waived for this release,
   not satisfied. First real-world check is the project owner trying it.
+- 2026-09-04: At the project owner's direction, reverted the version scheme
+  from 1.0.0/1.1.0 back to this project's established 0.0.x numbering - same
+  content, renamed only. What was 1.0.0 is now `0.0.124` (rebuilt from
+  commit `5611b5d`'s tree in a throwaway worktree, since that commit's own
+  files still say 1.0.0 and git history is not rewritten); what was 1.1.0 is
+  now `0.0.125` (commit `dc78a38`, this branch's tip). Both rebuilt clean
+  with zero warnings and revalidated: 347 .NET tests passed twice, 10 jsdom
+  tests passed. The 1.0.0 and 1.1.0 GitHub releases and tags were deleted;
+  0.0.124 and 0.0.125 released in their place, each independently verified
+  by downloading the published asset back and matching its manifest
+  checksum (`bfeaac898a4f3fdff55588a973bb71f4` and
+  `6cc8a52c82caedde9d6a609c8616e20c`). Same caveat as the entry above still
+  applies: no live two-server/browser check.
