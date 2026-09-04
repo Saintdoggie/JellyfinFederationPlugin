@@ -892,19 +892,18 @@
         scroller.insertBefore(downloadToDeviceItem, scroller.firstChild);
 
         if (currentUserIsAdmin) {
-          var downloadItem = makeActionSheetItem(
-            active ? 'cloud_off' : 'cloud_download',
-            active ? 'Cancel server download' : 'Download to server',
-            'federation-download',
-            function (btn) {
-              if (active) {
-                cancelDownload(btn);
-              } else {
-                startDownload(btn, rawId);
-              }
-            });
+          // Downloading a federated item to this server is temporarily disabled
+          // (see StartDownload's guard in FederationPluginController) - only the
+          // cancel affordance for a download already in flight from before this
+          // was disabled is still offered; new ones can't be started.
           if (active) {
+            var downloadItem = makeActionSheetItem(
+              'cloud_off',
+              'Cancel server download',
+              'federation-download',
+              function (btn) { cancelDownload(btn); });
             downloadItem.setAttribute('data-operation-id', active.operationId);
+            scroller.insertBefore(downloadItem, scroller.firstChild);
           }
 
           var hideItem = makeActionSheetItem(
@@ -914,7 +913,6 @@
             function (btn) { startHide(btn, rawId); });
 
           scroller.insertBefore(hideItem, scroller.firstChild);
-          scroller.insertBefore(downloadItem, scroller.firstChild);
         }
 
         return;

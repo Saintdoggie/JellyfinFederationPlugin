@@ -576,6 +576,7 @@
                         titles never appear here. An exclamation mark means Jellyfin already has a matching local copy,
                         so review it before downloading another. Downloads land in the "Federation Downloads" library.
                     </p>
+                    <p class="fed-srvstatus fed-srvstatus-info">Downloading to this server is temporarily disabled. Browsing still works.</p>
 
                     <div class="fed-download-toolbar">
                         <div class="fed-input-container fed-grow">
@@ -2942,7 +2943,7 @@
                                 html += '<div class="fed-local-copy-warning" role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</div>';
                             }
                             html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '" disabled title="Downloading to this server is temporarily disabled.">Download</button>';
                             html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
                             html += '</div>';
                         });
@@ -3065,17 +3066,9 @@
                             html += '<div class="fed-hint">Local: ' + formatQuality(c.localHeight, c.localBitrate) + ' · ' + escapeHtml(c.remoteServerName) + ': ' + formatQuality(c.remoteHeight, c.remoteBitrate) + '</div>';
                             html += '<div class="fed-quality-actions"><a data-fed-action="quality-exclude" data-id="' + id + '">Keep local copy; do not ask again</a>';
                             if (currentConfig.EnableQualityReplacementActions) {
-                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="quality-review" data-id="' + id + '">' + (qualityUpgradeReviewing[c.localItemId] ? 'Cancel review' : 'Review replacement') + '</button>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="quality-review" data-id="' + id + '" disabled title="Downloading to this server is temporarily disabled.">Review replacement</button>';
                             }
                             html += '</div>';
-                            if (currentConfig.EnableQualityReplacementActions && qualityUpgradeReviewing[c.localItemId]) {
-                                var confirmed = qualityUpgradeConfirmed[c.localItemId] === true;
-                                html += '<div class="fed-quality-confirm">';
-                                html += '<strong>Replace this exact title?</strong><p class="fed-hint">The better copy will download and validate first. Only then may the old local file be removed.</p>';
-                                html += '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedQualityConfirm" data-id="' + id + '"' + (confirmed ? ' checked' : '') + ' /> Yes, replace “' + escapeHtml(c.name) + '” and remove its current local copy after validation.</label>';
-                                html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="quality-apply-one" data-id="' + id + '"' + (confirmed ? '' : ' disabled') + '>Download better copy &amp; remove this old copy</button>';
-                                html += '</div>';
-                            }
                             html += '</div>';
                         });
                         if (qualityUpgradeMessage) {

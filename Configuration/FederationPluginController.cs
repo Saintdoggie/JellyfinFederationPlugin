@@ -3357,13 +3357,10 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult StartDownload([FromBody] DownloadItemBody body)
         {
-            var (success, message, operationId) = _downloadService.StartDownload(body?.ItemId ?? string.Empty);
-            if (!success)
-            {
-                return BadRequest(new { success, message });
-            }
-
-            return Ok(new { success, message, operationId });
+            // Temporarily disabled - see the matching guard on BrowseDownload and
+            // ApplyQualityUpgrades below. Restore the _downloadService.StartDownload
+            // call (see git history) to re-enable.
+            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
         }
 
         /// <summary>
@@ -3659,18 +3656,10 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult BrowseDownload([FromBody] BrowseDownloadBody body)
         {
-            if (body == null || string.IsNullOrWhiteSpace(body.ServerId) || string.IsNullOrWhiteSpace(body.ItemId))
-            {
-                return BadRequest(new { success = false, message = "ServerId and ItemId are required." });
-            }
-
-            var (success, message, operationId) = _downloadService.StartBrowseDownload(body.ServerId, body.ItemId, body.Name ?? "download");
-            if (!success)
-            {
-                return BadRequest(new { success, message });
-            }
-
-            return Ok(new { success, message, operationId });
+            // Temporarily disabled - see the matching guard on StartDownload above
+            // and ApplyQualityUpgrades below. Restore the
+            // _downloadService.StartBrowseDownload call (see git history) to re-enable.
+            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
         }
 
         #endregion
@@ -3722,46 +3711,10 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult ApplyQualityUpgrades([FromBody] QualityUpgradeApplyBody body)
         {
-            var config = Plugin.Instance?.Configuration;
-            if (config?.PreferHigherQualityRemotes != true || config.EnableQualityReplacementActions != true)
-            {
-                return BadRequest(new { success = false, message = "Replacement actions are not enabled." });
-            }
-
-            var itemIds = body?.ItemIds ?? new List<string>();
-            if (itemIds.Count == 0)
-            {
-                return Ok(new { success = true, message = "Nothing selected.", operations = new List<object>() });
-            }
-
-            if (itemIds.Count != 1)
-            {
-                return BadRequest(new { success = false, message = "Approve exactly one title per replacement request." });
-            }
-
-            var operations = new List<object>();
-            foreach (var itemId in itemIds)
-            {
-                var candidate = _qualityAdvisor.FindUpgradeFor(itemId);
-                if (candidate == null)
-                {
-                    // No longer a valid upgrade (local file already replaced by a
-                    // previous Apply, item deleted, or the remote no longer has a
-                    // better copy) - skip rather than fail the whole batch over
-                    // one stale selection.
-                    operations.Add(new { itemId, success = false, message = "No longer applicable - skipped." });
-                    continue;
-                }
-
-                var (success, message, operationId) = _downloadService.StartQualityReplace(
-                    candidate.LocalItemId,
-                    candidate.RemoteServerId,
-                    candidate.RemoteNativeItemId,
-                    candidate.Name);
-                operations.Add(new { itemId, success, message, operationId });
-            }
-
-            return Ok(new { success = true, operations });
+            // Temporarily disabled - see the matching guard on StartDownload and
+            // BrowseDownload above. Restore the body below (see git history) to
+            // re-enable.
+            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
         }
 
         /// <summary>
