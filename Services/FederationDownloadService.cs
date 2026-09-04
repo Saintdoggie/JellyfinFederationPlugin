@@ -37,6 +37,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly ILogger<FederationDownloadService> _logger;
+        private readonly Func<RemoteServer, string, string, IProgress<(long BytesRead, long? TotalBytes)>, CancellationToken, Task>? _qualityDownloadOverride;
+        private readonly Func<MediaBrowser.Controller.Entities.BaseItem, RemoteServer, string, bool>? _qualityUpgradeValidatorOverride;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationSources = new();
 
         /// <summary>
@@ -48,12 +50,33 @@ namespace Jellyfin.Plugin.Federation.Services
             IRemoteServerClientFactory clientFactory,
             ExternalCatalogRegistry externalCatalogs,
             ILogger<FederationDownloadService> logger)
+            : this(libraryManager, federationManager, clientFactory, externalCatalogs, logger, null, null)
+        {
+        }
+
+        /// <summary>
+        /// Test seam for the destructive replacement state machine. Production
+        /// dependency injection always uses the public constructor above; tests
+        /// can substitute only the long-running transfer and fresh-candidate
+        /// check while exercising the real staging, validation, commit,
+        /// cancellation, and delete ordering below.
+        /// </summary>
+        internal FederationDownloadService(
+            ILibraryManager libraryManager,
+            FederationLibraryManager federationManager,
+            IRemoteServerClientFactory clientFactory,
+            ExternalCatalogRegistry externalCatalogs,
+            ILogger<FederationDownloadService> logger,
+            Func<RemoteServer, string, string, IProgress<(long BytesRead, long? TotalBytes)>, CancellationToken, Task>? qualityDownloadOverride,
+            Func<MediaBrowser.Controller.Entities.BaseItem, RemoteServer, string, bool>? qualityUpgradeValidatorOverride)
         {
             _libraryManager = libraryManager;
             _federationManager = federationManager;
             _clientFactory = clientFactory;
             _externalCatalogs = externalCatalogs;
             _logger = logger;
+            _qualityDownloadOverride = qualityDownloadOverride;
+            _qualityUpgradeValidatorOverride = qualityUpgradeValidatorOverride;
         }
 
         /// <summary>
@@ -145,7 +168,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var cfg = Plugin.Instance?.Configuration;
             var server = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
-            if (server == null)
+            if (server == null || !server.Enabled)
             {
                 return (false, "Server not found.", null);
             }
@@ -204,10 +227,25 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var cfg = Plugin.Instance?.Configuration;
+            if (cfg?.PreferHigherQualityRemotes != true || cfg.EnableQualityReplacementActions != true)
+            {
+                return (false, "Quality replacement actions are not enabled.", null);
+            }
+
+            if (FederationLibraryManager.GetFederationKey(item) != null || string.IsNullOrWhiteSpace(item.Path))
+            {
+                return (false, "The approved old copy is no longer a local media file.", null);
+            }
+
             var server = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
-            if (server == null)
+            if (server == null || !server.Enabled)
             {
                 return (false, "Server not found.", null);
+            }
+
+            if (string.IsNullOrWhiteSpace(nativeItemId))
+            {
+                return (false, "Remote item id is required.", null);
             }
 
             if (cfg?.IncomingFilter != null && !cfg.IncomingFilter.AllowDownloads)
@@ -220,6 +258,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, $"Downloads from {server.Name} are disabled (Catalog → {server.Name} → Download access).", null);
             }
 
+            if (!IsExactQualityUpgrade(item, server, nativeItemId))
+            {
+                return (false, "The approved local/remote match is stale or is no longer a quality upgrade.", null);
+            }
+
             var dedupeKey = $"qreplace:{localItemId}";
             if (DownloadProgressTracker.IsDownloadingItem(dedupeKey))
             {
@@ -227,12 +270,12 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var operationId = Guid.NewGuid().ToString();
-            DownloadProgressTracker.Start(operationId, dedupeKey, itemName);
+            DownloadProgressTracker.Start(operationId, dedupeKey, item.Name);
 
             var cts = new CancellationTokenSource();
             _cancellationSources[operationId] = cts;
 
-            _ = Task.Run(() => RunQualityReplaceAsync(operationId, itemGuid, server, nativeItemId, itemName, cts.Token));
+            _ = Task.Run(() => RunQualityReplaceAsync(operationId, itemGuid, server, nativeItemId, item.Name, cts.Token));
 
             return (true, "Download started.", operationId);
         }
@@ -514,7 +557,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task RunQualityReplaceAsync(string operationId, Guid oldItemGuid, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
         {
-            string? destinationPath = null;
+            string? partialPath = null;
+            string? committedPath = null;
             try
             {
                 var downloadsRoot = GetDownloadsRoot();
@@ -527,17 +571,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 Directory.CreateDirectory(downloadsRoot);
 
                 var fileName = SafeFileName(itemName) + ".mkv";
-                destinationPath = Path.Combine(downloadsRoot, fileName);
-                DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
+                committedPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(committedPath) + "." + operationId + ".partial");
+                DownloadProgressTracker.SetDestinationPath(operationId, committedPath);
 
                 DownloadProgressTracker.Update(operationId, "Downloading higher-quality copy...");
                 var progress = new Progress<(long BytesRead, long? TotalBytes)>(
                     p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading higher-quality copy..."));
 
-                if (server.Kind == ServerKind.Jellyfin)
+                if (_qualityDownloadOverride != null)
+                {
+                    await _qualityDownloadOverride(server, nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else if (server.Kind == ServerKind.Jellyfin)
                 {
                     var client = _clientFactory.GetClient(server);
-                    await client.DownloadToFileAsync(nativeItemId, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await client.DownloadToFileAsync(nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -551,21 +600,48 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await DownloadUrlToFileAsync(url, partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
 
-                // Only reachable once the higher-quality copy is fully and
-                // successfully on disk - see this method's own summary for why
-                // the old copy is never touched before that point.
-                DownloadProgressTracker.Update(operationId, "Removing old copy...");
-                var oldItem = _libraryManager.GetItemById(oldItemGuid);
-                if (oldItem != null)
+                if (!ValidateCompletedDownload(partialPath))
                 {
-                    _libraryManager.DeleteItem(oldItem, new DeleteOptions { DeleteFileLocation = true });
+                    throw new InvalidDataException("The downloaded replacement was empty, truncated, or did not look like media.");
                 }
 
+                // Same-directory move is atomic on supported filesystems: the
+                // managed library never observes a partially-written movie.
+                File.Move(partialPath, committedPath);
+                partialPath = null;
+
+                // Make the destination library ready before touching the old item.
+                // A failure here leaves both the committed new file and old copy.
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
-                _libraryManager.QueueLibraryScan();
+
+                // Re-resolve the exact approved id immediately before deletion;
+                // never retain and act on the object captured before a long download.
+                var oldItem = _libraryManager.GetItemById(oldItemGuid);
+                if (oldItem == null
+                    || FederationLibraryManager.GetFederationKey(oldItem) != null
+                    || string.IsNullOrWhiteSpace(oldItem.Path)
+                    || !IsExactQualityUpgrade(oldItem, server, nativeItemId))
+                {
+                    throw new InvalidOperationException("The approved local copy changed before replacement; the downloaded copy was kept and the old item was not removed.");
+                }
+
+                DownloadProgressTracker.Update(operationId, "Removing the approved old copy...");
+                _libraryManager.DeleteItem(oldItem, new DeleteOptions { DeleteFileLocation = true });
+
+                // Deletion already completed successfully. A scan scheduling
+                // failure must not turn that completed replacement into an
+                // ambiguous failed operation or invite an unsafe retry.
+                try
+                {
+                    _libraryManager.QueueLibraryScan();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Replacement succeeded but a follow-up library scan could not be queued");
+                }
 
                 _logger.LogInformation(
                     "[Federation] Quality-replaced {Name}: downloaded a higher-quality copy from {Server} and removed the old local copy",
@@ -577,13 +653,16 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogInformation("[Federation] Quality-replace cancelled for {Name}", itemName);
                 DownloadProgressTracker.Complete(operationId, false, "Cancelled. The old copy was not touched.");
-                DeletePartialFile(destinationPath);
+                DeletePartialFile(partialPath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Quality-replace failed for {Name}", itemName);
-                DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message + " The old copy was not touched.");
-                DeletePartialFile(destinationPath);
+                var preservation = committedPath != null && File.Exists(committedPath)
+                    ? " The downloaded copy was kept. Verify the old copy before retrying."
+                    : " The old copy was not touched.";
+                DownloadProgressTracker.Complete(operationId, false, "Replacement failed: " + ex.Message + preservation);
+                DeletePartialFile(partialPath);
             }
             finally
             {
@@ -676,6 +755,94 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return new string(chars);
+        }
+
+        internal static bool ValidateCompletedDownload(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            var info = new FileInfo(path);
+            if (info.Length < 1024)
+            {
+                return false;
+            }
+
+            using var stream = File.OpenRead(path);
+            var prefixBytes = new byte[(int)Math.Min(256, info.Length)];
+            var read = stream.Read(prefixBytes, 0, prefixBytes.Length);
+            var prefix = System.Text.Encoding.UTF8.GetString(prefixBytes, 0, read).TrimStart();
+            return !prefix.StartsWith("<html", StringComparison.OrdinalIgnoreCase)
+                && !prefix.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase)
+                && !prefix.StartsWith("{", StringComparison.Ordinal)
+                && !prefix.StartsWith("[", StringComparison.Ordinal);
+        }
+
+        private bool IsExactQualityUpgrade(MediaBrowser.Controller.Entities.BaseItem localItem, RemoteServer server, string nativeItemId)
+        {
+            if (_qualityUpgradeValidatorOverride != null)
+            {
+                return _qualityUpgradeValidatorOverride(localItem, server, nativeItemId);
+            }
+
+            if (!server.Enabled || localItem.ProviderIds == null)
+            {
+                return false;
+            }
+
+            var dedupKeys = Plugin.Instance?.Configuration?.DedupProviderIds
+                ?? new List<string> { "imdb", "tmdb", "tvdb" };
+            foreach (var entry in _federationManager.Cache.GetAllEntries())
+            {
+                var sourceMatches = entry.Sources.Any(source =>
+                    string.Equals(source.ServerId, server.Id, StringComparison.Ordinal)
+                    && (server.Kind == ServerKind.Jellyfin
+                        ? string.Equals(source.RemoteItemId.ToString(), nativeItemId, StringComparison.OrdinalIgnoreCase)
+                        : string.Equals(entry.Metadata.RemoteNativeId, nativeItemId, StringComparison.Ordinal)));
+                if (!sourceMatches || entry.Metadata.ProviderIds == null)
+                {
+                    continue;
+                }
+
+                var sameTitle = dedupKeys.Any(key =>
+                    FederationLibraryManager.TryGetProviderId(localItem.ProviderIds, key, out var localValue)
+                    && FederationLibraryManager.TryGetProviderId(entry.Metadata.ProviderIds, key, out var remoteValue)
+                    && string.Equals(localValue, remoteValue, StringComparison.OrdinalIgnoreCase));
+                if (!sameTitle)
+                {
+                    continue;
+                }
+
+                var (localHeight, localBitrate) = FederationQualityAdvisorService.BestVideoStream(localItem.GetMediaStreams());
+                var (remoteHeight, remoteBitrate) = FederationQualityAdvisorService.BestVideoStream(entry.Metadata.MediaStreams);
+                return FederationQualityAdvisorService.IsUpgrade(localHeight, localBitrate, remoteHeight, remoteBitrate);
+            }
+
+            return false;
+        }
+
+        private static string GetUniqueDestinationPath(string directory, string fileName)
+        {
+            var candidate = Path.Combine(directory, fileName);
+            if (!File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            var extension = Path.GetExtension(fileName);
+            for (var suffix = 2; suffix < 10_000; suffix++)
+            {
+                candidate = Path.Combine(directory, $"{stem} ({suffix}){extension}");
+                if (!File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            throw new IOException("Could not allocate a unique destination filename.");
         }
     }
 }

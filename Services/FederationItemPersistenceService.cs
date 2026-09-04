@@ -558,47 +558,24 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    // Mirrors FederationLibraryManager.BuildStaticPath's guard, which
-                    // only ever ran once at creation before this existed. The one
-                    // case that must never keep a stamped Path is a server with
-                    // FriendUserAccessRules: those rules are keyed by which of *our*
-                    // local users is asking, but a stamped item.Path is one static
-                    // value shared by every client, so keeping one would silently
-                    // bypass the per-user restriction for the primary source - a
-                    // real, reported bug this blanking self-heals on the next sync.
-                    // Direct mode is deliberately NOT in that list any more: its
-                    // stamped Path is the secret-free local proxy gateway (see
-                    // BuildStaticPath), which previously meant "no Path at all" and
-                    // therefore no Play button in jellyfin-web (LocationType Virtual).
-                    var playableServer = _federationManager.GetServer(playable.ServerId);
-                    var hasUserAccessRules = playableServer?.FriendUserAccessRules != null
-                        && playableServer.FriendUserAccessRules.Count > 0;
-
-                    if (hasUserAccessRules)
+                    // BuildStaticPath now evaluates every configured user rule for
+                    // this exact item. A broad rule that allows it no longer removes
+                    // the Play button from everyone; a genuinely user-dependent item
+                    // still gets no shared static path and relies on the per-request
+                    // provider source.
+                    var expected = _federationManager.BuildStaticPath(entry, playable);
+                    if (string.IsNullOrEmpty(expected))
                     {
-                        // Blank rather than merely "don't restamp" so an item whose
-                        // server just gained its first FriendUserAccessRules entry
-                        // self-heals on its next sync instead of keeping an ungated
-                        // URL around indefinitely.
                         if (!string.IsNullOrEmpty(x.Item.Path))
                         {
                             x.Item.Path = null;
                             changed = true;
                         }
                     }
-                    else
+                    else if (!string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
                     {
-                        var expected = _federationManager.BuildStaticPath(entry.ItemType, playable);
-
-                        // A null here does NOT mean "disabled" - that case is handled
-                        // above. It means the URL cannot be built right now.
-                        // Blanking a working path over a temporary inability to rebuild it
-                        // would take the whole library offline, so leave it alone.
-                        if (!string.IsNullOrEmpty(expected) && !string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
-                        {
-                            x.Item.Path = expected;
-                            changed = true;
-                        }
+                        x.Item.Path = expected;
+                        changed = true;
                     }
 
                     if (changed)

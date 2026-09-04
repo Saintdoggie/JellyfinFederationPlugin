@@ -372,6 +372,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 dto.ProductionYear = year;
             }
 
+            if (GetLong(m, "addedAt") is long addedAt && addedAt > 0)
+            {
+                dto.DateCreated = DateTimeOffset.FromUnixTimeSeconds(addedAt).UtcDateTime;
+            }
+
             // Plex reports durations in milliseconds; Jellyfin counts ticks.
             if (GetLong(m, "duration") is long durationMs && durationMs > 0)
             {

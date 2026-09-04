@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -399,7 +401,7 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 var primary = entry.GetPrimarySource();
-                return primary == null ? null : BuildStaticPath(entry.ItemType, primary);
+                return primary == null ? null : BuildStaticPath(entry, primary);
             }
             catch (Exception ex)
             {
@@ -411,8 +413,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// The client-facing static Path this plugin stamps on a federated item:
         /// this server's own <c>/Plugins/Federation/Stream</c> proxy gateway, for
-        /// both streaming modes. That endpoint is anonymous and secret-free (it
-        /// mints a short-lived remote token per request - see
+        /// both streaming modes. That endpoint uses a signed, item-scoped URL and
+        /// mints a short-lived remote token per request (see
         /// <see cref="FederationStreamHandler.BuildDirectStreamUrlAsync"/>), so
         /// unlike <see cref="BuildPlaybackUrl"/>'s Direct-mode output it is safe to
         /// persist on <c>item.Path</c>, which Jellyfin serializes straight into
@@ -429,19 +431,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// for the static source, but playback is only possible with a button.
         /// </para>
         /// <para>
-        /// Null (deliberately no static Path - the provider's per-request source
-        /// becomes the only path) when the server is missing/disabled, or when any
-        /// <see cref="RemoteServer.FriendUserAccessRules"/> exist: those are keyed
-        /// by which of *our* local users is asking, but a stamped item.Path is one
-        /// static value shared by every client, so persisting one would silently
-        /// bypass the per-user restriction for the primary source (a real, reported
-        /// bug this guard closes).
+        /// Null when the caller cannot prove an item-specific shared path is safe.
+        /// The entry-aware overload should be preferred for materialized items; this
+        /// conservative overload remains for static exports/downloads that do not
+        /// carry enough context to evaluate per-user library/rating rules.
         /// </para>
         /// </summary>
         public string? BuildStaticPath(string itemType, FederatedSource src)
         {
             var server = GetServer(src.ServerId);
-            if (server == null || !server.Enabled)
+            if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
             {
                 return null;
             }
@@ -455,13 +454,36 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Builds this server's own loopback proxy-gateway URL for a source (see
-        /// <see cref="BuildStaticPath"/>). Contains no credential of any kind.
+        /// Builds the shared item Path when every configured local-user override
+        /// allows this exact item. This avoids one narrow rule removing the Play
+        /// button for every other user while preserving the rule boundary for items
+        /// that genuinely differ by user.
         /// </summary>
-        private string? BuildProxyStreamUrl(string itemType, FederatedSource src)
+        public string? BuildStaticPath(FederatedCacheEntry entry, FederatedSource src)
         {
             var server = GetServer(src.ServerId);
-            if (server == null || !server.Enabled)
+            if (server == null || !server.Enabled
+                || !RemoteAccessControlService.IsAllowedForEveryConfiguredUser(
+                    server,
+                    entry.MappingName,
+                    src.RemoteItemId,
+                    entry.Metadata.OfficialRating))
+            {
+                return null;
+            }
+
+            return BuildProxyStreamUrl(entry.ItemType, src);
+        }
+
+        /// <summary>
+        /// Builds this server's own loopback proxy-gateway URL for a source (see
+        /// <see cref="BuildStaticPath"/>). Contains an item-scoped HMAC capability,
+        /// never the remote server credential used to create it.
+        /// </summary>
+        private string? BuildProxyStreamUrl(string itemType, FederatedSource src, string? requestingUserId = null)
+        {
+            var server = GetServer(src.ServerId);
+            if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
             {
                 return null;
             }
@@ -475,7 +497,46 @@ namespace Jellyfin.Plugin.Federation.Services
             // setup) is what turned 4K playback startup into minutes-long waits.
             var localUrl = GetInternalPlaybackBaseUrl();
             var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
-            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+            var userFlag = string.IsNullOrEmpty(requestingUserId) ? string.Empty : $"&requestingUserId={Uri.EscapeDataString(requestingUserId)}";
+            var signature = CreateProxySignature(src.ServerId, src.RemoteItemId, IsAudioType(itemType), requestingUserId);
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{userFlag}&sig={signature}";
+        }
+
+        /// <summary>
+        /// Creates an item/user-scoped signature for the capability media URL. The
+        /// configured remote credential is only HMAC key material and never appears
+        /// in the URL; changing or removing the server immediately invalidates it.
+        /// </summary>
+        public string CreateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId)
+        {
+            var server = GetServer(serverId);
+            if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
+            {
+                return string.Empty;
+            }
+
+            var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
+            var payload = $"v1\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}";
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(server.ApiKey));
+            return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        }
+
+        /// <summary>Validates a proxy URL signature in constant time.</summary>
+        public bool ValidateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, string? signature)
+        {
+            if (string.IsNullOrEmpty(signature)
+                || signature.Length != 64
+                || signature.Any(c => !Uri.IsHexDigit(c))
+                || (!string.IsNullOrEmpty(requestingUserId) && !Guid.TryParse(requestingUserId, out _)))
+            {
+                return false;
+            }
+
+            var expected = CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId);
+            var expectedBytes = Encoding.UTF8.GetBytes(expected);
+            var suppliedBytes = Encoding.UTF8.GetBytes(signature);
+            return expectedBytes.Length == suppliedBytes.Length
+                && CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
         }
 
         /// <summary>

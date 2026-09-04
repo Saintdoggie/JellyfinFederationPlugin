@@ -1,9 +1,8 @@
-# Known minor issues (deliberately not fixed this release)
+# Known issues
 
 Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
 
 1. **Version skew with old peers** — a friend running a pre-0.0.70 plugin can't use scoped tokens; handshake is rejected with an upgrade message rather than mixing protocols. Fix = both sides upgrade.
-2. **No static Play button for rule-gated servers** — a server with per-remote-user access rules configured deliberately gets no stamped item.Path (a static Path is shared by every client and would bypass the per-user restriction), so those items still lack the web-client Play button. Playback itself works via PlaybackInfo. Trade-off documented in `FederationLibraryManager.BuildStaticPath`.
 3. **WAN bitrate caps are inert** — the capped transcode URL is internal-only (never served to a client since 0.0.70); measurement was fixed in 0.0.78 but no client-facing URL applies a cap. Clients on slow links direct-play the raw bitrate and may buffer.
 4. **Disabled servers' deletions don't propagate while disabled** — sync skips disabled servers entirely; remote-side deletions appear only after re-enable + next sync (offline servers propagate on next successful sync).
 5. **`LeavePool` is reversible by the next pool notice** — leaving a pool doesn't notify members, and a subsequent roster fan-out re-adopts the membership.
@@ -13,4 +12,13 @@ Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
 9. **Federation tokens stored plaintext in config XML** — scoped and non-admin, but unencrypted at rest.
 10. **Deleting a local Jellyfin user leaves stale federation state** — per-user access rules pushed by friends (`FriendUserAccessRules`) and cached session tokens for that user are never swept (no user-deletion hook exists). Inert after deletion, but accumulates.
 11. **Direct-mode static source relays through this server** — the Play-button fix routes the stamped static Path through the local proxy gateway (a relay hop). Direct client→remote fetching is still available for the provider-emitted sources where applicable, but the default source relays.
-12. **TODO, not yet investigated: friend→me playback has no Play button, but me→friend does** — reported 2026-09-02: content federated FROM a friend's server INTO this one plays fine via mine→theirs (this server's content playing on their end), but items federated the other way (their content, materialized here) show no web-client Play button at all - not just the narrower "rule-gated" case already covered by #2 above, reportedly the plain case too. Needs reproducing against a real friend pair to confirm whether it's the same root cause as #2 (missing static item.Path) manifesting more broadly than documented, or a distinct directional bug in how BuildStaticPath/PlaybackInfo differ between the two sides of a friendship.
+
+## Resolved in the current quality pass
+
+- The directional missing-Play-button report was traced to a coarse guard that
+  blanked every federated item path as soon as any incoming per-user rule existed.
+  Paths are now evaluated per item across all configured rules, so universally
+  allowed items remain playable without weakening restrictive items.
+- Local stream URLs are no longer enumerable server/item pairs. They carry a
+  scoped HMAC capability and are revalidated against current server, cache, source,
+  and access-rule state at stream time.

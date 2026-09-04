@@ -54,12 +54,13 @@
       // item comes from". Dark chip with a light cloud is neutral, always
       // legible over any poster art, and doesn't compete visually with
       // Jellyfin's own colored state badges.
-      '.federation-badge-corner{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:6px;',
-      'background:rgba(0,0,0,.72);color:#fff;',
+      '.federation-badge-corner{position:absolute;top:.45em;left:.45em;width:clamp(1.65em,1.55vw,2em);height:clamp(1.65em,1.55vw,2em);border-radius:.48em;',
+      'background:linear-gradient(145deg,rgba(20,25,34,.94),rgba(5,8,13,.82));color:#fff;',
       'display:flex;align-items:center;justify-content:center;',
-      'z-index:3;pointer-events:none;',
-      'box-shadow:0 1px 3px rgba(0,0,0,.55);}',
-      '.federation-badge-corner svg{width:13px;height:13px;opacity:.95;}',
+      'z-index:3;pointer-events:none;line-height:0;',
+      'border:1px solid rgba(255,255,255,.18);',
+      'box-shadow:0 2px 8px rgba(0,0,0,.45);backdrop-filter:blur(5px);}',
+      '.federation-badge-corner svg{display:block;width:58%;height:58%;opacity:.98;}',
 
       // Progress ring shown centered over a card/poster while an item is
       // actively being downloaded. Keeps its own dark backing plate since it
@@ -93,9 +94,27 @@
   // id -> source server name ('' when unknown). A map rather than a set so the
   // badge can name the server instead of just asserting "not local".
   var federatedIds = new Map();
+  var currentUserIsAdmin = false;
+  var showFederatedCloudBadges = false;
+  var clientSettingsLoaded = false;
+
+  // This script runs for ordinary viewers too. Resolve elevation once before
+  // enabling admin-only polling/actions, otherwise every non-admin browser
+  // sends a forbidden /Downloads request every three seconds indefinitely.
+  function resolveAdminState() {
+    try {
+      if (window.ApiClient && typeof window.ApiClient.getCurrentUser === 'function') {
+        return Promise.resolve(window.ApiClient.getCurrentUser()).then(function (user) {
+          currentUserIsAdmin = !!(user && user.Policy && user.Policy.IsAdministrator);
+        }).catch(function () { /* a viewer remains non-admin */ });
+      }
+    } catch (e) { /* a viewer remains non-admin */ }
+
+    return Promise.resolve();
+  }
 
   function refreshFederatedIds() {
-    fetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
+    return fetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
       .then(function (res) {
         return res.ok ? res.json() : {};
       })
@@ -118,6 +137,42 @@
       });
   }
 
+  function refreshClientSettings() {
+    return fetch('/Plugins/Federation/ClientSettings', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : {}; })
+      .then(function (settings) {
+        var wasLoaded = clientSettingsLoaded;
+        var previousValue = showFederatedCloudBadges;
+        showFederatedCloudBadges = settings.showFederatedCloudBadges === true;
+        clientSettingsLoaded = true;
+
+        // Cards are deliberately marked as processed even when the cloud is
+        // disabled, otherwise every DOM mutation would reconsider the same
+        // cards. If an administrator changes the setting in another tab,
+        // clear only federated card state and let the normal scanner reconcile
+        // it. This makes both enabling and disabling take effect without a
+        // full jellyfin-web reload.
+        if (wasLoaded && previousValue !== showFederatedCloudBadges) {
+          document.querySelectorAll('.card[data-id],.listItem[data-id]').forEach(function (card) {
+            if (!federatedIds.has(normalizeId(card.getAttribute('data-id')))) {
+              return;
+            }
+
+            card.removeAttribute('data-federation-badge');
+            card.querySelectorAll('.federation-badge-corner').forEach(function (badge) {
+              badge.remove();
+            });
+          });
+          scheduleScan();
+        }
+      })
+      .catch(function () {
+        // The privacy-preserving default is also the visual default: no cloud.
+        showFederatedCloudBadges = false;
+      })
+      .then(function () { clientSettingsLoaded = true; });
+  }
+
   // ids of this server's own local items currently excluded from sharing with
   // every friend (Configuration/FederationPluginController.cs's
   // "Outgoing sharing" region) - the opposite direction from federatedIds
@@ -127,6 +182,10 @@
   var sharingDisabledIds = new Set();
 
   function refreshSharingDisabledIds() {
+    if (!currentUserIsAdmin) {
+      return;
+    }
+
     fetch('/Plugins/Federation/Sharing/DisabledIds', { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (ids) {
@@ -148,6 +207,12 @@
     // on the same card.
     var isSharingDisabled = !isFederated && !!id && sharingDisabledIds.has(id);
 
+    if (isFederated && !showFederatedCloudBadges) {
+      el.setAttribute('data-federation-badge', '0');
+      updateDownloadRing(el, id);
+      return;
+    }
+
     if (!isFederated && !isSharingDisabled) {
       // Neither (or not known yet) - skip this element for good so we don't
       // keep re-checking it on every scan.
@@ -156,13 +221,12 @@
     }
 
     if (!el.querySelector('.federation-badge-corner')) {
-      // Absolutely positioned relative to the card itself rather than a
-      // specific inner image wrapper - jellyfin-web card markup varies by
-      // layout, but the poster is consistently the first thing in the
-      // card, so a top-left corner badge on the outer element lands on the
-      // poster either way, without depending on internal class names.
-      if (window.getComputedStyle(el).position === 'static') {
-        el.style.position = 'relative';
+      // Anchor to the artwork, not the outer card. Card footers vary in height
+      // across poster, landscape and list layouts; positioning against them is
+      // what made the cloud visibly drift away from the image.
+      var anchor = el.querySelector('.cardImageContainer, .listItemImage') || el;
+      if (window.getComputedStyle(anchor).position === 'static') {
+        anchor.style.position = 'relative';
       }
 
       var badge = document.createElement('div');
@@ -176,7 +240,7 @@
         badge.innerHTML = EYE_OFF_SVG;
       }
 
-      el.appendChild(badge);
+      anchor.appendChild(badge);
     }
 
     el.setAttribute('data-federation-badge', '1');
@@ -250,16 +314,17 @@
   // currently known (either the periodic list poll below, or a live percent
   // passed straight from the detail page's own per-item poll).
   function updateDownloadRing(el, id, pctOverride) {
+    var anchor = el.querySelector('.cardImageContainer, .listItemImage') || el;
     if (typeof pctOverride === 'number') {
-      applyDownloadRing(el, pctOverride, 46);
+      applyDownloadRing(anchor, pctOverride, 46);
       return;
     }
 
     var dl = activeDownloadsByItem.get(id);
     if (dl) {
-      applyDownloadRing(el, dl.percentComplete, 46);
+      applyDownloadRing(anchor, dl.percentComplete, 46);
     } else {
-      removeDownloadRing(el);
+      removeDownloadRing(anchor);
     }
   }
 
@@ -326,6 +391,10 @@
   }
 
   function refreshDownloadsList() {
+    if (!currentUserIsAdmin) {
+      return;
+    }
+
     var token = getToken();
     fetch('/Plugins/Federation/Downloads', {
       credentials: 'same-origin',
@@ -514,7 +583,7 @@
 
   // Saves a copy straight to the viewer's own device - distinct from
   // startDownload above, which downloads a permanent copy onto the *server's*
-  // disk instead. Resolves the actual (anonymous, no-token-needed) stream URL
+  // disk instead. Resolves an item-scoped, signed stream URL
   // via DownloadUrl, then triggers it through a throwaway <a download> click
   // rather than fetching it into memory first - browsers stream a same-origin
   // navigation like this straight to disk, exactly like any other download.
@@ -740,15 +809,24 @@
       return;
     }
 
-    // Remove a tag left over from a previous item before adding the current
-    // one (SPA navigation can keep the surrounding DOM).
     var old = info.querySelector('.federation-source-tag');
+    // MutationObserver calls scan() after our own DOM changes. Rebuilding the
+    // same tag on every scan created a self-sustaining remove/add loop that
+    // kept a browser busy even while the page was idle.
+    if (old && old.getAttribute('data-item-id') === normalizeId(rawId)
+        && old.getAttribute('data-server-name') === name) {
+      return;
+    }
+
+    // Remove a tag left over from a previous item (the SPA reuses this DOM).
     if (old) {
       old.remove();
     }
 
     var tag = document.createElement('span');
     tag.className = 'federation-source-tag';
+    tag.setAttribute('data-item-id', normalizeId(rawId));
+    tag.setAttribute('data-server-name', name);
     tag.title = label;
     tag.innerHTML = ICON_SVG;
     var text = document.createElement('span');
@@ -805,36 +883,44 @@
 
       if (isFederated) {
         var active = loadActiveDownloads()[rawId];
-        var downloadItem = makeActionSheetItem(
-          active ? 'cloud_off' : 'cloud_download',
-          active ? 'Cancel download' : 'Download',
-          'federation-download',
-          function (btn) {
-            if (active) {
-              cancelDownload(btn);
-            } else {
-              startDownload(btn, rawId);
-            }
-          });
-        if (active) {
-          downloadItem.setAttribute('data-operation-id', active.operationId);
-        }
-
         var downloadToDeviceItem = makeActionSheetItem(
           'file_download',
           'Download to device',
           'federation-download-device',
           function (btn) { downloadToDevice(btn, rawId); });
 
-        var hideItem = makeActionSheetItem(
-          'visibility_off',
-          'Hide',
-          'federation-hide',
-          function (btn) { startHide(btn, rawId); });
-
-        scroller.insertBefore(hideItem, scroller.firstChild);
         scroller.insertBefore(downloadToDeviceItem, scroller.firstChild);
-        scroller.insertBefore(downloadItem, scroller.firstChild);
+
+        if (currentUserIsAdmin) {
+          var downloadItem = makeActionSheetItem(
+            active ? 'cloud_off' : 'cloud_download',
+            active ? 'Cancel server download' : 'Download to server',
+            'federation-download',
+            function (btn) {
+              if (active) {
+                cancelDownload(btn);
+              } else {
+                startDownload(btn, rawId);
+              }
+            });
+          if (active) {
+            downloadItem.setAttribute('data-operation-id', active.operationId);
+          }
+
+          var hideItem = makeActionSheetItem(
+            'visibility_off',
+            'Hide from this server',
+            'federation-hide',
+            function (btn) { startHide(btn, rawId); });
+
+          scroller.insertBefore(hideItem, scroller.firstChild);
+          scroller.insertBefore(downloadItem, scroller.firstChild);
+        }
+
+        return;
+      }
+
+      if (!currentUserIsAdmin) {
         return;
       }
 
@@ -925,6 +1011,10 @@
   ].join(',');
 
   function scan() {
+    if (!clientSettingsLoaded) {
+      return;
+    }
+
     injectStyle();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
@@ -945,13 +1035,19 @@
     });
   }
 
-  refreshFederatedIds();
-  setInterval(refreshFederatedIds, 5 * 60 * 1000);
-  refreshSharingDisabledIds();
-  setInterval(refreshSharingDisabledIds, 5 * 60 * 1000);
-  resumeActiveDownloads();
+  Promise.all([refreshFederatedIds(), refreshClientSettings(), resolveAdminState()]).then(function () {
+    if (currentUserIsAdmin) {
+      refreshSharingDisabledIds();
+      resumeActiveDownloads();
+      refreshDownloadsList();
+    }
 
-  refreshDownloadsList();
+    scheduleScan();
+  });
+  setInterval(refreshFederatedIds, 5 * 60 * 1000);
+  setInterval(refreshClientSettings, 5 * 60 * 1000);
+  setInterval(refreshSharingDisabledIds, 5 * 60 * 1000);
+
   setInterval(refreshDownloadsList, 3000);
 
   // jellyfin-web is a client-routed SPA (pushState navigation), which does
@@ -962,5 +1058,4 @@
   var observer = new MutationObserver(scheduleScan);
   observer.observe(document.body, { childList: true, subtree: true });
 
-  scheduleScan();
 })();

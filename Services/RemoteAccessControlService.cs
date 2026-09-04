@@ -196,6 +196,56 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>
+        /// Whether a shared, user-agnostic item path is safe for this item. Jellyfin
+        /// stores one Path for every local user, so it may only be stamped when every
+        /// configured override permits this exact item; users without an override
+        /// inherit the already-filtered server scope and are therefore allowed.
+        /// </summary>
+        public static bool IsAllowedForEveryConfiguredUser(
+            RemoteServer? server,
+            string? mappingName,
+            Guid remoteItemId,
+            string? officialRating)
+        {
+            if (server?.FriendUserAccessRules == null || server.FriendUserAccessRules.Count == 0)
+            {
+                return true;
+            }
+
+            foreach (var rule in server.FriendUserAccessRules)
+            {
+                if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
+                    .Any(id => Guid.TryParse(id, out var blocked) && blocked == remoteItemId))
+                {
+                    return false;
+                }
+
+                if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating)
+                    && !IncomingContentFilterService.IsAllowedByRatingCeilings(officialRating, null, rule.MaxAllowedRating))
+                {
+                    return false;
+                }
+
+                var allowed = rule.Mode switch
+                {
+                    RemoteUserAccessMode.Blocked => false,
+                    RemoteUserAccessMode.AllLibraries => true,
+                    RemoteUserAccessMode.CertainItems => (rule.ItemIds ?? new System.Collections.Generic.List<string>())
+                        .Any(id => Guid.TryParse(id, out var item) && item == remoteItemId),
+                    RemoteUserAccessMode.CertainLibraries => IsInAllowedLibrary(server, mappingName, rule),
+                    _ => true
+                };
+
+                if (!allowed)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private static bool IsInAllowedLibrary(RemoteServer server, string? mappingName, RemoteUserAccessRule rule)
         {
             if (string.IsNullOrEmpty(mappingName) || rule.LibraryFolderIds == null || rule.LibraryFolderIds.Count == 0)
