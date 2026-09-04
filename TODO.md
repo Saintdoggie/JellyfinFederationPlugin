@@ -165,3 +165,17 @@ first.
   GitHub. Project/meta/manifest versions agree; the four-file release archive
   was downloaded back from GitHub and independently matched manifest MD5
   `d029debb99b293497cc2042c4d87a6eb`. This release gate is complete.
+- 2026-09-04: Settings UI polish and a temporary pause on downloading
+  federated content to this server (StartDownload/BrowseDownload/
+  ApplyQualityUpgrades) were built and validated (347 .NET tests x2, 8 jsdom
+  tests) but only handed to the project owner as a zip, versioned 0.1.0 - no
+  tag or GitHub release existed for it yet.
+- 2026-09-04: At the project owner's direction this was renumbered to 1.0.0
+  (a major, not minor, release) on commit `5611b5d`, rebuilt clean with zero
+  warnings, and revalidated: 347 .NET tests passed twice, 8 jsdom tests
+  passed. Released to public `master` and GitHub as tag `1.0.0`; the release
+  archive was downloaded back from GitHub and independently matched manifest
+  MD5 `447d4460900fd8d5e4d225da07abe80d`. This release gate is complete.
+  Note: downloading federated content to this server remains temporarily
+  disabled in 1.0.0 pending the rework mentioned above - re-enabling that
+  flow is separate follow-up work, not yet started.
