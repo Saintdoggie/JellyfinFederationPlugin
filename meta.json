@@ -5,7 +5,7 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "1.1.0",
+  "version": "0.0.125",
   "changelog": "Every checkbox on the Federation settings page (Advanced and every other tab) is visible again - it was silently rendering with no checkmark box at all on some setups. The Downloads tab's server dropdown no longer sometimes shows 'no servers available' when friends are actually connected. The Downloads tab's TV mode now lists shows instead of a flat, effectively random page of episodes - click a show to see its own episode list, grouped by season in watch order. The Download button reports back inline what happened instead of doing nothing when clicked. Clicking a movie or episode opens an info card with its poster, overview, year, genres and rating.",
   "targetAbi": "10.11.0.0",
   "timestamp": "2026-09-04T17:08:45Z",
