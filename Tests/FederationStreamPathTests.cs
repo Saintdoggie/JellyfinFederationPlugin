@@ -122,7 +122,7 @@ public class FederationStreamPathTests : IDisposable
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
 
         Assert.Equal(
-            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={_manager.CreateProxySignature("serverA", remoteId, false, null)}",
             item.Path);
         Assert.DoesNotContain("secret-key", item.Path);
         Assert.Equal(LocationType.Remote, item.LocationType);
@@ -130,18 +130,58 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void Movie_DirectMode_WithPerUserAccessRules_StillGetsNoStaticPath_SoRulesCannotBeBypassed()
+    public void Movie_DirectMode_WithUniversallyPermissiveUserRule_KeepsStaticPath()
     {
-        // The one deliberate exception to the fix above: a server with
-        // FriendUserAccessRules gates content per local user, but a stamped
-        // item.Path is one static value shared by every client - persisting one
-        // would silently bypass the restriction for the primary source. These
-        // items rely on the provider's per-request source (no static Play button
-        // gap-free path exists for them).
+        // Merely having a rule must not remove the Play button for every user.
+        // AllLibraries without a rating/item restriction allows this exact item
+        // for configured and unconfigured users alike, so one shared path is safe.
         var server = AddServer();
         server.FriendUserAccessRules = new List<Configuration.RemoteUserAccessRule>
         {
-            new() { RemoteUserId = Guid.NewGuid().ToString("N") }
+            new() { RemoteUserId = Guid.NewGuid().ToString("N"), Mode = Configuration.RemoteUserAccessMode.AllLibraries }
+        };
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+
+        Assert.False(string.IsNullOrEmpty(item.Path));
+        Assert.Equal(LocationType.Remote, item.LocationType);
+    }
+
+    [Fact]
+    public void Movie_DirectMode_WithRuleAllowingThisMappedLibrary_KeepsStaticPathForAllUsers()
+    {
+        var server = AddServer();
+        server.FriendUserAccessRules = new List<Configuration.RemoteUserAccessRule>
+        {
+            new()
+            {
+                RemoteUserId = Guid.NewGuid().ToString("N"),
+                Mode = Configuration.RemoteUserAccessMode.CertainLibraries,
+                LibraryFolderIds = new List<string> { "remote-movies" }
+            }
+        };
+        _plugin.Configuration.LibraryMappings.Add(new Configuration.LibraryMapping
+        {
+            LocalLibraryName = "Movies",
+            RemoteLibrarySources = new List<Configuration.RemoteLibrarySource>
+            {
+                new() { ServerId = "serverA", RemoteLibraryId = "remote-movies" }
+            }
+        });
+
+        var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
+
+        Assert.False(string.IsNullOrEmpty(item.Path));
+        Assert.Equal(LocationType.Remote, item.LocationType);
+    }
+
+    [Fact]
+    public void Movie_DirectMode_WithBlockedUserRule_GetsNoStaticPath()
+    {
+        var server = AddServer();
+        server.FriendUserAccessRules = new List<Configuration.RemoteUserAccessRule>
+        {
+            new() { RemoteUserId = Guid.NewGuid().ToString("N"), Mode = Configuration.RemoteUserAccessMode.Blocked }
         };
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
 
@@ -175,7 +215,7 @@ public class FederationStreamPathTests : IDisposable
         // rather than the public ServerUrl - going out through a public host/VPS
         // tunnel and back in to reach the same process is pure wasted latency.
         Assert.Equal(
-            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={_manager.CreateProxySignature("serverA", remoteId, false, null)}",
             item.Path);
 
         // The remote api_key must never reach a client in Proxy mode.
@@ -199,8 +239,44 @@ public class FederationStreamPathTests : IDisposable
         // being configured, so an unconfigured ServerUrl (which still blocks peer
         // handshakes) should no longer block Proxy playback from working.
         Assert.Equal(
-            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}",
+            $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={_manager.CreateProxySignature("serverA", remoteId, false, null)}",
             item.Path);
+    }
+
+    [Fact]
+    public void ProxySignature_IsScopedToServerItemMediaKindAndUser()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var otherItemId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString("N");
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, userId);
+
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, null));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, string.Empty));
+        Assert.False(_manager.ValidateProxySignature("missing-server", itemId, false, userId, signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", otherItemId, false, userId, signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, true, userId, signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, Guid.NewGuid().ToString("N"), signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, "not-a-user-id", signature));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, new string('z', 64)));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature + "00"));
+    }
+
+    [Fact]
+    public void ProxySignature_IsRevokedWhenServerCredentialChangesOrServerIsDisabled()
+    {
+        var server = AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, null);
+
+        server.ApiKey = "rotated-key";
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, signature));
+
+        var rotatedSignature = _manager.CreateProxySignature("serverA", itemId, false, null);
+        server.Enabled = false;
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, rotatedSignature));
     }
 
     [Fact]

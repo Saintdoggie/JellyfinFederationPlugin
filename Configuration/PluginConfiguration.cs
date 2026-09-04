@@ -80,6 +80,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> DedupProviderIds { get; set; } = new List<string> { "imdb", "tmdb", "tvdb" };
 
         /// <summary>
+        /// Gets or sets a value indicating whether jellyfin-web should draw the
+        /// small federated cloud over media artwork. Off by default so the main
+        /// library remains visually native unless an administrator opts in.
+        /// Source labels, playback, and downloads do not depend on this cosmetic
+        /// preference.
+        /// </summary>
+        public bool ShowFederatedCloudBadges { get; set; } = false;
+
+        /// <summary>
         /// Gets or sets a value indicating whether the config page should compare
         /// each locally-owned item against its federated dedup counterparts (see
         /// <see cref="DedupProviderIds"/>) and surface any where a friend's server
@@ -89,6 +98,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// ever deleted automatically, regardless of this setting.
         /// </summary>
         public bool PreferHigherQualityRemotes { get; set; } = false;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the quality review may show
+        /// destructive replacement actions. This is a second, explicit opt-in
+        /// beyond merely finding better copies. Even when enabled, every movie
+        /// still requires its own affirmative confirmation.
+        /// </summary>
+        public bool EnableQualityReplacementActions { get; set; } = false;
 
         /// <summary>
         /// Gets or sets the local item ids (see <see cref="MediaBrowser.Controller.Entities.BaseItem.Id"/>,

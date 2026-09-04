@@ -1,10 +1,17 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -26,20 +33,24 @@ public class FederationDownloadServiceTests : IDisposable
     private readonly Mock<ILibraryManager> _libraryManager;
     private readonly FederationLibraryManager _federationManager;
     private readonly FederationItemCache _cache;
+    private readonly Mock<IRemoteServerClientFactory> _clientFactory;
+    private readonly ExternalCatalogRegistry _externalCatalogs;
     private readonly FederationDownloadService _service;
 
     public FederationDownloadServiceTests()
     {
         _plugin = new RealPluginInstance();
+        _plugin.Configuration.PreferHigherQualityRemotes = true;
+        _plugin.Configuration.EnableQualityReplacementActions = true;
 
         _libraryManager = new Mock<ILibraryManager>();
-        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        _clientFactory = new Mock<IRemoteServerClientFactory>();
         _cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
-        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
-        _federationManager = new FederationLibraryManager(_libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, _cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, _clientFactory.Object);
+        _federationManager = new FederationLibraryManager(_libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, _clientFactory.Object, _cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
-        var externalCatalogs = new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>());
-        _service = new FederationDownloadService(_libraryManager.Object, _federationManager, clientFactory.Object, externalCatalogs, NullLogger<FederationDownloadService>.Instance);
+        _externalCatalogs = new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>());
+        _service = new FederationDownloadService(_libraryManager.Object, _federationManager, _clientFactory.Object, _externalCatalogs, NullLogger<FederationDownloadService>.Instance);
     }
 
     public void Dispose() => _plugin.Dispose();
@@ -246,7 +257,7 @@ public class FederationDownloadServiceTests : IDisposable
     [Fact]
     public void GetDownloadUrl_ValidFederatedItem_ReturnsDownloadUrlAndSanitizedFileName()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "server-1", Name = "Friend", Url = "http://friend.example:8096", Enabled = true });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "server-1", Name = "Friend", Url = "http://friend.example:8096", ApiKey = "federation-secret", Enabled = true });
 
         var itemId = Guid.NewGuid();
         var remoteItemId = Guid.NewGuid();
@@ -280,6 +291,7 @@ public class FederationDownloadServiceTests : IDisposable
             Id = "server-1",
             Name = "Friend",
             Url = "http://friend.example:8096",
+            ApiKey = "federation-secret",
             Enabled = true,
             FriendUserAccessRules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule() }
         });
@@ -325,7 +337,7 @@ public class FederationDownloadServiceTests : IDisposable
     public void StartQualityReplace_ServerNotFound_Fails()
     {
         var itemId = Guid.NewGuid();
-        var item = new Movie { Id = itemId };
+        var item = new Movie { Id = itemId, Path = "/media/Movie.mkv" };
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
 
         var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "no-such-server", "remote-1", "Movie");
@@ -339,7 +351,7 @@ public class FederationDownloadServiceTests : IDisposable
     public void StartQualityReplace_DownloadsDisabledForServer_Fails()
     {
         var itemId = Guid.NewGuid();
-        var item = new Movie { Id = itemId };
+        var item = new Movie { Id = itemId, Path = "/media/Movie.mkv" };
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
         _plugin.Configuration.RemoteServers.Add(new RemoteServer
         {
@@ -355,5 +367,241 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.False(success);
         Assert.Contains("disabled", message);
         Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void StartQualityReplace_ReplacementActionsDisabled_FailsClosed()
+    {
+        _plugin.Configuration.EnableQualityReplacementActions = false;
+        var itemId = Guid.NewGuid();
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(new Movie { Id = itemId, Path = "/media/Movie.mkv" });
+
+        var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "server-1", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("not enabled", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void StartQualityReplace_FederatedOldItem_FailsClosed()
+    {
+        var itemId = Guid.NewGuid();
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(new Movie
+        {
+            Id = itemId,
+            Path = "/media/Movie.mkv",
+            ProviderIds = new Dictionary<string, string> { ["FederationKey"] = "not-local" }
+        });
+
+        var (success, message, operationId) = _service.StartQualityReplace(itemId.ToString(), "server-1", "remote-1", "Movie");
+
+        Assert.False(success);
+        Assert.Contains("no longer a local", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(operationId);
+    }
+
+    [Fact]
+    public void ValidateCompletedDownload_RejectsTinyAndHtmlFiles_ButAcceptsMediaSizedBinary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-download-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var tiny = Path.Combine(root, "tiny.mkv");
+            File.WriteAllBytes(tiny, new byte[16]);
+            Assert.False(FederationDownloadService.ValidateCompletedDownload(tiny));
+
+            var html = Path.Combine(root, "error.mkv");
+            File.WriteAllText(html, "<!doctype html>" + new string('x', 2048));
+            Assert.False(FederationDownloadService.ValidateCompletedDownload(html));
+
+            var media = Path.Combine(root, "movie.mkv");
+            var bytes = new byte[4096];
+            bytes[0] = 0x1A;
+            bytes[1] = 0x45;
+            bytes[2] = 0xDF;
+            bytes[3] = 0xA3;
+            File.WriteAllBytes(media, bytes);
+            Assert.True(FederationDownloadService.ValidateCompletedDownload(media));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task QualityReplace_DownloadsValidatesAndCommitsBeforeDeletingExactOldItem()
+    {
+        var events = new ConcurrentQueue<string>();
+        var item = ConfigureQualityReplacement();
+        var validationCalls = 0;
+        string? stagedPath = null;
+        _libraryManager.Setup(l => l.DeleteItem(item, It.IsAny<DeleteOptions>()))
+            .Callback(() =>
+            {
+                events.Enqueue("delete");
+                Assert.NotNull(stagedPath);
+                Assert.False(File.Exists(stagedPath));
+            });
+
+        var service = CreateQualityService(
+            async (path, token) =>
+            {
+                stagedPath = path;
+                events.Enqueue("download");
+                await File.WriteAllBytesAsync(path, ValidMediaBytes(), token);
+            },
+            () =>
+            {
+                var call = Interlocked.Increment(ref validationCalls);
+                events.Enqueue("validate-" + call);
+                return true;
+            });
+
+        var (started, message, operationId) = service.StartQualityReplace(item.Id.ToString(), "server-1", "remote-1", "Untrusted browser name");
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.True(completed.Success, completed.Status);
+        Assert.True(File.Exists(completed.DestinationPath));
+        Assert.Equal(
+            new[] { "validate-1", "download", "validate-2", "delete" },
+            events.ToArray());
+        Assert.Equal("Approved Movie", completed.ItemName);
+        _libraryManager.Verify(l => l.DeleteItem(item, It.Is<DeleteOptions>(o => o.DeleteFileLocation)), Times.Once);
+    }
+
+    [Fact]
+    public async Task QualityReplace_InvalidDownloadedBodyNeverDeletesAndCleansPartialFile()
+    {
+        var item = ConfigureQualityReplacement();
+        var service = CreateQualityService(
+            (path, token) => File.WriteAllTextAsync(path, "<!doctype html>" + new string('x', 2048), token),
+            () => true);
+
+        var (started, message, operationId) = service.StartQualityReplace(item.Id.ToString(), "server-1", "remote-1", item.Name);
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.False(completed.Success);
+        Assert.Contains("did not look like media", completed.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(completed.DestinationPath));
+        Assert.Empty(Directory.GetFiles(FederationDownloadService.GetDownloadsRoot(), "*.partial"));
+        _libraryManager.Verify(l => l.DeleteItem(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<DeleteOptions>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task QualityReplace_CancellationNeverDeletesAndCleansPartialFile()
+    {
+        var item = ConfigureQualityReplacement();
+        var transferStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateQualityService(
+            async (path, token) =>
+            {
+                await File.WriteAllBytesAsync(path, ValidMediaBytes(), token);
+                transferStarted.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            },
+            () => true);
+
+        var (started, message, operationId) = service.StartQualityReplace(item.Id.ToString(), "server-1", "remote-1", item.Name);
+        Assert.True(started, message);
+        await transferStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var (cancelled, cancelMessage) = service.CancelDownload(operationId!);
+        Assert.True(cancelled, cancelMessage);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.False(completed.Success);
+        Assert.Contains("Cancelled", completed.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(completed.DestinationPath));
+        Assert.Empty(Directory.GetFiles(FederationDownloadService.GetDownloadsRoot(), "*.partial"));
+        _libraryManager.Verify(l => l.DeleteItem(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<DeleteOptions>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task QualityReplace_StaleApprovalAfterDownloadKeepsBothCopies()
+    {
+        var item = ConfigureQualityReplacement();
+        var validationCalls = 0;
+        var service = CreateQualityService(
+            (path, token) => File.WriteAllBytesAsync(path, ValidMediaBytes(), token),
+            () => Interlocked.Increment(ref validationCalls) == 1);
+
+        var (started, message, operationId) = service.StartQualityReplace(item.Id.ToString(), "server-1", "remote-1", item.Name);
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.False(completed.Success);
+        Assert.Contains("changed before replacement", completed.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(completed.DestinationPath));
+        Assert.Equal(2, validationCalls);
+        _libraryManager.Verify(l => l.DeleteItem(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<DeleteOptions>()), Times.Never);
+    }
+
+    private Movie ConfigureQualityReplacement()
+    {
+        var item = new Movie
+        {
+            Id = Guid.NewGuid(),
+            Name = "Approved Movie",
+            Path = "/media/Approved Movie.mkv",
+            ProviderIds = new Dictionary<string, string> { ["tmdb"] = "123" }
+        };
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            Enabled = true,
+            AllowDownloads = true
+        });
+        _libraryManager.Setup(l => l.GetItemById(item.Id)).Returns(item);
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+        return item;
+    }
+
+    private FederationDownloadService CreateQualityService(
+        Func<string, CancellationToken, Task> download,
+        Func<bool> validate)
+    {
+        return new FederationDownloadService(
+            _libraryManager.Object,
+            _federationManager,
+            _clientFactory.Object,
+            _externalCatalogs,
+            NullLogger<FederationDownloadService>.Instance,
+            (_, _, path, _, token) => download(path, token),
+            (_, _, _) => validate());
+    }
+
+    private static byte[] ValidMediaBytes()
+    {
+        var bytes = new byte[4096];
+        bytes[0] = 0x1A;
+        bytes[1] = 0x45;
+        bytes[2] = 0xDF;
+        bytes[3] = 0xA3;
+        return bytes;
+    }
+
+    private static async Task<DownloadProgress> WaitForCompletion(string operationId)
+    {
+        for (var attempt = 0; attempt < 250; attempt++)
+        {
+            var progress = DownloadProgressTracker.Get(operationId);
+            if (progress?.IsComplete == true)
+            {
+                return progress;
+            }
+
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("Download operation did not complete within five seconds.");
     }
 }

@@ -139,7 +139,9 @@
                    same "plain, functional, not decorative" treatment as everything
                    else on this page, just applied to a grid instead of a list. */
                 #federationConfigPage .fed-catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5em, 1fr)); gap: 1em; margin-top: 1em; }
-                #federationConfigPage .fed-catalog-card { cursor: pointer; text-align: center; }
+                #federationConfigPage .fed-catalog-card { position:relative; cursor:pointer; text-align:center; appearance:none; display:block; width:100%; min-width:0; margin:0; padding:.35em; border:1px solid transparent; color:inherit; background:transparent; font:inherit; border-radius:.55em; }
+                #federationConfigPage .fed-catalog-card:hover { background:var(--fed-surface); }
+                #federationConfigPage .fed-catalog-card:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
                 #federationConfigPage .fed-catalog-poster {
                     width: 100%; aspect-ratio: 2 / 3; border-radius: 0.25em; background: rgba(128,128,128,0.14);
                     background-size: cover; background-position: center; outline: 2px solid transparent; outline-offset: 2px;
@@ -148,10 +150,20 @@
                 #federationConfigPage .fed-catalog-name { font-size: 0.85em; margin-top: 0.35em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 #federationConfigPage .fed-catalog-state { font-size: 0.75em; color: var(--fed-warn-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 #federationConfigPage .fed-browse-dlbtn { display: block; width: 100%; margin-top: 0.35em; font-size: 0.8em; }
+                #federationConfigPage .fed-local-copy-warning { position:absolute; top:.45em; right:.45em; display:grid; place-items:center; width:1.65em; height:1.65em; border-radius:50%; background:var(--fed-warn-text); color:#111; font-weight:800; line-height:1; box-shadow:0 2px 8px rgba(0,0,0,.45); }
+                #federationConfigPage .fed-catalog-toolbar { display:grid; grid-template-columns:minmax(16em,1fr) minmax(8em,.35fr) minmax(11em,.45fr) auto; align-items:end; gap:1em; }
+                #federationConfigPage .fed-download-toolbar { display:grid; grid-template-columns:minmax(12em,1fr) minmax(12em,1fr) minmax(8em,.55fr) minmax(11em,.7fr); align-items:end; gap:1em; }
+                #federationConfigPage .fed-catalog-toolbar > *, #federationConfigPage .fed-download-toolbar > * { margin-bottom:0; min-width:0; }
                 #federationConfigPage .fed-catalog-actionbar { margin-top: 1.2em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft); display: flex; flex-direction: column; gap: 0.7em; }
                 #federationConfigPage .fed-catalog-actionbar-row { display: flex; align-items: center; gap: 1.2em; }
                 #federationConfigPage .fed-catalog-actionbar-row a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
                 #federationConfigPage .fed-catalog-actionbar-row a:hover { text-decoration: underline; }
+                #federationConfigPage .fed-qualitypanel { margin-top:1.1em; padding-top:1em; border-top:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-quality-candidate { padding:.9em 0; border-top:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-quality-candidate:first-of-type { border-top:0; }
+                #federationConfigPage .fed-quality-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.6em 1em; margin-top:.55em; }
+                #federationConfigPage .fed-quality-actions a { color:var(--fed-accent); cursor:pointer; font-size:.88em; }
+                #federationConfigPage .fed-quality-confirm { margin-top:.75em; padding:.85em; border:1px solid var(--fed-warn-text); border-radius:.6em; background:rgba(224,160,74,.08); }
 
                 /* Downloads */
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
@@ -189,19 +201,80 @@
                 #federationConfigPage details.fed-details > summary { cursor: pointer; font-weight: 600; padding: 0.35em 0; user-select: none; }
                 #federationConfigPage details.fed-details > summary:hover { opacity: 0.85; }
                 #federationConfigPage .fed-details-body { padding-top: 0.7em; }
+
+                /* Premium pass: a restrained surface hierarchy, compact status
+                   cards and a stable scrollable tab rail. Motion only reinforces
+                   navigation/selection and is disabled when the OS requests it. */
+                #federationConfigPage { --fed-surface: rgba(128,128,128,.055); --fed-surface-raised: rgba(128,128,128,.09); max-width:76rem; margin-inline:auto; }
+                #federationConfigPage .fed-hero { margin:.4em 0 1.3em; padding:1.2em 1.35em; border:1px solid var(--fed-border-soft); border-radius:.9em; background:linear-gradient(120deg,rgba(0,164,220,.14),rgba(128,128,128,.025) 66%); }
+                #federationConfigPage .fed-hero .sectionTitleContainer,
+                #federationConfigPage .fed-hero .sectionTitle { margin:0; }
+                #federationConfigPage .fed-hero .sectionTitle { letter-spacing:-.025em; }
+                #federationConfigPage .fed-hero .fieldDescription { max-width:55em; margin-bottom:0; }
+                #federationConfigPage .fed-tabpanel > .verticalSection,
+                #federationConfigPage .fed-tabpanel > details.fed-details { background:var(--fed-surface); border:1px solid var(--fed-border-soft); border-radius:.85em; padding:clamp(1em,2.4vw,1.6em); box-shadow:0 .5em 1.7em rgba(0,0,0,.10); }
+                #federationConfigPage .fed-statusstrip { display:grid; grid-template-columns:repeat(3,minmax(8em,1fr)) auto; align-items:stretch; gap:.65em; }
+                #federationConfigPage .fed-statusstrip > .fed-spacer { display:none; }
+                #federationConfigPage .fed-stat { display:flex; flex-direction:column; justify-content:center; min-height:3.6em; padding:.65em .8em; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); }
+                #federationConfigPage .fed-stat strong { font-size:1.2em; line-height:1.2; font-weight:700; }
+                #federationConfigPage .fed-stat span { opacity:.65; font-size:.86em; }
+                #federationConfigPage .fed-statusstrip > .emby-button { align-self:center; white-space:nowrap; }
+                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.15em; overflow-x:auto; scrollbar-width:thin; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.2em; padding:.3em; background:rgba(20,20,20,.92); backdrop-filter:blur(14px); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
+                #federationConfigPage .fed-tab-btn { flex:0 0 auto; border:0; border-radius:.55em; margin:0; min-height:2.65em; padding:.58em .9em; transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease; }
+                #federationConfigPage .fed-tab-btn:hover { opacity:.95; background:var(--fed-surface-raised); }
+                #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:2px; }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity:1; color:var(--fed-accent); border-bottom-color:transparent; background:rgba(0,164,220,.14); }
+                #federationConfigPage .fed-tabpanel.fed-tabpanel-active { animation:fed-panel-in 180ms ease-out; }
+                #federationConfigPage .fed-server { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:.85em; margin:.65em 0; background:var(--fed-surface); transition:border-color 150ms ease,background-color 150ms ease; }
+                #federationConfigPage .fed-server:hover { border-color:var(--fed-border); background:var(--fed-surface-raised); }
+                #federationConfigPage .fed-catalog-card { border-radius:.55em; padding:.35em; transition:transform 150ms ease,background-color 150ms ease; }
+                #federationConfigPage .fed-catalog-card:hover { transform:translateY(-2px); background:var(--fed-surface); }
+                #federationConfigPage .fed-catalog-card:focus-within { outline:2px solid var(--fed-accent); outline-offset:2px; }
+                @keyframes fed-panel-in { from { opacity:0; transform:translateY(.25em); } to { opacity:1; transform:none; } }
+                @media (max-width:44em) {
+                    #federationConfigPage .fed-statusstrip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+                    #federationConfigPage .fed-statusstrip .fed-stat:nth-child(3) { grid-column:1 / -1; }
+                    #federationConfigPage .fed-statusstrip > .emby-button { grid-column:1 / -1; width:100%; }
+                    #federationConfigPage .fed-inline { flex-direction:column; align-items:stretch; gap:.6em; }
+                    #federationConfigPage .fed-inline .fed-input-container { flex-basis:auto; width:100%; margin-bottom:0; }
+                    #federationConfigPage .fed-inline > .fed-grow { flex:none; width:100%; }
+                    #federationConfigPage .fed-inline > .emby-button { width:100%; }
+                }
+                @media (max-width:62em) {
+                    #federationConfigPage .fed-catalog-toolbar,
+                    #federationConfigPage .fed-download-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+                    #federationConfigPage .fed-catalog-toolbar > .emby-button { width:100%; }
+                }
+                @media (min-width:100em) {
+                    #federationConfigPage { max-width:84rem; font-size:1.08em; }
+                    #federationConfigPage .fed-tab-btn { min-height:3em; padding-inline:1.05em; }
+                    #federationConfigPage .emby-button { min-height:2.8em; }
+                }
+                @media (prefers-reduced-motion:reduce) {
+                    #federationConfigPage *, #federationConfigPage *::before, #federationConfigPage *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+                }
+                @media (forced-colors:active) {
+                    #federationConfigPage .fed-hero,
+                    #federationConfigPage .fed-tabs,
+                    #federationConfigPage .fed-tabpanel > .verticalSection,
+                    #federationConfigPage .fed-stat { border:1px solid CanvasText; }
+                    #federationConfigPage .fed-tab-btn.fed-tab-btn-active { outline:2px solid Highlight; outline-offset:-2px; }
+                    #federationConfigPage .fed-dot { forced-color-adjust:none; border:1px solid CanvasText; }
+                }
             </style>
 
-            <div class="sectionTitleContainer">
-                <h2 class="sectionTitle">Federation</h2>
+            <div class="fed-hero">
+                <div class="sectionTitleContainer">
+                    <h2 class="sectionTitle">Federation</h2>
+                </div>
+                <p class="fieldDescription">
+                    Your connected media network. Invite people, choose what crosses server boundaries, and keep playback healthy from one place.
+                </p>
             </div>
-            <p class="fieldDescription">
-                Watch libraries from other Jellyfin servers as if they were your own. Add a friend, pick what to share, save — that's it.
-            </p>
 
             <div id="fedErrorContainer"></div>
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
-            <div id="fedQualityUpgradePanel"></div>
 
             <div class="fed-statusstrip verticalSection" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -231,17 +304,17 @@
                 tab is the one showing.
             -->
             <div class="fed-tabs" id="fedTabs" role="tablist">
-                <button is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="companion" role="tab" aria-selected="false">Companion</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Browse</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
-                <button is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
+                <button id="fedTabFriends" aria-controls="fedPanelFriends" tabindex="0" is="emby-button" type="button" class="fed-tab-btn fed-tab-btn-active" data-fed-action="switch-tab" data-tab="friends" role="tab" aria-selected="true">Friends</button>
+                <button id="fedTabPools" aria-controls="fedPanelPools" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
+                <button id="fedTabCompanion" aria-controls="fedPanelCompanion" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="companion" role="tab" aria-selected="false">Companion</button>
+                <button id="fedTabDiscovery" aria-controls="fedPanelDiscovery" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
+                <button id="fedTabLibraries" aria-controls="fedPanelLibraries" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
+                <button id="fedTabCatalog" aria-controls="fedPanelCatalog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
+                <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
+                <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
             </div>
 
-            <div class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
+            <div id="fedPanelFriends" aria-labelledby="fedTabFriends" class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
                 <div class="verticalSection" id="fedDownloadsCard" style="display:none;">
                     <h3 class="sectionTitle">Downloads</h3>
                     <p class="fieldDescription">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
@@ -279,7 +352,7 @@
                 </div>
             </div>
 
-            <div class="fed-tabpanel" data-tab-panel="pools" role="tabpanel">
+            <div id="fedPanelPools" aria-labelledby="fedTabPools" class="fed-tabpanel" data-tab-panel="pools" role="tabpanel">
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Pools</h3>
                     <p class="fieldDescription">
@@ -338,7 +411,7 @@
                 </div>
             </div>
 
-            <div class="fed-tabpanel" data-tab-panel="companion" role="tabpanel">
+            <div id="fedPanelCompanion" aria-labelledby="fedTabCompanion" class="fed-tabpanel" data-tab-panel="companion" role="tabpanel">
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
                     <p class="fieldDescription">
@@ -398,7 +471,7 @@
                 </div>
             </div>
 
-            <div class="fed-tabpanel" data-tab-panel="discovery" role="tabpanel">
+            <div id="fedPanelDiscovery" aria-labelledby="fedTabDiscovery" class="fed-tabpanel" data-tab-panel="discovery" role="tabpanel">
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Discovery</h3>
                     <p class="fieldDescription">
@@ -422,7 +495,7 @@
                 </div>
             </div>
 
-            <div class="fed-tabpanel" data-tab-panel="catalog" role="tabpanel">
+            <div id="fedPanelCatalog" aria-labelledby="fedTabCatalog" class="fed-tabpanel" data-tab-panel="catalog" role="tabpanel">
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Catalog</h3>
                     <p class="fieldDescription">
@@ -432,10 +505,23 @@
                         watching from a friend) don't appear here - they were never yours to share onward.
                     </p>
 
-                    <div class="fed-inline">
+                    <div class="fed-catalog-toolbar">
                         <div class="inputContainer fed-grow">
                             <label class="inputLabel" for="fedCatalogSearch">Search your library</label>
                             <input type="text" id="fedCatalogSearch" class="emby-input" placeholder="Leave blank to browse everything" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedCatalogType">Media</label>
+                            <select class="emby-select fed-select" id="fedCatalogType">
+                                <option value="Movie">Movies</option>
+                                <option value="Series">TV shows</option>
+                            </select>
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedCatalogSort">Order</label>
+                            <select class="emby-select fed-select" id="fedCatalogSort" disabled>
+                                <option>Newest added first</option>
+                            </select>
                         </div>
                         <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="catalog-search">Search</button>
                     </div>
@@ -478,16 +564,16 @@
                 </div>
             </div>
 
-            <div class="fed-tabpanel" data-tab-panel="browse" role="tabpanel">
+            <div id="fedPanelBrowse" aria-labelledby="fedTabBrowse" class="fed-tabpanel" data-tab-panel="browse" role="tabpanel">
                 <div class="verticalSection">
-                    <h3 class="sectionTitle">Browse & Download</h3>
+                    <h3 class="sectionTitle">Federated downloads</h3>
                     <p class="fieldDescription">
-                        Browse a connected server's full catalog and pull individual items down to this server's disk -
-                        independent of the Libraries tab's whole-library sync above, so nothing needs to be shared or
-                        mapped first. Downloaded items land in a "Federation Downloads" library after the next scan.
+                        Browse media held by connected servers and pull an exact title down to this server. Local-only
+                        titles never appear here. An exclamation mark means Jellyfin already has a matching local copy,
+                        so review it before downloading another. Downloads land in the "Federation Downloads" library.
                     </p>
 
-                    <div class="fed-inline">
+                    <div class="fed-download-toolbar">
                         <div class="fed-input-container fed-grow">
                             <label class="fed-label">Server</label>
                             <select class="emby-select fed-select" id="fedBrowseServer">
@@ -498,6 +584,19 @@
                             <label class="fed-label">Library</label>
                             <select class="emby-select fed-select" id="fedBrowseLibrary" disabled>
                                 <option value="">Pick a server first</option>
+                            </select>
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedBrowseType">Media</label>
+                            <select class="emby-select fed-select" id="fedBrowseType">
+                                <option value="Movie">Movies</option>
+                                <option value="Episode">TV episodes</option>
+                            </select>
+                        </div>
+                        <div class="fed-input-container">
+                            <label class="fed-label" for="fedBrowseSort">Order</label>
+                            <select class="emby-select fed-select" id="fedBrowseSort" disabled>
+                                <option>Newest added first</option>
                             </select>
                         </div>
                     </div>
@@ -511,7 +610,7 @@
             </div>
 
             <form id="fedConfigForm">
-                <div class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
+                <div id="fedPanelLibraries" aria-labelledby="fedTabLibraries" class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
                     <div class="verticalSection">
                         <h3 class="sectionTitle">Libraries</h3>
                         <p class="fieldDescription">
@@ -546,7 +645,7 @@
                     </div>
                 </div>
 
-                <div class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
+                <div id="fedPanelAdvanced" aria-labelledby="fedTabAdvanced" class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
                     <details class="fed-details" id="fedAdvancedSettings">
                         <summary>Advanced settings</summary>
                         <div class="fed-details-body">
@@ -566,6 +665,8 @@
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkCloudBadges" class="emby-checkbox fed-check" /> Show a cloud badge on federated media artwork</label>
+                            <p class="fieldDescription">Off by default. Turn it on when you want an at-a-glance source marker on movie, show, and list artwork. This does not change playback or sharing.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
                             <p class="fieldDescription">
                                 When on: your friends can see who your other friends are, and this server automatically sends friend requests
@@ -577,15 +678,20 @@
                                 <label class="inputLabel" for="fedTxtDedupIds">Provider IDs used for merging</label>
                                 <input type="text" id="fedTxtDedupIds" class="emby-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Prefer higher-quality copies from other servers</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Find better federated copies</label>
                             <p class="fieldDescription">
                                 When on, this page checks your own locally-owned movies/episodes against the matching copy on a federated
                                 friend's server (matched the same way merging above matches "the same movie" across servers) and, every time
                                 you open this page, shows a review list of any where a friend's copy is meaningfully better - higher
                                 resolution, or a clearly higher bitrate at the same resolution. <strong>Nothing is ever removed
                                 automatically</strong> - the review list just offers a "download the better copy, then remove the old one"
-                                button per item, and you choose all, some, or none each time.
+                                suggestion per item. Suggestions alone never download or delete anything.
                             </p>
+                            <div id="fedQualityReplaceOptIn" style="display:none;">
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkQualityReplaceActions" class="emby-checkbox fed-check" /> Show “download better copy and remove old copy” actions</label>
+                                <p class="fieldDescription"><strong>This still does not replace anything automatically.</strong> Every movie gets its own review and its own “Yes, replace this exact movie” confirmation. The old file is touched only after the new download completes and validates.</p>
+                            </div>
+                            <div id="fedQualityUpgradePanel"></div>
                             <a data-fed-action="quality-exclusions-toggle" style="cursor:pointer;">Manage exceptions (titles never suggested)</a>
                             <div id="fedQualityExclusionsPanel" style="display:none;margin-top:0.4em;"></div>
                             <div class="inputContainer">
@@ -2662,7 +2768,7 @@
                     /* ---------------- Browse & Download ---------------- */
 
                     var browseLoaded = false;
-                    var browseState = { serverId: '', libraryId: '', startIndex: 0, pageSize: 60, items: [] };
+                    var browseState = { serverId: '', libraryId: '', mediaType: 'Movie', startIndex: 0, pageSize: 60, items: [] };
 
                     function setBrowseStatus(msg, kind) {
                         var el = q('#fedBrowseStatus');
@@ -2774,6 +2880,8 @@
                         setBrowseStatus('Loading…', 'info');
                         var url = '/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId)
                             + '/Items?libraryId=' + encodeURIComponent(browseState.libraryId)
+                            + '&type=' + encodeURIComponent(browseState.mediaType)
+                            + '&sort=DateCreatedDescending'
                             + '&startIndex=' + browseState.startIndex + '&limit=' + browseState.pageSize;
                         fedFetch(url)
                         .then(function (r) { return r.json(); })
@@ -2814,9 +2922,15 @@
 
                         var html = '';
                         browseState.items.forEach(function (item, i) {
-                            var title = (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
+                            var episodePrefix = item.type === 'Episode' && item.seriesName
+                                ? item.seriesName + ' · ' + (item.parentIndexNumber != null ? 'S' + String(item.parentIndexNumber).padStart(2, '0') + ' ' : '') + (item.indexNumber != null ? 'E' + String(item.indexNumber).padStart(2, '0') + ' · ' : '')
+                                : '';
+                            var title = episodePrefix + (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
                             html += '<div class="fed-catalog-card">';
                             html += '<div class="fed-catalog-poster" id="fedBrowsePoster' + i + '"></div>';
+                            if (item.hasLocalCopy) {
+                                html += '<div class="fed-local-copy-warning" role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</div>';
+                            }
                             html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
                             html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
                             html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
@@ -2883,7 +2997,9 @@
                     /* ---------------- Prefer Higher Quality ---------------- */
 
                     var qualityUpgradeCandidates = [];
-                    var qualityUpgradeSelected = {};
+                    var qualityUpgradeReviewing = {};
+                    var qualityUpgradeConfirmed = {};
+                    var qualityUpgradeMessage = '';
 
                     // Re-checked every time the config page loads (not on a
                     // timer, not automatically) - "ask each time you go to the
@@ -2901,11 +3017,6 @@
                         .then(function (r) { return r.json(); })
                         .then(function (candidates) {
                             qualityUpgradeCandidates = candidates || [];
-                            qualityUpgradeCandidates.forEach(function (c) {
-                                if (!(c.localItemId in qualityUpgradeSelected)) {
-                                    qualityUpgradeSelected[c.localItemId] = true;
-                                }
-                            });
                             renderQualityUpgradePanel();
                         })
                         .catch(function () { /* best-effort informational panel - a failed check here shouldn't block the rest of the page */ });
@@ -2923,34 +3034,43 @@
                             return;
                         }
 
-                        if (!currentConfig.PreferHigherQualityRemotes || qualityUpgradeCandidates.length === 0) {
+                        if (!currentConfig.PreferHigherQualityRemotes) {
                             el.innerHTML = '';
                             return;
                         }
 
+                        if (qualityUpgradeCandidates.length === 0) {
+                            el.innerHTML = '<p class="fed-srvstatus fed-srvstatus-ok">No clearly better federated copies need review right now.</p>';
+                            return;
+                        }
+
                         var count = qualityUpgradeCandidates.length;
-                        var html = '<div class="fed-warnbar fed-qualitypanel">';
-                        html += '<strong>' + count + ' item' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a higher-quality copy available on another server.</strong>';
-                        html += '<div style="margin:0.5em 0;">';
-                        html += '<a data-fed-action="quality-select-all" style="margin-right:1em;">Select all</a>';
-                        html += '<a data-fed-action="quality-select-none">Select none</a>';
-                        html += '</div>';
+                        var html = '<div class="fed-qualitypanel">';
+                        html += '<h3 class="fed-subhead">Better copies to review</h3>';
+                        html += '<p class="fieldDescription">' + count + ' exact title' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a meaningfully better federated match. Review replacements one at a time.</p>';
                         qualityUpgradeCandidates.forEach(function (c) {
-                            var checked = qualityUpgradeSelected[c.localItemId] ? ' checked' : '';
-                            html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5em;">';
-                            html += '<label class="fed-check-label" style="display:block;flex:1;">';
-                            html += '<input type="checkbox" class="fed-check fedQualityPick" data-id="' + escapeHtml(c.localItemId) + '"' + checked + ' /> ';
-                            html += escapeHtml(c.name) + (c.year ? ' (' + c.year + ')' : '') + ' — ';
-                            html += 'yours: ' + formatQuality(c.localHeight, c.localBitrate);
-                            html += ', ' + escapeHtml(c.remoteServerName) + '\'s: ' + formatQuality(c.remoteHeight, c.remoteBitrate);
-                            html += '</label>';
-                            html += '<a data-fed-action="quality-exclude" data-id="' + escapeHtml(c.localItemId) + '" style="white-space:nowrap;font-size:0.85em;">Never ask about this one</a>';
+                            var id = escapeHtml(c.localItemId);
+                            html += '<div class="fed-quality-candidate">';
+                            html += '<div><strong>' + escapeHtml(c.name) + (c.year ? ' (' + c.year + ')' : '') + '</strong></div>';
+                            html += '<div class="fed-hint">Local: ' + formatQuality(c.localHeight, c.localBitrate) + ' · ' + escapeHtml(c.remoteServerName) + ': ' + formatQuality(c.remoteHeight, c.remoteBitrate) + '</div>';
+                            html += '<div class="fed-quality-actions"><a data-fed-action="quality-exclude" data-id="' + id + '">Keep local copy; do not ask again</a>';
+                            if (currentConfig.EnableQualityReplacementActions) {
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="quality-review" data-id="' + id + '">' + (qualityUpgradeReviewing[c.localItemId] ? 'Cancel review' : 'Review replacement') + '</button>';
+                            }
+                            html += '</div>';
+                            if (currentConfig.EnableQualityReplacementActions && qualityUpgradeReviewing[c.localItemId]) {
+                                var confirmed = qualityUpgradeConfirmed[c.localItemId] === true;
+                                html += '<div class="fed-quality-confirm">';
+                                html += '<strong>Replace this exact title?</strong><p class="fed-hint">The better copy will download and validate first. Only then may the old local file be removed.</p>';
+                                html += '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedQualityConfirm" data-id="' + id + '"' + (confirmed ? ' checked' : '') + ' /> Yes, replace “' + escapeHtml(c.name) + '” and remove its current local copy after validation.</label>';
+                                html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="quality-apply-one" data-id="' + id + '"' + (confirmed ? '' : ' disabled') + '>Download better copy &amp; remove this old copy</button>';
+                                html += '</div>';
+                            }
                             html += '</div>';
                         });
-                        html += '<div style="margin-top:0.6em;">';
-                        html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="quality-apply">Download selected &amp; remove old copies</button>';
-                        html += '</div>';
-                        html += '<div class="fed-srvstatus" id="fedQualityUpgradeStatus" style="display:none;"></div>';
+                        if (qualityUpgradeMessage) {
+                            html += '<div class="fed-srvstatus fed-srvstatus-info">' + escapeHtml(qualityUpgradeMessage) + '</div>';
+                        }
                         html += '</div>';
                         el.innerHTML = html;
                     }
@@ -3012,62 +3132,47 @@
                         })
                         .then(function () {
                             qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return c.localItemId !== id; });
-                            delete qualityUpgradeSelected[id];
+                            delete qualityUpgradeReviewing[id];
+                            delete qualityUpgradeConfirmed[id];
                             renderQualityUpgradePanel();
                         })
                         .catch(function () { /* best-effort - it'll just be offered again next load */ });
                     }
 
-                    function setQualitySelection(id, checked) {
-                        qualityUpgradeSelected[id] = checked;
-                    }
-
-                    function setQualitySelectAll(value) {
-                        qualityUpgradeCandidates.forEach(function (c) { qualityUpgradeSelected[c.localItemId] = value; });
+                    function toggleQualityReview(id) {
+                        qualityUpgradeReviewing[id] = !qualityUpgradeReviewing[id];
+                        qualityUpgradeConfirmed[id] = false;
                         renderQualityUpgradePanel();
                     }
 
-                    function applyQualityUpgrades() {
-                        var ids = qualityUpgradeCandidates
-                            .filter(function (c) { return qualityUpgradeSelected[c.localItemId]; })
-                            .map(function (c) { return c.localItemId; });
-
-                        if (ids.length === 0) {
-                            // "Select none" then Apply just dismisses the list for
-                            // this visit - re-showing the identical items the
-                            // moment it's dismissed would defeat the point of
-                            // asking each time rather than nagging continuously.
-                            qualityUpgradeCandidates = [];
-                            renderQualityUpgradePanel();
+                    function applyQualityUpgrade(id) {
+                        if (!qualityUpgradeReviewing[id] || !qualityUpgradeConfirmed[id]) {
                             return;
                         }
 
-                        var statusEl = q('#fedQualityUpgradeStatus');
-                        if (statusEl) {
-                            statusEl.style.display = 'block';
-                            statusEl.className = 'fed-srvstatus fed-srvstatus-info';
-                            statusEl.textContent = 'Starting downloads…';
-                        }
+                        qualityUpgradeMessage = 'Starting the approved replacement…';
+                        renderQualityUpgradePanel();
 
                         fedFetch('/Plugins/Federation/QualityUpgrades/Apply', {
                             method: 'POST',
-                            body: JSON.stringify({ ItemIds: ids })
+                            body: JSON.stringify({ ItemIds: [id] })
                         })
-                        .then(function (r) { return r.json(); })
-                        .then(function () {
-                            if (statusEl) {
-                                statusEl.textContent = 'Started - see the Downloads panel above for progress. The old copy for each is removed automatically once its replacement finishes downloading.';
+                        .then(function (r) { return r.ok ? r.json() : r.text().then(function (text) { throw new Error(text); }); })
+                        .then(function (res) {
+                            var op = res.operations && res.operations[0];
+                            if (!op || !op.success) {
+                                throw new Error((op && op.message) || 'The replacement could not be started.');
                             }
-
+                            qualityUpgradeMessage = 'Replacement started. Progress is shown in Downloads; the local copy remains until validation succeeds.';
                             loadDownloads();
-                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return ids.indexOf(c.localItemId) === -1; });
+                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return c.localItemId !== id; });
+                            delete qualityUpgradeReviewing[id];
+                            delete qualityUpgradeConfirmed[id];
                             renderQualityUpgradePanel();
                         })
                         .catch(function (e) {
-                            if (statusEl) {
-                                statusEl.className = 'fed-srvstatus fed-srvstatus-err';
-                                statusEl.textContent = 'Error: ' + e.message;
-                            }
+                            qualityUpgradeMessage = 'Could not start replacement: ' + e.message;
+                            renderQualityUpgradePanel();
                         });
                     }
 
@@ -3418,6 +3523,7 @@
 
                     var catalogItems = [];
                     var catalogQuery = '';
+                    var catalogType = 'Movie';
                     var catalogStartIndex = 0;
                     var catalogTotal = 0;
                     var catalogLoaded = false;
@@ -3476,11 +3582,12 @@
                         catalogItems.forEach(function (item) {
                             var selected = !!catalogSelected[item.id];
                             var state = catalogStateLabel(item);
-                            html += '<div class="fed-catalog-card' + (selected ? ' fed-catalog-card-selected' : '') + '" data-fed-action="catalog-toggle" data-id="' + escapeHtml(item.id) + '">';
+                            var accessibleName = (selected ? 'Selected. ' : '') + (item.name || 'Untitled') + (state ? '. ' + state : '') + '. Toggle selection.';
+                            html += '<button type="button" class="fed-catalog-card' + (selected ? ' fed-catalog-card-selected' : '') + '" data-fed-action="catalog-toggle" data-id="' + escapeHtml(item.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '" aria-label="' + escapeHtml(accessibleName) + '">';
                             html += '<div class="fed-catalog-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(item.id)) + '\')"></div>';
                             html += '<div class="fed-catalog-name">' + escapeHtml(item.name) + (item.year ? ' (' + item.year + ')' : '') + '</div>';
                             html += state ? '<div class="fed-catalog-state">' + escapeHtml(state) + '</div>' : '';
-                            html += '</div>';
+                            html += '</button>';
                         });
 
                         grid.innerHTML = html;
@@ -3499,6 +3606,7 @@
 
                         setCatalogStatus('Loading…', 'info');
                         var url = '/Plugins/Federation/BrowseLocalItems?startIndex=' + catalogStartIndex + '&limit=60'
+                            + '&type=' + encodeURIComponent(catalogType)
                             + (catalogQuery ? '&query=' + encodeURIComponent(catalogQuery) : '');
                         fedFetch(url)
                         .then(function (r) { return r.json(); })
@@ -4175,12 +4283,15 @@
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
+                            q('#fedChkCloudBadges').checked = currentConfig.ShowFederatedCloudBadges === true;
                             q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
                             q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
                             q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
+                            q('#fedChkQualityReplaceActions').checked = currentConfig.EnableQualityReplacementActions === true;
+                            q('#fedQualityReplaceOptIn').style.display = currentConfig.PreferHigherQualityRemotes === true ? 'block' : 'none';
 
                             renderFriends();
                             renderMappings();
@@ -4214,12 +4325,14 @@
                             InternalServerUrl: q('#fedTxtInternalUrl').value.trim(),
                             CachePath: q('#fedTxtCachePath').value.trim(),
                             EnableDedup: q('#fedChkDedup').checked,
+                            ShowFederatedCloudBadges: q('#fedChkCloudBadges').checked,
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
                             AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
                             EnablePlexStrmExport: q('#fedChkPlexStrmExport').checked,
                             PlexStrmExportPath: q('#fedTxtPlexStrmPath').value.trim(),
                             PreferHigherQualityRemotes: q('#fedChkPreferQuality').checked,
+                            EnableQualityReplacementActions: q('#fedChkQualityReplaceActions').checked,
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {
@@ -4261,7 +4374,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'browse', 'catalog', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
 
                     function switchTab(tab) {
@@ -4276,6 +4389,7 @@
                             var active = btn.getAttribute('data-tab') === tab;
                             btn.classList.toggle('fed-tab-btn-active', active);
                             btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                            btn.setAttribute('tabindex', active ? '0' : '-1');
                         });
 
                         // Lazy: the catalog can be a large fetch, so it's only loaded
@@ -4494,14 +4608,11 @@
                                 case 'browse-more':
                                     loadBrowseItems(false);
                                     break;
-                                case 'quality-select-all':
-                                    setQualitySelectAll(true);
+                                case 'quality-review':
+                                    toggleQualityReview(t.getAttribute('data-id'));
                                     break;
-                                case 'quality-select-none':
-                                    setQualitySelectAll(false);
-                                    break;
-                                case 'quality-apply':
-                                    applyQualityUpgrades();
+                                case 'quality-apply-one':
+                                    applyQualityUpgrade(t.getAttribute('data-id'));
                                     break;
                                 case 'quality-exclude':
                                     excludeQualityUpgrade(t.getAttribute('data-id'));
@@ -4609,6 +4720,19 @@
                                 return;
                             }
 
+                            if (t.id === 'fedCatalogType') {
+                                catalogType = t.value === 'Series' ? 'Series' : 'Movie';
+                                catalogSelected = {};
+                                updateCatalogActionBar();
+                                loadCatalog(true);
+                                return;
+                            }
+
+                            if (t.id === 'fedChkPreferQuality') {
+                                q('#fedQualityReplaceOptIn').style.display = t.checked ? 'block' : 'none';
+                                return;
+                            }
+
                             if (t.id === 'fedBrowseServer') {
                                 onBrowseServerChange();
                                 return;
@@ -4619,8 +4743,20 @@
                                 return;
                             }
 
-                            if (t.classList.contains('fedQualityPick')) {
-                                setQualitySelection(t.getAttribute('data-id'), t.checked);
+                            if (t.id === 'fedBrowseType') {
+                                browseState.mediaType = t.value === 'Episode' ? 'Episode' : 'Movie';
+                                if (browseState.libraryId) {
+                                    loadBrowseItems(true);
+                                }
+                                return;
+                            }
+
+                            if (t.classList.contains('fedQualityConfirm')) {
+                                qualityUpgradeConfirmed[t.getAttribute('data-id')] = t.checked;
+                                var applyButton = q('[data-fed-action="quality-apply-one"][data-id="' + t.getAttribute('data-id') + '"]');
+                                if (applyButton) {
+                                    applyButton.disabled = !t.checked;
+                                }
                                 return;
                             }
 
@@ -4710,6 +4846,30 @@
                                 }
                             }
                         });
+
+                        // Standard ARIA tab keyboard behavior. The old row was
+                        // mouse-only, making eight destinations needlessly hard
+                        // to navigate from a keyboard or TV remote.
+                        var tabList = page.querySelector('#fedTabs');
+                        if (tabList) {
+                            tabList.addEventListener('keydown', function (e) {
+                                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') {
+                                    return;
+                                }
+
+                                var tabs = Array.prototype.slice.call(page.querySelectorAll('.fed-tab-btn'));
+                                var current = tabs.indexOf(document.activeElement);
+                                if (current < 0) {
+                                    return;
+                                }
+
+                                e.preventDefault();
+                                var next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1
+                                    : (current + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+                                switchTab(tabs[next].getAttribute('data-tab'));
+                                tabs[next].focus();
+                            });
+                        }
 
                         var form = page.querySelector('#fedConfigForm');
                         if (form) {

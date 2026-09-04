@@ -156,7 +156,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 // request time just resolves to "not covered" - the provider then
                 // emits its own fresh source in addition, which is the safe
                 // fallback, never a broken one.
-                var currentPrimaryUrl = primarySource == null
+                var sharedPathAllowed = primarySource != null
+                    && _federationManager.BuildStaticPath(entry, primarySource) != null;
+                var currentPrimaryUrl = primarySource == null || !sharedPathAllowed
                     ? null
                     : (_federationManager.GetServer(primarySource.ServerId)?.StreamingMode == StreamingMode.Direct
                         ? BuildProxyUrl(primarySource, entry.ItemType == "Audio")
@@ -167,7 +169,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!string.IsNullOrEmpty(item.Path) && !staticSourceCoversPrimary)
                 {
                     _logger.LogWarning(
-                        "[Federation] {Name} has a stored stream path that no longer matches its server's current address/key; serving a freshly built source instead (a sync will refresh the stored one)",
+                        "[Federation] {Name} has a stored stream path that no longer matches current server credentials, address, or access rules; serving a freshly built source instead (a sync will refresh the stored one)",
                         item.Name);
                 }
 
@@ -188,17 +190,11 @@ namespace Jellyfin.Plugin.Federation.Services
                         // The item's own Path already IS this source (stamped once
                         // at materialization time, outside any request context - see
                         // ResolvePlaybackUrl), and Jellyfin builds a static media
-                        // source from it directly without calling this provider, so
-                        // there is nothing here to gate. A denied primary source
-                        // still logs below so it's visible that this known gap
-                        // applied, even though it can't be closed from this hook.
-                        if (!_accessControl.IsAllowed(_federationManager.GetServer(entrySources[i].ServerId), localUserId, entry.MappingName, entrySources[i].RemoteItemId))
-                        {
-                            _logger.LogWarning(
-                                "[Federation] {Name}'s primary source is blocked by a per-remote-user override for the current user, but is served via the item's own static Path (set outside any request context) which this provider cannot suppress - alternate sources are still filtered normally",
-                                item.Name);
-                        }
-
+                        // source from it directly without calling this provider. A
+                        // path only counts as covering when every configured user
+                        // currently remains allowed; a newly restrictive rule makes
+                        // an older path stale immediately and emits a fresh,
+                        // user-bound provider source below.
                         continue;
                     }
 
@@ -456,11 +452,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// on item.Path at sync time; used to detect a stale/covering static source
         /// and as the actual Path of Proxy-mode provider sources.
         /// </summary>
-        private string BuildProxyUrl(FederatedSource src, bool isAudio)
+        private string BuildProxyUrl(FederatedSource src, bool isAudio, Guid? localUserId = null)
         {
             var localUrl = ResolveLocalServerUrl();
             var audioFlag = isAudio ? "&audio=true" : string.Empty;
-            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}";
+            var user = localUserId?.ToString("N");
+            var requestingUserFlag = user == null ? string.Empty : $"&requestingUserId={user}";
+            var signature = _federationManager.CreateProxySignature(src.ServerId, src.RemoteItemId, isAudio, user);
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{requestingUserFlag}&sig={signature}";
         }
 
         private async Task<string?> BuildPlaybackPathAsync(RemoteServer server, FederatedSource src, string itemType, Guid? localUserId, CancellationToken cancellationToken)
@@ -478,8 +477,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // at the moment the bytes are actually requested, in case this URL
                 // outlives the session it was minted for (bookmarked, cached by a
                 // client, replayed later after the admin tightens the rule).
-                var requestingUserFlag = localUserId.HasValue ? $"&requestingUserId={localUserId.Value:N}" : string.Empty;
-                return BuildProxyUrl(src, itemType == "Audio") + requestingUserFlag;
+                return BuildProxyUrl(src, itemType == "Audio", localUserId);
             }
 
             var client = _federationManager.GetClient(src.ServerId);

@@ -133,6 +133,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? parentId = null,
             int? startIndex = null,
             int? limit = null,
+            string? sortBy = null,
+            string? sortOrder = null,
             CancellationToken cancellationToken = default,
             string? localActingUserId = null,
             string? localActingUserName = null)
@@ -164,6 +166,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (limit.HasValue)
                 {
                     queryParams.Add($"limit={limit.Value}");
+                }
+
+                if (!string.IsNullOrEmpty(sortBy))
+                {
+                    queryParams.Add($"sortBy={Uri.EscapeDataString(sortBy)}");
+                }
+
+                if (!string.IsNullOrEmpty(sortOrder))
+                {
+                    queryParams.Add($"sortOrder={Uri.EscapeDataString(sortOrder)}");
                 }
 
                 var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
@@ -1068,6 +1080,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     item.PremiereDate = premiereDate;
                 }
+            }
+
+            if (itemElement.TryGetProperty("DateCreated", out var createdProp) && createdProp.ValueKind == JsonValueKind.String
+                && DateTime.TryParse(createdProp.GetString(), out var dateCreated))
+            {
+                item.DateCreated = dateCreated;
             }
 
             if (itemElement.TryGetProperty("ProductionYear", out var yearProp) && yearProp.TryGetInt32(out var year))

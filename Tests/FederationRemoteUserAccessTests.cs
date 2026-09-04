@@ -57,6 +57,32 @@ public class FederationRemoteUserAccessTests : IDisposable
     }
 
     [Fact]
+    public void IsAllowedForEveryConfiguredUser_AllLibrariesWithoutLimits_IsTrue()
+    {
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = Guid.NewGuid().ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries
+        });
+
+        Assert.True(RemoteAccessControlService.IsAllowedForEveryConfiguredUser(server, "Movies", Guid.NewGuid(), "R"));
+    }
+
+    [Fact]
+    public void IsAllowedForEveryConfiguredUser_OneBlockedRule_IsFalse()
+    {
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = Guid.NewGuid().ToString("N"),
+            Mode = RemoteUserAccessMode.Blocked
+        });
+
+        Assert.False(RemoteAccessControlService.IsAllowedForEveryConfiguredUser(server, "Movies", Guid.NewGuid(), "PG"));
+    }
+
+    [Fact]
     public void IsAllowed_UnknownLocalUser_FallsBackToAllowed()
     {
         // A background/internal call with no authenticated request context to

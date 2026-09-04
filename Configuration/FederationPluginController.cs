@@ -20,7 +20,7 @@ namespace Jellyfin.Plugin.Federation.Api
     /// <summary>
     /// API controller for federation plugin: servers, mappings, refresh, streaming, diagnostics.
     /// All data and mutating endpoints require an elevated (admin) session. The only
-    /// anonymous endpoints are the static config page markup and the bounded stream
+    /// anonymous endpoints are the static config page markup and capability-bounded stream
     /// proxy (clients fetch media source URLs without Jellyfin auth headers).
     /// </summary>
     [ApiController]
@@ -383,6 +383,10 @@ namespace Jellyfin.Plugin.Federation.Api
                     // become visible to all of them again on the next unrelated
                     // config save - enforced in FederationPeerAccessService.IsItemVisible.
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
+
+                    // Managed by the dedicated QualityUpgrades/Exclude endpoints,
+                    // not serialized back by the main settings form.
+                    config.QualityUpgradeExcludedItemIds = existing.QualityUpgradeExcludedItemIds;
                 }
 
                 // DedupProviderIds is a free-form comma-separated text field on the
@@ -539,6 +543,23 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok(items);
+        }
+
+        /// <summary>
+        /// Non-sensitive presentation preferences consumed by the injected
+        /// jellyfin-web client. Anonymous read is safe because this returns one
+        /// cosmetic boolean and no server/item/user data; changing it still
+        /// requires the elevated configuration endpoint.
+        /// </summary>
+        [HttpGet("ClientSettings")]
+        [AllowAnonymous]
+        public IActionResult GetClientSettings()
+        {
+            var config = Plugin.Instance?.Configuration;
+            return Ok(new
+            {
+                showFederatedCloudBadges = config?.ShowFederatedCloudBadges == true
+            });
         }
 
         #endregion
@@ -1325,21 +1346,20 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 var boundedLimit = Math.Clamp(limit, 1, 200);
                 var boundedStart = Math.Max(0, startIndex);
+                var requestedKind = string.Equals(type, "Series", StringComparison.OrdinalIgnoreCase)
+                    ? Jellyfin.Data.Enums.BaseItemKind.Series
+                    : Jellyfin.Data.Enums.BaseItemKind.Movie;
 
                 var itemQuery = new MediaBrowser.Controller.Entities.InternalItemsQuery
                 {
                     Recursive = true,
-                    IsVirtualItem = false
+                    IsVirtualItem = false,
+                    IncludeItemTypes = new[] { requestedKind }
                 };
 
                 if (!string.IsNullOrWhiteSpace(query))
                 {
                     itemQuery.SearchTerm = query;
-                }
-
-                if (!string.IsNullOrWhiteSpace(type) && Enum.TryParse<Jellyfin.Data.Enums.BaseItemKind>(type, true, out var kind))
-                {
-                    itemQuery.IncludeItemTypes = new[] { kind };
                 }
 
                 // Federated items are excluded below by their FederationKey provider id -
@@ -1354,10 +1374,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 itemQuery.Limit = 5000;
 
                 var result = _libraryManager.GetItemsResult(itemQuery);
-                var localOnly = result.Items
-                    .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
-                    .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                var localOnly = PrepareLocalCatalog(result.Items);
 
                 var config = Plugin.Instance?.Configuration;
                 var globallyExcluded = config?.GloballyExcludedItemIds ?? new List<string>();
@@ -1375,6 +1392,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         name = i.Name,
                         type = i.GetType().Name,
                         year = i.ProductionYear,
+                        dateCreated = i.DateCreated,
                         hiddenFromEveryone = globallyExcluded.Any(x => string.Equals(x, idString, StringComparison.OrdinalIgnoreCase)),
                         excludedFriendNames = excludedFriends
                     };
@@ -2157,8 +2175,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <summary>
         /// Proxy stream endpoint (Proxy mode). Streams the body through this server so
         /// the remote api_key never reaches clients. Anonymous because media players
-        /// fetch media source URLs without Jellyfin auth headers; bounded to
-        /// configured servers and explicit item ids only.
+        /// fetch media source URLs without Jellyfin auth headers; bounded by a
+        /// cryptographic signature to one configured server, item, media kind and
+        /// (for per-request paths) local user.
         /// </summary>
         [HttpGet("Stream")]
         [AllowAnonymous]
@@ -2169,17 +2188,54 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] bool audio = false,
             [FromQuery] string? requestingUserId = null,
             [FromQuery] bool download = false,
-            [FromQuery] string? fileName = null)
+            [FromQuery] string? fileName = null,
+            [FromQuery] string? sig = null)
         {
-            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
-            if (server == null)
-            {
-                return NotFound($"Server not found: {serverId}");
-            }
-
-            if (!Guid.TryParse(itemId, out _))
+            if (!Guid.TryParse(itemId, out var itemGuid))
             {
                 return BadRequest("Invalid item id");
+            }
+
+            // This endpoint has to remain anonymous because Jellyfin's ffmpeg
+            // fetch does not forward the viewer's auth header. The URL itself is
+            // therefore an item/user-scoped capability: changing the server, item,
+            // media kind or claimed user invalidates it. This replaces the old
+            // enumerable serverId+itemId URL and makes a forged requestingUserId
+            // useless.
+            if (!_federationManager.ValidateProxySignature(serverId, itemGuid, audio, requestingUserId, sig))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            // Only disclose configured-server/cache membership after the caller
+            // has demonstrated possession of a valid item capability.
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null || !server.Enabled)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var cacheKey = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, itemGuid);
+            var entry = cacheKey == null ? null : _federationManager.Cache.GetEntryByKey(cacheKey);
+            if (entry == null || !entry.GetSourcesSnapshot().Any(source =>
+                string.Equals(source.ServerId, serverId, StringComparison.OrdinalIgnoreCase)
+                && source.RemoteItemId == itemGuid))
+            {
+                return NotFound();
+            }
+
+            // A static item.Path cannot identify which local user Jellyfin's
+            // transcoder is fetching for. It is only valid when every configured
+            // user rule allows this exact item. Per-request provider URLs carry a
+            // signed user id and are checked again by the stream handler below.
+            if (string.IsNullOrEmpty(requestingUserId)
+                && !RemoteAccessControlService.IsAllowedForEveryConfiguredUser(
+                    server,
+                    entry.MappingName,
+                    itemGuid,
+                    entry.Metadata.OfficialRating))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
             }
 
             // download=true is the only difference from a normal play request: a
@@ -2187,7 +2243,7 @@ namespace Jellyfin.Plugin.Federation.Api
             // viewer's own device instead of playing it inline - see
             // GetDownloadUrl below, which is what actually hands this URL to
             // clients. Header value is untrusted input (this endpoint is
-            // anonymous and callable directly), so strip anything that could
+            // capability URL and callable directly), so strip anything that could
             // inject an extra header/response-split rather than trusting it was
             // already sanitized upstream.
             if (download)
@@ -2212,13 +2268,13 @@ namespace Jellyfin.Plugin.Federation.Api
         /// all, it just streams straight to whoever asked.
         /// <para>
         /// Deliberately <see cref="AuthorizeAttribute"/> alone rather than the
-        /// <c>RequiresElevation</c> every other endpoint on this controller uses:
-        /// the underlying bytes are already reachable anonymously through
-        /// <see cref="Stream"/> above with no per-user gating at all, so this
-        /// adds no new exposure - it is a filename/header convenience wrapper
-        /// around an already-anonymous URL, not a new access boundary, and
-        /// gating it to admins only would make "save this to my phone" a
-        /// feature only the admin could ever use. Does not yet check the
+        /// <c>RequiresElevation</c> every admin endpoint on this controller uses:
+        /// it returns a signed item-scoped capability for <see cref="Stream"/>,
+        /// after the download service has applied the source's download policy.
+        /// Requiring a normal Jellyfin login here prevents anonymous callers from
+        /// minting capabilities while still allowing ordinary viewers to use
+        /// "save this to my phone" without granting dashboard elevation. This
+        /// endpoint does not yet check the
         /// caller's own <c>EnableContentDownloading</c> user policy the way
         /// Jellyfin's native per-item downloads do - a known gap, not a
         /// deliberate design choice.
@@ -2631,6 +2687,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string? parentId,
             [FromQuery] int? startIndex,
             [FromQuery] int? limit,
+            [FromQuery] string? sortBy,
+            [FromQuery] string? sortOrder,
             CancellationToken cancellationToken)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
@@ -2657,9 +2715,16 @@ namespace Jellyfin.Plugin.Federation.Api
                 // "multiple collection Include" query-splitting warning (no
                 // QuerySplittingBehavior configured), which is a real slow-query hit
                 // repeated on every 200-item page across every mapping, every sync.
-                "Fields=BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear",
+                "Fields=BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear,DateCreated",
                 "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
             };
+            if (string.Equals(sortBy, "DateCreated", StringComparison.OrdinalIgnoreCase))
+            {
+                queryParams.Add("SortBy=DateCreated");
+                queryParams.Add(string.Equals(sortOrder, "Ascending", StringComparison.OrdinalIgnoreCase)
+                    ? "SortOrder=Ascending"
+                    : "SortOrder=Descending");
+            }
             if (!string.IsNullOrEmpty(mediaType))
             {
                 queryParams.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
@@ -3400,7 +3465,14 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpGet("Browse/{serverId}/Items")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> BrowseItems(string serverId, [FromQuery] string libraryId, [FromQuery] int startIndex, [FromQuery] int? limit, CancellationToken cancellationToken)
+        public async Task<IActionResult> BrowseItems(
+            string serverId,
+            [FromQuery] string libraryId,
+            [FromQuery] string? type,
+            [FromQuery] string? sort,
+            [FromQuery] int startIndex,
+            [FromQuery] int? limit,
+            CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(libraryId))
             {
@@ -3418,6 +3490,33 @@ namespace Jellyfin.Plugin.Federation.Api
             // per-request fetch (unlike the paged background sync), not something
             // to let balloon into a multi-minute remote call.
             var pageSize = Math.Clamp(limit ?? 60, 1, 200);
+            var requestedKind = string.Equals(type, "Episode", StringComparison.OrdinalIgnoreCase)
+                ? Jellyfin.Data.Enums.BaseItemKind.Episode
+                : Jellyfin.Data.Enums.BaseItemKind.Movie;
+
+            IReadOnlyList<MediaBrowser.Controller.Entities.BaseItem> localOwned;
+            try
+            {
+                localOwned = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
+                {
+                    Recursive = true,
+                    IsVirtualItem = false,
+                    IncludeItemTypes = new[] { requestedKind }
+                })
+                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
+                .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not build local duplicate index for Downloads");
+                localOwned = Array.Empty<MediaBrowser.Controller.Entities.BaseItem>();
+            }
+
+            bool HasLocalCopy(MediaBrowser.Model.Dto.BaseItemDto remote)
+                => HasEquivalentLocalCopy(
+                    remote,
+                    localOwned,
+                    Plugin.Instance?.Configuration?.DedupProviderIds ?? new List<string> { "imdb", "tmdb", "tvdb" });
 
             if (server.Kind != ServerKind.Jellyfin)
             {
@@ -3431,24 +3530,46 @@ namespace Jellyfin.Plugin.Federation.Api
                 var items = provider == null
                     ? null
                     : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
-                var page = (items ?? new List<ExternalItem>()).Skip(startIndex).Take(pageSize);
+                var page = (items ?? new List<ExternalItem>())
+                    .Where(i => i.Dto.Type == requestedKind)
+                    .OrderByDescending(i => i.Dto.DateCreated)
+                    .ThenBy(i => i.Dto.Name, StringComparer.OrdinalIgnoreCase)
+                    .Skip(Math.Max(0, startIndex))
+                    .Take(pageSize);
                 return Ok(page.Select(i => new
                 {
                     id = i.NativeId,
                     name = i.Dto.Name,
                     type = i.Dto.Type.ToString(),
-                    year = i.Dto.ProductionYear
+                    year = i.Dto.ProductionYear,
+                    dateCreated = i.Dto.DateCreated,
+                    hasLocalCopy = HasLocalCopy(i.Dto),
+                    seriesName = i.Dto.SeriesName,
+                    parentIndexNumber = i.Dto.ParentIndexNumber,
+                    indexNumber = i.Dto.IndexNumber
                 }).ToList());
             }
 
             var client = _clientFactory.GetClient(server);
-            var jfItems = await client.GetItemsAsync(parentId: libraryId, startIndex: startIndex, limit: pageSize, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var jfItems = await client.GetItemsAsync(
+                mediaType: requestedKind.ToString(),
+                parentId: libraryId,
+                startIndex: Math.Max(0, startIndex),
+                limit: pageSize,
+                sortBy: "DateCreated",
+                sortOrder: "Descending",
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             return Ok((jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>()).Select(i => new
             {
                 id = i.Id.ToString(),
                 name = i.Name,
                 type = i.Type.ToString(),
-                year = i.ProductionYear
+                year = i.ProductionYear,
+                dateCreated = i.DateCreated,
+                hasLocalCopy = HasLocalCopy(i),
+                seriesName = i.SeriesName,
+                parentIndexNumber = i.ParentIndexNumber,
+                indexNumber = i.IndexNumber
             }).ToList());
         }
 
@@ -3601,10 +3722,21 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult ApplyQualityUpgrades([FromBody] QualityUpgradeApplyBody body)
         {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.PreferHigherQualityRemotes != true || config.EnableQualityReplacementActions != true)
+            {
+                return BadRequest(new { success = false, message = "Replacement actions are not enabled." });
+            }
+
             var itemIds = body?.ItemIds ?? new List<string>();
             if (itemIds.Count == 0)
             {
                 return Ok(new { success = true, message = "Nothing selected.", operations = new List<object>() });
+            }
+
+            if (itemIds.Count != 1)
+            {
+                return BadRequest(new { success = false, message = "Approve exactly one title per replacement request." });
             }
 
             var operations = new List<object>();
@@ -3795,6 +3927,45 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #endregion
 
+        internal static List<MediaBrowser.Controller.Entities.BaseItem> PrepareLocalCatalog(
+            IEnumerable<MediaBrowser.Controller.Entities.BaseItem> items)
+            => items
+                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
+                .OrderByDescending(i => i.DateCreated)
+                .ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        internal static bool HasEquivalentLocalCopy(
+            MediaBrowser.Model.Dto.BaseItemDto remote,
+            IEnumerable<MediaBrowser.Controller.Entities.BaseItem> localItems,
+            IEnumerable<string> dedupKeys)
+        {
+            foreach (var local in localItems)
+            {
+                foreach (var key in dedupKeys)
+                {
+                    if (FederationLibraryManager.TryGetProviderId(local.ProviderIds, key, out var localValue)
+                        && FederationLibraryManager.TryGetProviderId(remote.ProviderIds, key, out var remoteValue)
+                        && string.Equals(localValue, remoteValue, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+
+                // A warning may use the conservative title/year fallback when
+                // either catalog lacks provider ids. It does not authorize a
+                // replacement; that path requires a provider-id match in the
+                // quality advisor and a fresh per-title confirmation.
+                if (string.Equals(local.Name, remote.Name, StringComparison.OrdinalIgnoreCase)
+                    && local.ProductionYear == remote.ProductionYear)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static object Sanitize(PluginConfiguration config)
         {
             return new
@@ -3804,6 +3975,9 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.CachePath,
                 config.EnableDedup,
                 config.DedupProviderIds,
+                config.ShowFederatedCloudBadges,
+                config.PreferHigherQualityRemotes,
+                config.EnableQualityReplacementActions,
                 config.AutoProvisionLibraries,
                 config.AllowFriendsOfFriends,
                 config.RefreshIntervalHours,

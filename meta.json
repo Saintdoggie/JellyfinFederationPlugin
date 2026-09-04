@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.122",
-  "changelog": "Two fixes/additions. (1) Fix: the Browse tab came back completely empty for a Plex source whose libraries aren't (yet) in its sync allow-list - the normal starting state for a freshly-connected Plex server, since nothing is allowed for auto-sync until the admin opts a library in on the Libraries tab. Browse wrongly reused the same sync-consent check GetItemsAsync applies for scheduled syncing; it now calls a new, unfiltered GetAllItemsAsync instead, since ad-hoc browsing/downloading one item was never supposed to require sync consent. (2) Prefer-higher-quality review list: each suggested title now has a 'Never ask about this one' link that permanently excludes just that title from future suggestions, plus a 'Manage exceptions' list under the Advanced setting to review or undo exclusions - a per-title override to the global prefer-higher-quality toggle. 329 tests, all green.",
+  "version": "0.0.123",
+  "changelog": "Premium reliability, security, and settings pass. Cross-server playback now keeps the Play button for universally allowed items and uses signed item/user-scoped stream capabilities with live revocation checks, fixing ordinary-user playback without exposing peer credentials. The injected cloud badge is polished, optional, and off by default. Settings now have a local-only Catalog for exact outgoing exclusions and a remote-only Downloads workspace with newest-first Movie/TV filtering and already-local warnings. Better-copy replacement is a staged opt-in with one explicit confirmation per title; it downloads to a partial file, validates and commits the replacement, then rechecks the exact match before removing the old copy. Includes responsive laptop/TV polish, accessibility improvements, 347 passing .NET tests run twice, jsdom coverage, Chromium layout checks, and a two-server admin/non-admin range-playback matrix.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-03T05:30:00Z",
+  "timestamp": "2026-09-04T14:29:35Z",
   "imageUrl": "thumb.png"
 }

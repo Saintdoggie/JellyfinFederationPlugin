@@ -97,16 +97,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, string? libraryFolderId)
         {
-            var itemIdString = itemId.ToString("N");
-
-            if ((Plugin.Instance?.Configuration?.GloballyExcludedItemIds ?? new System.Collections.Generic.List<string>())
-                .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
+            if (IsItemOrAncestorListed(itemId, Plugin.Instance?.Configuration?.GloballyExcludedItemIds))
             {
                 return false;
             }
 
-            if ((caller.ExcludedItemIds ?? new System.Collections.Generic.List<string>())
-                .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
+            if (IsItemOrAncestorListed(itemId, caller.ExcludedItemIds))
             {
                 return false;
             }
@@ -129,8 +125,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // other restriction): the only way to hide one specific item from
             // someone who otherwise sees everything, without narrowing their
             // whole access mode down to an allow-list of items.
-            if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
-                .Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)))
+            if (IsItemOrAncestorListed(itemId, rule.BlockedItemIds))
             {
                 return false;
             }
@@ -155,9 +150,47 @@ namespace Jellyfin.Plugin.Federation.Services
                 RemoteUserAccessMode.AllLibraries => true,
                 RemoteUserAccessMode.CertainLibraries => !string.IsNullOrEmpty(libraryFolderId)
                     && rule.LibraryFolderIds.Any(id => FolderIdsEqual(id, libraryFolderId)),
-                RemoteUserAccessMode.CertainItems => rule.ItemIds.Any(id => string.Equals(id, itemIdString, StringComparison.OrdinalIgnoreCase)),
+                RemoteUserAccessMode.CertainItems => IsItemOrAncestorListed(itemId, rule.ItemIds),
                 _ => true
             };
+        }
+
+        /// <summary>
+        /// Checks an exact item and its Jellyfin parent chain. This makes a TV
+        /// series selection meaningful: excluding a show also excludes its
+        /// seasons/episodes, while selecting a show in a CertainItems allow-list
+        /// includes those descendants. The walk is bounded and cycle-safe so a
+        /// corrupt parent chain cannot hang a peer request.
+        /// </summary>
+        private bool IsItemOrAncestorListed(Guid itemId, System.Collections.Generic.IEnumerable<string>? configuredIds)
+        {
+            var ids = new System.Collections.Generic.HashSet<string>(
+                configuredIds ?? Array.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase);
+            if (ids.Count == 0)
+            {
+                return false;
+            }
+
+            var current = itemId;
+            var visited = new System.Collections.Generic.HashSet<Guid>();
+            for (var depth = 0; depth < 64 && current != Guid.Empty && visited.Add(current); depth++)
+            {
+                if (ids.Contains(current.ToString("N")) || ids.Contains(current.ToString()))
+                {
+                    return true;
+                }
+
+                var item = _libraryManager.GetItemById(current);
+                if (item == null || item.ParentId == Guid.Empty)
+                {
+                    break;
+                }
+
+                current = item.ParentId;
+            }
+
+            return false;
         }
 
         /// <summary>

@@ -233,12 +233,14 @@ public class RemoteServerClientPlaybackTests
         var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
 
-        await client.GetItemsAsync(mediaType: "Movie", parentId: "lib-1", startIndex: 10, limit: 5, cancellationToken: CancellationToken.None);
+        await client.GetItemsAsync(mediaType: "Movie", parentId: "lib-1", startIndex: 10, limit: 5, sortBy: "DateCreated", sortOrder: "Descending", cancellationToken: CancellationToken.None);
 
         Assert.Contains("mediaType=Movie", handler.LastRequestedQuery);
         Assert.Contains("parentId=lib-1", handler.LastRequestedQuery);
         Assert.Contains("startIndex=10", handler.LastRequestedQuery);
         Assert.Contains("limit=5", handler.LastRequestedQuery);
+        Assert.Contains("sortBy=DateCreated", handler.LastRequestedQuery);
+        Assert.Contains("sortOrder=Descending", handler.LastRequestedQuery);
     }
 
     [Fact]
