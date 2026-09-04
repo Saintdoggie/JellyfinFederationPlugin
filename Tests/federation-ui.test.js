@@ -168,3 +168,31 @@ test('catalog and downloads expose distinct local/remote workflows without bulk 
   assert.match(configPage, /ItemIds:\s*\[id\]/);
   dom.window.close();
 });
+
+test('Downloads server dropdown refreshes on every config load, not just once', () => {
+  // Regression: loadBrowseServers() used to run only the first time the
+  // Downloads tab was opened (guarded by a "browseLoaded" flag). If that
+  // first open raced ahead of the initial config fetch, the dropdown was
+  // populated from the still-empty currentConfig placeholder and then
+  // never touched again for the rest of the page's life - "no servers
+  // available" even though friends existed. It must now run every time
+  // loadConfiguration() resolves, and there must be no once-only gate left
+  // on the tab-switch call.
+  assert.equal(configPage.includes('var browseLoaded'), false);
+  assert.equal(/if \(tab === 'browse'[^)]*\)\s*\{\s*loadBrowseServers\(\);/.test(configPage), true);
+
+  const configScript = configPage.match(/function loadConfiguration\(silent\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(configScript, 'loadConfiguration function body not found');
+  assert.match(configScript[0], /loadBrowseServers\(\);/);
+});
+
+test('fed-check checkboxes render with a visible native box, not the unupgraded emby-checkbox style', () => {
+  // Regression: every checkbox on this page is class="emby-checkbox fed-check"
+  // with no is="emby-checkbox", so jellyfin-web's checkbox custom element
+  // never upgrades them, and the dashboard's own .emby-checkbox rule (which
+  // hides the native box expecting that element to draw a replacement) left
+  // every checkbox on the page fully invisible while still toggling on click.
+  assert.equal(/is="emby-checkbox"/.test(configPage), false, 'no checkbox uses the emby-checkbox upgrade');
+  assert.match(configPage, /#federationConfigPage input\.fed-check\s*\{[^}]*appearance:\s*auto/);
+  assert.match(configPage, /#federationConfigPage input\.fed-check\s*\{[^}]*opacity:\s*1/);
+});
