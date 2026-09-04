@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.1.0",
+        "changelog": "Every checkbox on the Federation settings page (Advanced and every other tab) is visible again - it was silently rendering with no checkmark box at all on some setups. The Downloads tab's server dropdown no longer sometimes shows 'no servers available' when friends are actually connected. The Downloads tab's TV mode now lists shows instead of a flat, effectively random page of episodes - click a show to see its own episode list, grouped by season in watch order. The Download button reports back inline what happened instead of doing nothing when clicked. Clicking a movie or episode opens an info card with its poster, overview, year, genres and rating.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/1.1.0/Jellyfin.Federation.zip",
+        "checksum": "70b999dbded686c446d792090300d81c",
+        "timestamp": "2026-09-04T17:08:45Z"
+      },
+      {
         "version": "1.0.0",
         "changelog": "First stable 1.0 release: settings UI polish, and federated downloads to this server are temporarily paused. The federation settings page's hero banner drops its gradient for a flat surface, tabs get more breathing room, and the 'cloud badge' setting is now an explicit Add/Remove button pair instead of a checkbox. Separately: downloading federated content onto this server is temporarily disabled while that flow is reworked - the item action-sheet's 'Download to server', the Browse tab's per-item Download button, and the prefer-higher-quality review's 'download better copy and remove old copy' action now all clearly show as disabled instead of running. Cancelling a download already in flight, and a viewer's own 'download to device' copy, are both unaffected. 347 tests, all green.",
         "targetAbi": "10.11.0.0",
