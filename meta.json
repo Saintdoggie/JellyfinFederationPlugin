@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.123",
-  "changelog": "Premium reliability, security, and settings pass. Cross-server playback now keeps the Play button for universally allowed items and uses signed item/user-scoped stream capabilities with live revocation checks, fixing ordinary-user playback without exposing peer credentials. The injected cloud badge is polished, optional, and off by default. Settings now have a local-only Catalog for exact outgoing exclusions and a remote-only Downloads workspace with newest-first Movie/TV filtering and already-local warnings. Better-copy replacement is a staged opt-in with one explicit confirmation per title; it downloads to a partial file, validates and commits the replacement, then rechecks the exact match before removing the old copy. Includes responsive laptop/TV polish, accessibility improvements, 347 passing .NET tests run twice, jsdom coverage, Chromium layout checks, and a two-server admin/non-admin range-playback matrix.",
+  "version": "0.1.0",
+  "changelog": "Settings UI polish, and federated downloads to this server are temporarily paused. The federation settings page's hero banner drops its gradient for a flat surface, tabs get more breathing room, and the 'cloud badge' setting is now an explicit Add/Remove button pair instead of a checkbox. Separately: downloading federated content onto this server is temporarily disabled while that flow is reworked - the item action-sheet's 'Download to server', the Browse tab's per-item Download button, and the prefer-higher-quality review's 'download better copy and remove old copy' action now all clearly show as disabled instead of running. Cancelling a download already in flight, and a viewer's own 'download to device' copy, are both unaffected. 347 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-04T14:29:35Z",
+  "timestamp": "2026-09-04T15:03:56Z",
   "imageUrl": "thumb.png"
 }
