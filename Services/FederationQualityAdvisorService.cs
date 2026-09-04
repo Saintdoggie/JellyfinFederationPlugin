@@ -169,7 +169,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                results.Add(new QualityUpgradeCandidate
+                var candidate = new QualityUpgradeCandidate
                 {
                     LocalItemId = item.Id.ToString(),
                     Name = item.Name,
@@ -180,8 +180,19 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteBitrate = remoteBitrate,
                     RemoteServerId = server.Id,
                     RemoteServerName = server.Name,
-                    RemoteNativeItemId = nativeItemId
-                });
+                    RemoteNativeItemId = nativeItemId,
+                    ItemType = item.GetBaseItemKind().ToString()
+                };
+
+                if (item is MediaBrowser.Controller.Entities.TV.Episode episode)
+                {
+                    candidate.SeriesId = episode.SeriesId == Guid.Empty ? null : episode.SeriesId.ToString();
+                    candidate.SeriesName = episode.SeriesName;
+                    candidate.ParentIndexNumber = episode.ParentIndexNumber;
+                    candidate.IndexNumber = episode.IndexNumber;
+                }
+
+                results.Add(candidate);
             }
 
             return results;
@@ -268,5 +279,24 @@ namespace Jellyfin.Plugin.Federation.Services
         public string RemoteServerName { get; set; } = string.Empty;
 
         public string RemoteNativeItemId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// "Movie" or "Episode" - lets the config page group episode candidates
+        /// under their show instead of listing every episode as its own flat
+        /// unrelated row.
+        /// </summary>
+        public string ItemType { get; set; } = string.Empty;
+
+        /// <summary>Set only for an Episode candidate - the local Series item id.</summary>
+        public string? SeriesId { get; set; }
+
+        /// <summary>Set only for an Episode candidate.</summary>
+        public string? SeriesName { get; set; }
+
+        /// <summary>Set only for an Episode candidate - the season number.</summary>
+        public int? ParentIndexNumber { get; set; }
+
+        /// <summary>Set only for an Episode candidate - the episode number.</summary>
+        public int? IndexNumber { get; set; }
     }
 }
