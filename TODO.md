@@ -5,6 +5,42 @@ ordered by user impact and risk. A polished interface does not compensate for
 an unreliable or weak streaming boundary, so playback and authorization ship
 first.
 
+## Requested next pass (post-1.0.0) — not started
+
+Reported directly by the project owner after 1.0.0 shipped. Nothing in this
+section has been investigated or fixed yet.
+
+- [ ] Advanced tab checkboxes are effectively invisible - `input type="checkbox"
+      class="emby-checkbox fed-check"` never gets a Jellyfin `is="emby-checkbox"`
+      custom-element upgrade anywhere in `configPage.html`, and there's no fed-*
+      CSS fallback for the box/checkmark either, so unlike every other injected
+      control on this page nothing draws a visible check state. Likely every
+      `.fed-check` checkbox on every tab has the same problem, not just Advanced.
+- [ ] Browse/Catalog/Downloads show individual federated TV episodes as flat,
+      effectively random list entries instead of grouping by series. Should
+      show one card per TV show that expands/drills into that show's own
+      episode list, matching how Jellyfin normally presents a series.
+- [ ] Clicking Download gives no feedback (no toast, spinner, disabled state, or
+      progress) - from the user's perspective nothing happens. Needs a real
+      Downloads tab/section showing in-flight and completed
+      device/server downloads with live progress and failure state, not just
+      the per-item button.
+- [ ] Clicking into a movie/show from the download flow should show a proper
+      info card (poster, overview, year, genres, etc. - the normal Jellyfin
+      item-detail treatment) instead of a bare download action with no context.
+- [ ] Browse/Catalog/Downloads paging should become infinite scroll with real
+      lazy-loading (fetch/render next page as the user nears the bottom, lazy
+      image loading for off-screen cover art) instead of the current paging.
+
+## Deferred — friend ratings/comments (design only, not scheduled)
+
+Project owner wants a rough draft of the concept, not an implementation, and
+said explicitly not to start building it yet:
+
+- [ ] When a friend finishes a movie or an episode/season of a TV show, show a
+      rating reminder prompting a star rating plus a free-text comment about
+      that title, visible to federated friends.
+
 ## Requested product pass — complete before the next release
 
 - [x] Add an administrator setting for the injected federated cloud badge.
