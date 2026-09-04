@@ -46,7 +46,7 @@
                    (muted labels, accent underline on the active tab) without wiring
                    into its SPA view router, which a single static plugin page has no
                    clean way to hook into. */
-                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.1em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
+                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.5em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
                 #federationConfigPage .fed-tab-btn {
                     background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
                     color: inherit; opacity: 0.62; font-family: inherit; font-size: inherit; font-weight: 600;
@@ -206,7 +206,7 @@
                    cards and a stable scrollable tab rail. Motion only reinforces
                    navigation/selection and is disabled when the OS requests it. */
                 #federationConfigPage { --fed-surface: rgba(128,128,128,.055); --fed-surface-raised: rgba(128,128,128,.09); max-width:76rem; margin-inline:auto; }
-                #federationConfigPage .fed-hero { margin:.4em 0 1.3em; padding:1.2em 1.35em; border:1px solid var(--fed-border-soft); border-radius:.9em; background:linear-gradient(120deg,rgba(0,164,220,.14),rgba(128,128,128,.025) 66%); }
+                #federationConfigPage .fed-hero { margin:.4em 0 1.3em; padding:1.2em 1.35em; border:1px solid var(--fed-border-soft); border-radius:.9em; background:var(--fed-surface); }
                 #federationConfigPage .fed-hero .sectionTitleContainer,
                 #federationConfigPage .fed-hero .sectionTitle { margin:0; }
                 #federationConfigPage .fed-hero .sectionTitle { letter-spacing:-.025em; }
@@ -219,7 +219,7 @@
                 #federationConfigPage .fed-stat strong { font-size:1.2em; line-height:1.2; font-weight:700; }
                 #federationConfigPage .fed-stat span { opacity:.65; font-size:.86em; }
                 #federationConfigPage .fed-statusstrip > .emby-button { align-self:center; white-space:nowrap; }
-                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.15em; overflow-x:auto; scrollbar-width:thin; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.2em; padding:.3em; background:rgba(20,20,20,.92); backdrop-filter:blur(14px); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
+                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.5em; overflow-x:auto; scrollbar-width:thin; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.2em; padding:.3em; background:rgba(20,20,20,.92); backdrop-filter:blur(14px); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
                 #federationConfigPage .fed-tab-btn { flex:0 0 auto; border:0; border-radius:.55em; margin:0; min-height:2.65em; padding:.58em .9em; transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease; }
                 #federationConfigPage .fed-tab-btn:hover { opacity:.95; background:var(--fed-surface-raised); }
                 #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:2px; }
@@ -227,6 +227,10 @@
                 #federationConfigPage .fed-tabpanel.fed-tabpanel-active { animation:fed-panel-in 180ms ease-out; }
                 #federationConfigPage .fed-server { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:.85em; margin:.65em 0; background:var(--fed-surface); transition:border-color 150ms ease,background-color 150ms ease; }
                 #federationConfigPage .fed-server:hover { border-color:var(--fed-border); background:var(--fed-surface-raised); }
+                #federationConfigPage .fed-toggle-row { display:flex; align-items:center; flex-wrap:wrap; gap:.6em; margin:.6em 0; }
+                #federationConfigPage .fed-toggle-label { margin:0; }
+                #federationConfigPage .fed-btn-group { display:inline-flex; gap:.3em; }
+                #federationConfigPage .fed-toggle-btn.fed-toggle-btn-active { opacity:1; color:var(--fed-accent); background:rgba(0,164,220,.14); }
                 #federationConfigPage .fed-catalog-card { border-radius:.55em; padding:.35em; transition:transform 150ms ease,background-color 150ms ease; }
                 #federationConfigPage .fed-catalog-card:hover { transform:translateY(-2px); background:var(--fed-surface); }
                 #federationConfigPage .fed-catalog-card:focus-within { outline:2px solid var(--fed-accent); outline-offset:2px; }
@@ -665,8 +669,14 @@
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkCloudBadges" class="emby-checkbox fed-check" /> Show a cloud badge on federated media artwork</label>
-                            <p class="fieldDescription">Off by default. Turn it on when you want an at-a-glance source marker on movie, show, and list artwork. This does not change playback or sharing.</p>
+                            <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
+                                <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
+                                <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
+                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeAdd" data-fed-action="toggle-cloud-badge" data-value="true">Add</button>
+                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeRemove" data-fed-action="toggle-cloud-badge" data-value="false">Remove</button>
+                                </div>
+                            </div>
+                            <p class="fieldDescription">Off by default. Add the badge when you want an at-a-glance source marker on movie, show, and list artwork; remove it any time. This does not change playback or sharing.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
                             <p class="fieldDescription">
                                 When on: your friends can see who your other friends are, and this server automatically sends friend requests
@@ -4235,6 +4245,19 @@
                         .catch(function (err) { showError('Unhide failed: ' + err.message); });
                     }
 
+                    function setCloudBadgeToggle(enabled) {
+                        var wrap = q('#fedCloudBadgeToggle');
+                        if (!wrap) {
+                            return;
+                        }
+
+                        wrap.setAttribute('data-enabled', enabled ? 'true' : 'false');
+                        var addBtn = q('#fedBtnCloudBadgeAdd');
+                        var removeBtn = q('#fedBtnCloudBadgeRemove');
+                        if (addBtn) { addBtn.classList.toggle('fed-toggle-btn-active', !!enabled); }
+                        if (removeBtn) { removeBtn.classList.toggle('fed-toggle-btn-active', !enabled); }
+                    }
+
                     function setAdvancedStatus(msg, kind) {
                         var el = q('#fedAdvancedStatus');
                         if (!el) {
@@ -4283,7 +4306,7 @@
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
-                            q('#fedChkCloudBadges').checked = currentConfig.ShowFederatedCloudBadges === true;
+                            setCloudBadgeToggle(currentConfig.ShowFederatedCloudBadges === true);
                             q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
                             q('#fedTxtRefreshHours').value = currentConfig.RefreshIntervalHours || 1;
@@ -4325,7 +4348,7 @@
                             InternalServerUrl: q('#fedTxtInternalUrl').value.trim(),
                             CachePath: q('#fedTxtCachePath').value.trim(),
                             EnableDedup: q('#fedChkDedup').checked,
-                            ShowFederatedCloudBadges: q('#fedChkCloudBadges').checked,
+                            ShowFederatedCloudBadges: q('#fedCloudBadgeToggle').getAttribute('data-enabled') === 'true',
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,
                             AllowFriendsOfFriends: q('#fedChkFriendsOfFriends').checked,
@@ -4441,6 +4464,9 @@
                             switch (t.getAttribute('data-fed-action')) {
                                 case 'switch-tab':
                                     switchTab(t.getAttribute('data-tab'));
+                                    break;
+                                case 'toggle-cloud-badge':
+                                    setCloudBadgeToggle(t.getAttribute('data-value') === 'true');
                                     break;
                                 case 'send-friend-request':
                                     sendFriendRequest();
