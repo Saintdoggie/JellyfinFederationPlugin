@@ -56,6 +56,25 @@ Reported directly by the project owner after 1.0.0 shipped.
       lazy-loading (fetch/render next page as the user nears the bottom, lazy
       image loading for off-screen cover art) instead of the current paging.
       Not started this pass.
+- [x] Quality-upgrade review ("better copies to review") gave each movie its
+      own one-at-a-time review button, listed every episode candidate flat
+      with no cover art, and had no way to act on more than one title at
+      once. It now shows cover art on every card (`catalogPosterUrl`, the
+      same helper the Catalog tab already used - these are local items, no
+      remote-image proxy needed), groups episode candidates under their show
+      (selecting the show selects all its episodes), and supports selecting
+      several candidates for one "Apply selected" bulk request, gated behind
+      two separate confirmations. **This deliberately reverses this file's
+      own earlier P0 decision** ("Require an individual affirmative approval
+      for every movie replacement; do not provide a destructive bulk
+      approval") **at the project owner's explicit request.** `ApplyQualityUpgrades`
+      remains temporarily disabled server-side either way, so nothing in this
+      change can currently start a real download/removal; if/when it is
+      re-enabled, it must still re-validate and download-then-remove each
+      selected item on its own (the multi-id request body already supports
+      this - see the per-item `operations` handling in
+      `applySelectedQualityUpgrades`), not treat a large selection as
+      permission to skip that per-item safety work.
 
 ## Deferred — friend ratings/comments (design only, not scheduled)
 
@@ -271,3 +290,10 @@ said explicitly not to start building it yet:
   checksum (`bfeaac898a4f3fdff55588a973bb71f4` and
   `6cc8a52c82caedde9d6a609c8616e20c`). Same caveat as the entry above still
   applies: no live two-server/browser check.
+- 2026-09-04: Quality-upgrade review grouping/cover-art/bulk-select above
+  built and validated: clean Release build with zero warnings, 347 .NET
+  tests passed twice, 11 jsdom tests passed (one rewritten to match the new
+  bulk-apply design, one new case added asserting exactly two confirmations
+  gate `applySelectedQualityUpgrades`). No live two-server/browser check
+  again this pass - same reasons as above. Not released; working-tree state
+  on `master` only.

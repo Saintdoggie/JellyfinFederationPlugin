@@ -150,7 +150,7 @@ test('all rendered tabs are routable and the inline configuration script parses'
   dom.window.close();
 });
 
-test('catalog and downloads expose distinct local/remote workflows without bulk replacement', () => {
+test('catalog and downloads tabs expose distinct local/remote workflows', () => {
   const dom = new JSDOM(configPage);
   const document = dom.window.document;
   assert.equal(document.querySelector('#fedTabCatalog').textContent.trim(), 'Catalog');
@@ -163,10 +163,28 @@ test('catalog and downloads expose distinct local/remote workflows without bulk 
     [...document.querySelectorAll('#fedBrowseType option')].map((option) => option.textContent.trim()),
     ['Movies', 'TV shows']
   );
-  assert.equal(configPage.includes('data-fed-action="quality-select-all"'), false);
-  assert.equal(configPage.includes('data-fed-action="quality-apply-one"'), true);
-  assert.match(configPage, /ItemIds:\s*\[id\]/);
   dom.window.close();
+});
+
+test('quality-upgrade review supports multi-select bulk apply, grouped by show, with two confirmations', () => {
+  // Deliberate reversal of this project's earlier "no bulk approval, one
+  // title at a time" stance, done at the project owner's explicit request -
+  // selecting many candidates and applying them together is now supported,
+  // gated behind two separate window.confirm() calls rather than the old
+  // per-item checkbox+button pair.
+  assert.equal(configPage.includes('data-fed-action="quality-select-all"'), true);
+  // quality-select-show is assigned to a variable and interpolated into the
+  // card markup (renderQualityCard), not a literal HTML attribute, so it is
+  // checked as the string passed to that helper instead.
+  assert.equal(configPage.includes("selectAction: 'quality-select-show'"), true);
+  assert.equal(configPage.includes('data-fed-action="quality-apply-selected"'), true);
+  assert.equal(configPage.includes('data-fed-action="quality-apply-one"'), false);
+  assert.match(configPage, /ItemIds:\s*ids/);
+
+  const applyFn = configPage.match(/function applySelectedQualityUpgrades\(\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(applyFn, 'applySelectedQualityUpgrades function body not found');
+  const confirmCalls = applyFn[0].match(/window\.confirm\(/g) || [];
+  assert.equal(confirmCalls.length, 2, 'expected exactly two confirmations before a bulk replacement request is sent');
 });
 
 test('Downloads server dropdown refreshes on every config load, not just once', () => {

@@ -230,6 +230,20 @@
                 #federationConfigPage .fed-quality-candidate:first-of-type { border-top:0; }
                 #federationConfigPage .fed-quality-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.6em 1em; margin-top:.55em; }
                 #federationConfigPage .fed-quality-actions a { color:var(--fed-accent); cursor:pointer; font-size:.88em; }
+                #federationConfigPage .fed-quality-bulkbar { display:flex; align-items:center; flex-wrap:wrap; gap:.5em 1.2em; margin:.9em 0; padding:.7em 0; border-top:1px solid var(--fed-border-soft); border-bottom:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-quality-bulkbar a { color:var(--fed-accent); cursor:pointer; }
+                #federationConfigPage .fed-quality-bulkbar .fed-spacer { flex:1; }
+                #federationConfigPage .fed-quality-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(9em, 1fr)); gap:1.1em; margin-top:1em; }
+                /* A checkbox-look toggle, not a real <input type="checkbox"> - the
+                   whole card is one clickable button (matching the Catalog tab's
+                   own select-for-bulk-action pattern), and a real checkbox nested
+                   inside a button is invalid HTML. Empty square unselected, filled
+                   with a checkmark when the card carries fed-catalog-card-selected. */
+                #federationConfigPage .fed-quality-checkbox { position:absolute; top:.45em; left:.45em; width:1.3em; height:1.3em; border-radius:.3em; border:2px solid rgba(255,255,255,.8); background:rgba(0,0,0,.35); box-shadow:0 1px 4px rgba(0,0,0,.4); }
+                #federationConfigPage .fed-catalog-card-selected .fed-quality-checkbox { background:var(--fed-accent); border-color:var(--fed-accent); }
+                #federationConfigPage .fed-catalog-card-selected .fed-quality-checkbox::after { content:''; position:absolute; left:.32em; top:.06em; width:.32em; height:.62em; border:solid #111; border-width:0 .18em .18em 0; transform:rotate(45deg); }
+                #federationConfigPage .fed-quality-cardwrap { position:relative; }
+                #federationConfigPage .fed-quality-exclude { display:block; font-size:.78em; margin-top:.3em; color:var(--fed-accent); cursor:pointer; text-align:center; }
                 #federationConfigPage .fed-quality-confirm { margin-top:.75em; padding:.85em; border:1px solid var(--fed-warn-text); border-radius:.6em; background:rgba(224,160,74,.08); }
 
                 /* Downloads */
@@ -3329,9 +3343,13 @@
                     /* ---------------- Prefer Higher Quality ---------------- */
 
                     var qualityUpgradeCandidates = [];
-                    var qualityUpgradeReviewing = {};
-                    var qualityUpgradeConfirmed = {};
+                    // Flat by localItemId regardless of movie/episode - a show's
+                    // checkbox just toggles every one of its episode ids together
+                    // (see toggleQualitySelectShow), so this one map is always the
+                    // full source of truth for what Apply selected would send.
+                    var qualityUpgradeSelected = {};
                     var qualityUpgradeMessage = '';
+                    var qualityUpgradeBusy = false;
 
                     // Re-checked every time the config page loads (not on a
                     // timer, not automatically) - "ask each time you go to the
@@ -3360,6 +3378,86 @@
                         return br ? res + ', ' + br : res;
                     }
 
+                    // Episode candidates with a seriesId are grouped under their
+                    // show - selecting the show's card selects every one of its
+                    // episodes together, so replacing "the whole show" is one
+                    // click instead of finding and checking each episode.
+                    // Episodes without a resolvable seriesId (shouldn't normally
+                    // happen - see FederationQualityAdvisorService) fall back to
+                    // being listed like a movie, rather than silently dropped.
+                    function groupQualityUpgrades(candidates) {
+                        var movies = [];
+                        var showsById = {};
+                        var showOrder = [];
+                        candidates.forEach(function (c) {
+                            if (c.itemType === 'Episode' && c.seriesId) {
+                                if (!showsById[c.seriesId]) {
+                                    showsById[c.seriesId] = { seriesId: c.seriesId, seriesName: c.seriesName || c.name, episodes: [] };
+                                    showOrder.push(c.seriesId);
+                                }
+                                showsById[c.seriesId].episodes.push(c);
+                            } else {
+                                movies.push(c);
+                            }
+                        });
+                        showOrder.forEach(function (id) {
+                            showsById[id].episodes.sort(function (a, b) {
+                                var sa = a.parentIndexNumber || 0;
+                                var sb = b.parentIndexNumber || 0;
+                                return sa !== sb ? sa - sb : (a.indexNumber || 0) - (b.indexNumber || 0);
+                            });
+                        });
+                        return { movies: movies, shows: showOrder.map(function (id) { return showsById[id]; }) };
+                    }
+
+                    function qualitySelectedIds() {
+                        return Object.keys(qualityUpgradeSelected).filter(function (id) { return qualityUpgradeSelected[id]; });
+                    }
+
+                    function isQualityShowSelected(show) {
+                        return show.episodes.every(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; });
+                    }
+
+                    function toggleQualitySelect(id) {
+                        qualityUpgradeSelected[id] = !qualityUpgradeSelected[id];
+                        renderQualityUpgradePanel();
+                    }
+
+                    function toggleQualitySelectShow(seriesId) {
+                        var show = groupQualityUpgrades(qualityUpgradeCandidates).shows.filter(function (s) { return s.seriesId === seriesId; })[0];
+                        if (!show) {
+                            return;
+                        }
+
+                        var nowSelected = !isQualityShowSelected(show);
+                        show.episodes.forEach(function (ep) { qualityUpgradeSelected[ep.localItemId] = nowSelected; });
+                        renderQualityUpgradePanel();
+                    }
+
+                    function selectAllQualityUpgrades() {
+                        qualityUpgradeCandidates.forEach(function (c) { qualityUpgradeSelected[c.localItemId] = true; });
+                        renderQualityUpgradePanel();
+                    }
+
+                    function clearQualitySelection() {
+                        qualityUpgradeSelected = {};
+                        renderQualityUpgradePanel();
+                    }
+
+                    function renderQualityCard(opts) {
+                        var html = '<div class="fed-quality-cardwrap">';
+                        html += '<button type="button" class="fed-catalog-card' + (opts.selected ? ' fed-catalog-card-selected' : '') + '" data-fed-action="' + opts.selectAction + '" data-id="' + escapeHtml(opts.selectId) + '" aria-pressed="' + (opts.selected ? 'true' : 'false') + '" aria-label="' + escapeHtml(opts.title) + '">';
+                        html += '<div class="fed-catalog-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(opts.posterId)) + '\')"><span class="fed-quality-checkbox" aria-hidden="true"></span></div>';
+                        html += '<div class="fed-catalog-name">' + escapeHtml(opts.title) + '</div>';
+                        html += '</button>';
+                        html += '<div class="fed-hint">' + opts.subtitle + '</div>';
+                        if (opts.excludeId) {
+                            html += '<a class="fed-quality-exclude" data-fed-action="quality-exclude" data-id="' + escapeHtml(opts.excludeId) + '">Keep local copy; do not ask again</a>';
+                        }
+                        html += '</div>';
+                        return html;
+                    }
+
                     function renderQualityUpgradePanel() {
                         var el = q('#fedQualityUpgradePanel');
                         if (!el) {
@@ -3376,22 +3474,60 @@
                             return;
                         }
 
+                        // Drop any selection left over from a candidate that is no
+                        // longer offered (excluded, resolved, or no longer better)
+                        // since the last render.
+                        var liveIds = {};
+                        qualityUpgradeCandidates.forEach(function (c) { liveIds[c.localItemId] = true; });
+                        Object.keys(qualityUpgradeSelected).forEach(function (id) {
+                            if (!liveIds[id]) {
+                                delete qualityUpgradeSelected[id];
+                            }
+                        });
+
+                        var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
                         var count = qualityUpgradeCandidates.length;
+                        var selectedCount = qualitySelectedIds().length;
+
                         var html = '<div class="fed-qualitypanel">';
                         html += '<h3 class="fed-subhead">Better copies to review</h3>';
-                        html += '<p class="fieldDescription">' + count + ' exact title' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a meaningfully better federated match. Review replacements one at a time.</p>';
-                        qualityUpgradeCandidates.forEach(function (c) {
-                            var id = escapeHtml(c.localItemId);
-                            html += '<div class="fed-quality-candidate">';
-                            html += '<div><strong>' + escapeHtml(c.name) + (c.year ? ' (' + c.year + ')' : '') + '</strong></div>';
-                            html += '<div class="fed-hint">Local: ' + formatQuality(c.localHeight, c.localBitrate) + ' · ' + escapeHtml(c.remoteServerName) + ': ' + formatQuality(c.remoteHeight, c.remoteBitrate) + '</div>';
-                            html += '<div class="fed-quality-actions"><a data-fed-action="quality-exclude" data-id="' + id + '">Keep local copy; do not ask again</a>';
-                            if (currentConfig.EnableQualityReplacementActions) {
-                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="quality-review" data-id="' + id + '" disabled title="Downloading to this server is temporarily disabled.">Review replacement</button>';
-                            }
+                        html += '<p class="fieldDescription">' + count + ' title' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a meaningfully better federated match. Select the ones to replace, then apply - a TV show replaces every one of its selected episodes together.</p>';
+
+                        if (currentConfig.EnableQualityReplacementActions) {
+                            html += '<div class="fed-quality-bulkbar">';
+                            html += '<strong>' + selectedCount + ' selected</strong>';
+                            html += '<a data-fed-action="quality-select-all">Select all</a>';
+                            html += '<a data-fed-action="quality-clear-selection">Clear</a>';
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat raised" data-fed-action="quality-apply-selected"' + (selectedCount === 0 || qualityUpgradeBusy ? ' disabled' : '') + '>Apply selected (' + selectedCount + ')</button>';
                             html += '</div>';
-                            html += '</div>';
+                        }
+
+                        html += '<div class="fed-quality-grid">';
+                        grouped.movies.forEach(function (c) {
+                            html += renderQualityCard({
+                                selectAction: 'quality-select',
+                                selectId: c.localItemId,
+                                posterId: c.localItemId,
+                                title: c.name + (c.year ? ' (' + c.year + ')' : ''),
+                                subtitle: 'Local: ' + escapeHtml(formatQuality(c.localHeight, c.localBitrate)) + ' · ' + escapeHtml(c.remoteServerName) + ': ' + escapeHtml(formatQuality(c.remoteHeight, c.remoteBitrate)),
+                                selected: !!qualityUpgradeSelected[c.localItemId],
+                                excludeId: c.localItemId
+                            });
                         });
+                        grouped.shows.forEach(function (show) {
+                            var epCount = show.episodes.length;
+                            html += renderQualityCard({
+                                selectAction: 'quality-select-show',
+                                selectId: show.seriesId,
+                                posterId: show.seriesId,
+                                title: show.seriesName,
+                                subtitle: epCount + ' episode' + (epCount === 1 ? '' : 's') + ' with a better copy on ' + escapeHtml(show.episodes[0].remoteServerName) + ' - selecting replaces the whole show.',
+                                selected: isQualityShowSelected(show)
+                            });
+                        });
+                        html += '</div>';
+
                         if (qualityUpgradeMessage) {
                             html += '<div class="fed-srvstatus fed-srvstatus-info">' + escapeHtml(qualityUpgradeMessage) + '</div>';
                         }
@@ -3456,46 +3592,84 @@
                         })
                         .then(function () {
                             qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return c.localItemId !== id; });
-                            delete qualityUpgradeReviewing[id];
-                            delete qualityUpgradeConfirmed[id];
+                            delete qualityUpgradeSelected[id];
                             renderQualityUpgradePanel();
                         })
                         .catch(function () { /* best-effort - it'll just be offered again next load */ });
                     }
 
-                    function toggleQualityReview(id) {
-                        qualityUpgradeReviewing[id] = !qualityUpgradeReviewing[id];
-                        qualityUpgradeConfirmed[id] = false;
-                        renderQualityUpgradePanel();
-                    }
-
-                    function applyQualityUpgrade(id) {
-                        if (!qualityUpgradeReviewing[id] || !qualityUpgradeConfirmed[id]) {
+                    // Bulk-apply, reached only after the two confirmations below -
+                    // a deliberate reversal of this project's earlier "no bulk
+                    // approval, one title at a time" stance, done at the project
+                    // owner's explicit request. Each id is still sent individually
+                    // in one request (QualityUpgradeApplyBody.ItemIds), and if/when
+                    // ApplyQualityUpgrades stops being temporarily disabled it must
+                    // keep re-validating and downloading-then-removing each item on
+                    // its own - selecting many at once is a UI convenience, not a
+                    // license for the server side to skip per-item safety checks.
+                    function applySelectedQualityUpgrades() {
+                        var ids = qualitySelectedIds();
+                        if (ids.length === 0 || qualityUpgradeBusy) {
                             return;
                         }
 
-                        qualityUpgradeMessage = 'Starting the approved replacement…';
+                        var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
+                        var selectedShows = grouped.shows.filter(function (s) { return isQualityShowSelected(s); });
+                        var selectedMovies = grouped.movies.filter(function (c) { return qualityUpgradeSelected[c.localItemId]; });
+
+                        var summary = [];
+                        if (selectedMovies.length > 0) {
+                            summary.push(selectedMovies.length + ' movie' + (selectedMovies.length === 1 ? '' : 's'));
+                        }
+                        if (selectedShows.length > 0) {
+                            var epTotal = selectedShows.reduce(function (n, s) { return n + s.episodes.length; }, 0);
+                            summary.push(selectedShows.length + ' show' + (selectedShows.length === 1 ? '' : 's') + ' (' + epTotal + ' episode' + (epTotal === 1 ? '' : 's') + ')');
+                        }
+
+                        if (!window.confirm('Replace ' + summary.join(' and ') + ' with the federated copy? Each one downloads the better copy first and only removes the old local file after that succeeds.')) {
+                            return;
+                        }
+
+                        if (!window.confirm('This can\'t be easily undone once each download completes. Continue?')) {
+                            return;
+                        }
+
+                        qualityUpgradeBusy = true;
+                        qualityUpgradeMessage = 'Starting ' + ids.length + ' approved replacement' + (ids.length === 1 ? '' : 's') + '…';
                         renderQualityUpgradePanel();
 
                         fedFetch('/Plugins/Federation/QualityUpgrades/Apply', {
                             method: 'POST',
-                            body: JSON.stringify({ ItemIds: [id] })
+                            body: JSON.stringify({ ItemIds: ids })
                         })
                         .then(function (r) { return r.ok ? r.json() : r.text().then(function (text) { throw new Error(text); }); })
                         .then(function (res) {
-                            var op = res.operations && res.operations[0];
-                            if (!op || !op.success) {
-                                throw new Error((op && op.message) || 'The replacement could not be started.');
+                            var operations = res.operations || [];
+                            if (operations.length === 0) {
+                                // The endpoint validated the whole request before any
+                                // per-item work started (e.g. downloading to this
+                                // server is currently disabled) - nothing to remove
+                                // from the list, just show why.
+                                throw new Error(res.message || 'The replacement could not be started.');
                             }
-                            qualityUpgradeMessage = 'Replacement started. Progress is shown in Downloads; the local copy remains until validation succeeds.';
-                            loadDownloads();
-                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return c.localItemId !== id; });
-                            delete qualityUpgradeReviewing[id];
-                            delete qualityUpgradeConfirmed[id];
-                            renderQualityUpgradePanel();
+
+                            var succeeded = operations.filter(function (op) { return op.success; }).map(function (op) { return op.itemId; });
+                            var failed = operations.filter(function (op) { return !op.success; });
+
+                            qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return succeeded.indexOf(c.localItemId) === -1; });
+                            succeeded.forEach(function (id) { delete qualityUpgradeSelected[id]; });
+
+                            qualityUpgradeMessage = succeeded.length + ' of ' + operations.length + ' replacement' + (operations.length === 1 ? '' : 's') + ' started - progress is shown in Downloads.'
+                                + (failed.length > 0 ? ' ' + failed.length + ' could not start: ' + failed.map(function (op) { return op.message; }).join('; ') : '');
+                            if (succeeded.length > 0) {
+                                loadDownloads();
+                            }
                         })
                         .catch(function (e) {
                             qualityUpgradeMessage = 'Could not start replacement: ' + e.message;
+                        })
+                        .then(function () {
+                            qualityUpgradeBusy = false;
                             renderQualityUpgradePanel();
                         });
                     }
@@ -4981,11 +5155,20 @@
                                     // (see its own data-fed-action doc comment) -
                                     // deliberately does nothing.
                                     break;
-                                case 'quality-review':
-                                    toggleQualityReview(t.getAttribute('data-id'));
+                                case 'quality-select':
+                                    toggleQualitySelect(t.getAttribute('data-id'));
                                     break;
-                                case 'quality-apply-one':
-                                    applyQualityUpgrade(t.getAttribute('data-id'));
+                                case 'quality-select-show':
+                                    toggleQualitySelectShow(t.getAttribute('data-id'));
+                                    break;
+                                case 'quality-select-all':
+                                    selectAllQualityUpgrades();
+                                    break;
+                                case 'quality-clear-selection':
+                                    clearQualitySelection();
+                                    break;
+                                case 'quality-apply-selected':
+                                    applySelectedQualityUpgrades();
                                     break;
                                 case 'quality-exclude':
                                     excludeQualityUpgrade(t.getAttribute('data-id'));
@@ -5121,15 +5304,6 @@
                                 resetBrowseSeriesState();
                                 if (browseState.libraryId) {
                                     loadBrowseItems(true);
-                                }
-                                return;
-                            }
-
-                            if (t.classList.contains('fedQualityConfirm')) {
-                                qualityUpgradeConfirmed[t.getAttribute('data-id')] = t.checked;
-                                var applyButton = q('[data-fed-action="quality-apply-one"][data-id="' + t.getAttribute('data-id') + '"]');
-                                if (applyButton) {
-                                    applyButton.disabled = !t.checked;
                                 }
                                 return;
                             }

@@ -3837,7 +3837,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 localBitrate = c.LocalBitrate,
                 remoteHeight = c.RemoteHeight,
                 remoteBitrate = c.RemoteBitrate,
-                remoteServerName = c.RemoteServerName
+                remoteServerName = c.RemoteServerName,
+                itemType = c.ItemType,
+                seriesId = c.SeriesId,
+                seriesName = c.SeriesName,
+                parentIndexNumber = c.ParentIndexNumber,
+                indexNumber = c.IndexNumber
             }).ToList());
         }
 
