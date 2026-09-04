@@ -295,5 +295,11 @@ said explicitly not to start building it yet:
   tests passed twice, 11 jsdom tests passed (one rewritten to match the new
   bulk-apply design, one new case added asserting exactly two confirmations
   gate `applySelectedQualityUpgrades`). No live two-server/browser check
-  again this pass - same reasons as above. Not released; working-tree state
-  on `master` only.
+  again this pass - same reasons as above.
+- 2026-09-04: Released as 0.0.126 (commit `83f6000`). Project/meta/manifest
+  versions agree; the release archive was downloaded back from GitHub and
+  independently matched manifest MD5 `6e4ea7420b4afe1378db9244d9bfc68c`.
+  This release gate is complete on the build/test criteria only - the
+  two-server integration matrix and interactive UI smoke test criteria are
+  still not satisfied for any change since 0.0.123 (see the 1.0.0/0.1.0
+  entries above); same waiver, same reason.
