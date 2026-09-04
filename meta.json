@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.1.0",
-  "changelog": "Settings UI polish, and federated downloads to this server are temporarily paused. The federation settings page's hero banner drops its gradient for a flat surface, tabs get more breathing room, and the 'cloud badge' setting is now an explicit Add/Remove button pair instead of a checkbox. Separately: downloading federated content onto this server is temporarily disabled while that flow is reworked - the item action-sheet's 'Download to server', the Browse tab's per-item Download button, and the prefer-higher-quality review's 'download better copy and remove old copy' action now all clearly show as disabled instead of running. Cancelling a download already in flight, and a viewer's own 'download to device' copy, are both unaffected. 347 tests, all green.",
+  "version": "1.0.0",
+  "changelog": "First stable 1.0 release: settings UI polish, and federated downloads to this server are temporarily paused. The federation settings page's hero banner drops its gradient for a flat surface, tabs get more breathing room, and the 'cloud badge' setting is now an explicit Add/Remove button pair instead of a checkbox. Separately: downloading federated content onto this server is temporarily disabled while that flow is reworked - the item action-sheet's 'Download to server', the Browse tab's per-item Download button, and the prefer-higher-quality review's 'download better copy and remove old copy' action now all clearly show as disabled instead of running. Cancelling a download already in flight, and a viewer's own 'download to device' copy, are both unaffected. 347 tests, all green.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-04T15:03:56Z",
+  "timestamp": "2026-09-04T15:25:59Z",
   "imageUrl": "thumb.png"
 }
