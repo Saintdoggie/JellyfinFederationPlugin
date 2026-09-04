@@ -161,7 +161,7 @@ test('catalog and downloads expose distinct local/remote workflows without bulk 
   );
   assert.deepEqual(
     [...document.querySelectorAll('#fedBrowseType option')].map((option) => option.textContent.trim()),
-    ['Movies', 'TV episodes']
+    ['Movies', 'TV shows']
   );
   assert.equal(configPage.includes('data-fed-action="quality-select-all"'), false);
   assert.equal(configPage.includes('data-fed-action="quality-apply-one"'), true);

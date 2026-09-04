@@ -5,32 +5,57 @@ ordered by user impact and risk. A polished interface does not compensate for
 an unreliable or weak streaming boundary, so playback and authorization ship
 first.
 
-## Requested next pass (post-1.0.0) — not started
+## Requested next pass (post-1.0.0)
 
-Reported directly by the project owner after 1.0.0 shipped. Nothing in this
-section has been investigated or fixed yet.
+Reported directly by the project owner after 1.0.0 shipped.
 
-- [ ] Advanced tab checkboxes are effectively invisible - `input type="checkbox"
+- [x] Advanced tab checkboxes are effectively invisible - `input type="checkbox"
       class="emby-checkbox fed-check"` never gets a Jellyfin `is="emby-checkbox"`
       custom-element upgrade anywhere in `configPage.html`, and there's no fed-*
       CSS fallback for the box/checkmark either, so unlike every other injected
-      control on this page nothing draws a visible check state. Likely every
-      `.fed-check` checkbox on every tab has the same problem, not just Advanced.
-- [ ] Browse/Catalog/Downloads show individual federated TV episodes as flat,
-      effectively random list entries instead of grouping by series. Should
-      show one card per TV show that expands/drills into that show's own
-      episode list, matching how Jellyfin normally presents a series.
-- [ ] Clicking Download gives no feedback (no toast, spinner, disabled state, or
-      progress) - from the user's perspective nothing happens. Needs a real
-      Downloads tab/section showing in-flight and completed
-      device/server downloads with live progress and failure state, not just
-      the per-item button.
-- [ ] Clicking into a movie/show from the download flow should show a proper
-      info card (poster, overview, year, genres, etc. - the normal Jellyfin
-      item-detail treatment) instead of a bare download action with no context.
+      control on this page nothing draws a visible check state. Fixed with a
+      scoped `#federationConfigPage input.fed-check` rule (native `appearance:
+      auto` + `accent-color`, high enough specificity to win regardless of
+      stylesheet order) - affects every `.fed-check` on every tab, not just
+      Advanced, since they all share the one root cause.
+- [x] Downloads tab server dropdown sometimes shows "no servers available" even
+      with friends configured - `loadBrowseServers()` only ever ran once, the
+      first time the tab was opened, guarded by a `browseLoaded` flag; if that
+      first open raced ahead of the initial config fetch the dropdown was built
+      from an empty placeholder and never touched again for the rest of the
+      page's life. Now refreshes on every `loadConfiguration()` resolution and
+      every tab visit, preserving the current selection across a refresh.
+- [x] Browse/Downloads showed individual federated TV episodes as flat,
+      effectively random list entries instead of grouping by series. The
+      Downloads tab's TV mode now lists shows (`type=Series`); clicking one
+      opens a dedicated episode list for that show, grouped by season, in
+      proper watch order (new `Browse/{serverId}/Series/{seriesId}/Episodes`
+      endpoint, with a "back to shows" link). Works for both Jellyfin peers
+      (ParentId+Recursive against the existing Peer/Items endpoint - no
+      receiving-side change needed beyond a new EpisodeOrder sort option) and
+      Plex sources (GetSectionItemsAsync already returns show entries
+      alongside episodes with a matching SeriesId, just never used before).
+- [x] Clicking Download gave no feedback at all - the button was `disabled`
+      with only a hover tooltip explaining why, so a click did literally
+      nothing. The button is clickable again and always reports back inline
+      exactly what the server said (currently "temporarily disabled", per the
+      guard added for the 1.0.0 settings-UI-polish work) instead of silently
+      doing nothing. The existing global "Downloads in progress" panel above
+      the tabs (GetDownloads/DownloadProgressTracker) still needs a proper
+      dedicated history/progress view inside this tab, but building that out
+      further has little value while download-to-server stays disabled - see
+      the P0 entry on re-enabling it below.
+- [x] Clicking into a movie/show/episode now opens an info card (poster,
+      overview, year, genres, rating) instead of doing nothing - implemented
+      as a modal (`showItemInfoModal`), reusing fields the Browse endpoints
+      now also return (`overview`, `genres`, `officialRating`,
+      `communityRating`). Clicking a TV show still opens its episode list
+      instead (that already *is* "clicking in" for a show); the info card is
+      for movies and individual episodes.
 - [ ] Browse/Catalog/Downloads paging should become infinite scroll with real
       lazy-loading (fetch/render next page as the user nears the bottom, lazy
       image loading for off-screen cover art) instead of the current paging.
+      Not started this pass.
 
 ## Deferred — friend ratings/comments (design only, not scheduled)
 
@@ -215,3 +240,12 @@ said explicitly not to start building it yet:
   Note: downloading federated content to this server remains temporarily
   disabled in 1.0.0 pending the rework mentioned above - re-enabling that
   flow is separate follow-up work, not yet started.
+- 2026-09-04: Post-1.0.0 fixes above (invisible checkboxes, Downloads server
+  dropdown, TV show grouping, Download click feedback, item info card) built
+  and validated: clean Release build with zero warnings, 347 .NET tests
+  passed twice, 10 jsdom tests passed (2 new regression cases added for the
+  checkbox and Downloads-dropdown fixes). Not yet verified against a live
+  two-server matrix or an interactive browser - the TV-show grouping in
+  particular touches a new controller endpoint and both the Jellyfin-peer and
+  Plex code paths, and would benefit from that before being called part of a
+  release. Not tagged/released; working-tree state on `master` only.
