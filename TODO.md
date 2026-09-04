@@ -244,8 +244,17 @@ said explicitly not to start building it yet:
   dropdown, TV show grouping, Download click feedback, item info card) built
   and validated: clean Release build with zero warnings, 347 .NET tests
   passed twice, 10 jsdom tests passed (2 new regression cases added for the
-  checkbox and Downloads-dropdown fixes). Not yet verified against a live
-  two-server matrix or an interactive browser - the TV-show grouping in
-  particular touches a new controller endpoint and both the Jellyfin-peer and
-  Plex code paths, and would benefit from that before being called part of a
-  release. Not tagged/released; working-tree state on `master` only.
+  checkbox and Downloads-dropdown fixes). A live two-server/browser check was
+  attempted but could not be completed this session (Chrome extension
+  unavailable; no sandbox admin credentials on hand, and none should be
+  stored in this repo per this file's own rules) - the TV-show grouping in
+  particular is new surface on both the Jellyfin-peer and Plex code paths.
+  Flagged to the project owner before release.
+- 2026-09-04: Released as 1.1.0 (commit `00a6825`) at the project owner's
+  explicit direction, without the live two-server/browser check above -
+  build/test validation only. Project/meta/manifest versions agree; the
+  release archive was downloaded back from GitHub and independently matched
+  manifest MD5 `70b999dbded686c446d792090300d81c`. This release gate is
+  complete on the build/test criteria; the two-server integration matrix and
+  interactive UI smoke test criteria were explicitly waived for this release,
+  not satisfied. First real-world check is the project owner trying it.
