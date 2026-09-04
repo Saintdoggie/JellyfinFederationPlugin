@@ -15,10 +15,10 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
   `.strm` imports without requiring Jellyfin on the Plex owner's machine.
 - Main plugin target: .NET 9, Jellyfin 10.11.6.
 - Source branch: `master`; GitHub remote: `Saintdoggie/JellyfinFederationPlugin`.
-- Current published baseline at the start of this pass was version 0.0.122,
-  commit `be38416`. Version 0.0.123 has now passed 347 .NET tests twice, jsdom,
-  Chromium layout, and a two-server admin/viewer Range-playback matrix; consult
-  `git status`, `TODO.md`, and GitHub before assuming publication completed.
+- Current published baseline is version 0.0.123, release commit `6650a4d`.
+  It passed 347 .NET tests twice, jsdom, Chromium layout, and a two-server
+  admin/viewer Range-playback matrix. Its GitHub-downloaded archive matched
+  manifest MD5 `d029debb99b293497cc2042c4d87a6eb`.
   and `TODO.md` before treating it as released.
 
 ## Read these files by task

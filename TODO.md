@@ -161,6 +161,7 @@ first.
   both federation directions for admin and ordinary viewer accounts: PlaybackInfo
   returned a viable source and every 64-byte Range request returned HTTP 206 with
   exactly 64 bytes.
-- 2026-09-04: Prepared 0.0.123 with matching project/meta/manifest versions and
-  MD5 `d029debb99b293497cc2042c4d87a6eb`. Final archive inspection and publication
-  are the only remaining actions.
+- 2026-09-04: Released 0.0.123 from commit `6650a4d` to public `master` and
+  GitHub. Project/meta/manifest versions agree; the four-file release archive
+  was downloaded back from GitHub and independently matched manifest MD5
+  `d029debb99b293497cc2042c4d87a6eb`. This release gate is complete.
