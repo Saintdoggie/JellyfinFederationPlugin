@@ -64,6 +64,28 @@
                 #federationConfigPage .fed-label { display: block; margin-bottom: 0.3em; opacity: 0.8; }
                 #federationConfigPage .fed-hint { font-size: 0.87em; opacity: 0.7; line-height: 1.5; margin: 0.35em 0 0; }
                 #federationConfigPage .fed-check-label { display: flex; align-items: flex-start; gap: 0.5em; margin: 0.55em 0; cursor: pointer; line-height: 1.4; }
+                /* Every checkbox on this page is plain class="emby-checkbox fed-check"
+                   and never gets the emby-checkbox custom-element upgrade (that
+                   needs an is= attribute at parse time), so its dashboard-wide .emby-checkbox
+                   rule (which hides the native box and expects that element to draw
+                   a replacement) leaves a fully invisible but still-clickable input.
+                   Overridden here to render as a plain native checkbox instead of
+                   depending on that upgrade at all: id+element+class specificity
+                   beats the single-class .emby-checkbox rule regardless of stylesheet
+                   order, no !important needed. */
+                #federationConfigPage input.fed-check {
+                    appearance: auto;
+                    -webkit-appearance: auto;
+                    position: static;
+                    opacity: 1;
+                    accent-color: var(--fed-accent);
+                    width: 1.1em;
+                    height: 1.1em;
+                    min-width: 1.1em;
+                    margin: 0.2em 0 0;
+                    flex: 0 0 auto;
+                    cursor: pointer;
+                }
                 #federationConfigPage .fed-muted { opacity: 0.6; }
                 #federationConfigPage .fed-inline { display: flex; flex-wrap: wrap; gap: 0 1.4em; align-items: flex-end; }
                 #federationConfigPage .fed-inline .fed-input-container { flex: 1 1 16em; margin-bottom: 0.9em; }
@@ -2778,7 +2800,6 @@
 
                     /* ---------------- Browse & Download ---------------- */
 
-                    var browseLoaded = false;
                     var browseState = { serverId: '', libraryId: '', mediaType: 'Movie', startIndex: 0, pageSize: 60, items: [] };
 
                     function setBrowseStatus(msg, kind) {
@@ -2807,12 +2828,33 @@
                             return;
                         }
 
+                        // Called both on first tab open and every time
+                        // loadConfiguration() resolves (friend added/removed/
+                        // enabled/disabled elsewhere on the page), not just once -
+                        // otherwise a config fetch still in flight when the admin
+                        // opens this tab left the dropdown permanently empty
+                        // ("no servers available") for the rest of the page's
+                        // life, and a friend added after the fact never appeared
+                        // here without a full reload. Preserve the current
+                        // selection across a refresh so browsing isn't interrupted
+                        // by an unrelated change elsewhere.
+                        var previousValue = sel.value;
                         var servers = (currentConfig.RemoteServers || []).filter(function (s) { return s.Kind !== 2 && s.Enabled !== false; });
                         var html = '<option value="">Select a server…</option>';
                         servers.forEach(function (s) {
                             html += '<option value="' + escapeHtml(s.Id) + '">' + escapeHtml(s.Name || s.Url) + '</option>';
                         });
                         sel.innerHTML = html;
+
+                        if (previousValue && servers.some(function (s) { return s.Id === previousValue; })) {
+                            sel.value = previousValue;
+                        } else if (previousValue) {
+                            // The previously selected server disappeared (removed
+                            // or switched off) - fall back to nothing selected
+                            // rather than silently showing another server's items
+                            // under the old selection's label.
+                            onBrowseServerChange();
+                        }
                     }
 
                     function onBrowseServerChange() {
@@ -4316,6 +4358,7 @@
                             loadHiddenItems();
                             loadQualityUpgrades();
                             populateCatalogFriendPick();
+                            loadBrowseServers();
 
                             if (newlyConnectedIds.length > 0) {
                                 loadLibraryPicker(newlyConnectedIds);
@@ -4423,11 +4466,14 @@
                             loadDiscovery(true);
                         }
 
-                        // Lazy for the same reason: the server dropdown only
-                        // needs to reflect currentConfig once, the first time an
-                        // admin actually opens this tab, not on every load.
-                        if (tab === 'browse' && !browseLoaded) {
-                            browseLoaded = true;
+                        // Refreshed on every visit, not just the first - it's a
+                        // cheap in-memory filter of currentConfig (no fetch), and
+                        // loadBrowseServers() itself preserves the current
+                        // selection, so this just keeps the list accurate if a
+                        // friend was added/removed/toggled since the tab was last
+                        // open. See loadBrowseServers() for why "once" used to
+                        // leave the dropdown stuck empty.
+                        if (tab === 'browse') {
                             loadBrowseServers();
                         }
 
