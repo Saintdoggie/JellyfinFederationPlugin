@@ -2725,6 +2725,17 @@ namespace Jellyfin.Plugin.Federation.Api
                     ? "SortOrder=Ascending"
                     : "SortOrder=Descending");
             }
+            else if (string.Equals(sortBy, "EpisodeOrder", StringComparison.OrdinalIgnoreCase))
+            {
+                // Season/episode order for BrowseSeriesEpisodes - browsing one
+                // show's own episode list needs watch order, not date added,
+                // which is what every other caller of this endpoint sorts by.
+                // A fixed literal, not sortBy forwarded as-is, so this endpoint
+                // never passes caller-supplied text straight into the internal
+                // Items API's SortBy query param.
+                queryParams.Add("SortBy=ParentIndexNumber,IndexNumber,SortName");
+                queryParams.Add("SortOrder=Ascending");
+            }
             if (!string.IsNullOrEmpty(mediaType))
             {
                 queryParams.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
@@ -3487,9 +3498,19 @@ namespace Jellyfin.Plugin.Federation.Api
             // per-request fetch (unlike the paged background sync), not something
             // to let balloon into a multi-minute remote call.
             var pageSize = Math.Clamp(limit ?? 60, 1, 200);
-            var requestedKind = string.Equals(type, "Episode", StringComparison.OrdinalIgnoreCase)
-                ? Jellyfin.Data.Enums.BaseItemKind.Episode
-                : Jellyfin.Data.Enums.BaseItemKind.Movie;
+
+            // TV browsing lists Series here, not Episode - a flat page of the
+            // most-recently-added episodes across every show reads as random to
+            // an admin looking for "the episodes of this show". Episode is still
+            // accepted for callers that genuinely want a flat episode list (none
+            // currently do), and one show's own episodes are fetched in order via
+            // BrowseSeriesEpisodes once its card is opened.
+            var requestedKind = type switch
+            {
+                _ when string.Equals(type, "Episode", StringComparison.OrdinalIgnoreCase) => Jellyfin.Data.Enums.BaseItemKind.Episode,
+                _ when string.Equals(type, "Series", StringComparison.OrdinalIgnoreCase) => Jellyfin.Data.Enums.BaseItemKind.Series,
+                _ => Jellyfin.Data.Enums.BaseItemKind.Movie
+            };
 
             IReadOnlyList<MediaBrowser.Controller.Entities.BaseItem> localOwned;
             try
@@ -3543,7 +3564,11 @@ namespace Jellyfin.Plugin.Federation.Api
                     hasLocalCopy = HasLocalCopy(i.Dto),
                     seriesName = i.Dto.SeriesName,
                     parentIndexNumber = i.Dto.ParentIndexNumber,
-                    indexNumber = i.Dto.IndexNumber
+                    indexNumber = i.Dto.IndexNumber,
+                    overview = i.Dto.Overview,
+                    genres = i.Dto.Genres,
+                    officialRating = i.Dto.OfficialRating,
+                    communityRating = i.Dto.CommunityRating
                 }).ToList());
             }
 
@@ -3566,7 +3591,125 @@ namespace Jellyfin.Plugin.Federation.Api
                 hasLocalCopy = HasLocalCopy(i),
                 seriesName = i.SeriesName,
                 parentIndexNumber = i.ParentIndexNumber,
-                indexNumber = i.IndexNumber
+                indexNumber = i.IndexNumber,
+                overview = i.Overview,
+                genres = i.Genres,
+                officialRating = i.OfficialRating,
+                communityRating = i.CommunityRating
+            }).ToList());
+        }
+
+        /// <summary>
+        /// Lists one TV show's episodes, across every season, in watch order -
+        /// backs the drill-down from a show card in <see cref="BrowseItems"/>'s
+        /// Series listing. Deliberately a separate endpoint rather than folding
+        /// "parentId=seriesId" into <see cref="BrowseItems"/>: that endpoint's
+        /// paging/sort story (newest-added-first, page size capped well below a
+        /// full show) is for browsing a whole library, not for showing one
+        /// show's episode list, which needs season/episode order instead and is
+        /// small enough that it is not worth paginating.
+        /// </summary>
+        [HttpGet("Browse/{serverId}/Series/{seriesId}/Episodes")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> BrowseSeriesEpisodes(
+            string serverId,
+            string seriesId,
+            [FromQuery] string? libraryId,
+            CancellationToken cancellationToken)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Server not found." });
+            }
+
+            IReadOnlyList<MediaBrowser.Controller.Entities.BaseItem> localOwned;
+            try
+            {
+                localOwned = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
+                {
+                    Recursive = true,
+                    IsVirtualItem = false,
+                    IncludeItemTypes = new[] { Jellyfin.Data.Enums.BaseItemKind.Episode }
+                })
+                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
+                .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not build local duplicate index for series episode browse");
+                localOwned = Array.Empty<MediaBrowser.Controller.Entities.BaseItem>();
+            }
+
+            bool HasLocalCopy(MediaBrowser.Model.Dto.BaseItemDto remote)
+                => HasEquivalentLocalCopy(
+                    remote,
+                    localOwned,
+                    Plugin.Instance?.Configuration?.DedupProviderIds ?? new List<string> { "imdb", "tmdb", "tvdb" });
+
+            List<(string Id, MediaBrowser.Model.Dto.BaseItemDto Dto)> episodes;
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                if (string.IsNullOrWhiteSpace(libraryId))
+                {
+                    return BadRequest(new { success = false, message = "libraryId is required." });
+                }
+
+                var provider = _externalCatalogs.For(server);
+                var items = provider == null
+                    ? null
+                    : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                if (items == null)
+                {
+                    return Ok(new List<object>());
+                }
+
+                var series = items.FirstOrDefault(i => i.NativeId == seriesId && i.Dto.Type == Jellyfin.Data.Enums.BaseItemKind.Series);
+                if (series == null)
+                {
+                    return Ok(new List<object>());
+                }
+
+                episodes = items
+                    .Where(i => i.Dto.Type == Jellyfin.Data.Enums.BaseItemKind.Episode && i.Dto.SeriesId == series.Dto.Id)
+                    .OrderBy(i => i.Dto.ParentIndexNumber ?? 0)
+                    .ThenBy(i => i.Dto.IndexNumber ?? 0)
+                    .Select(i => (i.NativeId, i.Dto))
+                    .ToList();
+            }
+            else
+            {
+                var client = _clientFactory.GetClient(server);
+
+                // Recursive on the receiving side (see Peer/Items) means ParentId
+                // matches every descendant, not just direct children, so this
+                // reaches episodes through their season without needing to
+                // enumerate seasons here at all.
+                var jfItems = await client.GetItemsAsync(
+                    mediaType: "Episode",
+                    parentId: seriesId,
+                    sortBy: "EpisodeOrder",
+                    sortOrder: "Ascending",
+                    limit: 2000,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                episodes = (jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>())
+                    .Select(i => (i.Id.ToString(), i))
+                    .ToList();
+            }
+
+            return Ok(episodes.Select(e => new
+            {
+                id = e.Id,
+                name = e.Dto.Name,
+                type = e.Dto.Type.ToString(),
+                seriesName = e.Dto.SeriesName,
+                parentIndexNumber = e.Dto.ParentIndexNumber,
+                indexNumber = e.Dto.IndexNumber,
+                dateCreated = e.Dto.DateCreated,
+                hasLocalCopy = HasLocalCopy(e.Dto),
+                overview = e.Dto.Overview,
+                communityRating = e.Dto.CommunityRating
             }).ToList());
         }
 

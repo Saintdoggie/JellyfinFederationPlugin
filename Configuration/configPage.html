@@ -177,6 +177,51 @@
                 #federationConfigPage .fed-download-toolbar { display:grid; grid-template-columns:minmax(12em,1fr) minmax(12em,1fr) minmax(8em,.55fr) minmax(11em,.7fr); align-items:end; gap:1em; }
                 #federationConfigPage .fed-catalog-toolbar > *, #federationConfigPage .fed-download-toolbar > * { margin-bottom:0; min-width:0; }
                 #federationConfigPage .fed-catalog-actionbar { margin-top: 1.2em; padding-top: 1em; border-top: 1px solid var(--fed-border-soft); display: flex; flex-direction: column; gap: 0.7em; }
+
+                /* Browse grid cards wrap a clickable poster+name trigger (opens the
+                   info card, or a TV show's episode list) alongside a separate
+                   sibling Download button - two buttons side by side, never one
+                   nested inside the other, which is invalid HTML and behaves
+                   inconsistently across browsers. */
+                #federationConfigPage .fed-catalog-cardwrap { position: relative; }
+                #federationConfigPage .fed-catalog-cardtrigger { text-align: left; }
+
+                /* One TV show's episode list, grouped by season - a plain list
+                   reads better here than the poster grid used for browsing shows
+                   and movies themselves. */
+                #federationConfigPage .fed-browse-backlink { background:none; border:0; padding:0; margin-bottom:0.8em; color: var(--fed-accent); cursor: pointer; font: inherit; display: inline-flex; align-items: center; gap: 0.35em; }
+                #federationConfigPage .fed-browse-backlink:hover, #federationConfigPage .fed-browse-backlink:focus-visible { text-decoration: underline; }
+                #federationConfigPage .fed-series-title { font-size: 1.1em; font-weight: 600; margin: 0 0 0.9em; }
+                #federationConfigPage .fed-season-heading { font-size: 0.95em; font-weight: 600; opacity: 0.85; margin: 1.1em 0 0.4em; }
+                #federationConfigPage .fed-season-heading:first-child { margin-top: 0; }
+                #federationConfigPage .fed-episode-row { display: flex; align-items: center; gap: 0.8em; padding: 0.5em 0; border-bottom: 1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-episode-poster { flex: 0 0 auto; width: 4.5em; aspect-ratio: 16 / 9; border-radius: 0.25em; background: rgba(128,128,128,0.14); background-size: cover; background-position: center; }
+                #federationConfigPage .fed-episode-trigger { flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: 0; padding: 0.15em 0; margin: 0; color: inherit; font: inherit; cursor: pointer; border-radius: 0.3em; }
+                #federationConfigPage .fed-episode-trigger:hover, #federationConfigPage .fed-episode-trigger:focus-visible { outline: 2px solid var(--fed-accent); outline-offset: 2px; }
+                #federationConfigPage .fed-episode-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                #federationConfigPage .fed-episode-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 0.6em; }
+
+                /* Item info card - poster/overview/genres for a movie or episode,
+                   opened from its Browse grid/list trigger. Fixed positioning does
+                   not need a positioned ancestor, so this works appended anywhere
+                   inside #federationConfigPage; kept there (not document.body) so
+                   the page's existing click-delegation on data-fed-action still
+                   reaches its close controls. */
+                #federationConfigPage .fed-info-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 1.2em; z-index: 1000; }
+                /* Fixed dark chrome rather than a theme variable: it sits on its
+                   own dark overlay backdrop regardless of the host dashboard's
+                   light/dark theme, the same way an image lightbox or video
+                   player's chrome would - safer than guessing at a Jellyfin
+                   background variable that may not resolve the way a card
+                   surface needs (legible light text on it) on every theme. */
+                #federationConfigPage .fed-info-card { position: relative; display: flex; gap: 1.2em; max-width: 40em; width: 100%; max-height: 85vh; overflow-y: auto; background: rgba(24,24,26,0.97); color: #f2f2f2; border-radius: 0.6em; padding: 1.4em; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+                #federationConfigPage .fed-info-poster { flex: 0 0 auto; width: 9em; aspect-ratio: 2 / 3; border-radius: 0.4em; background: rgba(128,128,128,0.14); background-size: cover; background-position: center; }
+                #federationConfigPage .fed-info-body { min-width: 0; }
+                #federationConfigPage .fed-info-body h3 { margin: 0 0 0.3em; }
+                #federationConfigPage .fed-info-meta, #federationConfigPage .fed-info-genres { font-size: 0.88em; opacity: 0.75; margin: 0 0 0.5em; }
+                #federationConfigPage .fed-info-overview { line-height: 1.5; white-space: pre-line; }
+                #federationConfigPage .fed-info-close { position: absolute; top: 0.6em; right: 0.6em; background: none; border: 0; color: inherit; font-size: 1.4em; line-height: 1; cursor: pointer; opacity: 0.7; padding: 0.2em 0.4em; }
+                #federationConfigPage .fed-info-close:hover, #federationConfigPage .fed-info-close:focus-visible { opacity: 1; outline: 2px solid var(--fed-accent); outline-offset: 2px; border-radius: 0.3em; }
                 #federationConfigPage .fed-catalog-actionbar-row { display: flex; align-items: center; gap: 1.2em; }
                 #federationConfigPage .fed-catalog-actionbar-row a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
                 #federationConfigPage .fed-catalog-actionbar-row a:hover { text-decoration: underline; }
@@ -301,6 +346,7 @@
             <div id="fedErrorContainer"></div>
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
+            <div id="fedInfoModalRoot"></div>
 
             <div class="fed-statusstrip verticalSection" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -600,7 +646,7 @@
                     </p>
                     <p class="fed-srvstatus fed-srvstatus-info">Downloading to this server is temporarily disabled. Browsing still works.</p>
 
-                    <div class="fed-download-toolbar">
+                    <div class="fed-download-toolbar" id="fedBrowseToolbar">
                         <div class="fed-input-container fed-grow">
                             <label class="fed-label">Server</label>
                             <select class="emby-select fed-select" id="fedBrowseServer">
@@ -617,7 +663,7 @@
                             <label class="fed-label" for="fedBrowseType">Media</label>
                             <select class="emby-select fed-select" id="fedBrowseType">
                                 <option value="Movie">Movies</option>
-                                <option value="Episode">TV episodes</option>
+                                <option value="Series">TV shows</option>
                             </select>
                         </div>
                         <div class="fed-input-container">
@@ -628,6 +674,7 @@
                         </div>
                     </div>
 
+                    <div id="fedBrowseSeriesHeader" style="display:none;"></div>
                     <div id="fedBrowseStatus" class="fed-srvstatus" style="display:none;"></div>
                     <div id="fedBrowseList"></div>
                     <div class="fed-picker-actions" id="fedBrowseMoreWrap" style="display:none;">
@@ -2800,7 +2847,14 @@
 
                     /* ---------------- Browse & Download ---------------- */
 
-                    var browseState = { serverId: '', libraryId: '', mediaType: 'Movie', startIndex: 0, pageSize: 60, items: [] };
+                    var browseState = {
+                        serverId: '', libraryId: '', mediaType: 'Movie', startIndex: 0, pageSize: 60, items: [],
+                        // Set while drilled into one TV show's episode list (see
+                        // openBrowseSeries/closeBrowseSeries below). seriesEpisodes
+                        // is fetched whole, not paginated - a show's own episode
+                        // count is small enough that "Load more" would be noise.
+                        seriesId: null, seriesName: null, seriesEpisodes: []
+                    };
 
                     function setBrowseStatus(msg, kind) {
                         var el = q('#fedBrowseStatus');
@@ -2816,6 +2870,25 @@
                         el.style.display = 'block';
                         el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
                         el.textContent = msg;
+                    }
+
+                    // Clears drill-down state without touching browseState.items
+                    // (the shows grid) or re-fetching anything - shared by every
+                    // place that invalidates the current episode view: switching
+                    // server/library/media type, or the explicit back link.
+                    function resetBrowseSeriesState() {
+                        browseState.seriesId = null;
+                        browseState.seriesName = null;
+                        browseState.seriesEpisodes = [];
+                        var toolbar = q('#fedBrowseToolbar');
+                        if (toolbar) {
+                            toolbar.style.display = '';
+                        }
+                        var header = q('#fedBrowseSeriesHeader');
+                        if (header) {
+                            header.style.display = 'none';
+                            header.innerHTML = '';
+                        }
                     }
 
                     // Companion consumers (Kind 2) have no browsable catalog of
@@ -2864,6 +2937,7 @@
                         browseState.serverId = serverId;
                         browseState.libraryId = '';
                         browseState.items = [];
+                        resetBrowseSeriesState();
                         setBrowseStatus('', 'info');
                         var list = q('#fedBrowseList');
                         if (list) {
@@ -2909,6 +2983,7 @@
                         var sel = q('#fedBrowseLibrary');
                         browseState.libraryId = sel ? sel.value : '';
                         browseState.items = [];
+                        resetBrowseSeriesState();
                         var list = q('#fedBrowseList');
                         if (list) {
                             list.innerHTML = '';
@@ -2943,10 +3018,11 @@
                             items = items || [];
                             browseState.items = browseState.items.concat(items);
                             browseState.startIndex += items.length;
+                            browseState.lastBatchFull = items.length >= browseState.pageSize;
                             renderBrowseList();
                             var moreWrap = q('#fedBrowseMoreWrap');
                             if (moreWrap) {
-                                moreWrap.style.display = items.length >= browseState.pageSize ? 'block' : 'none';
+                                moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none';
                             }
                         })
                         .catch(function (e) { setBrowseStatus('Error: ' + e.message, 'err'); });
@@ -2962,6 +3038,11 @@
                     // itself renders, so a slow or missing image never blocks the
                     // list from showing.
                     function renderBrowseList() {
+                        if (browseState.seriesId) {
+                            renderSeriesEpisodes();
+                            return;
+                        }
+
                         var c = q('#fedBrowseList');
                         if (!c) {
                             return;
@@ -2973,30 +3054,42 @@
                             return;
                         }
 
+                        // TV mode lists shows, not episodes (see BrowseItems on the
+                        // server side) - a show's own card opens its episode list
+                        // instead of downloading directly, so it gets no Download
+                        // button of its own. The trigger is a sibling <button>
+                        // around the poster/name, not a parent one wrapping the
+                        // Download button too - nested buttons are invalid HTML and
+                        // behave inconsistently across browsers.
+                        var isSeries = browseState.mediaType === 'Series';
                         var html = '';
                         browseState.items.forEach(function (item, i) {
-                            var episodePrefix = item.type === 'Episode' && item.seriesName
-                                ? item.seriesName + ' · ' + (item.parentIndexNumber != null ? 'S' + String(item.parentIndexNumber).padStart(2, '0') + ' ' : '') + (item.indexNumber != null ? 'E' + String(item.indexNumber).padStart(2, '0') + ' · ' : '')
-                                : '';
-                            var title = episodePrefix + (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
-                            html += '<div class="fed-catalog-card">';
+                            var title = (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
+                            html += '<div class="fed-catalog-cardwrap">';
+                            html += '<button type="button" class="fed-catalog-card fed-catalog-cardtrigger" data-fed-action="' + (isSeries ? 'browse-open-series' : 'browse-info') + '" data-idx="' + i + '">';
                             html += '<div class="fed-catalog-poster" id="fedBrowsePoster' + i + '"></div>';
+                            html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
+                            html += '</button>';
                             if (item.hasLocalCopy) {
                                 html += '<div class="fed-local-copy-warning" role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</div>';
                             }
-                            html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '" disabled title="Downloading to this server is temporarily disabled.">Download</button>';
-                            html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
+                            if (!isSeries) {
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
+                                html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
+                            }
                             html += '</div>';
                         });
                         c.innerHTML = html;
                         c.className = 'fed-catalog-grid';
-                        loadBrowsePosters();
+                        loadPostersFor(browseState.items, 'fedBrowsePoster');
                     }
 
-                    function loadBrowsePosters() {
-                        browseState.items.forEach(function (item, i) {
-                            var el = q('#fedBrowsePoster' + i);
+                    // Shared by the shows/movies grid and one show's episode list -
+                    // both fetch cover art the same way, just against a different
+                    // item array and a different element id prefix.
+                    function loadPostersFor(items, idPrefix) {
+                        items.forEach(function (item, i) {
+                            var el = q('#' + idPrefix + i);
                             if (!el) {
                                 return;
                             }
@@ -3012,8 +3105,8 @@
                         });
                     }
 
-                    function setBrowseItemStatus(idx, msg, kind) {
-                        var el = q('#fedBrowseItemStatus' + idx);
+                    function setItemStatus(idPrefix, idx, msg, kind) {
+                        var el = q('#' + idPrefix + idx);
                         if (!el) {
                             return;
                         }
@@ -3023,13 +3116,18 @@
                         el.textContent = msg;
                     }
 
-                    function downloadBrowseItem(idx) {
-                        var item = browseState.items[idx];
+                    // Shared download-start flow for a movie/episode card - shown
+                    // inline right where the admin clicked, rather than a disabled
+                    // button that gave no feedback at all when downloading to this
+                    // server was paused: clicking now always reaches the server
+                    // and reports back its exact reason (e.g. "temporarily
+                    // disabled") instead of silently doing nothing.
+                    function startBrowseDownload(item, idPrefix, idx) {
                         if (!item) {
                             return;
                         }
 
-                        setBrowseItemStatus(idx, 'Starting…', 'info');
+                        setItemStatus(idPrefix, idx, 'Starting…', 'info');
                         fedFetch('/Plugins/Federation/Browse/Download', {
                             method: 'POST',
                             body: JSON.stringify({ ServerId: browseState.serverId, ItemId: item.id, Name: item.name })
@@ -3037,14 +3135,195 @@
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
                             if (!res.success) {
-                                setBrowseItemStatus(idx, res.message || 'Could not start download.', 'err');
+                                setItemStatus(idPrefix, idx, res.message || 'Could not start download.', 'err');
                                 return;
                             }
 
-                            setBrowseItemStatus(idx, 'Downloading… see the Downloads panel above for progress.', 'ok');
+                            setItemStatus(idPrefix, idx, 'Downloading… see the Downloads panel above for progress.', 'ok');
                             loadDownloads();
                         })
-                        .catch(function (e) { setBrowseItemStatus(idx, 'Error: ' + e.message, 'err'); });
+                        .catch(function (e) { setItemStatus(idPrefix, idx, 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function downloadBrowseItem(idx) {
+                        startBrowseDownload(browseState.items[idx], 'fedBrowseItemStatus', idx);
+                    }
+
+                    function downloadEpisodeItem(idx) {
+                        startBrowseDownload(browseState.seriesEpisodes[idx], 'fedEpisodeItemStatus', idx);
+                    }
+
+                    /* ---------------- TV show drill-down ---------------- */
+
+                    function openBrowseSeries(idx) {
+                        var item = browseState.items[idx];
+                        if (!item) {
+                            return;
+                        }
+
+                        browseState.seriesId = item.id;
+                        browseState.seriesName = item.name;
+
+                        var toolbar = q('#fedBrowseToolbar');
+                        if (toolbar) {
+                            toolbar.style.display = 'none';
+                        }
+                        var moreWrap = q('#fedBrowseMoreWrap');
+                        if (moreWrap) {
+                            moreWrap.style.display = 'none';
+                        }
+
+                        renderSeriesHeader(true);
+                        setBrowseStatus('Loading episodes…', 'info');
+
+                        var url = '/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId)
+                            + '/Series/' + encodeURIComponent(browseState.seriesId) + '/Episodes'
+                            + '?libraryId=' + encodeURIComponent(browseState.libraryId);
+                        fedFetch(url)
+                        .then(function (r) { return r.json(); })
+                        .then(function (episodes) {
+                            setBrowseStatus('', 'info');
+                            browseState.seriesEpisodes = episodes || [];
+                            renderSeriesEpisodes();
+                        })
+                        .catch(function (e) {
+                            setBrowseStatus('Error loading episodes: ' + e.message, 'err');
+                            browseState.seriesEpisodes = [];
+                            renderSeriesEpisodes();
+                        });
+                    }
+
+                    function closeBrowseSeries() {
+                        resetBrowseSeriesState();
+                        var moreWrap = q('#fedBrowseMoreWrap');
+                        if (moreWrap) {
+                            moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none';
+                        }
+                        renderBrowseList();
+                    }
+
+                    function renderSeriesHeader(loading) {
+                        var header = q('#fedBrowseSeriesHeader');
+                        if (!header) {
+                            return;
+                        }
+
+                        header.style.display = 'block';
+                        var html = '<button type="button" class="fed-browse-backlink" data-fed-action="browse-back-to-shows">← Back to shows</button>';
+                        html += '<div class="fed-series-title">' + escapeHtml(browseState.seriesName || 'Show') + (loading ? ' — loading…' : '') + '</div>';
+                        header.innerHTML = html;
+                    }
+
+                    function renderSeriesEpisodes() {
+                        renderSeriesHeader(false);
+                        var c = q('#fedBrowseList');
+                        if (!c) {
+                            return;
+                        }
+
+                        var episodes = browseState.seriesEpisodes;
+                        if (episodes.length === 0) {
+                            c.innerHTML = '<p class="fed-muted">No episodes found for this show.</p>';
+                            c.className = '';
+                            return;
+                        }
+
+                        var html = '';
+                        var currentSeason;
+                        episodes.forEach(function (ep, i) {
+                            var season = ep.parentIndexNumber != null ? ep.parentIndexNumber : null;
+                            if (i === 0 || season !== currentSeason) {
+                                currentSeason = season;
+                                html += '<div class="fed-season-heading">' + (season != null ? 'Season ' + season : 'Specials / unnumbered') + '</div>';
+                            }
+
+                            var epLabel = (ep.indexNumber != null ? 'E' + String(ep.indexNumber).padStart(2, '0') + ' · ' : '') + (ep.name || 'Untitled');
+                            html += '<div class="fed-episode-row">';
+                            html += '<div class="fed-episode-poster" id="fedEpisodePoster' + i + '"></div>';
+                            html += '<button type="button" class="fed-episode-trigger" data-fed-action="browse-episode-info" data-idx="' + i + '">';
+                            html += '<div class="fed-episode-title">' + escapeHtml(epLabel) + '</div>';
+                            html += '</button>';
+                            html += '<div class="fed-episode-actions">';
+                            if (ep.hasLocalCopy) {
+                                html += '<span role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</span>';
+                            }
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-episode-download" data-idx="' + i + '">Download</button>';
+                            html += '</div></div>';
+                            html += '<div class="fed-srvstatus" id="fedEpisodeItemStatus' + i + '" style="display:none;"></div>';
+                        });
+                        c.innerHTML = html;
+                        c.className = '';
+                        loadPostersFor(episodes, 'fedEpisodePoster');
+                    }
+
+                    /* ---------------- Item info card ---------------- */
+
+                    function itemInfoTitle(item) {
+                        if (item.type === 'Episode' && item.seriesName) {
+                            var tag = (item.parentIndexNumber != null ? 'S' + String(item.parentIndexNumber).padStart(2, '0') : '')
+                                + (item.indexNumber != null ? 'E' + String(item.indexNumber).padStart(2, '0') : '');
+                            return item.seriesName + (tag ? ' · ' + tag : '') + ' · ' + (item.name || 'Untitled');
+                        }
+
+                        return (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
+                    }
+
+                    function showItemInfoModal(item) {
+                        var root = q('#fedInfoModalRoot');
+                        if (!root || !item) {
+                            return;
+                        }
+
+                        var title = itemInfoTitle(item);
+                        var meta = [];
+                        if (item.type !== 'Episode' && item.year) {
+                            meta.push(String(item.year));
+                        }
+                        if (item.officialRating) {
+                            meta.push(item.officialRating);
+                        }
+                        if (item.communityRating) {
+                            meta.push('★ ' + Number(item.communityRating).toFixed(1));
+                        }
+
+                        var html = '<div class="fed-info-overlay" data-fed-action="info-close">';
+                        // data-fed-action="info-noop" on the card itself stops a
+                        // click anywhere inside it (selecting the overview text,
+                        // etc.) from bubbling to the overlay's info-close action -
+                        // closest() finds this nearer ancestor first, so only a
+                        // click that actually reaches the overlay background (or
+                        // the explicit close button) closes the modal.
+                        html += '<div class="fed-info-card" data-fed-action="info-noop" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">';
+                        html += '<button type="button" class="fed-info-close" data-fed-action="info-close" aria-label="Close">×</button>';
+                        html += '<div class="fed-info-poster" id="fedInfoPoster"></div>';
+                        html += '<div class="fed-info-body">';
+                        html += '<h3>' + escapeHtml(title) + '</h3>';
+                        if (meta.length > 0) {
+                            html += '<div class="fed-info-meta">' + escapeHtml(meta.join(' · ')) + '</div>';
+                        }
+                        if (item.genres && item.genres.length > 0) {
+                            html += '<div class="fed-info-genres">' + escapeHtml(item.genres.join(', ')) + '</div>';
+                        }
+                        html += '<p class="fed-info-overview">' + escapeHtml(item.overview || 'No synopsis available.') + '</p>';
+                        html += '</div></div></div>';
+                        root.innerHTML = html;
+
+                        fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId) + '/Image?itemId=' + encodeURIComponent(item.id))
+                        .then(function (r) { return r.ok ? r.blob() : null; })
+                        .then(function (blob) {
+                            var el = q('#fedInfoPoster');
+                            if (blob && el) {
+                                el.style.backgroundImage = "url('" + URL.createObjectURL(blob) + "')";
+                            }
+                        })
+                        .catch(function () { /* no cover art - modal still shows the rest of the info */ });
+                    }
+
+                    function closeItemInfoModal() {
+                        var root = q('#fedInfoModalRoot');
+                        if (root) {
+                            root.innerHTML = '';
+                        }
                     }
 
                     /* ---------------- Prefer Higher Quality ---------------- */
@@ -4491,6 +4770,12 @@
 
                         page.dataset.handlersAttached = '1';
 
+                        page.addEventListener('keydown', function (e) {
+                            if (e.key === 'Escape' && q('#fedInfoModalRoot').innerHTML) {
+                                closeItemInfoModal();
+                            }
+                        });
+
                         page.addEventListener('click', function (e) {
                             var t = e.target && e.target.closest ? e.target.closest('[data-fed-action]') : null;
                             if (!t || !page.contains(t)) {
@@ -4673,6 +4958,29 @@
                                 case 'browse-more':
                                     loadBrowseItems(false);
                                     break;
+                                case 'browse-info':
+                                    showItemInfoModal(browseState.items[parseInt(t.getAttribute('data-idx'), 10)]);
+                                    break;
+                                case 'browse-open-series':
+                                    openBrowseSeries(parseInt(t.getAttribute('data-idx'), 10));
+                                    break;
+                                case 'browse-back-to-shows':
+                                    closeBrowseSeries();
+                                    break;
+                                case 'browse-episode-info':
+                                    showItemInfoModal(browseState.seriesEpisodes[parseInt(t.getAttribute('data-idx'), 10)]);
+                                    break;
+                                case 'browse-episode-download':
+                                    downloadEpisodeItem(parseInt(t.getAttribute('data-idx'), 10));
+                                    break;
+                                case 'info-close':
+                                    closeItemInfoModal();
+                                    break;
+                                case 'info-noop':
+                                    // A click landed inside the info card itself
+                                    // (see its own data-fed-action doc comment) -
+                                    // deliberately does nothing.
+                                    break;
                                 case 'quality-review':
                                     toggleQualityReview(t.getAttribute('data-id'));
                                     break;
@@ -4809,7 +5117,8 @@
                             }
 
                             if (t.id === 'fedBrowseType') {
-                                browseState.mediaType = t.value === 'Episode' ? 'Episode' : 'Movie';
+                                browseState.mediaType = t.value === 'Series' ? 'Series' : 'Movie';
+                                resetBrowseSeriesState();
                                 if (browseState.libraryId) {
                                     loadBrowseItems(true);
                                 }
