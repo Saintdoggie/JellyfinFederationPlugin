@@ -1056,6 +1056,48 @@
                         });
                     }
 
+                    // Jellyfin's global exception handler sometimes returns plain
+                    // text (for example "Error processing request") while plugin
+                    // endpoints normally return JSON. Calling Response.json()
+                    // directly turned the useful failure into "Unexpected token E".
+                    // Read once as text, decode JSON when present, and always give the
+                    // administrator a short message they can act on.
+                    function readJson(response) {
+                        return response.text().then(function (raw) {
+                            var body = null;
+                            if (raw) {
+                                try {
+                                    body = JSON.parse(raw);
+                                } catch (e) {
+                                    if (response.ok) {
+                                        throw new Error('Jellyfin returned an unreadable response. Reload the page and try again.');
+                                    }
+                                }
+                            }
+
+                            if (!response.ok) {
+                                var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
+                                var message = details.length > 0
+                                    ? details.join(' ')
+                                    : (body && (body.error || body.message));
+
+                                if (!message && raw && raw.indexOf('Error processing request') !== 0) {
+                                    message = raw;
+                                }
+
+                                if (!message) {
+                                    message = response.status >= 500
+                                        ? 'Jellyfin could not complete this request. Check the server log for details.'
+                                        : 'Request failed (HTTP ' + response.status + ').';
+                                }
+
+                                throw new Error(String(message));
+                            }
+
+                            return body === null ? {} : body;
+                        });
+                    }
+
                     function q(selector) {
                         return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
                     }
@@ -1134,7 +1176,7 @@
                         }
 
                         return fedFetch('/Plugins/Federation/LocalLibraries')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (libs) {
                             localLibrariesCache = libs || [];
                             // The sharing panel needed the list to render checkboxes
@@ -1260,7 +1302,7 @@
                                 ExcludedItemIds: pending.ExcludedItems.map(function (it) { return it.id; })
                             })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setSharingStatus(serverId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
@@ -1288,7 +1330,7 @@
                                 AllowBulkDownloads: !!(bulk && bulk.checked && allow && allow.checked)
                             })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             show(res.message || 'Download permissions saved.', res.success ? 'ok' : 'err');
                             if (res.success) { return loadConfiguration(true); }
@@ -1310,7 +1352,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/SearchLocalItems?query=' + encodeURIComponent(query))
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             excludedItemSearchResults[serverId] = res || [];
                             renderFriends();
@@ -1367,7 +1409,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Id: server.Id, Url: server.Url, ApiKey: '' })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             remoteUsersCache[server.Id] = {
                                 loading: false,
@@ -1575,7 +1617,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/SearchLocalItems?query=' + encodeURIComponent(query))
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             userRuleItemSearchResults[key] = res || [];
                             renderFriends();
@@ -1603,7 +1645,7 @@
                                 ItemIds: pending.Items.map(function (it) { return it.id; })
                             })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setUserRuleStatus(key, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
@@ -1687,7 +1729,7 @@
                             method: 'POST',
                             body: JSON.stringify({ RemoteServerId: friendId })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendPoolStatus(friendId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
@@ -1926,7 +1968,7 @@
                         if (!currentConfig.RemoteServers.length) { return Promise.resolve(); }
                         lastHealthCheck = Date.now();
                         healthRequest = fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
-                        .then(function (r) { if (!r.ok) { throw new Error('Connection check failed'); } return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             (res.results || []).forEach(function (r) {
                                 friendHealth[r.serverId] = { status: r.status || (r.online ? 'online' : 'unreachable'), checkedAtUtc: r.checkedAtUtc || new Date().toISOString() };
@@ -2007,7 +2049,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Name: name, ShareAllLibraries: true, SharedLibraryFolderIds: [] })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success) {
                                 setFedStatus('fedCompanionStatus', res.message || 'Could not generate a connect code.', 'err');
@@ -2042,7 +2084,7 @@
 
                     function copyCompanionCode(id, btn) {
                         fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(id) + '/CompanionConnectCode')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success) {
                                 showError(res.message || 'Could not fetch connect code.');
@@ -2067,7 +2109,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Code: raw })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success) {
                                 setFedStatus('fedPlexConnectStatus', res.error || res.message || 'Could not connect.', 'err');
@@ -2107,7 +2149,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Name: name, Url: url, Token: token })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success) {
                                 setFedStatus('fedPlexManualStatus', res.error || res.message || 'Could not connect.', 'err');
@@ -2208,10 +2250,9 @@
                             body: JSON.stringify(server)
                         })
                         .then(function (r) {
-                            if (!r.ok) {
-                                return r.text().then(function (t) { throw new Error(t || 'Failed to save'); });
-                            }
-
+                            return readJson(r);
+                        })
+                        .then(function () {
                             var s = currentConfig.RemoteServers[i];
                             s.Name = server.Name;
                             s.Url = server.Url;
@@ -2246,7 +2287,7 @@
                             method: 'POST',
                             body: JSON.stringify(server)
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (res.success) {
                                 setServerDot(i, 'ok');
@@ -2279,10 +2320,9 @@
                         clearError();
                         fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(s.Id), { method: 'DELETE' })
                         .then(function (r) {
-                            if (!r.ok) {
-                                return r.text().then(function (t) { throw new Error(t); });
-                            }
-
+                            return readJson(r);
+                        })
+                        .then(function () {
                             return loadConfiguration(true);
                         })
                         .then(function () {
@@ -2373,7 +2413,7 @@
 
                     function loadFriendRequests() {
                         fedFetch('/Plugins/Federation/Friends')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(renderFriendRequests)
                         .catch(function () { /* best-effort */ });
                     }
@@ -2391,7 +2431,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Url: url })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
                             if (res.success && urlEl) {
@@ -2406,7 +2446,7 @@
                     function acceptFriendRequest(id) {
                         setFriendStatus('Confirming with your friend\'s server…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             loadFriendRequests();
                             if (res.success) {
@@ -2432,7 +2472,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Reject', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
                             loadFriendRequests();
@@ -2446,7 +2486,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/Friends/Outgoing/' + encodeURIComponent(id), { method: 'DELETE' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
                             loadFriendRequests();
@@ -2505,7 +2545,7 @@
 
                     function loadConnectivityMode() {
                         return fedFetch('/Plugins/Federation/Setup/Connectivity')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var sel = q('#fedConnectivityMode');
                             var mode = (res && res.mode) || 'Unset';
@@ -2531,7 +2571,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Mode: mode })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (res.success) {
                                 setConnectivityStatus('Saved.', 'ok');
@@ -2562,7 +2602,7 @@
 
                     function checkTailscaleEnvironment() {
                         return fedFetch('/Plugins/Federation/Setup/Tailscale/Environment')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var warn = q('#fedTailscaleEnvWarning');
                             var installBtn = q('[data-fed-action="tailscale-install"]');
@@ -2620,7 +2660,7 @@
 
                     function refreshTailscaleStatus() {
                         return fedFetch('/Plugins/Federation/Setup/Tailscale/Status')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var line = q('#fedTailscaleStatusLine');
                             if (line) {
@@ -2653,7 +2693,7 @@
 
                         setTailscaleStatus('Installing... this can take a minute.', 'info');
                         fedFetch('/Plugins/Federation/Setup/Tailscale/Install', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setTailscaleStatus(res.message, res.success ? 'ok' : 'err');
                             refreshTailscaleStatus();
@@ -2664,7 +2704,7 @@
                     function startTailscaleLogin() {
                         setTailscaleStatus('Starting login...', 'info');
                         fedFetch('/Plugins/Federation/Setup/Tailscale/Login', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var linkEl = q('#fedTailscaleLoginLink');
                             if (linkEl) {
@@ -2693,7 +2733,7 @@
                     function setUpTailscaleFunnel() {
                         setTailscaleStatus('Setting up Funnel...', 'info');
                         fedFetch('/Plugins/Federation/Setup/Tailscale/Funnel', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (res.success && res.funnelUrl) {
                                 var urlEl = q('#fedTxtServerUrl');
@@ -2790,7 +2830,7 @@
                                     method: 'POST',
                                     body: JSON.stringify({ IconBase64: base64 })
                                 })
-                                .then(function (r) { return r.json(); })
+                                .then(function (r) { return readJson(r); })
                                 .then(function (res) {
                                     setPoolStatus(res.message, res.success ? 'ok' : 'err');
                                     loadPools();
@@ -2850,7 +2890,7 @@
 
                     function loadPoolInvites() {
                         fedFetch('/Plugins/Federation/Pools/Invites')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(renderPoolInvites)
                         .catch(function () { /* best-effort */ });
                     }
@@ -2858,7 +2898,7 @@
                     function acceptPoolInvite(id) {
                         setPoolStatus('Confirming with the inviting server…', 'info');
                         fedFetch('/Plugins/Federation/Pools/Invites/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.message, res.success ? 'ok' : 'err');
                             loadPoolInvites();
@@ -2873,7 +2913,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/Pools/Invites/' + encodeURIComponent(id) + '/Reject', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.message, res.success ? 'ok' : 'err');
                             loadPoolInvites();
@@ -2887,7 +2927,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/Pools/Invites/Outgoing/' + encodeURIComponent(id), { method: 'DELETE' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.message, res.success ? 'ok' : 'err');
                             loadPoolInvites();
@@ -2897,7 +2937,7 @@
 
                     function loadPools() {
                         return fedFetch('/Plugins/Federation/Pools')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (pools) {
                             currentPools = pools || [];
                             renderPools(currentPools);
@@ -2920,7 +2960,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Name: name })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (res.success) {
                                 setPoolStatus('Pool created.', 'ok');
@@ -2949,7 +2989,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Url: url })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.message, res.success ? 'ok' : 'err');
                             if (res.success && urlEl) {
@@ -2966,7 +3006,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/Pools/' + encodeURIComponent(poolId), { method: 'DELETE' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.success ? 'Left the pool.' : 'Failed to leave the pool.', res.success ? 'ok' : 'err');
                             loadPools();
@@ -3139,7 +3179,7 @@
                         libSel.disabled = true;
                         libSel.innerHTML = '<option value="">Loading…</option>';
                         fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(serverId) + '/Libraries')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (libs) {
                             libs = libs || [];
                             if (libs.length === 0) {
@@ -3194,7 +3234,7 @@
                             + '&sort=DateCreatedDescending'
                             + '&startIndex=' + browseState.startIndex + '&limit=' + browseState.pageSize;
                         fedFetch(url)
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (items) {
                             setBrowseStatus('', 'info');
                             items = items || [];
@@ -3325,7 +3365,7 @@
                             })
                         })
                         .then(function (r) {
-                            return r.json().then(function (body) {
+                            return readJson(r).then(function (body) {
                                 if (!r.ok) { throw new Error(body.message || body.error || 'The server rejected this download request.'); }
                                 return body;
                             });
@@ -3371,7 +3411,7 @@
                             + '/Series/' + encodeURIComponent(browseState.seriesId) + '/Episodes'
                             + '?libraryId=' + encodeURIComponent(browseState.libraryId);
                         fedFetch(url)
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (episodes) {
                             setBrowseStatus('', 'info');
                             browseState.seriesEpisodes = episodes || [];
@@ -3549,7 +3589,7 @@
                         }
 
                         fedFetch('/Plugins/Federation/QualityUpgrades')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (candidates) {
                             qualityUpgradeCandidates = candidates || [];
                             renderQualityUpgradePanel();
@@ -3861,7 +3901,7 @@
                         el.style.display = 'block';
                         el.innerHTML = '<span class="fieldDescription">Loading…</span>';
                         fedFetch('/Plugins/Federation/QualityUpgrades/Excluded')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(renderQualityExclusionsPanel)
                         .catch(function () { el.innerHTML = '<span class="fieldDescription">Could not load.</span>'; });
                     }
@@ -3890,7 +3930,7 @@
                     function unexcludeQualityUpgrade(id) {
                         fedFetch('/Plugins/Federation/QualityUpgrades/Exclude/' + encodeURIComponent(id), { method: 'DELETE' })
                         .then(function () {
-                            return fedFetch('/Plugins/Federation/QualityUpgrades/Excluded').then(function (r) { return r.json(); });
+                            return fedFetch('/Plugins/Federation/QualityUpgrades/Excluded').then(function (r) { return readJson(r); });
                         })
                         .then(renderQualityExclusionsPanel)
                         .catch(function () { /* best-effort */ });
@@ -3942,7 +3982,7 @@
                             method: 'POST',
                             body: JSON.stringify({ ItemIds: ids, Confirm: true })
                         })
-                        .then(function (r) { return r.ok ? r.json() : r.text().then(function (text) { throw new Error(text); }); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var operations = res.items || [];
                             if (operations.length === 0) {
@@ -4029,7 +4069,7 @@
                         var q1 = q('#fedDiscoverySearch');
                         var query = q1 ? q1.value.trim() : '';
                         fedFetch('/Plugins/Federation/Discovery/Search' + (query ? ('?query=' + encodeURIComponent(query)) : ''))
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(renderDiscoveryResults)
                         .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
                     }
@@ -4037,7 +4077,7 @@
                     function refreshDiscovery() {
                         setDiscoveryStatus('Asking your friends who they know…', 'info');
                         fedFetch('/Plugins/Federation/Discovery/Refresh', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setDiscoveryStatus('Found ' + (res.count || 0) + ' server(s).', 'ok');
                             searchDiscovery();
@@ -4060,7 +4100,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Url: url })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setDiscoveryStatus(res.message, res.success ? 'ok' : 'err');
                             loadFriendRequests();
@@ -4101,7 +4141,7 @@
                         hint.style.display = 'block';
                         list.innerHTML = '';
                         fedFetch('/Plugins/Federation/GetRemoteLibraries')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success || !res.servers || res.servers.length === 0) {
                                 pickerLoaded = false;
@@ -4404,7 +4444,7 @@
                             + '&type=' + encodeURIComponent(catalogType)
                             + (catalogQuery ? '&query=' + encodeURIComponent(catalogQuery) : '');
                         fedFetch(url)
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             catalogLoaded = true;
                             catalogTotal = res.totalRecordCount || 0;
@@ -4554,7 +4594,7 @@
                                 ExcludedItemIds: merged
                             })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setCatalogStatus(res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
@@ -4602,7 +4642,7 @@
                                 BlockedItemIds: blocked
                             })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setCatalogStatus(res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
@@ -4692,7 +4732,7 @@
 
                         c.innerHTML = '<p class="fed-muted">Loading…</p>';
                         fedFetch('/Plugins/Federation/GetRemoteLibraries')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             var currentIndex = customMappings.indexOf(targetMapping);
                             if (currentIndex === -1) {
@@ -4798,7 +4838,7 @@
 
                     function loadStatus() {
                         fedFetch('/Plugins/Federation/Status')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (d) {
                             var se = q('#fedStatServers');
                             var ie = q('#fedStatItems');
@@ -4820,7 +4860,7 @@
 
                     function loadDiagnostics() {
                         fedFetch('/Plugins/Federation/SystemInfo')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (d) {
                             var el = q('#fedDiagnostics');
                             if (el) {
@@ -4914,7 +4954,7 @@
 
                     function loadDownloads() {
                         fedFetch('/Plugins/Federation/Downloads')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (list) { renderDownloads(list); })
                         .catch(function () { /* downloads card is best-effort */ });
                     }
@@ -4968,7 +5008,7 @@
 
                     function loadWatching() {
                         fedFetch('/Plugins/Federation/NowWatching')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (list) { renderWatching(list); })
                         .catch(function () { /* now-watching card is best-effort */ });
                     }
@@ -5009,7 +5049,7 @@
 
                     function loadHiddenItems() {
                         return fedFetch('/Plugins/Federation/HiddenItems')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (items) { renderHiddenItems(items); })
                         .catch(function () { /* best-effort */ });
                     }
@@ -5023,7 +5063,7 @@
                             method: 'POST',
                             body: JSON.stringify({ Key: key })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function () {
                             // Does not recreate the item - see the hint text above the
                             // list. Just reflects that it's off the hide list now.
@@ -5065,7 +5105,7 @@
                         }
 
                         return fedFetch('/Plugins/Federation/Configuration')
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) { return readJson(r); })
                         .then(function (c) {
                             stopWatchdog();
                             currentConfig = c || { RemoteServers: [], LibraryMappings: [] };
@@ -5169,9 +5209,7 @@
                             method: 'POST',
                             body: JSON.stringify(config)
                         })
-                        .then(function (r) {
-                            return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t); });
-                        })
+                        .then(function (r) { return readJson(r); })
                         .then(function () {
                             return loadConfiguration(true);
                         })
@@ -5582,7 +5620,7 @@
                                     clearError();
                                     setSaveMsg('Refreshing cache…');
                                     fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
-                                    .then(function (r) { return r.json(); })
+                                    .then(function (r) { return readJson(r); })
                                     .then(function (res) {
                                         setSaveMsg(res.Message || 'Refresh complete', res.Success === false);
                                         loadStatus();
@@ -5603,14 +5641,14 @@
                                 case 'provision':
                                     setAdvancedStatus('Provisioning…', 'info');
                                     fedFetch('/Plugins/Federation/ProvisionLibraries', { method: 'POST' })
-                                    .then(function (r) { return r.json(); })
+                                    .then(function (r) { return readJson(r); })
                                     .then(function (res) { setAdvancedStatus(res.message || 'Libraries provisioned.', 'ok'); })
                                     .catch(function (err) { setAdvancedStatus('Provision failed: ' + err.message, 'err'); });
                                     break;
                                 case 'test-all':
                                     setAdvancedStatus('Testing servers…', 'info');
                                     fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
-                                    .then(function (r) { return r.json(); })
+                                    .then(function (r) { return readJson(r); })
                                     .then(function (res) {
                                         var results = res.results || [];
                                         var online = results.filter(function (x) { return x.online; }).length;

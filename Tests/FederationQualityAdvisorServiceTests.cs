@@ -139,6 +139,20 @@ public class FederationQualityAdvisorServiceTests
     }
 
     [Fact]
+    public void IsOwnedRemoteCopy_RejectsContentTheFriendFederatedFromAnotherServer()
+    {
+        Assert.False(FederationQualityAdvisorService.IsOwnedRemoteCopy(
+            new Dictionary<string, string>
+            {
+                ["Tmdb"] = "1234",
+                ["fEdErAtIoNkEy"] = "Movies/tmdb:1234/source/item"
+            }));
+
+        Assert.True(FederationQualityAdvisorService.IsOwnedRemoteCopy(
+            new Dictionary<string, string> { ["Tmdb"] = "1234" }));
+    }
+
+    [Fact]
     public void QualityCleanupBatchResult_ReclaimedBytes_SumsOnlySuccessfulItems()
     {
         var result = new QualityCleanupBatchResult();

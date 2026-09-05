@@ -127,6 +127,30 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshDiscoveredServersAsync_SkipsPlexAndAddresslessCompanionEntries()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "plex",
+            Kind = ServerKind.Plex,
+            Url = "https://plex.example",
+            Enabled = true
+        });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "receiver",
+            Kind = ServerKind.Companion,
+            Url = string.Empty,
+            Enabled = true
+        });
+
+        var found = await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+
+        Assert.Equal(0, found);
+        _clientFactory.Verify(f => f.GetClient(It.IsAny<RemoteServer>()), Times.Never);
+    }
+
+    [Fact]
     public async Task DiscoverFriendsOfFriendsAsync_DiscoversNewFriend_AndSendsRequest()
     {
         _plugin.Configuration.AllowFriendsOfFriends = true;

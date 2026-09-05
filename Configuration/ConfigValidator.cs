@@ -113,6 +113,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
             var servers = config.RemoteServers ?? new List<RemoteServer>();
             for (int i = 0; i < servers.Count; i++)
             {
+                // A Companion entry represents a receiver of this server's catalog,
+                // not a server this plugin connects to. It deliberately has no URL:
+                // the generated connect code contains this server's address instead.
+                // Treating that empty field like a Jellyfin/Plex source made every
+                // unrelated settings save fail as soon as a Companion friend existed.
+                if (servers[i].Kind == ServerKind.Companion && string.IsNullOrWhiteSpace(servers[i].Url))
+                {
+                    continue;
+                }
+
                 if (!IsValidServerUrl(servers[i].Url))
                 {
                     errors.Add($"Remote server #{i + 1} ('{servers[i].Name}') has an invalid URL.");
