@@ -12,7 +12,7 @@
         "changelog": "Storage cleanup is a finished workspace: TV grouped into show/season folders, cover art on movies/shows/episodes, native checkboxes (including season/show with partial state), a size calculator for eligible/selected/reclaimed bytes, and delete-only removal after two confirmations. Downloads has selection vs activity, bulk source consent, and download-to-this-server is live again. Plex share codes from 0.0.127 still auto-connect without a shared Tailscale; Companion also keeps revocable per-friend Plex relays and stable Jellyfin-to-Plex .strm playback, and can auto-create Plex Movies/Shows libraries for imports.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.128/Jellyfin.Federation.zip",
-        "checksum": "PENDING_RELEASE_CHECKSUM",
+        "checksum": "0cd337e831797e4e75b60802c1549d97",
         "timestamp": "2026-09-05T22:00:00Z"
       },
       {
