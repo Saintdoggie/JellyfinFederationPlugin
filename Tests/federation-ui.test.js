@@ -321,6 +321,13 @@ test('Downloads server dropdown refreshes on every config load, not just once', 
   assert.match(configScript[0], /loadBrowseServers\(\);/);
 });
 
+test('Plex share requests can be accepted from the Companion tab without pasting a code', () => {
+  assert.match(configPage, /fedPlexOffersIncoming/);
+  assert.match(configPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
+  assert.match(configPage, /accept-plex-offer/);
+  assert.match(configPage, /this<\/em> server's public address/);
+});
+
 test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {
   // Regression: the settings page used to base64-decode the Companion code in
   // the browser and POST {url, token} to ExternalServers as if they were Plex

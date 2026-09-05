@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.132",
+        "changelog": "Plex Companion can send a share request by typing the Jellyfin address — connect codes are optional. Companion can update itself from the UI, turn Funnel on (with HTTPS cert) for Starlink/no-port-forward, and Funnel stays the off-home media path with Plex Relay as handshake fallback.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.132/Jellyfin.Federation.zip",
+        "checksum": "bb99814fad4ea6b165ae6937490a8d5f",
+        "timestamp": "2026-09-06T03:00:00Z"
+      },
+      {
         "version": "0.0.131",
         "changelog": "Plex connect codes from a Starlink/Funnel friend no longer fail just because Tailscale Funnel published DNS while HTTPS TLS is dead. Companion now prefers Plex Remote Access/Relay for the code even if a Funnel URL is saved, a Funnel URL can be cleared, and Jellyfin reports the TLS failure instead of a generic reachability error.",
         "targetAbi": "10.11.0.0",

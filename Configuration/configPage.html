@@ -521,11 +521,11 @@
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
                     <p class="fieldDescription">
-                        Have a friend whose Federation Companion app generated a connect code? Paste it below. This
-                        server claims it over the internet and maps their shared Plex libraries automatically - they do
-                        not need to be on your Tailscale. When Companion is publicly reachable, Jellyfin receives a
-                        revocable relay credential and their real Plex token stays inside Companion.
+                        Usual path: they type <em>this</em> server's public address in Companion and send a share
+                        request. It shows up below — Accept it. A connect code is optional if they cannot reach you
+                        that way. They do not need to be on your Tailscale.
                     </p>
+                    <div id="fedPlexOffersIncoming"></div>
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
                             <label class="inputLabel" for="fedPlexConnectCode">Connect code</label>
@@ -2094,6 +2094,61 @@
                             copyTailscaleCommand(res.connectCode, btn);
                         })
                         .catch(function (e) { showError('Error: ' + e.message); });
+                    }
+
+                    function renderPlexOffers(data) {
+                        var el = q('#fedPlexOffersIncoming');
+                        if (!el) {
+                            return;
+                        }
+
+                        var list = (data && data.incoming) || [];
+                        if (list.length === 0) {
+                            el.innerHTML = '';
+                            return;
+                        }
+
+                        var html = '<h3 class="fed-substep">Plex share requests waiting on you</h3>';
+                        list.forEach(function (r) {
+                            html += '<div class="fed-server"><div class="fed-server-head">';
+                            html += '<span class="fed-dot fed-dot-ok"></span>';
+                            html += '<strong>' + escapeHtml(r.ServerName || 'Plex') + '</strong>';
+                            html += '<span class="fed-server-url">' + escapeHtml(r.CompanionUrl || '') + '</span>';
+                            html += '<span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-plex-offer" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-plex-offer" data-id="' + escapeHtml(r.Id) + '">Reject</button>';
+                            html += '</div></div>';
+                        });
+                        el.innerHTML = html;
+                    }
+
+                    function loadPlexOffers() {
+                        fedFetch('/Plugins/Federation/PlexOffers')
+                            .then(function (r) { return readJson(r); })
+                            .then(renderPlexOffers)
+                            .catch(function () { /* best-effort */ });
+                    }
+
+                    function acceptPlexOffer(id) {
+                        setFedStatus('fedPlexConnectStatus', 'Accepting Plex share…', 'info');
+                        fedFetch('/Plugins/Federation/PlexOffers/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
+                            .then(function (r) { return readJson(r); })
+                            .then(function (res) {
+                                if (!res.success) {
+                                    setFedStatus('fedPlexConnectStatus', res.error || res.message || 'Could not accept.', 'err');
+                                    return;
+                                }
+                                setFedStatus('fedPlexConnectStatus', res.message || 'Connected.', 'ok');
+                                loadPlexOffers();
+                                return loadConfiguration(true);
+                            })
+                            .catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function rejectPlexOffer(id) {
+                        fedFetch('/Plugins/Federation/PlexOffers/' + encodeURIComponent(id), { method: 'DELETE' })
+                            .then(function () { loadPlexOffers(); })
+                            .catch(function () { /* best-effort */ });
                     }
 
                     function connectPlexSource() {
@@ -5384,6 +5439,12 @@
                                 case 'connect-plex-source':
                                     connectPlexSource();
                                     break;
+                                case 'accept-plex-offer':
+                                    acceptPlexOffer(friendId);
+                                    break;
+                                case 'reject-plex-offer':
+                                    rejectPlexOffer(friendId);
+                                    break;
                                 case 'connect-plex-source-manual':
                                     connectPlexSourceManual();
                                     break;
@@ -5898,6 +5959,7 @@
                         switchTab(savedTab || TAB_NAMES[0]);
 
                         loadFriendRequests();
+                        loadPlexOffers();
                         loadConnectivityMode();
                         loadPools();
                         loadPoolInvites();

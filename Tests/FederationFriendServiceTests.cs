@@ -759,6 +759,67 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public void ReceivePlexOffer_StoresPendingShare_WithoutConnectingYet()
+    {
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true}"""));
+
+        var (success, message) = _service.ReceivePlexOffer(payload);
+
+        Assert.True(success, message);
+        var offer = Assert.Single(_plugin.Configuration.IncomingPlexOffers);
+        Assert.Equal("freakbob", offer.ServerName);
+        Assert.Equal("https://freakbob.tail4e0b6f.ts.net", offer.CompanionUrl);
+        Assert.Empty(_plugin.Configuration.RemoteServers);
+    }
+
+    [Fact]
+    public async Task AcceptPlexOfferAsync_ConnectsStoredCode()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            Assert.Equal("https://friend.ts.net/api/link/complete", req.RequestUri!.ToString());
+            return Json(HttpStatusCode.OK, new
+            {
+                plexUrl = "https://friend.ts.net/plex/peer-1",
+                plexToken = "relay-token",
+                serverName = "Alex Plex",
+                libraries = new[] { new { sectionKey = "1", title = "Movies", type = "movie" } }
+            });
+        }));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://friend.ts.net","token":"claim-token","name":"Alex Plex","claim":true}"""));
+        _service.ReceivePlexOffer(payload);
+        var id = Assert.Single(_plugin.Configuration.IncomingPlexOffers).Id;
+
+        var (success, message, server) = await _service.AcceptPlexOfferAsync(id, CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.NotNull(server);
+        Assert.Empty(_plugin.Configuration.IncomingPlexOffers);
+        Assert.Equal("https://friend.ts.net/plex/peer-1", server!.Url);
+    }
+
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_ClaimTlsFailure_UsesFallbackPlexRelay()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            throw new HttpRequestException(
+                "The SSL connection could not be established, see inner exception.",
+                new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true,"fallbackUrl":"https://relay.plex.direct:443","fallbackToken":"plex-token","libraries":[{"sectionKey":"1","title":"Movies","type":"movie"}]}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Equal("https://relay.plex.direct:443", server!.Url);
+        Assert.Equal("plex-token", server.ApiKey);
+    }
+
+    [Fact]
     public async Task ConnectPlexCompanionAsync_FunnelTlsFailure_TellsFriendToUsePlexRelay()
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
