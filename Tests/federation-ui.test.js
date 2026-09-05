@@ -193,6 +193,52 @@ test('all rendered tabs are routable and the inline configuration script parses'
   dom.window.close();
 });
 
+function configResponseParser() {
+  const match = configPage.match(/function readJson\(response\) \{([\s\S]*?)\n {20}\}\n\n {20}function q/);
+  assert.ok(match, 'readJson response parser not found');
+  return new Function('response', match[1]);
+}
+
+test('settings response parser turns JSON validation details into a concise message', async () => {
+  const readJson = configResponseParser();
+  const response = {
+    ok: false,
+    status: 400,
+    text: () => Promise.resolve('{"error":"Invalid configuration","details":["Plex receiver entries do not need a server address."]}')
+  };
+
+  await assert.rejects(
+    readJson(response),
+    { message: 'Plex receiver entries do not need a server address.' }
+  );
+});
+
+test('settings response parser hides JSON syntax jargon for plain-text server failures', async () => {
+  const readJson = configResponseParser();
+  const response = {
+    ok: false,
+    status: 500,
+    text: () => Promise.resolve('Error processing request.')
+  };
+
+  await assert.rejects(
+    readJson(response),
+    { message: 'Jellyfin could not complete this request. Check the server log for details.' }
+  );
+});
+
+test('settings response parser accepts successful JSON and explains malformed success bodies', async () => {
+  const readJson = configResponseParser();
+  assert.deepEqual(
+    await readJson({ ok: true, status: 200, text: () => Promise.resolve('{"success":true}') }),
+    { success: true }
+  );
+  await assert.rejects(
+    readJson({ ok: true, status: 200, text: () => Promise.resolve('not json') }),
+    { message: 'Jellyfin returned an unreadable response. Reload the page and try again.' }
+  );
+});
+
 test('catalog and downloads tabs expose distinct local/remote workflows', () => {
   const dom = new JSDOM(configPage);
   const document = dom.window.document;

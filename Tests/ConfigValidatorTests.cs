@@ -100,6 +100,20 @@ public class ConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_AllowsCompanionReceiverWithoutUrl()
+    {
+        var config = new PluginConfiguration
+        {
+            RemoteServers = new List<RemoteServer>
+            {
+                new() { Name = "Plex friend", Kind = ServerKind.Companion, Url = string.Empty }
+            }
+        };
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
+    [Fact]
     public void Validate_RejectsInvalidLocalServerUrl()
     {
         var config = new PluginConfiguration { ServerUrl = "notaurl" };

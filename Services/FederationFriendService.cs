@@ -394,14 +394,22 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = (ResolveLocalUrl() ?? string.Empty).TrimEnd('/');
             var found = 0;
 
-            foreach (var friend in config.RemoteServers.Where(s => s.Enabled).ToList())
+            // Discovery is a Jellyfin Federation protocol call. Plex sources do
+            // not implement Peer/Friends, and Companion entries are receivers with
+            // no address at all. Trying to construct a client for the latter threw
+            // UriFormatException before the per-friend try/catch and surfaced to
+            // the browser as the plain text "Error processing request" response.
+            foreach (var friend in config.RemoteServers.Where(s =>
+                         s.Enabled
+                         && s.Kind == ServerKind.Jellyfin
+                         && ConfigValidator.IsValidServerUrl(s.Url)).ToList())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var client = _clientFactory.GetClient(friend);
                 List<FriendListEntry>? entries;
                 try
                 {
+                    var client = _clientFactory.GetClient(friend);
                     entries = await client.GetFriendsListAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)

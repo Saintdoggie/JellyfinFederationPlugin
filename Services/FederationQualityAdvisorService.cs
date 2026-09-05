@@ -103,6 +103,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                // Fail closed against circular suggestions from an old or modified
+                // peer which re-exports media it originally federated from us. A
+                // FederationKey says the peer's catalog row is itself a remote
+                // placeholder, so it can never prove that peer owns a better local
+                // copy. Current peers already filter these rows at their catalog
+                // boundary; keeping the guard here protects mixed-version setups.
+                if (!IsOwnedRemoteCopy(entry.Metadata.ProviderIds))
+                {
+                    continue;
+                }
+
                 foreach (var key in dedupKeys)
                 {
                     if (FederationLibraryManager.TryGetProviderId(entry.Metadata.ProviderIds, key, out var val))
@@ -288,6 +299,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return 0;
             }
         }
+
+        internal static bool IsOwnedRemoteCopy(IReadOnlyDictionary<string, string>? providerIds)
+            => !FederationLibraryManager.TryGetProviderId(providerIds, "FederationKey", out _);
 
         internal static bool IsExactRemovableLocalFile(BaseItem? item, QualityUpgradeCandidate candidate)
         {
