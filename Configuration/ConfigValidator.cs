@@ -24,7 +24,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
         }
 
         /// <summary>
-        /// Validates a remote server URL.
+        /// Validates a remote server base URL. A reverse-proxy path is allowed,
+        /// but credentials, query parameters, and fragments are not: every caller
+        /// appends plugin/API paths to this value, and preserving any of those
+        /// components would both produce a broken endpoint and risk persisting or
+        /// logging a credential-bearing URL.
         /// </summary>
         public static bool IsValidServerUrl(string? url)
         {
@@ -34,7 +38,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
             }
 
             return Uri.TryCreate(url, UriKind.Absolute, out var uri)
-                && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+                && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+                && !string.IsNullOrWhiteSpace(uri.Host)
+                && string.IsNullOrEmpty(uri.UserInfo)
+                && string.IsNullOrEmpty(uri.Query)
+                && string.IsNullOrEmpty(uri.Fragment);
         }
 
         /// <summary>

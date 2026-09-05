@@ -11,6 +11,7 @@ using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -30,6 +31,7 @@ public class FederationStreamHandlerTests : IDisposable
 {
     private readonly RealPluginInstance _plugin;
     private readonly FederationStreamHandler _handler;
+    private readonly RecordingLogger<FederationStreamHandler> _handlerLogger = new();
 
     public FederationStreamHandlerTests()
     {
@@ -65,7 +67,7 @@ public class FederationStreamHandlerTests : IDisposable
         var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
-        _handler = new FederationStreamHandler(NullLogger<FederationStreamHandler>.Instance, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), bandwidthMonitor);
+        _handler = new FederationStreamHandler(_handlerLogger, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), bandwidthMonitor);
     }
 
     private static HttpResponseMessage Json(string body)
@@ -77,6 +79,38 @@ public class FederationStreamHandlerTests : IDisposable
     {
         FederationStreamHandler.HttpClientOverride = null;
         _plugin.Dispose();
+    }
+
+    [Theory]
+    [InlineData("https://user:password@friend.example:8096/Plugins/Federation/DirectStream/item?token=super-secret#fragment", "friend.example")]
+    [InlineData("http://192.0.2.10/video?X-Plex-Token=plex-secret", "192.0.2.10")]
+    [InlineData("not a valid stream URL token=still-secret", "remote server")]
+    public void SafeUpstreamHost_StripsEveryCredentialBearingUrlComponent(string url, string expected)
+    {
+        var safeValue = FederationStreamHandler.GetSafeUpstreamHost(url);
+
+        Assert.Equal(expected, safeValue);
+        Assert.DoesNotContain("secret", safeValue, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("password", safeValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RelayFailure_DoesNotLogCredentialBearingUrlOrExceptionMessage()
+    {
+        const string secret = "do-not-log-this-token";
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            throw new HttpRequestException($"Request failed for https://friend.example/video?token={secret}")));
+        var (request, response, _) = MakeContext(null);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, response.StatusCode);
+        Assert.NotEmpty(_handlerLogger.Entries);
+        Assert.All(_handlerLogger.Entries, entry =>
+        {
+            Assert.DoesNotContain(secret, entry.Message, StringComparison.Ordinal);
+            Assert.Null(entry.Exception);
+        });
     }
 
     private static (HttpRequest Request, HttpResponse Response, MemoryStream Body) MakeContext(string? rangeHeader)
@@ -310,6 +344,23 @@ public class FederationStreamHandlerTests : IDisposable
         public CancellationToken RequestAborted { get; set; }
 
         public void Abort() => AbortCalled = true;
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public System.Collections.Generic.List<(string Message, Exception? Exception)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((formatter(state, exception), exception));
     }
 
     /// <summary>
