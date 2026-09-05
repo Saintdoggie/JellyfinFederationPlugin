@@ -38,15 +38,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
         }
 
         /// <summary>
-        /// True when a URL's host is a loopback or RFC 1918 private-range IP address
-        /// (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), or an IPv6
-        /// loopback/unique-local equivalent. Used to catch a server's own public URL
-        /// being auto-detected from a private-network request - e.g. an admin
-        /// managing Jellyfin over their LAN when accepting a friend request - which
-        /// silently hands a friend an address only reachable on that LAN. A hostname
-        /// (not a literal IP) is never flagged: DNS resolution isn't attempted here,
-        /// and a hostname pointing at a private IP is normally deliberate (split-horizon
-        /// DNS, VPN-only setups) rather than an accident.
+        /// True when a URL's host is a loopback, RFC 1918, link-local, CGNAT/
+        /// Tailscale (100.64.0.0/10), or IPv6 unique-local/link-local address.
+        /// Used to catch a server's own public URL being auto-detected from a
+        /// private-network request - e.g. an admin managing Jellyfin over their LAN
+        /// when accepting a friend request - which silently hands a friend an
+        /// address only reachable on that LAN or tailnet. A hostname (not a literal
+        /// IP) is never flagged: DNS resolution isn't attempted here, and a hostname
+        /// pointing at a private IP is normally deliberate (split-horizon DNS,
+        /// Funnel <c>*.ts.net</c> names) rather than an accident.
         /// </summary>
         public static bool IsPrivateOrLoopbackHost(string? url)
         {
@@ -70,7 +70,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 var b = ip.GetAddressBytes();
                 return b[0] == 10
                     || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
-                    || (b[0] == 192 && b[1] == 168);
+                    || (b[0] == 192 && b[1] == 168)
+                    || (b[0] == 169 && b[1] == 254)
+                    || (b[0] == 100 && b[1] >= 64 && b[1] <= 127);
             }
 
             if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)

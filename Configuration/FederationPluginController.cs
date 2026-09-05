@@ -1981,6 +1981,34 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Claims a Companion-generated Plex share code. The Jellyfin server
+        /// completes the handshake with Companion (or uses a direct Plex
+        /// remote/relay URL in the code) so the Plex owner and this server do
+        /// not need to share a Tailscale tailnet.
+        /// </summary>
+        [HttpPost("ExternalServers/ConnectCode")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ConnectPlexCompanion([FromBody] ConnectPlexCompanionBody? body, CancellationToken cancellationToken)
+        {
+            var (success, message, server) = await _friends.ConnectPlexCompanionAsync(body?.Code, cancellationToken).ConfigureAwait(false);
+            if (!success || server == null)
+            {
+                return BadRequest(new { success = false, error = message, message });
+            }
+
+            try
+            {
+                await _syncService.SyncServerAsync(server.Id, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Connected to Plex source {Name} but the first sync failed", server.Name);
+            }
+
+            return Ok(new { success = true, message, server = SanitizeServer(server) });
+        }
+
+        /// <summary>
         /// Replaces a non-Jellyfin (Plex) server's pasted token in place. Kind,
         /// name and every other field survive untouched - this is the "the token
         // expired, here's the new one" path, not a re-add.
@@ -4155,6 +4183,11 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Url { get; set; }
 
         public string? Token { get; set; }
+    }
+
+    public class ConnectPlexCompanionBody
+    {
+        public string? Code { get; set; }
     }
 
     public class SetExternalServerTokenBody

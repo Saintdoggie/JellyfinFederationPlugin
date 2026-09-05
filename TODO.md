@@ -303,3 +303,10 @@ said explicitly not to start building it yet:
   two-server integration matrix and interactive UI smoke test criteria are
   still not satisfied for any change since 0.0.123 (see the 1.0.0/0.1.0
   entries above); same waiver, same reason.
+- 2026-09-05: 0.0.127 Plex share-code / Companion library-manager pass. Clean
+  Release build, 362 plugin tests x2, 21 Companion tests x2, 12 jsdom tests.
+  Isolated sandbox: Jellyfin 10.11.11 generated a Companion connect code;
+  Companion imported 5 titles and auto-created Plex Movies/Shows libraries.
+  A sandbox Plex 1.43 with local QA media (Alpha Rising, Beta Horizon, two
+  shows) listed both its own files and the imported friend libraries. Share
+  codes no longer require a shared Tailscale tailnet.

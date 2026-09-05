@@ -654,6 +654,86 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Null(connectCode);
     }
 
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_ClaimsCompanionCode_AndMapsSharedLibraries()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            Assert.Equal("https://friend.ts.net/api/link/complete", req.RequestUri!.ToString());
+            return Json(HttpStatusCode.OK, new
+            {
+                plexUrl = "https://1-2-3-4.hash.plex.direct:32400",
+                plexToken = "plex-server-token",
+                serverName = "Alex Plex",
+                libraries = new[]
+                {
+                    new { sectionKey = "1", title = "Movies", type = "movie" },
+                    new { sectionKey = "2", title = "TV", type = "show" }
+                }
+            });
+        }));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://friend.ts.net","token":"claim-token","name":"Alex Plex"}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.NotNull(server);
+        Assert.Equal(ServerKind.Plex, server!.Kind);
+        Assert.Equal("https://1-2-3-4.hash.plex.direct:32400", server.Url);
+        Assert.Equal("plex-server-token", server.ApiKey);
+        Assert.Equal(new List<string> { "1", "2" }, server.AllowedExternalLibraryIds);
+        Assert.Equal(StreamingMode.Proxy, server.StreamingMode);
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Movies" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "1"));
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Shows" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "2"));
+    }
+
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_RejectsLanOrTailscalePlexUrl()
+    {
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"http://100.64.1.20:32400","token":"plex-token","name":"LAN Plex","claim":false}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Null(server);
+        Assert.Contains("Tailscale", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(_plugin.Configuration.RemoteServers);
+    }
+
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_DirectPublicPlexCode_ConnectsWithoutClaim()
+    {
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://5-6-7-8.hash.plex.direct:32400","token":"plex-token","name":"Remote Plex","claim":false,"libraries":[{"sectionKey":"9","title":"Films","type":"movie"}]}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Equal("https://5-6-7-8.hash.plex.direct:32400", server!.Url);
+        Assert.Equal("plex-token", server.ApiKey);
+        Assert.Equal(new List<string> { "9" }, server.AllowedExternalLibraryIds);
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Movies");
+    }
+
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_CompanionClaimError_SurfacesRemoteMessage()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            Json(HttpStatusCode.BadRequest, new { error = "This connect code is invalid or has expired. Generate a new one." })));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://friend.ts.net","token":"stale","name":"Alex Plex"}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Null(server);
+        Assert.Contains("expired", message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

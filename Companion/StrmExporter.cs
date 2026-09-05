@@ -63,8 +63,25 @@ public static class StrmExporter
             return null;
         }
 
-        var folder = item.ProductionYear.HasValue ? $"{name} ({item.ProductionYear.Value})" : name;
+        var folder = MovieFolderName(name, item.ProductionYear);
         return Path.Combine(MoviesFolderName, folder, folder + ".strm");
+    }
+
+    /// <summary>
+    /// Avoids "Title (2021) (2021)" when Jellyfin already put the year in the name.
+    /// </summary>
+    public static string MovieFolderName(string name, int? year)
+    {
+        if (year is int y)
+        {
+            var suffix = $" ({y})";
+            if (!name.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return name + suffix;
+            }
+        }
+
+        return name;
     }
 
     private static string? BuildEpisodePath(PeerItem item)

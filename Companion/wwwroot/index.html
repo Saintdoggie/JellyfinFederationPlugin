@@ -166,7 +166,7 @@
 
   <div class="card" id="publicUrlCard">
     <h2><span class="step-num">2</span> Your public address</h2>
-    <p class="status-line">This is how Jellyfin servers reach you - your Tailscale Funnel URL for this app (e.g. <code>https://yourname.tailXXXXX.ts.net</code>).</p>
+    <p class="status-line">Optional if Plex Remote Access or Plex Relay is already on. Your Jellyfin friend does <strong>not</strong> need to join your Tailscale. Paste a Tailscale <em>Funnel</em> URL (<code>https://yourname.tailXXXXX.ts.net</code>), never a 100.x tailnet address.</p>
     <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
     <button class="secondary" id="savePublicUrlBtn">Save</button>
     <div class="status-line" id="publicUrlStatus"></div>
@@ -177,6 +177,10 @@
     <div id="notConnected">
       <p class="empty-state">Not connected yet.</p>
       <button id="connectBtn">Sign in with Plex</button>
+      <p class="status-line">Or connect a local Plex server with its address and token - no plex.tv account required, and your Jellyfin friend still does not need Tailscale.</p>
+      <input type="text" id="localPlexUrl" placeholder="http://127.0.0.1:32400">
+      <input type="text" id="localPlexToken" placeholder="Plex token" autocomplete="off">
+      <button class="secondary" id="connectLocalBtn">Connect local Plex</button>
       <div class="status-line" id="connectStatus"></div>
     </div>
     <div id="connected" class="hidden">
@@ -192,7 +196,7 @@
 
   <div class="card hidden" id="shareCard">
     <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Generate a one-time code and send it to your friend. They'll paste it into their Jellyfin Federation plugin to link automatically - no copying tokens by hand.</p>
+    <p class="status-line">Generate a one-time code and send it to your friend. They paste it into Jellyfin Federation and the servers connect over the internet - they do not need to be on your Tailscale.</p>
     <button id="generateCodeBtn">Generate connect code</button>
     <code class="cmd hidden" id="connectCode"></code>
     <div class="status-line" id="codeStatus"></div>
@@ -203,10 +207,13 @@
 
   <div class="card" id="importCard">
     <h2><span class="step-num">6</span> Import from a Jellyfin friend</h2>
-    <p class="status-line">Paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab. This pulls whatever they share and keeps a local <code>.strm</code> export in sync automatically - point a Plex library at the export path shown below for each friend.</p>
-    <input type="text" id="importCodeInput" placeholder="Paste the connect code">
-    <button id="importConnectBtn">Connect</button>
+    <p class="status-line">Paste a connect code from their Jellyfin Federation Companion tab. This app pulls what they share and adds Movies/Shows libraries to your Plex automatically - you manage it here, not in Plex Settings.</p>
+    <input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code">
+    <button id="importConnectBtn">Import into Plex</button>
     <div class="status-line" id="importConnectStatus"></div>
+    <input type="text" id="plexVisibleRootInput" placeholder="Path as Plex sees the import folder (optional)">
+    <button class="secondary" id="savePlexRootBtn">Save Plex path</button>
+    <div class="status-line" id="plexRootStatus"></div>
 
     <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
   </div>
@@ -234,6 +241,12 @@ const importCodeInput = document.getElementById('importCodeInput');
 const importConnectBtn = document.getElementById('importConnectBtn');
 const importConnectStatus = document.getElementById('importConnectStatus');
 const importPeerList = document.getElementById('importPeerList');
+const connectLocalBtn = document.getElementById('connectLocalBtn');
+const localPlexUrl = document.getElementById('localPlexUrl');
+const localPlexToken = document.getElementById('localPlexToken');
+const plexVisibleRootInput = document.getElementById('plexVisibleRootInput');
+const savePlexRootBtn = document.getElementById('savePlexRootBtn');
+const plexRootStatus = document.getElementById('plexRootStatus');
 let knownPlexLibraries = [];
 
 async function loadTailscale() {
@@ -261,6 +274,9 @@ async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
   knownPlexLibraries = data.libraries || [];
+  if (data.plexVisibleImportRoot) {
+    plexVisibleRootInput.value = data.plexVisibleImportRoot;
+  }
   if (data.serverConnected) {
     notConnected.classList.add('hidden');
     connected.classList.remove('hidden');
@@ -295,27 +311,23 @@ async function loadImportPeers() {
     row.style.alignItems = 'stretch';
     row.style.gap = '6px';
 
-    const sectionOptions = ['<option value="">Don\'t refresh a Plex section</option>']
-      .concat(knownPlexLibraries.map(l => `<option value="${escapeHtml(l.sectionKey)}"${l.sectionKey === peer.plexSectionKey ? ' selected' : ''}>${escapeHtml(l.title)}</option>`))
-      .join('');
-
     const lastSync = peer.lastSyncUtc ? new Date(peer.lastSyncUtc).toLocaleString() : 'never';
     const errorLine = peer.lastError ? `<div class="status-line" style="color:#f0c674">${escapeHtml(peer.lastError)}</div>` : '';
+    const inPlex = peer.plexMovieSectionKey || peer.plexShowSectionKey
+      ? `<span class="badge ok">In Plex</span> movies #${escapeHtml(peer.plexMovieSectionKey || '—')} · shows #${escapeHtml(peer.plexShowSectionKey || '—')}`
+      : '<span class="badge warn">Not in Plex yet</span>';
 
     row.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <strong>${escapeHtml(peer.name)}</strong>
         <div>
+          <button class="secondary" data-action="add-plex" data-id="${escapeHtml(peer.id)}">Add to Plex</button>
           <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}">Sync now</button>
           <button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
         </div>
       </div>
-      <div class="status-line">Last synced ${lastSync} &middot; ${peer.lastItemCount} item(s) &middot; exporting to <code>${escapeHtml(peer.exportPath)}</code></div>
-      ${errorLine}
-      <div>
-        <label class="status-line">Refresh this Plex section after a sync: </label>
-        <select data-action="plex-section" data-id="${escapeHtml(peer.id)}">${sectionOptions}</select>
-      </div>`;
+      <div class="status-line">${inPlex} &middot; Last synced ${lastSync} &middot; ${peer.lastItemCount} item(s)</div>
+      ${errorLine}`;
     importPeerList.appendChild(row);
   }
 
@@ -332,13 +344,16 @@ async function loadImportPeers() {
       loadImportPeers();
     });
   });
-  importPeerList.querySelectorAll('select[data-action="plex-section"]').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      await fetch(`/api/import/peers/${sel.dataset.id}/plex-section`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionKey: sel.value })
-      });
+  importPeerList.querySelectorAll('button[data-action="add-plex"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await fetch(`/api/import/peers/${btn.dataset.id}/add-to-plex`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        importConnectStatus.textContent = data.error || 'Could not add libraries to Plex.';
+      }
+      await loadImportPeers();
+      btn.disabled = false;
     });
   });
 }
@@ -397,6 +412,34 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+connectLocalBtn.addEventListener('click', async () => {
+  connectLocalBtn.disabled = true;
+  connectStatus.textContent = 'Connecting to local Plex…';
+  const res = await fetch('/api/plex/connect-local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: localPlexUrl.value.trim(), token: localPlexToken.value.trim() })
+  });
+  const data = await res.json();
+  connectStatus.textContent = res.ok ? `Connected to ${data.serverName}.` : (data.error || 'Could not connect.');
+  connectLocalBtn.disabled = false;
+  if (res.ok) {
+    loadStatus();
+  }
+});
+
+savePlexRootBtn.addEventListener('click', async () => {
+  savePlexRootBtn.disabled = true;
+  const res = await fetch('/api/plex-visible-root', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: plexVisibleRootInput.value.trim() })
+  });
+  const data = await res.json();
+  plexRootStatus.textContent = res.ok ? 'Saved. New imports will create Plex libraries at this path.' : (data.error || 'Could not save.');
+  savePlexRootBtn.disabled = false;
+});
+
 connectBtn.addEventListener('click', async () => {
   connectBtn.disabled = true;
   connectStatus.textContent = 'Opening Plex sign-in…';
@@ -444,7 +487,9 @@ generateCodeBtn.addEventListener('click', async () => {
   if (res.ok) {
     connectCode.textContent = data.code;
     connectCode.classList.remove('hidden');
-    codeStatus.textContent = `Expires in ${data.expiresInMinutes} minutes. Send this to your friend now.`;
+    codeStatus.textContent = data.mode === 'direct'
+      ? `Expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay so your friend does not need Tailscale.`
+      : `Expires in ${data.expiresInMinutes} minutes. Send this to your friend now - they do not need to be on your Tailscale.`;
   } else {
     codeStatus.textContent = data.error || 'Could not generate a code.';
   }
@@ -469,7 +514,9 @@ importConnectBtn.addEventListener('click', async () => {
     const data = await res.json();
     if (res.ok) {
       importCodeInput.value = '';
-      importConnectStatus.textContent = `Connected to ${data.name}.`;
+      importConnectStatus.textContent = data.plexMovieSectionKey || data.plexShowSectionKey
+        ? `Imported ${data.name} and added it to Plex.`
+        : `Imported ${data.name}. Click Add to Plex if the libraries are not visible yet.`;
       await loadImportPeers();
     } else {
       importConnectStatus.textContent = data.error || 'Could not connect.';
