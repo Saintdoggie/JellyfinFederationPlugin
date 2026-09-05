@@ -76,12 +76,15 @@ var pendingLinks = new ConcurrentDictionary<string, DateTime>(StringComparer.Ord
 
 app.MapGet("/api/status", (CompanionState s) => Results.Ok(new
 {
-    signedIn = !string.IsNullOrEmpty(s.PlexAccountToken),
+    signedIn = !string.IsNullOrEmpty(s.PlexAccountToken) || !string.IsNullOrEmpty(s.ServerAccessToken),
     serverConnected = !string.IsNullOrEmpty(s.ServerBaseUrl),
     serverName = s.ServerName,
     serverMachineIdentifier = s.ServerMachineIdentifier,
     libraries = s.Libraries,
-    peerCount = s.Peers.Count
+    peerCount = s.Peers.Count,
+    importPeerCount = s.ImportPeers.Count,
+    plexVisibleImportRoot = s.PlexVisibleImportRoot,
+    playbackBaseUrl = s.PlaybackBaseUrl
 }));
 
 app.MapPost("/api/plex/start-signin", async (HttpRequest req, PlexAuth auth, CancellationToken ct) =>
@@ -181,6 +184,59 @@ app.MapPost("/api/plex/servers/select", async (SelectPlexServerRequest body, Ple
     return Results.Ok(new { server.Name });
 });
 
+app.MapPost("/api/plex/connect-local", async (ConnectLocalPlexRequest body, PlexClient plex, CompanionState s, CancellationToken ct) =>
+{
+    if (body.Url == null || !Uri.TryCreate(body.Url, UriKind.Absolute, out var parsed)
+        || (parsed.Scheme != "http" && parsed.Scheme != "https")
+        || string.IsNullOrWhiteSpace(body.Token))
+    {
+        return Results.BadRequest(new { error = "Plex server address and token are both required." });
+    }
+
+    var url = body.Url.TrimEnd('/');
+    try
+    {
+        var libraries = await plex.GetSectionsAsync(url, body.Token.Trim(), ct).ConfigureAwait(false);
+        s.ServerBaseUrl = url;
+        s.ServerAccessToken = body.Token.Trim();
+        s.ServerName = await plex.GetServerNameAsync(url, body.Token.Trim(), ct).ConfigureAwait(false) ?? "Plex Media Server";
+        MergeLibraries(s, libraries);
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(new { serverName = s.ServerName, libraries = s.Libraries });
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = "Could not reach that Plex server with the token provided." });
+    }
+});
+
+app.MapPost("/api/playback-url", async (SetPublicUrlRequest body, CompanionState s) =>
+{
+    if (string.IsNullOrWhiteSpace(body.Url))
+    {
+        s.PlaybackBaseUrl = null;
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(new { playbackBaseUrl = s.PlaybackBaseUrl });
+    }
+
+    if (!Uri.TryCreate(body.Url, UriKind.Absolute, out var parsed)
+        || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+    {
+        return Results.BadRequest(new { error = "Enter the http(s) address Plex should call back to this app on Play." });
+    }
+
+    s.PlaybackBaseUrl = body.Url.Trim().TrimEnd('/');
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { playbackBaseUrl = s.PlaybackBaseUrl });
+});
+
+app.MapPost("/api/plex-visible-root", async (SetPublicUrlRequest body, CompanionState s) =>
+{
+    s.PlexVisibleImportRoot = string.IsNullOrWhiteSpace(body.Url) ? null : body.Url.Trim().TrimEnd('/', '\\').Replace('\\', '/');
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { plexVisibleImportRoot = s.PlexVisibleImportRoot });
+});
+
 app.MapPost("/api/libraries/refresh", async (PlexClient plex, CompanionState s, CancellationToken ct) =>
 {
     if (s.ServerBaseUrl == null || s.ServerAccessToken == null)
@@ -217,13 +273,13 @@ app.MapGet("/api/public-url", (CompanionState s) => Results.Ok(new { publicUrl =
 
 app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s) =>
 {
-    if (!IsSafePublicUrl(body.Url, out var publicUrl))
+    if (!PlexRemoteEndpoint.IsPublicHttpsUrl(body.Url))
     {
-        return Results.BadRequest(new { error = "Enter a full https:// address - Jellyfin servers reach you over the internet, so this can't be a plain local address." });
+        return Results.BadRequest(new { error = "Enter a public https:// address your Jellyfin friend can reach without joining your Tailscale. A Tailscale Funnel URL (https://name.ts.net) works; a 100.x or LAN address does not." });
     }
 
     var previousUrl = s.PublicUrl;
-    s.PublicUrl = publicUrl;
+    s.PublicUrl = body.Url.Trim().TrimEnd('/');
     foreach (var peer in s.ImportPeers.Where(p => string.IsNullOrWhiteSpace(p.PlaybackBaseUrl)
         || string.Equals(p.PlaybackBaseUrl, previousUrl, StringComparison.OrdinalIgnoreCase)))
     {
@@ -233,43 +289,65 @@ app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s
     return Results.Ok(new { publicUrl = s.PublicUrl });
 });
 
-app.MapPost("/api/connect/generate", (CompanionState s) =>
+app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, CancellationToken ct) =>
 {
-    if (string.IsNullOrEmpty(s.PublicUrl) || !IsSafePublicUrl(s.PublicUrl, out _))
-    {
-        return Results.BadRequest(new { error = "Set your public URL first (see the Tailscale step)." });
-    }
-
     if (s.ServerBaseUrl == null || s.ServerAccessToken == null)
     {
         return Results.BadRequest(new { error = "Connect to Plex first." });
     }
 
-    // Random, unguessable, and single-use - this token is the only thing
-    // standing between "whoever has this code" and "gets a working Plex
-    // relay credential back", so it has to be as strong as a real access token,
-    // not a short human-typed one.
-    var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-    pendingLinks[token] = DateTime.UtcNow.AddMinutes(15);
+    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
+    var companionIsPublic = PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl);
 
-    var payload = JsonSerializer.Serialize(new { url = s.PublicUrl, token, name = s.ServerName });
-    var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
-    return Results.Ok(new { code, expiresInMinutes = 15 });
+    if (!companionIsPublic && string.IsNullOrEmpty(remotePlexUrl))
+    {
+        return Results.BadRequest(new { error = "Friends who aren't on your Tailscale need a public path. Set a Tailscale Funnel URL for this app, or enable Plex Remote Access / Plex Relay so they can reach Plex over the internet." });
+    }
+
+    var sharedLibraries = s.Libraries.Where(l => l.Shared).Select(l => new { l.SectionKey, l.Title, l.Type }).ToList();
+
+    // Prefer a one-time claim against Companion's public URL so the real Plex
+    // token never sits in the copied code. If Companion isn't publicly
+    // reachable, fall back to a direct code that already contains Plex's own
+    // remote/relay address - still no shared Tailscale required.
+    object payload;
+    string mode;
+    if (companionIsPublic)
+    {
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        pendingLinks[token] = DateTime.UtcNow.AddMinutes(15);
+        payload = new { url = s.PublicUrl, token, name = s.ServerName, claim = true };
+        mode = "claim";
+    }
+    else
+    {
+        payload = new
+        {
+            url = remotePlexUrl,
+            token = s.ServerAccessToken,
+            name = s.ServerName,
+            claim = false,
+            libraries = sharedLibraries
+        };
+        mode = "direct";
+    }
+
+    var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
+    return Results.Ok(new { code, expiresInMinutes = 15, mode });
 });
 
-app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s) =>
+app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s, PlexAuth auth, CancellationToken ct) =>
 {
     if (!pendingLinks.TryRemove(body.Token, out var expiry) || expiry < DateTime.UtcNow)
     {
         return Results.BadRequest(new { error = "This connect code is invalid or has expired. Generate a new one." });
     }
 
-    if (string.IsNullOrWhiteSpace(s.PublicUrl)
-        || !IsSafePublicUrl(s.PublicUrl, out _)
+    if (!PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl)
         || string.IsNullOrWhiteSpace(s.ServerBaseUrl)
         || string.IsNullOrWhiteSpace(s.ServerAccessToken))
     {
-        return Results.Conflict(new { error = "Companion is not ready to share a Plex server yet." });
+        return Results.Conflict(new { error = "Companion is not ready to share a Plex server yet. Set a public Funnel URL, or generate a direct Plex Remote Access/Relay code instead." });
     }
 
     var requesterName = body.RequesterName?.Trim();
@@ -287,7 +365,7 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
         // The friend receives a revocable Companion credential, never Plex's
         // whole-server token. The relay filters every request against the
         // source owner's current library toggles.
-        plexUrl = $"{s.PublicUrl.TrimEnd('/')}/plex/{Uri.EscapeDataString(peer.Id)}",
+        plexUrl = $"{s.PublicUrl!.TrimEnd('/')}/plex/{Uri.EscapeDataString(peer.Id)}",
         plexToken = peer.AccessToken,
         serverName = s.ServerName,
         libraries = s.Libraries.Where(l => l.Shared).Select(l => new { l.SectionKey, l.Title, l.Type })
@@ -388,7 +466,60 @@ app.MapPost("/api/import/connect", async (ImportConnectRequest body, HttpRequest
     // waiting up to 30 minutes for the background timer's first tick.
     await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
 
+    if (!string.IsNullOrEmpty(s.ServerBaseUrl) && !string.IsNullOrEmpty(s.ServerAccessToken))
+    {
+        try
+        {
+            await PlexImportManager.AttachAsync(s, plex, peer, ct).ConfigureAwait(false);
+            await s.SaveAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[Companion] Imported {Peer} but could not add Plex libraries automatically", peer.Name);
+            peer.LastError = "Imported, but Plex libraries were not created automatically: " + ex.Message;
+            await s.SaveAsync().ConfigureAwait(false);
+        }
+    }
+
     return Results.Ok(ImportPeerView(peer));
+});
+
+app.MapPost("/api/import/peers/{id}/add-to-plex", async (string id, CompanionState s, PlexClient plex, CancellationToken ct) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null)
+    {
+        return Results.NotFound();
+    }
+
+    try
+    {
+        await PlexImportManager.AttachAsync(s, plex, peer, ct).ConfigureAwait(false);
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(peer);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapMethods("/import-stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (string peerId, string itemId, HttpContext ctx, CompanionState s, JellyfinImportService jellyfin, CancellationToken ct) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == peerId);
+    if (peer == null)
+    {
+        return Results.NotFound();
+    }
+
+    var minted = await jellyfin.GetPlaybackTokenAsync(peer.Url, peer.Token, itemId, ct).ConfigureAwait(false);
+    if (minted == null)
+    {
+        return Results.Json(new { error = "Could not authorize playback from the Jellyfin friend." }, statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    var upstream = JellyfinImportService.BuildStreamUrl(peer.Url, itemId, minted.Value.Token);
+    return Results.Redirect(upstream, permanent: false);
 });
 
 app.MapPost("/api/import/peers/{id}/plex-section", async (string id, SetPlexSectionRequest body, CompanionState s) =>
@@ -512,6 +643,44 @@ app.MapMethods("/stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (
 
 app.Run();
 
+static async Task<string?> ResolveFriendFacingPlexUrlAsync(CompanionState s, PlexAuth auth, CancellationToken cancellationToken)
+{
+    IEnumerable<PlexConnection> connections = Enumerable.Empty<PlexConnection>();
+    if (!string.IsNullOrWhiteSpace(s.PlexAccountToken))
+    {
+        try
+        {
+            var servers = await auth.GetOwnedServersAsync(s.PlexAccountToken, cancellationToken).ConfigureAwait(false);
+            var server = servers.FirstOrDefault(candidate =>
+                    !string.IsNullOrWhiteSpace(s.ServerName)
+                    && string.Equals(candidate.Name, s.ServerName, StringComparison.OrdinalIgnoreCase))
+                ?? servers.FirstOrDefault();
+            if (server != null)
+            {
+                connections = server.Connections;
+            }
+        }
+        catch (Exception)
+        {
+            // plex.tv being briefly unreachable must not block a claim if we
+            // already know a public connection from sign-in.
+        }
+    }
+
+    var selected = PlexRemoteEndpoint.SelectFriendFacing(connections);
+    if (selected != null)
+    {
+        return selected.Uri.TrimEnd('/');
+    }
+
+    if (!string.IsNullOrWhiteSpace(s.ServerBaseUrl) && !PlexRemoteEndpoint.IsLanOrPrivateHost(s.ServerBaseUrl))
+    {
+        return s.ServerBaseUrl.TrimEnd('/');
+    }
+
+    return null;
+}
+
 static void MergeLibraries(CompanionState s, List<CompanionLibrary> fresh)
 {
     // Preserves each existing library's Shared choice by key - re-scanning
@@ -562,6 +731,8 @@ static object ImportPeerView(JellyfinImportPeer peer) => new
     peer.ExportPath,
     peer.PlaybackBaseUrl,
     peer.PlexSectionKey,
+    peer.PlexMovieSectionKey,
+    peer.PlexShowSectionKey,
     peer.LastSyncUtc,
     peer.LastItemCount,
     peer.LastError
@@ -596,23 +767,6 @@ static bool IsSafePeerUrl(string candidate, out string normalized)
     return true;
 }
 
-static bool IsSafePublicUrl(string candidate, out string normalized)
-{
-    normalized = string.Empty;
-    if (!Uri.TryCreate(candidate.Trim(), UriKind.Absolute, out var uri)
-        || uri.Scheme != Uri.UriSchemeHttps
-        || !string.IsNullOrEmpty(uri.UserInfo)
-        || !string.IsNullOrEmpty(uri.Query)
-        || !string.IsNullOrEmpty(uri.Fragment)
-        || uri.AbsolutePath != "/")
-    {
-        return false;
-    }
-
-    normalized = uri.GetLeftPart(UriPartial.Authority);
-    return true;
-}
-
 static bool FixedTimeEquals(string supplied, string expected)
 {
     if (string.IsNullOrEmpty(supplied) || string.IsNullOrEmpty(expected))
@@ -634,6 +788,8 @@ internal sealed class PendingPin
 internal sealed record ToggleLibraryRequest(string SectionKey, bool Shared);
 
 internal sealed record SetPublicUrlRequest(string Url);
+
+internal sealed record ConnectLocalPlexRequest(string? Url, string? Token);
 
 internal sealed record LinkCompleteRequest(string Token, string? RequesterName);
 

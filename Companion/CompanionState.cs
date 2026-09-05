@@ -62,6 +62,21 @@ public sealed class CompanionState
     public string? PublicUrl { get; set; }
 
     /// <summary>
+    /// Optional URL Plex itself should use to fetch imported <c>.strm</c>
+    /// streams from this app (can be plain http on a LAN hostname). Separate
+    /// from <see cref="PublicUrl"/>, which must stay a public https address
+    /// for off-tailnet Jellyfin friends claiming a share code.
+    /// </summary>
+    public string? PlaybackBaseUrl { get; set; }
+
+    /// <summary>
+    /// Path of the import folder as Plex's own process sees it, when that
+    /// differs from this app's <see cref="JellyfinImportPeer.ExportPath"/>
+    /// (Companion and Plex in different containers sharing a volume).
+    /// </summary>
+    public string? PlexVisibleImportRoot { get; set; }
+
+    /// <summary>
     /// Every library section this Plex server has, with whether the user has
     /// chosen to share it. Refreshed from Plex on demand; a section already
     /// present keeps its existing Shared flag, so re-scanning doesn't reset
@@ -200,6 +215,8 @@ public sealed class CompanionLibrary
     /// <summary>Plex's own type string - "movie" or "show".</summary>
     public string Type { get; set; } = string.Empty;
 
+    public List<string> Locations { get; set; } = new();
+
     public bool Shared { get; set; }
 }
 
@@ -252,6 +269,12 @@ public sealed class JellyfinImportPeer
 
     /// <summary>Which of this app's own Plex sections to refresh after a sync that changed something - null until the user picks one.</summary>
     public string? PlexSectionKey { get; set; }
+
+    /// <summary>Auto-created (or matched) Plex movie library for this import.</summary>
+    public string? PlexMovieSectionKey { get; set; }
+
+    /// <summary>Auto-created (or matched) Plex TV library for this import.</summary>
+    public string? PlexShowSectionKey { get; set; }
 
     public DateTime? LastSyncUtc { get; set; }
 

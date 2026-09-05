@@ -275,6 +275,19 @@ test('Downloads server dropdown refreshes on every config load, not just once', 
   assert.match(configScript[0], /loadBrowseServers\(\);/);
 });
 
+test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {
+  // Regression: the settings page used to base64-decode the Companion code in
+  // the browser and POST {url, token} to ExternalServers as if they were Plex
+  // credentials. That saved Companion's Funnel URL + a one-time claim token,
+  // which only worked when both machines shared a Tailscale tailnet. The
+  // plugin must claim the code server-to-server instead.
+  const fn = configPage.match(/function connectPlexSource\(\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(fn, 'connectPlexSource not found');
+  assert.equal(fn[0].includes('JSON.parse(atob'), false);
+  assert.match(fn[0], /ExternalServers\/ConnectCode/);
+  assert.match(fn[0], /Code:\s*raw/);
+});
+
 test('fed-check checkboxes render with a visible native box, not the unupgraded emby-checkbox style', () => {
   // Regression: every checkbox on this page is class="emby-checkbox fed-check"
   // with no is="emby-checkbox", so jellyfin-web's checkbox custom element

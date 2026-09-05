@@ -40,11 +40,6 @@ namespace Jellyfin.Plugin.Federation.Api
         /// (see <see cref="Services.FederationFriendService"/>).
         /// </summary>
         private static readonly Version MinimumFederationTokenVersion = new(0, 0, 70);
-        private static readonly HttpClient CompanionLinkHttpClient = new(new HttpClientHandler { AllowAutoRedirect = false })
-        {
-            Timeout = TimeSpan.FromSeconds(30),
-            MaxResponseContentBufferSize = 256 * 1024
-        };
 
         /// <summary>
         /// Upper bound for one internal page fetch while filling a single
@@ -1989,153 +1984,32 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Consumes a Federation Companion one-time code server-side. Companion
-        /// returns a revocable, library-scoped relay token; its real Plex server
-        /// credential never reaches Jellyfin or the browser.
+        /// Claims a Companion-generated Plex share code. The Jellyfin server
+        /// completes the handshake with Companion (or uses a direct Plex
+        /// remote/relay URL in the code) so the Plex owner and this server do
+        /// not need to share a Tailscale tailnet. When Companion is public it
+        /// returns a revocable relay credential instead of the real Plex token.
         /// </summary>
-        [HttpPost("ExternalServers/CompanionConnect")]
+        [HttpPost("ExternalServers/ConnectCode")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> ConnectCompanionPlexSource(
-            [FromBody] ConnectPlexCompanionBody? body,
-            CancellationToken cancellationToken)
+        public async Task<IActionResult> ConnectPlexCompanion([FromBody] ConnectPlexCompanionBody? body, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(body?.Code) || body.Code.Length > 16_384)
+            var (success, message, server) = await _friends.ConnectPlexCompanionAsync(body?.Code, cancellationToken).ConfigureAwait(false);
+            if (!success || server == null)
             {
-                return BadRequest(new { success = false, error = "Paste a valid Companion connect code." });
-            }
-
-            CompanionConnectCode? decoded;
-            try
-            {
-                decoded = JsonSerializer.Deserialize<CompanionConnectCode>(
-                    Convert.FromBase64String(body.Code),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch (Exception ex) when (ex is FormatException or JsonException)
-            {
-                return BadRequest(new { success = false, error = "That connect code could not be read or is incomplete." });
-            }
-
-            if (decoded == null
-                || string.IsNullOrWhiteSpace(decoded.Url)
-                || string.IsNullOrWhiteSpace(decoded.Token)
-                || !Uri.TryCreate(decoded.Url.TrimEnd('/'), UriKind.Absolute, out var companionUri)
-                || (companionUri.Scheme != Uri.UriSchemeHttps
-                    && !(companionUri.Scheme == Uri.UriSchemeHttp && companionUri.IsLoopback))
-                || !string.IsNullOrEmpty(companionUri.UserInfo)
-                || !string.IsNullOrEmpty(companionUri.Query)
-                || !string.IsNullOrEmpty(companionUri.Fragment))
-            {
-                return BadRequest(new { success = false, error = "The code does not contain a safe Companion address." });
-            }
-
-            var config = Plugin.Instance?.Configuration;
-            if (config == null)
-            {
-                return BadRequest(new { success = false, error = "Plugin not initialized." });
+                return BadRequest(new { success = false, error = message, message });
             }
 
             try
             {
-                using var request = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    companionUri.AbsoluteUri.TrimEnd('/') + "/api/link/complete")
-                {
-                    Content = new StringContent(
-                        JsonSerializer.Serialize(new
-                        {
-                            token = decoded.Token,
-                            requesterName = _applicationHost.FriendlyName
-                        }),
-                        Encoding.UTF8,
-                        "application/json")
-                };
-                using var response = await CompanionLinkHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var error = TryReadCompanionError(responseBody)
-                        ?? "Companion rejected this code. It may have expired or already been used.";
-                    return StatusCode((int)response.StatusCode, new { success = false, error });
-                }
-
-                var linked = JsonSerializer.Deserialize<CompanionLinkResult>(
-                    responseBody,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                if (linked == null
-                    || string.IsNullOrWhiteSpace(linked.PlexUrl)
-                    || string.IsNullOrWhiteSpace(linked.PlexToken)
-                    || !Uri.TryCreate(linked.PlexUrl, UriKind.Absolute, out var relayUri)
-                    || !SameOrigin(companionUri, relayUri)
-                    || !relayUri.AbsolutePath.StartsWith(companionUri.AbsolutePath.TrimEnd('/') + "/plex/", StringComparison.Ordinal))
-                {
-                    return BadRequest(new { success = false, error = "Companion returned an invalid relay address." });
-                }
-
-                var normalized = linked.PlexUrl.TrimEnd('/');
-                if (config.RemoteServers.Any(s => string.Equals(s.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
-                {
-                    return BadRequest(new { success = false, error = "This Companion Plex source is already connected." });
-                }
-
-                var server = new RemoteServer
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    Kind = ServerKind.Plex,
-                    Name = string.IsNullOrWhiteSpace(linked.ServerName)
-                        ? LimitDisplayName(decoded.Name, "Plex friend")
-                        : LimitDisplayName(linked.ServerName, "Plex friend"),
-                    Url = normalized,
-                    ApiKey = linked.PlexToken,
-                    StreamingMode = StreamingMode.Proxy,
-                    Enabled = true,
-                    AllowedExternalLibraryIds = (linked.Libraries ?? new List<CompanionLinkedLibrary>())
-                        .Where(l => !string.IsNullOrWhiteSpace(l.SectionKey))
-                        .Select(l => l.SectionKey!)
-                        .Distinct(StringComparer.Ordinal)
-                        .ToList()
-                };
-                config.RemoteServers.Add(server);
-                Plugin.Instance!.SaveConfiguration();
-                _clientFactory.InvalidateAll();
-                return Ok(new { success = true, server = SanitizeServer(server) });
+                await _syncService.SyncServerAsync(server.Id, cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (Exception ex)
             {
-                throw;
+                _logger.LogWarning(ex, "[Federation] Connected to Plex source {Name} but the first sync failed", server.Name);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
-            {
-                _logger.LogWarning(ex, "[Federation] Could not complete a Plex Companion link");
-                return BadRequest(new { success = false, error = "Companion could not be reached or returned an invalid response." });
-            }
-        }
 
-        private static bool SameOrigin(Uri first, Uri second)
-            => string.Equals(first.Scheme, second.Scheme, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(first.Host, second.Host, StringComparison.OrdinalIgnoreCase)
-                && first.Port == second.Port;
-
-        private static string LimitDisplayName(string? value, string fallback)
-        {
-            var trimmed = value?.Trim();
-            return string.IsNullOrWhiteSpace(trimmed)
-                ? fallback
-                : trimmed[..Math.Min(trimmed.Length, 160)];
-        }
-
-        private static string? TryReadCompanionError(string body)
-        {
-            try
-            {
-                return JsonSerializer.Deserialize<CompanionErrorResponse>(
-                    body,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })?.Error;
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
+            return Ok(new { success = true, message, server = SanitizeServer(server) });
         }
 
         /// <summary>
@@ -4485,40 +4359,6 @@ namespace Jellyfin.Plugin.Federation.Api
     public class ConnectPlexCompanionBody
     {
         public string? Code { get; set; }
-    }
-
-    internal sealed class CompanionConnectCode
-    {
-        public string? Url { get; set; }
-
-        public string? Token { get; set; }
-
-        public string? Name { get; set; }
-    }
-
-    internal sealed class CompanionLinkResult
-    {
-        public string? PlexUrl { get; set; }
-
-        public string? PlexToken { get; set; }
-
-        public string? ServerName { get; set; }
-
-        public List<CompanionLinkedLibrary>? Libraries { get; set; }
-    }
-
-    internal sealed class CompanionLinkedLibrary
-    {
-        public string? SectionKey { get; set; }
-
-        public string? Title { get; set; }
-
-        public string? Type { get; set; }
-    }
-
-    internal sealed class CompanionErrorResponse
-    {
-        public string? Error { get; set; }
     }
 
     public class SetExternalServerTokenBody
