@@ -758,6 +758,28 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Contains("expired", message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_FunnelTlsFailure_TellsFriendToUsePlexRelay()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            throw new HttpRequestException(
+                "The SSL connection could not be established, see inner exception.",
+                new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Null(server);
+        Assert.Contains("freakbob.tail4e0b6f.ts.net", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TLS", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Plex Remote Access", message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(FederationFriendService.IsTlsHandshakeFailure(
+            new HttpRequestException("SSL", new System.IO.IOException("unexpected EOF"))));
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

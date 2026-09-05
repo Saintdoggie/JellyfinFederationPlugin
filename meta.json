@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.130",
-  "changelog": "Settings reliability fix: Companion receivers no longer block Save just because they correctly have no remote address, and discovery skips Plex/Companion entries that do not speak the Jellyfin peer protocol. The settings page now turns JSON and plain-text server failures into concise messages instead of raw JSON or 'Unexpected token' errors. Storage cleanup also rejects a friend's item when that item is itself federated, preventing circular removal suggestions.",
+  "version": "0.0.131",
+  "changelog": "Plex connect codes from a Starlink/Funnel friend no longer fail just because Tailscale Funnel published DNS while HTTPS TLS is dead. Companion now prefers Plex Remote Access/Relay for the code even if a Funnel URL is saved, a Funnel URL can be cleared, and Jellyfin reports the TLS failure instead of a generic reachability error.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-06T00:00:00Z",
+  "timestamp": "2026-09-06T02:00:00Z",
   "imageUrl": "thumb.png"
 }

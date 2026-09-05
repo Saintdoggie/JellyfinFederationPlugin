@@ -273,9 +273,19 @@ app.MapGet("/api/public-url", (CompanionState s) => Results.Ok(new { publicUrl =
 
 app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s) =>
 {
+    // Empty is allowed: Funnel is optional when Plex Remote Access / Relay
+    // already gives friends a public path. Once a Funnel URL is saved, generate
+    // used to prefer claim codes forever because this endpoint rejected blank.
+    if (string.IsNullOrWhiteSpace(body.Url))
+    {
+        s.PublicUrl = null;
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(new { publicUrl = (string?)null });
+    }
+
     if (!PlexRemoteEndpoint.IsPublicHttpsUrl(body.Url))
     {
-        return Results.BadRequest(new { error = "Enter a public https:// address your Jellyfin friend can reach without joining your Tailscale. A Tailscale Funnel URL (https://name.ts.net) works; a 100.x or LAN address does not." });
+        return Results.BadRequest(new { error = "Enter a public https:// address your Jellyfin friend can reach without joining your Tailscale, or leave this blank to use Plex Remote Access/Relay only. A Tailscale Funnel URL (https://name.ts.net) works; a 100.x or LAN address does not." });
     }
 
     var previousUrl = s.PublicUrl;
@@ -297,43 +307,44 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Can
     }
 
     var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
-    var companionIsPublic = PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl);
-
-    if (!companionIsPublic && string.IsNullOrEmpty(remotePlexUrl))
+    if (!ConnectCodeFactory.TryGenerate(
+            s.PublicUrl,
+            remotePlexUrl,
+            s.ServerAccessToken,
+            s.ServerName,
+            s.Libraries,
+            () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
+            out var generated,
+            out var generateError)
+        || generated == null)
     {
-        return Results.BadRequest(new { error = "Friends who aren't on your Tailscale need a public path. Set a Tailscale Funnel URL for this app, or enable Plex Remote Access / Plex Relay so they can reach Plex over the internet." });
+        return Results.BadRequest(new { error = generateError });
     }
 
-    var sharedLibraries = s.Libraries.Where(l => l.Shared).Select(l => new { l.SectionKey, l.Title, l.Type }).ToList();
-
-    // Prefer a one-time claim against Companion's public URL so the real Plex
-    // token never sits in the copied code. If Companion isn't publicly
-    // reachable, fall back to a direct code that already contains Plex's own
-    // remote/relay address - still no shared Tailscale required.
+    // A saved Funnel URL used to win over Plex Remote Access/Relay. That
+    // minted claim codes against Funnel even when Funnel TLS was dead (DNS
+    // and HTTP redirect still work) and the friend was on Starlink. Direct
+    // Plex codes skip Companion entirely for the handshake.
     object payload;
-    string mode;
-    if (companionIsPublic)
+    if (generated.Claim)
     {
-        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        pendingLinks[token] = DateTime.UtcNow.AddMinutes(15);
-        payload = new { url = s.PublicUrl, token, name = s.ServerName, claim = true };
-        mode = "claim";
+        pendingLinks[generated.Token] = DateTime.UtcNow.AddMinutes(15);
+        payload = new { url = generated.Url, token = generated.Token, name = generated.Name, claim = true };
     }
     else
     {
         payload = new
         {
-            url = remotePlexUrl,
-            token = s.ServerAccessToken,
-            name = s.ServerName,
+            url = generated.Url,
+            token = generated.Token,
+            name = generated.Name,
             claim = false,
-            libraries = sharedLibraries
+            libraries = generated.Libraries
         };
-        mode = "direct";
     }
 
     var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
-    return Results.Ok(new { code, expiresInMinutes = 15, mode });
+    return Results.Ok(new { code, expiresInMinutes = 15, mode = generated.Mode });
 });
 
 app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s, PlexAuth auth, CancellationToken ct) =>
@@ -360,13 +371,21 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
     s.Peers.Add(peer);
     await s.SaveAsync().ConfigureAwait(false);
 
+    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
+    var share = ConnectCodeFactory.FriendFacingShare(
+        remotePlexUrl,
+        s.ServerAccessToken,
+        s.PublicUrl,
+        peer.Id,
+        peer.AccessToken);
+
     return Results.Ok(new
     {
-        // The friend receives a revocable Companion credential, never Plex's
-        // whole-server token. The relay filters every request against the
-        // source owner's current library toggles.
-        plexUrl = $"{s.PublicUrl!.TrimEnd('/')}/plex/{Uri.EscapeDataString(peer.Id)}",
-        plexToken = peer.AccessToken,
+        // Prefer Plex's own Remote Access/Relay address so playback does not
+        // depend on Funnel TLS. Funnel relay (revocable, never the real Plex
+        // token) is only used when Plex has no public path of its own.
+        plexUrl = share.PlexUrl,
+        plexToken = share.PlexToken,
         serverName = s.ServerName,
         libraries = s.Libraries.Where(l => l.Shared).Select(l => new { l.SectionKey, l.Title, l.Type })
     });

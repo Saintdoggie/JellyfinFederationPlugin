@@ -45,7 +45,7 @@ The app is a single page, worked top to bottom:
 
 **4. Libraries to share.** Toggle which of your Plex libraries are visible to federated friends. Off by default; re-scanning never resets a choice you've already made.
 
-**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into Jellyfin Federation and connect over the internet — they do not need to join your Tailscale. When Companion has a public Funnel URL, the claim returns a revocable Companion relay credential (never your real Plex token). If Companion is not public, the code uses Plex Remote Access/Relay instead. Codes expire after 15 minutes; claim codes can only be used once.
+**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into Jellyfin Federation and connect over the internet — they do not need to join your Tailscale. Companion prefers Plex Remote Access / Plex Relay for that code (works on Starlink, no port forwarding) even if a Funnel URL is saved. Funnel claim codes are only generated when Plex has no public path of its own, because Funnel often publishes DNS while HTTPS TLS is dead. Codes expire after 15 minutes; claim codes can only be used once.
 
 ![Connect code and connected friends list](docs/screenshots/companion-connect-friend.jpg)
 
