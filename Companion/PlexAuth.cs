@@ -81,7 +81,7 @@ public sealed class PlexAuth
     /// </summary>
     public async Task<List<PlexResource>> GetOwnedServersAsync(string accountToken, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{PlexTvBaseUrl}/api/v2/resources?includeHttps=1");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{PlexTvBaseUrl}/api/v2/resources?includeHttps=1&includeRelay=1");
         ApplyHeaders(request);
         request.Headers.TryAddWithoutValidation("X-Plex-Token", accountToken);
 
@@ -183,6 +183,15 @@ public sealed class PlexConnection
 {
     [JsonPropertyName("uri")]
     public string Uri { get; set; } = string.Empty;
+
+    [JsonPropertyName("address")]
+    public string Address { get; set; } = string.Empty;
+
+    [JsonPropertyName("protocol")]
+    public string Protocol { get; set; } = string.Empty;
+
+    [JsonPropertyName("port")]
+    public int Port { get; set; }
 
     [JsonPropertyName("local")]
     public bool Local { get; set; }

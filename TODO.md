@@ -340,10 +340,16 @@ said explicitly not to start building it yet:
   two-server integration matrix and interactive UI smoke test criteria are
   still not satisfied for any change since 0.0.123 (see the 1.0.0/0.1.0
   entries above); same waiver, same reason.
-- 2026-09-05: The 0.0.127 working tree completed the new storage/download and
-  two-way Companion implementation. Focused plugin security/service tests
-  passed 73/73, Companion relay/import tests passed 10/10, and jsdom passed
-  12/12. An isolated Jellyfin 10.11.11 pair passed admin batch download,
-  source bulk-deny/opt-in, token revocation, and ordinary-user federated Range
-  playback. Final exact-tree full-suite repetitions and artifact verification
-  remain pending until the release-gate checkbox above is closed.
+- 2026-09-05: 0.0.127 Plex share-code / Companion library-manager pass. Clean
+  Release build, 362 plugin tests x2, 21 Companion tests x2, 12 jsdom tests.
+  Isolated sandbox: Jellyfin 10.11.11 generated a Companion connect code;
+  Companion imported 5 titles and auto-created Plex Movies/Shows libraries.
+  A sandbox Plex 1.43 with local QA media (Alpha Rising, Beta Horizon, two
+  shows) listed both its own files and the imported friend libraries. Share
+  codes no longer require a shared Tailscale tailnet.
+- 2026-09-05: Merged the unreleased storage/download/Companion-relay pass onto
+  0.0.127 as 0.0.128. Storage cleanup now has native checkboxes, season select,
+  episode covers, and a size calculator; Downloads uses the same selection
+  pattern and download-to-this-server is live again. Plugin tests 363, Companion
+  tests include both relay and share-code coverage, 16 jsdom tests. Release
+  archive/checksum still pending.

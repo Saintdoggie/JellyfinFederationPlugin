@@ -104,17 +104,24 @@ public static class ImportSyncCoordinator
             peer.LastError = null;
 
             // Plex needs a refresh when any .strm URL changes, not merely when
-            // the number of files changes. This is especially important when
-            // migrating legacy token-bearing files to stable relay URLs.
-            if (export.ChangedFileCount > 0 && !string.IsNullOrEmpty(peer.PlexSectionKey) && state.ServerBaseUrl != null && state.ServerAccessToken != null)
+            // the number of files changes. Refresh every auto-created Movies/Shows
+            // section plus any manually chosen section.
+            var sectionKeys = new[] { peer.PlexMovieSectionKey, peer.PlexShowSectionKey, peer.PlexSectionKey }
+                .Where(k => !string.IsNullOrEmpty(k))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (export.ChangedFileCount > 0 && sectionKeys.Count > 0 && state.ServerBaseUrl != null && state.ServerAccessToken != null)
             {
-                try
+                foreach (var key in sectionKeys)
                 {
-                    await plex.RefreshSectionAsync(state.ServerBaseUrl, state.ServerAccessToken, peer.PlexSectionKey, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-                {
-                    logger.LogWarning(ex, "[Companion] Synced {Peer} but could not trigger a Plex library refresh", peer.Name);
+                    try
+                    {
+                        await plex.RefreshSectionAsync(state.ServerBaseUrl, state.ServerAccessToken, key!, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                    {
+                        logger.LogWarning(ex, "[Companion] Synced {Peer} but could not trigger a Plex library refresh", peer.Name);
+                    }
                 }
             }
         }
@@ -149,6 +156,9 @@ public static class ImportSyncCoordinator
             _ => new[] { "Movie", "Episode" }
         };
     }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
     private static string SafeFolderName(string? name)
     {

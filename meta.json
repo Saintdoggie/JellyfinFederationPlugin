@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.127",
-  "changelog": "Premium laptop/TV polish and safer media management. Downloads now has remote-only movie/show browsing, season/episode folders, multi-select, source-owned bulk consent, and a separate live activity view with speed, ETA, status, and cancel. Storage cleanup shows covers and reclaim estimates, groups TV by show/season, and removes only exact local files after explicit confirmation and fresh revalidation; automatic better-copy replacement downloads are retired. Playback/download tokens are purpose-scoped and permissions are rechecked when bytes stream. Companion linking now uses revocable per-friend Plex relay credentials instead of exposing the Plex owner's real token, while stable item-bound relays make Jellyfin-to-Plex .strm playback survive token expiry.",
+  "version": "0.0.128",
+  "changelog": "Storage cleanup is a finished workspace: TV grouped into show/season folders, cover art on movies/shows/episodes, native checkboxes (including season/show with partial state), a size calculator for eligible/selected/reclaimed bytes, and delete-only removal after two confirmations. Downloads has selection vs activity, bulk source consent, and download-to-this-server is live again. Plex share codes from 0.0.127 still auto-connect without a shared Tailscale; Companion also keeps revocable per-friend Plex relays and stable Jellyfin-to-Plex .strm playback, and can auto-create Plex Movies/Shows libraries for imports.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-05T01:16:50Z",
+  "timestamp": "2026-09-05T22:00:00Z",
   "imageUrl": "thumb.png"
 }

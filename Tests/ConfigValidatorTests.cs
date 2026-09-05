@@ -105,6 +105,25 @@ public class ConfigValidatorTests
         Assert.Contains(errors, e => e.Contains("ServerUrl", System.StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1:8096")]
+    [InlineData("http://10.0.0.5:8096")]
+    [InlineData("http://192.168.1.10:8096")]
+    [InlineData("http://172.16.0.2:8096")]
+    [InlineData("http://169.254.1.1:8096")]
+    [InlineData("http://100.64.1.20:8096")]
+    [InlineData("http://100.127.0.1:8096")]
+    public void PrivateOrLoopbackAndCgnatHosts_AreFlagged(string url)
+        => Assert.True(ConfigValidator.IsPrivateOrLoopbackHost(url));
+
+    [Theory]
+    [InlineData("https://friend.example.com")]
+    [InlineData("https://name.tail12345.ts.net")]
+    [InlineData("https://1-2-3-4.hash.plex.direct:32400")]
+    [InlineData("http://8.8.8.8:8096")]
+    public void PublicHosts_AreNotFlaggedAsPrivate(string url)
+        => Assert.False(ConfigValidator.IsPrivateOrLoopbackHost(url));
+
     [Fact]
     public void Validate_AcceptsValidConfiguration()
     {
