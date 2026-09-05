@@ -122,6 +122,23 @@ said explicitly not to start building it yet:
       rating reminder prompting a star rating plus a free-text comment about
       that title, visible to federated friends.
 
+## Future — Radarr and Sonarr requests (design before implementation)
+
+- [ ] Let an administrator connect Radarr and Sonarr without exposing their API
+      keys to Jellyfin clients, peer servers, browser URLs, or logs.
+- [ ] Add an optional Request action for unavailable movies and shows. Show the
+      target server, root folder, monitor policy, and quality profile before the
+      administrator submits anything; never request media automatically merely
+      because a federated copy is offline or lower quality.
+- [ ] Keep request permissions separate from federation sharing and download
+      permissions. Ordinary users must follow Jellyfin's own request policy, and
+      peer-provided metadata must be treated as untrusted input.
+- [ ] Deduplicate requests against the local Jellyfin library and the connected
+      Radarr/Sonarr queue, and surface clear states for already owned, already
+      requested, rejected, downloading, imported, and failed.
+- [ ] Add SSRF, secret-at-rest, path/root-folder allow-list, rate-limit, and
+      destructive-action tests before enabling either integration by default.
+
 ## Requested product pass — complete before the next release
 
 - [x] Add an administrator setting for the injected federated cloud badge.
@@ -357,3 +374,19 @@ said explicitly not to start building it yet:
   release archive MD5 is `0cd337e831797e4e75b60802c1549d97`. Live
   two-server/browser matrix was not repeated this pass (same waiver as
   0.0.126/0.0.127); publication is at the project owner's explicit direction.
+- 2026-09-05: Post-release acceptance for 0.0.128 completed the previously
+  waived live checks. Real Chromium covered all nine settings tabs at laptop,
+  TV, and mobile widths with keyboard navigation and SPA leave/return. Two
+  isolated Jellyfin 10.11.11 servers passed both directions for admin and
+  ordinary users with movies and episodes; PlaybackInfo was viable and two
+  distinct 64-byte ranges per item returned HTTP 206 with exactly 64 bytes.
+- 2026-09-05: Released 0.0.129 as a focused security hardening pass. Relay
+  failures retain useful host/type/offset diagnostics without logging the
+  credential-bearing request URI or exception message, and saved server base
+  URLs reject user-info, query strings, and fragments. Clean Release build had
+  zero warnings; 56 focused streaming/URL-validation tests passed, all 386
+  plugin tests passed twice, 31 Companion tests passed twice, and 17 jsdom
+  tests passed twice. The immediately preceding 0.0.128 live playback/browser
+  acceptance remains applicable because this patch does not change playback,
+  authorization, media, or UI behavior. The four-file archive MD5 is
+  `1d48cce7e9dacc41148bec659c7400e5`.

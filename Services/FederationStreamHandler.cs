@@ -633,12 +633,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ++consecutiveFailures < MaxAttempts)
                     {
                         _logger.LogWarning(
-                            ex,
-                            "[Federation] Relayed stream for {Url} stalled/dropped at byte {Offset} (consecutive failure {Attempt}/{Max}), retrying",
-                            url,
+                            "[Federation] Relayed stream from {UpstreamHost} stalled/dropped at byte {Offset} (consecutive failure {Attempt}/{Max}, {ErrorType}), retrying",
+                            GetSafeUpstreamHost(url),
                             rangeStart,
                             consecutiveFailures,
-                            MaxAttempts);
+                            MaxAttempts,
+                            ex.GetType().Name);
                     }
                 }
             }
@@ -676,7 +676,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
                 else
                 {
-                    _logger.LogWarning("[Federation] Relayed stream for {Url} gave up after {Max} consecutive stalls at byte {Offset}", url, MaxAttempts, rangeStart);
+                    _logger.LogWarning("[Federation] Relayed stream from {UpstreamHost} gave up after {Max} consecutive stalls at byte {Offset}", GetSafeUpstreamHost(url), MaxAttempts, rangeStart);
                 }
 
                 response.HttpContext.Abort();
@@ -684,7 +684,13 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Error relaying stream");
+                // HttpClient/stream exception messages can include their request
+                // URI. This URI carries the playback credential, so keep only the
+                // exception type and already-redacted host in persistent logs.
+                _logger.LogError(
+                    "[Federation] Error relaying stream from {UpstreamHost} ({ErrorType})",
+                    GetSafeUpstreamHost(url),
+                    ex.GetType().Name);
                 if (!response.HasStarted)
                 {
                     response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -699,6 +705,19 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Returns the only part of an upstream stream URL that is safe to place
+        /// in logs. Stream URLs carry short-lived federation or Plex credentials
+        /// in their query string, and may also contain user-info or fragments.
+        /// </summary>
+        internal static string GetSafeUpstreamHost(string url)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && !string.IsNullOrWhiteSpace(uri.Host)
+                    ? uri.Host
+                    : "remote server";
         }
 
         /// <summary>

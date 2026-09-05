@@ -37,6 +37,9 @@ public class ConfigValidatorTests
     [InlineData("//server/path")]
     [InlineData("server:8096")]
     [InlineData("/relative/path")]
+    [InlineData("https://user:password@server.example")]
+    [InlineData("https://server.example?token=secret")]
+    [InlineData("https://server.example/#token=secret")]
     public void InvalidServerUrls_Rejected(string? url)
         => Assert.False(ConfigValidator.IsValidServerUrl(url));
 
@@ -44,6 +47,7 @@ public class ConfigValidatorTests
     [InlineData("http://server:8096")]
     [InlineData("https://example.com/")]
     [InlineData("http://192.168.1.10:8096")]
+    [InlineData("https://example.com/jellyfin")]
     public void ValidServerUrls_Accepted(string url)
         => Assert.True(ConfigValidator.IsValidServerUrl(url));
 

@@ -3,17 +3,21 @@
 Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
 
 1. **Version skew with old peers** — a friend running a pre-0.0.70 plugin can't use scoped tokens; handshake is rejected with an upgrade message rather than mixing protocols. Fix = both sides upgrade.
-3. **WAN bitrate caps are inert** — the capped transcode URL is internal-only (never served to a client since 0.0.70); measurement was fixed in 0.0.78 but no client-facing URL applies a cap. Clients on slow links direct-play the raw bitrate and may buffer.
-4. **Disabled servers' deletions don't propagate while disabled** — sync skips disabled servers entirely; remote-side deletions appear only after re-enable + next sync (offline servers propagate on next successful sync).
-5. **`LeavePool` is reversible by the next pool notice** — leaving a pool doesn't notify members, and a subsequent roster fan-out re-adopts the membership.
-6. **`_remoteIndex` in `FederationItemCache` grows monotonically** — never swept on entry removal; in-process only, bounded by usage volume.
-7. **Vestigial config fields** — `RemoteServer.UserId` (unused under token model) and `RemoteServer.RequireApiKeyForImages` (superseded by token-gated `Peer/Images`).
-8. **Resume points lost on item delete/recreate** — reconciliation dedup and migrations delete/recreate virtual items, wiping all users' watch progress on those items.
-9. **Federation tokens stored plaintext in config XML** — scoped and non-admin, but unencrypted at rest.
-10. **Deleting a local Jellyfin user leaves stale federation state** — per-user access rules pushed by friends (`FriendUserAccessRules`) and cached session tokens for that user are never swept (no user-deletion hook exists). Inert after deletion, but accumulates.
-11. **Direct-mode static source relays through this server** — the Play-button fix routes the stamped static Path through the local proxy gateway (a relay hop). Direct client→remote fetching is still available for the provider-emitted sources where applicable, but the default source relays.
+2. **Disabled servers' deletions don't propagate while disabled** — sync skips disabled servers entirely; remote-side deletions appear only after re-enable + next sync (offline servers propagate on next successful sync).
+3. **`LeavePool` is reversible by the next pool notice** — leaving a pool doesn't notify members, and a subsequent roster fan-out re-adopts the membership.
+4. **Vestigial config fields** — `RemoteServer.UserId` (unused under token model) and `RemoteServer.RequireApiKeyForImages` (superseded by token-gated `Peer/Images`).
+5. **Resume points lost on item delete/recreate** — reconciliation dedup and migrations delete/recreate virtual items, wiping all users' watch progress on those items.
+6. **Deleting a local Jellyfin user leaves stale federation state** — per-user access rules pushed by friends (`FriendUserAccessRules`) and cached session tokens for that user are never swept (no user-deletion hook exists). Inert after deletion, but accumulates.
+7. **Direct-mode static source relays through this server** — the Play-button fix routes the stamped static Path through the local proxy gateway (a relay hop). Direct client→remote fetching is still available for the provider-emitted sources where applicable, but the default source relays.
 
 ## Resolved in the current quality pass
+
+- The persisted remote-item index is rebuilt on startup and stale index entries
+  are swept when cache entries are removed.
+- Federation, relay, and Plex credentials are encrypted before configuration is
+  written to disk and decrypted only into the plugin's in-memory configuration.
+- WAN bitrate limits now request lower-bitrate remote transcodes in Direct mode
+  and pace bytes in the local relay for Proxy and Plex sources.
 
 - The directional missing-Play-button report was traced to a coarse guard that
   blanked every federated item path as soon as any incoming per-user rule existed.
