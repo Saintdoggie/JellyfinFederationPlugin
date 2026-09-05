@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.126",
-  "changelog": "The 'better copies to review' quality-upgrade panel now shows cover art on every title, groups a TV show's episode candidates under the show itself (selecting the show selects all its episodes), and supports selecting several candidates and applying them together in one request instead of one at a time - gated behind two confirmations. Downloading/replacing content on this server remains temporarily disabled while that flow is reworked, so nothing is actually downloaded or removed yet; this is the review/selection UI ahead of that.",
+  "version": "0.0.127",
+  "changelog": "Plex share codes now auto-connect a Jellyfin friend without both people being on the same Tailscale. Pasting a Companion connect code claims it server-to-server (or uses Plex Remote Access/Relay when Companion has no public Funnel URL), maps shared libraries automatically, and refuses LAN/100.x tailnet addresses that only work on a private network.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-04T17:48:18Z",
+  "timestamp": "2026-09-05T20:00:00Z",
   "imageUrl": "thumb.png"
 }

@@ -5,10 +5,9 @@ namespace FederationCompanion;
 
 /// <summary>
 /// Minimal Plex Media Server client for what this app needs: listing library
-/// sections. Deliberately not the full protocol client the Jellyfin plugin's
-/// PlexApiClient is (no item sync, no streaming) - this app never serves
-/// media itself, it only manages what a Jellyfin Federation peer is allowed
-/// to pull directly from the user's own Plex server.
+/// sections, creating the Movies/Shows libraries a Jellyfin import needs, and
+/// asking Plex to scan them. Deliberately not the full protocol client the
+/// Jellyfin plugin's PlexApiClient is.
 /// </summary>
 public sealed class PlexClient
 {
@@ -17,6 +16,24 @@ public sealed class PlexClient
     public PlexClient(HttpClient http)
     {
         _http = http;
+    }
+
+    public async Task<string?> GetServerNameAsync(string baseUrl, string token, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}/identity");
+        request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var body = await response.Content.ReadFromJsonAsync<PlexIdentityResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(body?.MediaContainer?.MachineIdentifier)
+            ? "Plex Media Server"
+            : "Plex Media Server";
     }
 
     public async Task<List<CompanionLibrary>> GetSectionsAsync(string baseUrl, string token, CancellationToken cancellationToken)
@@ -33,9 +50,86 @@ public sealed class PlexClient
 
         return directories
             .Where(d => d.Type is "movie" or "show")
-            .Select(d => new CompanionLibrary { SectionKey = d.Key, Title = d.Title, Type = d.Type })
+            .Select(d => new CompanionLibrary
+            {
+                SectionKey = d.Key,
+                Title = d.Title,
+                Type = d.Type,
+                Locations = (d.Location ?? new List<PlexLocation>()).Select(l => l.Path).Where(p => !string.IsNullOrWhiteSpace(p)).ToList()
+            })
             .ToList();
     }
+
+    /// <summary>
+    /// Creates a Plex library section if one with this name/type/path does not
+    /// already exist, then returns its key. Used by the import manager so a
+    /// Plex owner does not have to click through Plex Settings to see a
+    /// Jellyfin friend's content.
+    /// </summary>
+    public async Task<string> EnsureSectionAsync(
+        string baseUrl,
+        string token,
+        string name,
+        string type,
+        string location,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizePlexPath(location);
+        var existing = (await GetSectionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(s =>
+                string.Equals(s.Type, type, StringComparison.OrdinalIgnoreCase)
+                && (s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(s.Title, name, StringComparison.OrdinalIgnoreCase)));
+        if (existing != null)
+        {
+            return existing.SectionKey;
+        }
+
+        var url = BuildCreateSectionUrl(baseUrl, name, type, normalized);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var created = (await GetSectionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(s =>
+                string.Equals(s.Type, type, StringComparison.OrdinalIgnoreCase)
+                && (s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(s.Title, name, StringComparison.OrdinalIgnoreCase)));
+
+        return created?.SectionKey
+            ?? throw new InvalidOperationException("Plex accepted the new library but it did not show up in the section list.");
+    }
+
+    public static string BuildCreateSectionUrl(string baseUrl, string name, string type, string location)
+    {
+        var isShow = string.Equals(type, "show", StringComparison.OrdinalIgnoreCase);
+        var query = new Dictionary<string, string>
+        {
+            ["name"] = name,
+            ["type"] = isShow ? "show" : "movie",
+            ["agent"] = isShow ? "tv.plex.agents.series" : "tv.plex.agents.movie",
+            ["scanner"] = isShow ? "Plex TV Series" : "Plex Movie",
+            ["language"] = "en-US",
+            ["location"] = NormalizePlexPath(location)
+        };
+        return $"{baseUrl.TrimEnd('/')}/library/sections?{string.Join("&", query.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"))}";
+    }
+
+    public static string MapExportPathForPlex(string exportPath, string? plexVisibleRoot)
+    {
+        if (string.IsNullOrWhiteSpace(plexVisibleRoot))
+        {
+            return NormalizePlexPath(exportPath);
+        }
+
+        return NormalizePlexPath(plexVisibleRoot);
+    }
+
+    public static string NormalizePlexPath(string path)
+        => path.Replace('\\', '/').TrimEnd('/');
 
     /// <summary>
     /// Kicks off a partial scan of one library section, so Plex picks up a
@@ -75,5 +169,26 @@ public sealed class PlexClient
 
         [JsonPropertyName("type")]
         public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("Location")]
+        public List<PlexLocation>? Location { get; set; }
+    }
+
+    private sealed class PlexLocation
+    {
+        [JsonPropertyName("path")]
+        public string Path { get; set; } = string.Empty;
+    }
+
+    private sealed class PlexIdentityResponse
+    {
+        [JsonPropertyName("MediaContainer")]
+        public PlexIdentityContainer? MediaContainer { get; set; }
+    }
+
+    private sealed class PlexIdentityContainer
+    {
+        [JsonPropertyName("machineIdentifier")]
+        public string? MachineIdentifier { get; set; }
     }
 }

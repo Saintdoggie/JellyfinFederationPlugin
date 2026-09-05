@@ -2,7 +2,7 @@
 
 A standalone app a Plex-owning friend runs on their own machine to control what they share with federated Jellyfin servers - no Jellyfin required on their end.
 
-Unlike the original setup (a Jellyfin admin manually enters the friend's raw Plex token into the Federation plugin), this app lets the Plex owner sign in themselves, expose their server over the internet via Tailscale, pick which libraries to share, and generate a one-time connect code that links a Jellyfin friend's Federation plugin automatically - no tokens copied by hand.
+Unlike the original setup (a Jellyfin admin manually enters the friend's raw Plex token into the Federation plugin), this app lets the Plex owner sign in themselves, pick which libraries to share, and generate a one-time connect code that links a Jellyfin friend's Federation plugin automatically. The Jellyfin friend does **not** need to be on the same Tailscale tailnet: Companion prefers Plex Remote Access / Plex Relay for the actual media path, and a Tailscale Funnel URL is only needed if you want the one-time claim to go through this app.
 
 ## Install
 
@@ -39,17 +39,17 @@ The app is a single page, worked top to bottom:
 
 ![Tailscale, public address, and Plex connection steps](docs/screenshots/companion-setup-steps.jpg)
 
-**2. Public address.** Once Tailscale is up, turn on [Funnel](https://tailscale.com/kb/1223/funnel) for this server and paste the resulting `https://...ts.net` address here. This is the address a federated Jellyfin server will actually call.
+**2. Public address.** Optional if Plex Remote Access or Plex Relay is already enabled. Funnel is the public Tailscale hostname (`https://...ts.net`) a Jellyfin friend can call *without joining your tailnet*. Do not paste a `100.x` tailnet address here — that only works for people already on your Tailscale.
 
-**3. Plex connection.** Sign in with your Plex account (opens Plex's own sign-in page - your password never touches this app) and it resolves your server automatically.
+**3. Plex connection.** Sign in with your Plex account (opens Plex's own sign-in page - your password never touches this app), or paste a local Plex address + token if you do not want to use plex.tv.
 
 **4. Libraries to share.** Toggle which of your Plex libraries are visible to federated friends. Off by default; re-scanning never resets a choice you've already made.
 
-**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into their Jellyfin Federation plugin, which uses it to link automatically - no copying tokens by hand. Codes expire after 15 minutes and can only be used once. Connected friends show up below with a revoke button.
+**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into Jellyfin Federation and connect over the internet — they do not need to join your Tailscale. Codes expire after 15 minutes; claim codes can only be used once.
 
 ![Connect code and connected friends list](docs/screenshots/companion-connect-friend.jpg)
 
-**6. Import from a Jellyfin friend.** The other direction: paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab, and this app pulls whatever they share into a local `.strm` export - point a Plex library at the export path shown for that friend, and Plex plays it straight through their server, same as any other federated title. A background sync keeps the export current (additions and removals) every 30 minutes, or use "Sync now" to force one immediately. Pick a Plex section per friend to have Plex re-scan automatically right after a sync that changed something. Removing a friend here only stops syncing - it never deletes files already written, so nothing already scanned into Plex disappears out from under it.
+**6. Import from a Jellyfin friend.** Paste a connect code from their Federation plugin Companion tab. Companion pulls what they share and **adds Movies/Shows libraries to your Plex automatically** — manage friends from this page (Import into Plex / Sync / Remove) instead of creating libraries by hand in Plex Settings. A background sync keeps the export current every 30 minutes. Removing a friend here only stops syncing; it never deletes files already written.
 
 ## Status
 

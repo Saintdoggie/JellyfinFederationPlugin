@@ -501,9 +501,9 @@
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
                     <p class="fieldDescription">
-                        Have a Jellyfin friend whose Federation Companion app generated a connect code for you? Paste it
-                        below to add their Plex server as a source - the same as any other federated library, just backed
-                        by Plex instead of Jellyfin.
+                        Have a friend whose Federation Companion app generated a connect code? Paste it below. This
+                        server claims it over the internet and maps their shared Plex libraries automatically - they do
+                        not need to be on your Tailscale.
                     </p>
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
@@ -1935,23 +1935,10 @@
                             return;
                         }
 
-                        var decoded;
-                        try {
-                            decoded = JSON.parse(atob(raw));
-                        } catch (e) {
-                            setFedStatus('fedPlexConnectStatus', 'That code could not be read - check it was copied in full.', 'err');
-                            return;
-                        }
-
-                        if (!decoded || !decoded.url || !decoded.token) {
-                            setFedStatus('fedPlexConnectStatus', 'That code is missing an address or token.', 'err');
-                            return;
-                        }
-
                         setFedStatus('fedPlexConnectStatus', 'Connecting…', 'info');
-                        fedFetch('/Plugins/Federation/ExternalServers', {
+                        fedFetch('/Plugins/Federation/ExternalServers/ConnectCode', {
                             method: 'POST',
-                            body: JSON.stringify({ Name: decoded.name, Url: decoded.url, Token: decoded.token })
+                            body: JSON.stringify({ Code: raw })
                         })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -1960,7 +1947,7 @@
                                 return;
                             }
 
-                            setFedStatus('fedPlexConnectStatus', 'Connected to ' + (decoded.name || decoded.url) + '.', 'ok');
+                            setFedStatus('fedPlexConnectStatus', res.message || 'Connected.', 'ok');
                             if (input) {
                                 input.value = '';
                             }

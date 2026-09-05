@@ -86,6 +86,16 @@ public static class ImportSyncCoordinator
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
+                        var playbackBase = FirstNonEmpty(state.PlaybackBaseUrl, state.PublicUrl);
+                        if (!string.IsNullOrWhiteSpace(playbackBase))
+                        {
+                            // Stable Companion URL: a fresh Jellyfin playback token is
+                            // minted when Plex actually presses Play, so .strm files
+                            // survive token expiry and Companion restarts.
+                            entries.Add((item, $"{playbackBase.TrimEnd('/')}/import-stream/{Uri.EscapeDataString(peer.Id)}/{Uri.EscapeDataString(item.Id)}"));
+                            continue;
+                        }
+
                         if (!tokenCache.TryGetValue(item.Id, out var cached) || cached.ExpiresUtc < DateTime.UtcNow.AddHours(2))
                         {
                             var minted = await jellyfin.GetPlaybackTokenAsync(peer.Url, peer.Token, item.Id, cancellationToken).ConfigureAwait(false);
@@ -114,15 +124,25 @@ public static class ImportSyncCoordinator
             peer.LastItemCount = written;
             peer.LastError = null;
 
-            if (written != previousCount && !string.IsNullOrEmpty(peer.PlexSectionKey) && state.ServerBaseUrl != null && state.ServerAccessToken != null)
+            var sectionKeys = new[] { peer.PlexMovieSectionKey, peer.PlexShowSectionKey, peer.PlexSectionKey }
+                .Where(k => !string.IsNullOrEmpty(k))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (written != previousCount
+                && sectionKeys.Count > 0
+                && state.ServerBaseUrl != null
+                && state.ServerAccessToken != null)
             {
-                try
+                foreach (var key in sectionKeys)
                 {
-                    await plex.RefreshSectionAsync(state.ServerBaseUrl, state.ServerAccessToken, peer.PlexSectionKey, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-                {
-                    logger.LogWarning(ex, "[Companion] Synced {Peer} but could not trigger a Plex library refresh", peer.Name);
+                    try
+                    {
+                        await plex.RefreshSectionAsync(state.ServerBaseUrl, state.ServerAccessToken, key!, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                    {
+                        logger.LogWarning(ex, "[Companion] Synced {Peer} but could not trigger a Plex library refresh", peer.Name);
+                    }
                 }
             }
         }
@@ -144,6 +164,9 @@ public static class ImportSyncCoordinator
             _ => new[] { "Movie", "Episode" }
         };
     }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
     private static string SafeFolderName(string? name)
     {

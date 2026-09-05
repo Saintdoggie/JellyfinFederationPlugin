@@ -616,6 +616,234 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Claims a Plex-to-Jellyfin Companion connect code. The copied code is
+        /// either a one-time claim against Companion's public (Funnel) URL, or a
+        /// direct Plex remote/relay address. Either way the friend does not need
+        /// to be on the Plex owner's Tailscale; LAN and 100.x tailnet addresses
+        /// are rejected so a "connected" server is actually reachable.
+        /// </summary>
+        public async Task<(bool Success, string Message, RemoteServer? Server)> ConnectPlexCompanionAsync(string? code, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                return (false, "Paste a valid Companion connect code.", null);
+            }
+
+            CompanionConnectCodePayload? decoded;
+            try
+            {
+                decoded = JsonSerializer.Deserialize<CompanionConnectCodePayload>(
+                    Convert.FromBase64String(code.Trim()),
+                    JsonOpts);
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                return (false, "That connect code could not be read - check it was copied in full.", null);
+            }
+
+            if (decoded == null || string.IsNullOrWhiteSpace(decoded.Url) || string.IsNullOrWhiteSpace(decoded.Token))
+            {
+                return (false, "That connect code is missing an address or token.", null);
+            }
+
+            if (!ConfigValidator.IsValidServerUrl(decoded.Url))
+            {
+                return (false, "That connect code has an invalid server address.", null);
+            }
+
+            string plexUrl;
+            string plexToken;
+            string serverName;
+            IReadOnlyList<CompanionSharedLibrary> libraries;
+
+            // Historical codes omitted <c>claim</c> and put Companion's public
+            // URL + a one-time token in {url, token}. The settings page used to
+            // save those as Plex credentials, which only worked on the same
+            // tailnet. Default is to claim.
+            if (decoded.Claim != false)
+            {
+                var claimed = await ClaimCompanionLinkAsync(decoded, cancellationToken).ConfigureAwait(false);
+                if (!claimed.Success)
+                {
+                    return (false, claimed.Message, null);
+                }
+
+                plexUrl = claimed.PlexUrl!;
+                plexToken = claimed.PlexToken!;
+                serverName = claimed.ServerName!;
+                libraries = claimed.Libraries;
+            }
+            else
+            {
+                plexUrl = decoded.Url.Trim().TrimEnd('/');
+                plexToken = decoded.Token;
+                serverName = string.IsNullOrWhiteSpace(decoded.Name) ? plexUrl : decoded.Name.Trim();
+                libraries = decoded.Libraries ?? new List<CompanionSharedLibrary>();
+            }
+
+            if (ConfigValidator.IsPrivateOrLoopbackHost(plexUrl))
+            {
+                return (false, "That Plex server only published a local or Tailscale address. Ask your friend to enable Plex Remote Access or Plex Relay so you can connect without being on their Tailscale.", null);
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return (false, "Plugin not initialized.", null);
+            }
+
+            config.RemoteServers ??= new List<RemoteServer>();
+            if (config.RemoteServers.Any(s =>
+                    !string.IsNullOrWhiteSpace(s.Url)
+                    && string.Equals(s.Url.TrimEnd('/'), plexUrl, StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, "A server with this address is already configured - edit it in the list instead of adding it again.", null);
+            }
+
+            var server = new RemoteServer
+            {
+                Id = Guid.NewGuid().ToString(),
+                Kind = ServerKind.Plex,
+                Name = serverName,
+                Url = plexUrl,
+                ApiKey = plexToken,
+                StreamingMode = StreamingMode.Proxy,
+                Enabled = true
+            };
+
+            var shared = libraries
+                .Where(l => !string.IsNullOrWhiteSpace(l.SectionKey))
+                .Select(l => new CompanionSharedLibrary
+                {
+                    SectionKey = l.SectionKey,
+                    Title = l.Title,
+                    Type = l.Type
+                })
+                .ToList();
+
+            if (shared.Count > 0)
+            {
+                server.AllowedExternalLibraryIds = shared.Select(l => l.SectionKey!).ToList();
+            }
+
+            config.RemoteServers.Add(server);
+            AttachPlexLibraryMappings(config, server, shared);
+            Plugin.Instance!.SaveConfiguration();
+            _clientFactory.InvalidateAll();
+
+            var sharedNote = shared.Count == 0
+                ? " They have not marked any libraries shared yet, so nothing will sync until they do."
+                : $" {shared.Count} shared library(ies) are mapped and will sync.";
+            return (true, $"Connected to {server.Name}.{sharedNote}", server);
+        }
+
+        private async Task<(bool Success, string Message, string? PlexUrl, string? PlexToken, string? ServerName, List<CompanionSharedLibrary> Libraries)> ClaimCompanionLinkAsync(
+            CompanionConnectCodePayload decoded,
+            CancellationToken cancellationToken)
+        {
+            var claimUrl = decoded.Url!.Trim().TrimEnd('/') + "/api/link/complete";
+            try
+            {
+                using var response = await SharedHttpClient.PostAsync(
+                    claimUrl,
+                    JsonContent(new
+                    {
+                        token = decoded.Token,
+                        requesterName = _applicationHost.FriendlyName
+                    }),
+                    cancellationToken).ConfigureAwait(false);
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var remoteError = TryReadError(body);
+                    return (false, remoteError ?? "Could not reach the Companion app to finish the connect code. Your friend does not need to be on your Tailscale, but Companion does need a public Funnel URL, or they can generate a code that uses Plex Remote Access/Relay instead.", null, null, null, new List<CompanionSharedLibrary>());
+                }
+
+                var claimed = JsonSerializer.Deserialize<CompanionLinkCompleteResponse>(body, JsonOpts);
+                if (claimed == null || string.IsNullOrWhiteSpace(claimed.PlexUrl) || string.IsNullOrWhiteSpace(claimed.PlexToken))
+                {
+                    return (false, "The Companion app did not return a usable Plex address.", null, null, null, new List<CompanionSharedLibrary>());
+                }
+
+                return (
+                    true,
+                    "ok",
+                    claimed.PlexUrl.TrimEnd('/'),
+                    claimed.PlexToken,
+                    string.IsNullOrWhiteSpace(claimed.ServerName) ? (decoded.Name ?? claimed.PlexUrl) : claimed.ServerName.Trim(),
+                    claimed.Libraries ?? new List<CompanionSharedLibrary>());
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
+            {
+                _logger.LogWarning(ex, "[Federation] Companion connect-code claim failed for {Url}", decoded.Url);
+                return (false, "Could not reach the Companion app over the internet. They do not need to join your Tailscale - ask them for a Funnel URL or a code generated after Plex Remote Access/Relay is on.", null, null, null, new List<CompanionSharedLibrary>());
+            }
+        }
+
+        private static string? TryReadError(string body)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                {
+                    return error.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // Body is not JSON - keep the generic caller-side message.
+            }
+
+            return null;
+        }
+
+        private static void AttachPlexLibraryMappings(PluginConfiguration config, RemoteServer server, IReadOnlyList<CompanionSharedLibrary> libraries)
+        {
+            config.LibraryMappings ??= new List<LibraryMapping>();
+            foreach (var library in libraries)
+            {
+                var mediaType = string.Equals(library.Type, "show", StringComparison.OrdinalIgnoreCase)
+                    ? "Series"
+                    : "Movie";
+                var mappingName = mediaType == "Series" ? "Federated Shows" : "Federated Movies";
+                var mapping = config.LibraryMappings.FirstOrDefault(m =>
+                    string.Equals(m.LocalLibraryName, mappingName, StringComparison.OrdinalIgnoreCase));
+                if (mapping == null)
+                {
+                    mapping = new LibraryMapping
+                    {
+                        LocalLibraryName = mappingName,
+                        MediaType = mediaType,
+                        Enabled = true,
+                        AutoProvision = true,
+                        AutoManaged = false
+                    };
+                    config.LibraryMappings.Add(mapping);
+                }
+
+                if (!mapping.RemoteServerIds.Contains(server.Id))
+                {
+                    mapping.RemoteServerIds.Add(server.Id);
+                }
+
+                if (!mapping.RemoteLibrarySources.Any(s =>
+                        s.ServerId == server.Id
+                        && string.Equals(s.RemoteLibraryId, library.SectionKey, StringComparison.Ordinal)))
+                {
+                    mapping.RemoteLibrarySources.Add(new RemoteLibrarySource
+                    {
+                        ServerId = server.Id,
+                        ServerName = server.Name,
+                        RemoteLibraryId = library.SectionKey ?? string.Empty,
+                        RemoteLibraryName = string.IsNullOrWhiteSpace(library.Title) ? mappingName : library.Title!
+                    });
+                }
+            }
+        }
+
+        /// <summary>
         /// Admin-triggered: registers a non-Jellyfin consumer of our own catalog
         /// (<see cref="ServerKind.Companion"/>) - today, a Federation Companion
         /// instance a Plex-owning friend runs to import our content as
@@ -1875,6 +2103,39 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the pool's membership as known by the sender when this request was sent.</summary>
         public List<PoolMember>? PoolRoster { get; set; }
+    }
+
+    internal sealed class CompanionConnectCodePayload
+    {
+        public string? Url { get; set; }
+
+        public string? Token { get; set; }
+
+        public string? Name { get; set; }
+
+        public bool? Claim { get; set; }
+
+        public List<CompanionSharedLibrary>? Libraries { get; set; }
+    }
+
+    internal sealed class CompanionLinkCompleteResponse
+    {
+        public string? PlexUrl { get; set; }
+
+        public string? PlexToken { get; set; }
+
+        public string? ServerName { get; set; }
+
+        public List<CompanionSharedLibrary>? Libraries { get; set; }
+    }
+
+    internal sealed class CompanionSharedLibrary
+    {
+        public string? SectionKey { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? Type { get; set; }
     }
 
     /// <summary>
