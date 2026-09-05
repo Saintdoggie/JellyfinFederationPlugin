@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -181,7 +182,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerId = server.Id,
                     RemoteServerName = server.Name,
                     RemoteNativeItemId = nativeItemId,
-                    ItemType = item.GetBaseItemKind().ToString()
+                    ItemType = item.GetBaseItemKind().ToString(),
+                    LocalSizeBytes = GetLocalFileSize(item.Path)
                 };
 
                 if (item is MediaBrowser.Controller.Entities.TV.Episode episode)
@@ -209,6 +211,91 @@ namespace Jellyfin.Plugin.Federation.Services
         public QualityUpgradeCandidate? FindUpgradeFor(string localItemId)
         {
             return FindUpgrades().FirstOrDefault(c => string.Equals(c.LocalItemId, localItemId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Removes only the exact locally-owned file ids an administrator approved,
+        /// after rebuilding the better-copy candidate set at action time. Folder-
+        /// based media and missing paths fail closed; this endpoint is intentionally
+        /// a cleanup operation and never downloads the remote replacement.
+        /// </summary>
+        public QualityCleanupBatchResult RemoveLocalCopies(IEnumerable<string> approvedItemIds)
+        {
+            var approved = new HashSet<string>(approvedItemIds ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var current = FindUpgrades()
+                .Where(c => approved.Contains(c.LocalItemId))
+                .ToDictionary(c => c.LocalItemId, StringComparer.OrdinalIgnoreCase);
+            var result = new QualityCleanupBatchResult();
+
+            foreach (var itemId in approved)
+            {
+                if (!current.TryGetValue(itemId, out var candidate) || !Guid.TryParse(itemId, out var guid))
+                {
+                    result.Items.Add(new QualityCleanupItemResult(itemId, false, 0, "This item is no longer an exact better-copy candidate."));
+                    continue;
+                }
+
+                var item = _libraryManager.GetItemById(guid);
+                if (!IsExactRemovableLocalFile(item, candidate))
+                {
+                    result.Items.Add(new QualityCleanupItemResult(itemId, false, 0, "The approved local media file is missing or is not a single removable file."));
+                    continue;
+                }
+
+                try
+                {
+                    var size = GetLocalFileSize(item!.Path);
+                    _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true });
+                    result.Items.Add(new QualityCleanupItemResult(itemId, true, size, "Removed the approved local copy."));
+                    _logger.LogInformation("[Federation] Removed approved local cleanup copy {ItemId} ({Name})", itemId, candidate.Name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Failed to remove approved local cleanup copy {ItemId}", itemId);
+                    result.Items.Add(new QualityCleanupItemResult(itemId, false, 0, "Jellyfin could not remove this local copy."));
+                }
+            }
+
+            if (result.Items.Any(i => i.Success))
+            {
+                try
+                {
+                    _libraryManager.QueueLibraryScan();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Cleanup succeeded but a follow-up library scan could not be queued");
+                }
+            }
+
+            return result;
+        }
+
+        internal static long GetLocalFileSize(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return 0;
+            }
+
+            try
+            {
+                var info = new FileInfo(path);
+                return info.Exists ? Math.Max(0, info.Length) : 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        internal static bool IsExactRemovableLocalFile(BaseItem? item, QualityUpgradeCandidate candidate)
+        {
+            return item != null
+                && string.Equals(item.Id.ToString(), candidate.LocalItemId, StringComparison.OrdinalIgnoreCase)
+                && FederationLibraryManager.GetFederationKey(item) == null
+                && !string.IsNullOrWhiteSpace(item.Path)
+                && File.Exists(item.Path);
         }
 
         /// <summary>
@@ -298,5 +385,16 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Set only for an Episode candidate - the episode number.</summary>
         public int? IndexNumber { get; set; }
+
+        public long LocalSizeBytes { get; set; }
     }
+
+    public sealed class QualityCleanupBatchResult
+    {
+        public List<QualityCleanupItemResult> Items { get; } = new();
+
+        public long ReclaimedBytes => Items.Where(i => i.Success).Sum(i => i.ReclaimedBytes);
+    }
+
+    public sealed record QualityCleanupItemResult(string ItemId, bool Success, long ReclaimedBytes, string Message);
 }

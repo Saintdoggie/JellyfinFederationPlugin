@@ -15,11 +15,11 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
   `.strm` imports without requiring Jellyfin on the Plex owner's machine.
 - Main plugin target: .NET 9, Jellyfin 10.11.6.
 - Source branch: `master`; GitHub remote: `Saintdoggie/JellyfinFederationPlugin`.
-- Current published baseline is version 0.0.123, release commit `6650a4d`.
-  It passed 347 .NET tests twice, jsdom, Chromium layout, and a two-server
-  admin/viewer Range-playback matrix. Its GitHub-downloaded archive matched
-  manifest MD5 `d029debb99b293497cc2042c4d87a6eb`.
-  and `TODO.md` before treating it as released.
+- Current published baseline is version 0.0.126, release commit `83f6000`.
+  Its GitHub-downloaded archive matched manifest MD5
+  `6e4ea7420b4afe1378db9244d9bfc68c`. Read the later validation entries in
+  `TODO.md`: 0.0.126 passed build/unit gates but did not repeat the live
+  two-server/browser matrix completed for 0.0.123.
 
 ## Read these files by task
 
@@ -42,7 +42,7 @@ HTTP, UI, and browser injection:
   check authorization attributes and input validation for every changed route.
 - `Configuration/configPage.html` — embedded admin UI. It is currently a large
   single-file page with Friends, Pools, Companion, Discovery, Libraries,
-  Browse, Catalog, and Advanced tabs.
+  Browse/Downloads, Catalog, Storage, and Advanced tabs.
 - `Web/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
 - `Services/WebClientInjector.cs` and `Middleware/BadgeScriptInjectionMiddleware.cs`
@@ -75,8 +75,8 @@ Playback, authorization, and downloads:
   acting-user resolution, source fallback, remote PlaybackInfo, and paths.
 - `Services/FederationStreamHandler.cs` — proxy/direct relays, byte ranges,
   retries, cancellation, and external-source streaming.
-- `Services/FederationPlaybackTokenService.cs` — item-scoped remote playback
-  tokens.
+- `Services/FederationPlaybackTokenService.cs` — item-scoped, purpose-scoped
+  remote playback/download tokens and the ordinary-download throttle.
 - `Services/FederationUserSessionTokenService.cs` — per-user session tokens.
 - `Services/FederationTokenAuth.cs` — federation peer authentication.
 - `Services/FederationPeerAccessService.cs` — authoritative outgoing sharing
@@ -84,9 +84,9 @@ Playback, authorization, and downloads:
 - `Services/RemoteAccessControlService.cs` — receiving-side enforcement of
   rules pushed by a friend for this server's local users.
 - `Services/FederationDownloadService.cs` and `DownloadProgressTracker.cs` —
-  device/server downloads, replacement flow, and progress. Quality replacement
-  is deliberately two opt-ins plus one exact-title confirmation; it must stage
-  and validate the new file before deleting the revalidated old local item.
+  device/server downloads, bounded batch transfers, partial-file validation,
+  and progress. The old quality replacement endpoint is retired; Storage
+  cleanup is delete-only and revalidates every exact local item immediately.
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
 
 Friendship and connectivity:
@@ -97,7 +97,7 @@ Friendship and connectivity:
 - `Services/TailscaleService.cs` and `ProcessRunner.cs` — environment checks,
   install/login/Funnel workflow, process cancellation, and timeouts.
 - `Companion/Program.cs`, `CompanionState.cs`, `PlexAuth.cs`, `PlexClient.cs`,
-  `JellyfinImportService.cs`, `StrmExporter.cs`, and
+  `PlexFederationRelay.cs`, `JellyfinImportService.cs`, `StrmExporter.cs`, and
   `ImportSyncBackgroundService.cs` — Companion backend.
 - `Companion/wwwroot/index.html` — Companion single-page UI.
 
@@ -169,11 +169,12 @@ Tests and project history:
   or Series, newest first) and `Downloads` as remote-only acquisition (Movies or
   Episodes, newest first). Series-level exclusions are inherited by seasons and
   episodes in `FederationPeerAccessService`; do not remove that ancestor check.
-- `PreferHigherQualityRemotes` only enables suggestions.
-  `EnableQualityReplacementActions` separately reveals actions, and the API
-  accepts exactly one current candidate per call. The download service rechecks
-  provider identity and quality both at start and immediately before deletion.
-- `Configuration/configPage.html` is approximately 4,700 lines and
+- `PreferHigherQualityRemotes` only enables suggestions. The legacy
+  `EnableQualityReplacementActions` field is forced off; the compatibility
+  Apply endpoint always refuses replacement downloads. Storage removal requires
+  explicit selected IDs plus confirmation and rebuilds the candidate set before
+  deleting any exact local file.
+- `Configuration/configPage.html` is approximately 5,700 lines and
   `Web/federation-badge.js` approximately 1,000 lines. Make narrow changes with
   regression tests before attempting structural cleanup.
 

@@ -113,6 +113,11 @@
                 #federationConfigPage .fed-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6em; }
                 #federationConfigPage .fed-server-url { opacity: 0.55; font-size: 0.88em; }
                 #federationConfigPage .fed-dot { display: none; }
+                #federationConfigPage .fed-health { opacity:1; padding:.25em .6em; border:1px solid currentColor; border-radius:1em; font-size:.8em; }
+                #federationConfigPage .fed-health[data-state="online"] { color:var(--fed-ok-text); }
+                #federationConfigPage .fed-health[data-state="unreachable"] { color:var(--fed-warn-text); }
+                #federationConfigPage .fed-server-url { overflow-wrap:anywhere; min-width:0; }
+                #federationConfigPage button:focus-visible, #federationConfigPage input:focus-visible, #federationConfigPage select:focus-visible, #federationConfigPage summary:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
                 #federationConfigPage .fed-offnote { margin-top: 0.5em; font-size: 0.9em; color: var(--fed-warn-text); }
                 #federationConfigPage .fed-pill { font-size: 0.85em; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
                 #federationConfigPage .fed-pill-off { color: var(--fed-warn-text); opacity: 1; }
@@ -234,17 +239,35 @@
                 #federationConfigPage .fed-quality-bulkbar a { color:var(--fed-accent); cursor:pointer; }
                 #federationConfigPage .fed-quality-bulkbar .fed-spacer { flex:1; }
                 #federationConfigPage .fed-quality-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(9em, 1fr)); gap:1.1em; margin-top:1em; }
-                /* A checkbox-look toggle, not a real <input type="checkbox"> - the
-                   whole card is one clickable button (matching the Catalog tab's
-                   own select-for-bulk-action pattern), and a real checkbox nested
-                   inside a button is invalid HTML. Empty square unselected, filled
-                   with a checkmark when the card carries fed-catalog-card-selected. */
-                #federationConfigPage .fed-quality-checkbox { position:absolute; top:.45em; left:.45em; width:1.3em; height:1.3em; border-radius:.3em; border:2px solid rgba(255,255,255,.8); background:rgba(0,0,0,.35); box-shadow:0 1px 4px rgba(0,0,0,.4); }
-                #federationConfigPage .fed-catalog-card-selected .fed-quality-checkbox { background:var(--fed-accent); border-color:var(--fed-accent); }
-                #federationConfigPage .fed-catalog-card-selected .fed-quality-checkbox::after { content:''; position:absolute; left:.32em; top:.06em; width:.32em; height:.62em; border:solid #111; border-width:0 .18em .18em 0; transform:rotate(45deg); }
+                /* Real native checkboxes (class=fed-check). Nested inside a <button>
+                   is invalid HTML, so movie cards use a <label> instead; folder
+                   summaries keep the checkbox as a sibling of the expand hit-target
+                   so checking a show/season does not also collapse the folder. */
                 #federationConfigPage .fed-quality-cardwrap { position:relative; }
+                #federationConfigPage .fed-quality-pick { display:block; cursor:pointer; text-align:left; margin:0; }
+                #federationConfigPage .fed-quality-pick .fed-catalog-name { display:block; margin-top:.35em; }
+                #federationConfigPage .fed-poster-check { position:absolute; z-index:3; top:.45em; left:.45em; width:1.25em; height:1.25em; min-width:1.25em; margin:0; accent-color:var(--fed-accent); }
+                #federationConfigPage .fed-catalog-cardwrap { position:relative; }
                 #federationConfigPage .fed-quality-exclude { display:block; font-size:.78em; margin-top:.3em; color:var(--fed-accent); cursor:pointer; text-align:center; }
                 #federationConfigPage .fed-quality-confirm { margin-top:.75em; padding:.85em; border:1px solid var(--fed-warn-text); border-radius:.6em; background:rgba(224,160,74,.08); }
+                #federationConfigPage .fed-subtabs { display:inline-flex; gap:.3em; padding:.25em; margin:.2em 0 1.2em; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); }
+                #federationConfigPage .fed-subtab { border:0; border-radius:.45em; background:transparent; color:inherit; padding:.55em .9em; font:inherit; cursor:pointer; }
+                #federationConfigPage .fed-subtab-active { color:var(--fed-accent); background:rgba(0,164,220,.14); }
+                #federationConfigPage .fed-download-selectionbar { position:sticky; bottom:.7em; z-index:12; display:flex; align-items:center; flex-wrap:wrap; gap:.6em 1em; margin:1em 0 0; padding:.8em 1em; border:1px solid var(--fed-border); border-radius:.7em; background:rgba(24,24,26,.96); box-shadow:0 .5em 1.7em rgba(0,0,0,.28); }
+                #federationConfigPage .fed-season-folder, #federationConfigPage .fed-show-folder { margin:.7em 0; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); overflow:hidden; }
+                #federationConfigPage .fed-season-folder > summary, #federationConfigPage .fed-show-folder > summary { display:flex; align-items:center; gap:.7em; cursor:pointer; padding:.8em 1em; font-weight:650; list-style:none; }
+                #federationConfigPage .fed-season-folder > summary::-webkit-details-marker,
+                #federationConfigPage .fed-show-folder > summary::-webkit-details-marker { display:none; }
+                #federationConfigPage .fed-folder-poster { flex:0 0 auto; width:2.8em; height:4.15em; border-radius:.35em; background:rgba(128,128,128,.14); background-size:cover; background-position:center; }
+                #federationConfigPage .fed-folder-meta { flex:1; min-width:0; }
+                #federationConfigPage .fed-folder-meta strong { display:block; }
+                #federationConfigPage .fed-folder-meta span { display:block; font-weight:500; opacity:.7; font-size:.88em; }
+                #federationConfigPage .fed-folder-body { padding:0 1em .8em; }
+                #federationConfigPage .fed-folder-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:.7em; margin:.2em 0 .45em; font-size:.9em; }
+                #federationConfigPage .fed-storage-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.7em; margin:.8em 0 1em; }
+                #federationConfigPage .fed-storage-stat { padding:.8em; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); }
+                #federationConfigPage .fed-storage-stat strong { display:block; font-size:1.15em; }
+                #federationConfigPage .fed-episode-row input.fed-check { margin-top:0; }
 
                 /* Downloads */
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
@@ -324,6 +347,7 @@
                     #federationConfigPage .fed-inline .fed-input-container { flex-basis:auto; width:100%; margin-bottom:0; }
                     #federationConfigPage .fed-inline > .fed-grow { flex:none; width:100%; }
                     #federationConfigPage .fed-inline > .emby-button { width:100%; }
+                    #federationConfigPage .fed-storage-summary { grid-template-columns:1fr; }
                 }
                 @media (max-width:62em) {
                     #federationConfigPage .fed-catalog-toolbar,
@@ -397,16 +421,11 @@
                 <button id="fedTabLibraries" aria-controls="fedPanelLibraries" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
                 <button id="fedTabCatalog" aria-controls="fedPanelCatalog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
+                <button id="fedTabStorage" aria-controls="fedPanelStorage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="storage" role="tab" aria-selected="false">Storage</button>
                 <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
             </div>
 
             <div id="fedPanelFriends" aria-labelledby="fedTabFriends" class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
-                <div class="verticalSection" id="fedDownloadsCard" style="display:none;">
-                    <h3 class="sectionTitle">Downloads</h3>
-                    <p class="fieldDescription">Items being saved from a friend's server to this one. A download becomes a normal local item once it finishes and the next library scan picks it up.</p>
-                    <div id="fedDownloadsList"></div>
-                </div>
-
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Add a friend</h3>
                     <p class="fieldDescription">
@@ -428,12 +447,13 @@
                 </div>
 
                 <div class="verticalSection">
-                    <h3 class="sectionTitle">People</h3>
+                    <h3 class="sectionTitle">Connected friends</h3>
                     <p class="fieldDescription">
                         Servers you're connected with. Manage a friend to control what they can see of your library, put
                         them in a pool, or tweak connection settings.
                     </p>
 
+                    <p class="fieldDescription">Availability is checked while this page is open. An unreachable friend may be offline or need to reconnect. Their titles stay in your library.</p>
                     <div id="fedFriendList"></div>
                 </div>
             </div>
@@ -502,8 +522,8 @@
                     <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
                     <p class="fieldDescription">
                         Have a Jellyfin friend whose Federation Companion app generated a connect code for you? Paste it
-                        below to add their Plex server as a source - the same as any other federated library, just backed
-                        by Plex instead of Jellyfin.
+                        below to add their Plex server as a source. Jellyfin receives a revocable, library-scoped relay
+                        credential; their real Plex token stays inside Companion.
                     </p>
                     <div class="fed-inline">
                         <div class="inputContainer fed-grow">
@@ -658,7 +678,12 @@
                         titles never appear here. An exclamation mark means Jellyfin already has a matching local copy,
                         so review it before downloading another. Downloads land in the "Federation Downloads" library.
                     </p>
-                    <p class="fed-srvstatus fed-srvstatus-info">Downloading to this server is temporarily disabled. Browsing still works.</p>
+                    <div class="fed-subtabs" role="tablist" aria-label="Download workspace">
+                        <button id="fedDownloadSelectTab" type="button" class="fed-subtab fed-subtab-active" data-fed-action="download-view" data-view="select" role="tab" aria-controls="fedDownloadSelectView" aria-selected="true">Select media</button>
+                        <button id="fedDownloadActivityTab" type="button" class="fed-subtab" data-fed-action="download-view" data-view="activity" role="tab" aria-controls="fedDownloadActivityView" aria-selected="false">Transfer activity</button>
+                    </div>
+
+                    <div id="fedDownloadSelectView" role="tabpanel" aria-labelledby="fedDownloadSelectTab">
 
                     <div class="fed-download-toolbar" id="fedBrowseToolbar">
                         <div class="fed-input-container fed-grow">
@@ -693,6 +718,21 @@
                     <div id="fedBrowseList"></div>
                     <div class="fed-picker-actions" id="fedBrowseMoreWrap" style="display:none;">
                         <a data-fed-action="browse-more">Load more</a>
+                    </div>
+                    <div class="fed-download-selectionbar" id="fedBrowseSelectionBar" style="display:none;">
+                        <strong id="fedBrowseSelectedCount">0 selected</strong>
+                        <span id="fedBrowseBulkNotice" class="fed-hint"></span>
+                        <span class="fed-spacer"></span>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="browse-clear-selection">Clear</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="browse-download-selected">Download selected</button>
+                    </div>
+                    </div>
+
+                    <div id="fedDownloadActivityView" role="tabpanel" aria-labelledby="fedDownloadActivityTab" style="display:none;">
+                        <p class="fieldDescription">Live server transfers. Speed and ETA update automatically; completed and failed jobs remain here for review.</p>
+                        <div id="fedDownloadsCard">
+                            <div id="fedDownloadsList"><p class="fed-muted">No transfers yet.</p></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -729,6 +769,28 @@
                         <div class="fed-savebar">
                             <button is="emby-button" type="submit" id="fedBtnSave" class="raised button-submit emby-button"><span>Save library selections</span></button>
                             <span class="fed-savemsg" id="fedSaveMsg"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="fedPanelStorage" aria-labelledby="fedTabStorage" class="fed-tabpanel" data-tab-panel="storage" role="tabpanel">
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Storage cleanup</h3>
+                        <p class="fieldDescription">
+                            Find local movies and episodes where an exact provider-ID match exists on a connected server in clearly better quality.
+                            This workspace only removes local files you explicitly select; it never downloads a replacement or runs automatically.
+                        </p>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Find reclaimable local copies</label>
+                        <p class="fieldDescription">
+                            Removing a local file means future playback depends on that friend's server. Size totals are estimates from the files currently on disk,
+                            and every selected ID is checked again immediately before Jellyfin removes it.
+                        </p>
+                        <div id="fedQualityUpgradePanel"></div>
+                        <a data-fed-action="quality-exclusions-toggle" style="cursor:pointer;">Manage exceptions (titles never suggested)</a>
+                        <div id="fedQualityExclusionsPanel" style="display:none;margin-top:0.4em;"></div>
+                        <div class="fed-savebar" style="margin-top:1.2em;">
+                            <button is="emby-button" type="submit" class="raised button-submit emby-button">Save storage preference</button>
+                            <span class="fed-savemsg" id="fedSaveMsgStorage"></span>
                         </div>
                     </div>
                 </div>
@@ -772,27 +834,11 @@
                                 <label class="inputLabel" for="fedTxtDedupIds">Provider IDs used for merging</label>
                                 <input type="text" id="fedTxtDedupIds" class="emby-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Find better federated copies</label>
-                            <p class="fieldDescription">
-                                When on, this page checks your own locally-owned movies/episodes against the matching copy on a federated
-                                friend's server (matched the same way merging above matches "the same movie" across servers) and, every time
-                                you open this page, shows a review list of any where a friend's copy is meaningfully better - higher
-                                resolution, or a clearly higher bitrate at the same resolution. <strong>Nothing is ever removed
-                                automatically</strong> - the review list just offers a "download the better copy, then remove the old one"
-                                suggestion per item. Suggestions alone never download or delete anything.
-                            </p>
-                            <div id="fedQualityReplaceOptIn" style="display:none;">
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkQualityReplaceActions" class="emby-checkbox fed-check" /> Show “download better copy and remove old copy” actions</label>
-                                <p class="fieldDescription"><strong>This still does not replace anything automatically.</strong> Every movie gets its own review and its own “Yes, replace this exact movie” confirmation. The old file is touched only after the new download completes and validates.</p>
-                            </div>
-                            <div id="fedQualityUpgradePanel"></div>
-                            <a data-fed-action="quality-exclusions-toggle" style="cursor:pointer;">Manage exceptions (titles never suggested)</a>
-                            <div id="fedQualityExclusionsPanel" style="display:none;margin-top:0.4em;"></div>
                             <div class="inputContainer">
                                 <label class="inputLabel" for="fedTxtRefreshHours">Refresh interval (hours)</label>
                                 <input type="number" id="fedTxtRefreshHours" class="emby-input" min="1" max="168" />
                             </div>
-                            <p class="fieldDescription">To keep a permanent local copy of a federated item, use the download button on that item's own detail page — it downloads in the background with its own progress indicator there.</p>
+                            <p class="fieldDescription">To keep a permanent local copy of a federated item, use the Downloads tab. Selective transfers and their progress are kept together there.</p>
 
                             <label class="fed-check-label"><input type="checkbox" id="fedChkPlexStrmExport" class="emby-checkbox fed-check" /> Export federated content as .strm files for Plex (or any other file-scanning media server)</label>
                             <p class="fieldDescription">
@@ -854,7 +900,21 @@
                 (function () {
                     'use strict';
 
+                    // Native clients may host their UI separately from the Jellyfin server.
+                    // Preserve the configured server and reverse-proxy base path.
                     var apiBase = window.location.origin;
+                    try {
+                        if (window.ApiClient && typeof window.ApiClient.serverAddress === 'function') {
+                            apiBase = window.ApiClient.serverAddress().replace(/\/+$/, '');
+                        } else {
+                            var webAt = window.location.pathname.toLowerCase().indexOf('/web');
+                            if (webAt >= 0) { apiBase += window.location.pathname.substring(0, webAt); }
+                        }
+                    } catch (e) { /* use the current server */ }
+                    if (window.__federationDisposePage) { window.__federationDisposePage(); }
+                    var friendHealth = {};
+                    var healthRequest = null;
+                    var lastHealthCheck = 0;
                     var currentConfig = { RemoteServers: [], LibraryMappings: [] };
                     var currentPools = [];
                     var customMappings = [];
@@ -956,13 +1016,8 @@
                             var i, s;
                             for (i = 0; i < servers.length; i++) {
                                 s = servers[i];
-                                if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
+                                if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === apiBase) {
                                     return s.AccessToken;
-                                }
-                            }
-                            for (i = 0; i < servers.length; i++) {
-                                if (servers[i] && servers[i].AccessToken) {
-                                    return servers[i].AccessToken;
                                 }
                             }
                         } catch (e) { /* no token available */ }
@@ -1028,7 +1083,7 @@
                         // tab the admin actually saved from shows the result, since only
                         // one tab panel is visible at a time.
                         var className = 'fed-savemsg ' + (isError ? 'fed-savemsg-err' : (msg ? 'fed-savemsg-ok' : ''));
-                        ['#fedSaveMsg', '#fedSaveMsgAdvanced'].forEach(function (selector) {
+                        ['#fedSaveMsg', '#fedSaveMsgStorage', '#fedSaveMsgAdvanced'].forEach(function (selector) {
                             var el = q(selector);
                             if (!el) {
                                 return;
@@ -1127,6 +1182,16 @@
                         html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend.</p>';
                         html += '</div>';
 
+                        if (server.Kind !== 1) {
+                            html += '<div style="margin:.8em 0;padding:.75em 0;border-top:1px solid var(--fed-border-soft);border-bottom:1px solid var(--fed-border-soft);">';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowDownloads !== false ? 'checked' : '') + ' /> Allow this friend to download individual files from my server</label>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowBulkDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowBulkDownloads === true ? 'checked' : '') + ' /> Allow this friend to request bulk downloads</label>';
+                            html += '<p class="fed-hint">Bulk access is off by default. It is required when they select more than three files in one download action.</p>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-download-access" data-id="' + escapeHtml(server.Id) + '">Save download permissions</button>';
+                            html += '<div class="fed-srvstatus" id="fedDownloadAccessStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                            html += '</div>';
+                        }
+
                         html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
                         html += '<div class="fed-inline">';
                         html += '<div class="fed-input-container"><input type="text" class="emby-input fed-input fedExcludeItemSearch" data-id="' + escapeHtml(server.Id) + '" placeholder="Search your library by name…" /></div>';
@@ -1202,6 +1267,32 @@
                             }
                         })
                         .catch(function (e) { setSharingStatus(serverId, 'Failed: ' + e.message, 'err'); });
+                    }
+
+                    function saveDownloadAccess(serverId) {
+                        var allow = q('.fedAllowDownloads[data-id="' + serverId + '"]');
+                        var bulk = q('.fedAllowBulkDownloads[data-id="' + serverId + '"]');
+                        var status = q('#fedDownloadAccessStatus-' + serverId);
+                        function show(msg, kind) {
+                            if (!status) { return; }
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        }
+                        show('Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/DownloadAccess', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                AllowDownloads: !!(allow && allow.checked),
+                                AllowBulkDownloads: !!(bulk && bulk.checked && allow && allow.checked)
+                            })
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (res) {
+                            show(res.message || 'Download permissions saved.', res.success ? 'ok' : 'err');
+                            if (res.success) { return loadConfiguration(true); }
+                        })
+                        .catch(function (e) { show('Could not save download permissions: ' + e.message, 'err'); });
                     }
 
                     function blockFriend(serverId) {
@@ -1751,6 +1842,7 @@
                             var isOff = server.Enabled === false;
                             html += '<div class="fed-server' + (isOff ? ' fed-server-off' : '') + '">';
                             html += '<div class="fed-server-head">';
+                            html += '<span class="fed-health fed-pill" data-server-health="' + escapeHtml(server.Id) + '" role="status">Checking…</span>';
                             html += '<span class="fed-dot" id="fedSrvDot' + i + '"></span>';
                             html += '<strong>' + escapeHtml(title) + '</strong>';
                             if (server.Kind === 1) {
@@ -1766,7 +1858,7 @@
                             }
 
                             html += '<span class="fed-spacer"></span>';
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-server" data-i="' + i + '">Test</button>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="test-server" data-i="' + i + '">Check connection</button>';
                             html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="manage-friend" data-i="' + i + '">' + (isOpen ? 'Close' : 'Manage') + '</button>';
                             html += '</div>';
                             if (isOff) {
@@ -1779,13 +1871,14 @@
                                 var advOpen = expandedFriendAdvanced[server.Id] === true;
                                 html += '<div class="fed-friendpanel">';
                                 html += '<p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>';
+                                html += renderSharingBlock(server);
                                 html += '<div>';
                                 html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="toggle-friend-advanced" data-id="' + escapeHtml(server.Id) + '">';
                                 html += (advOpen ? 'Hide advanced sharing & connection settings' : 'Advanced: sharing, permissions & connection settings');
                                 html += '</button>';
                                 html += '</div>';
                                 if (advOpen) {
-                                    html += renderSharingBlock(server);
+
                                     // Per-user access rules are pushed to a friend's own
                                     // server through this plugin's Peer/* endpoints, and
                                     // pools are a federation-token concept - neither has
@@ -1809,8 +1902,40 @@
                             html += '</div>';
                         });
                         c.innerHTML = html;
+                        renderFriendHealth();
                         loadLocalLibraries();
                         renderCompanion();
+                    }
+
+                    function renderFriendHealth() {
+                        qa('[data-server-health]').forEach(function (el) {
+                            var id = el.getAttribute('data-server-health');
+                            var server = currentConfig.RemoteServers.find(function (s) { return s.Id === id; });
+                            var health = friendHealth[id];
+                            var state = server && server.Enabled === false ? 'disabled' : health ? health.status : 'checking';
+                            el.textContent = { online: 'Online', unreachable: 'Unreachable', disabled: 'Paused', receiver: 'Receives your library', checking: 'Checking…', unknown: 'Not checked' }[state] || 'Not checked';
+                            el.setAttribute('data-state', state);
+                            el.title = health && health.checkedAtUtc ? 'Checked ' + new Date(health.checkedAtUtc).toLocaleTimeString() : '';
+                        });
+                    }
+
+                    function loadFriendHealth(force) {
+                        if (healthRequest) { return healthRequest; }
+                        if (!force && Date.now() - lastHealthCheck < 60000) { return Promise.resolve(); }
+                        if (!currentConfig.RemoteServers.length) { return Promise.resolve(); }
+                        lastHealthCheck = Date.now();
+                        healthRequest = fedFetch('/Plugins/Federation/TestAllServers', { method: 'POST' })
+                        .then(function (r) { if (!r.ok) { throw new Error('Connection check failed'); } return r.json(); })
+                        .then(function (res) {
+                            (res.results || []).forEach(function (r) {
+                                friendHealth[r.serverId] = { status: r.status || (r.online ? 'online' : 'unreachable'), checkedAtUtc: r.checkedAtUtc || new Date().toISOString() };
+                            });
+                        })
+                        .catch(function () {
+                            currentConfig.RemoteServers.forEach(function (s) { friendHealth[s.Id] = { status: 'unknown' }; });
+                        })
+                        .then(function () { healthRequest = null; renderFriendHealth(); });
+                        return healthRequest;
                     }
 
                     /* ---------------- Companion (Plex import/export) ---------------- */
@@ -1861,6 +1986,7 @@
                                 html += '<div class="fed-friendpanel">';
                                 html += '<p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>';
                                 html += renderSharingBlock(server);
+
                                 html += '<div style="margin-top:0.9em;">';
                                 html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-friend" data-i="' + entry.i + '">Remove</button>';
                                 html += '</div>';
@@ -1935,23 +2061,10 @@
                             return;
                         }
 
-                        var decoded;
-                        try {
-                            decoded = JSON.parse(atob(raw));
-                        } catch (e) {
-                            setFedStatus('fedPlexConnectStatus', 'That code could not be read - check it was copied in full.', 'err');
-                            return;
-                        }
-
-                        if (!decoded || !decoded.url || !decoded.token) {
-                            setFedStatus('fedPlexConnectStatus', 'That code is missing an address or token.', 'err');
-                            return;
-                        }
-
-                        setFedStatus('fedPlexConnectStatus', 'Connecting…', 'info');
-                        fedFetch('/Plugins/Federation/ExternalServers', {
+                        setFedStatus('fedPlexConnectStatus', 'Verifying the one-time code with Companion…', 'info');
+                        fedFetch('/Plugins/Federation/ExternalServers/CompanionConnect', {
                             method: 'POST',
-                            body: JSON.stringify({ Name: decoded.name, Url: decoded.url, Token: decoded.token })
+                            body: JSON.stringify({ Code: raw })
                         })
                         .then(function (r) { return r.json(); })
                         .then(function (res) {
@@ -1960,7 +2073,7 @@
                                 return;
                             }
 
-                            setFedStatus('fedPlexConnectStatus', 'Connected to ' + (decoded.name || decoded.url) + '.', 'ok');
+                            setFedStatus('fedPlexConnectStatus', 'Connected through the revocable Companion relay.', 'ok');
                             if (input) {
                                 input.value = '';
                             }
@@ -2125,7 +2238,8 @@
 
                     function testServer(i) {
                         setServerDot(i, 'unknown');
-                        setServerStatus(i, 'Testing…', 'info');
+                        setServerStatus(i, 'Checking connection…', 'info');
+                        loadFriendHealth(true);
                         var server = collectServer(i);
                         fedFetch('/Plugins/Federation/TestServer', {
                             method: 'POST',
@@ -2869,6 +2983,57 @@
                         // count is small enough that "Load more" would be noise.
                         seriesId: null, seriesName: null, seriesEpisodes: []
                     };
+                    var browseSelected = {};
+                    var downloadView = 'select';
+
+                    function setDownloadView(view) {
+                        downloadView = view === 'activity' ? 'activity' : 'select';
+                        var selectView = q('#fedDownloadSelectView');
+                        var activityView = q('#fedDownloadActivityView');
+                        if (selectView) { selectView.style.display = downloadView === 'select' ? '' : 'none'; }
+                        if (activityView) { activityView.style.display = downloadView === 'activity' ? '' : 'none'; }
+                        qa('.fed-subtab[data-view]').forEach(function (btn) {
+                            var active = btn.getAttribute('data-view') === downloadView;
+                            btn.classList.toggle('fed-subtab-active', active);
+                            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                        });
+                        if (downloadView === 'activity') { loadDownloads(); }
+                    }
+
+                    function browseSelectionItems() {
+                        var available = browseState.items.concat(browseState.seriesEpisodes || []);
+                        var byId = {};
+                        available.forEach(function (item) { byId[item.id] = item; });
+                        return Object.keys(browseSelected).filter(function (id) { return browseSelected[id]; }).map(function (id) { return byId[id] || browseSelected[id]; });
+                    }
+
+                    function updateBrowseSelectionBar() {
+                        var items = browseSelectionItems();
+                        var bar = q('#fedBrowseSelectionBar');
+                        if (!bar) { return; }
+                        bar.style.display = items.length > 0 ? 'flex' : 'none';
+                        q('#fedBrowseSelectedCount').textContent = items.length + ' selected';
+                        q('#fedBrowseBulkNotice').textContent = items.length > 3 ? 'Bulk permission required from the source server' : 'Small selective batch';
+                    }
+
+                    function clearBrowseSelection() {
+                        browseSelected = {};
+                        renderBrowseList();
+                        updateBrowseSelectionBar();
+                    }
+
+                    function setBrowseSelection(item, selected) {
+                        if (!item) { return; }
+                        if (selected) { browseSelected[item.id] = item; }
+                        else { delete browseSelected[item.id]; }
+                        renderBrowseList();
+                        updateBrowseSelectionBar();
+                    }
+
+                    function toggleBrowseSelection(item) {
+                        if (!item) { return; }
+                        setBrowseSelection(item, !browseSelected[item.id]);
+                    }
 
                     function setBrowseStatus(msg, kind) {
                         var el = q('#fedBrowseStatus');
@@ -2951,6 +3116,7 @@
                         browseState.serverId = serverId;
                         browseState.libraryId = '';
                         browseState.items = [];
+                        browseSelected = {};
                         resetBrowseSeriesState();
                         setBrowseStatus('', 'info');
                         var list = q('#fedBrowseList');
@@ -2997,6 +3163,7 @@
                         var sel = q('#fedBrowseLibrary');
                         browseState.libraryId = sel ? sel.value : '';
                         browseState.items = [];
+                        browseSelected = {};
                         resetBrowseSeriesState();
                         var list = q('#fedBrowseList');
                         if (list) {
@@ -3080,6 +3247,10 @@
                         browseState.items.forEach(function (item, i) {
                             var title = (item.name || 'Untitled') + (item.year ? ' (' + item.year + ')' : '');
                             html += '<div class="fed-catalog-cardwrap">';
+                            if (!isSeries) {
+                                var selected = !!browseSelected[item.id];
+                                html += '<input type="checkbox" class="fed-check fed-poster-check" data-fed-action="browse-select" data-idx="' + i + '"' + (selected ? ' checked' : '') + ' aria-label="' + (selected ? 'Deselect ' : 'Select ') + escapeHtml(title) + '">';
+                            }
                             html += '<button type="button" class="fed-catalog-card fed-catalog-cardtrigger" data-fed-action="' + (isSeries ? 'browse-open-series' : 'browse-info') + '" data-idx="' + i + '">';
                             html += '<div class="fed-catalog-poster" id="fedBrowsePoster' + i + '"></div>';
                             html += '<div class="fed-catalog-name">' + escapeHtml(title) + '</div>';
@@ -3087,15 +3258,12 @@
                             if (item.hasLocalCopy) {
                                 html += '<div class="fed-local-copy-warning" role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</div>';
                             }
-                            if (!isSeries) {
-                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-download" data-idx="' + i + '">Download</button>';
-                                html += '<div class="fed-srvstatus" id="fedBrowseItemStatus' + i + '" style="display:none;"></div>';
-                            }
                             html += '</div>';
                         });
                         c.innerHTML = html;
                         c.className = 'fed-catalog-grid';
                         loadPostersFor(browseState.items, 'fedBrowsePoster');
+                        updateBrowseSelectionBar();
                     }
 
                     // Shared by the shows/movies grid and one show's episode list -
@@ -3119,52 +3287,60 @@
                         });
                     }
 
-                    function setItemStatus(idPrefix, idx, msg, kind) {
-                        var el = q('#' + idPrefix + idx);
-                        if (!el) {
-                            return;
-                        }
-
-                        el.style.display = 'block';
-                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
-                        el.textContent = msg;
+                    function setBrowseSeasonSelected(seasonKey, selected) {
+                        var episodes = browseState.seriesEpisodes.filter(function (ep) {
+                            return (ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown') === seasonKey;
+                        });
+                        episodes.forEach(function (ep) {
+                            if (selected) { browseSelected[ep.id] = ep; }
+                            else { delete browseSelected[ep.id]; }
+                        });
+                        renderSeriesEpisodes();
                     }
 
-                    // Shared download-start flow for a movie/episode card - shown
-                    // inline right where the admin clicked, rather than a disabled
-                    // button that gave no feedback at all when downloading to this
-                    // server was paused: clicking now always reaches the server
-                    // and reports back its exact reason (e.g. "temporarily
-                    // disabled") instead of silently doing nothing.
-                    function startBrowseDownload(item, idPrefix, idx) {
-                        if (!item) {
-                            return;
-                        }
+                    function toggleBrowseSeason(seasonKey) {
+                        var episodes = browseState.seriesEpisodes.filter(function (ep) {
+                            return (ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown') === seasonKey;
+                        });
+                        var allSelected = episodes.length > 0 && episodes.every(function (ep) { return !!browseSelected[ep.id]; });
+                        setBrowseSeasonSelected(seasonKey, !allSelected);
+                    }
 
-                        setItemStatus(idPrefix, idx, 'Starting…', 'info');
-                        fedFetch('/Plugins/Federation/Browse/Download', {
+                    function downloadSelectedBrowseItems() {
+                        var items = browseSelectionItems();
+                        if (items.length === 0) { return; }
+                        var isBulk = items.length > 3;
+                        var warning = isBulk
+                            ? 'This requests ' + items.length + ' files. The source server must have explicitly allowed bulk downloads. Continue?'
+                            : 'Download ' + items.length + ' selected file' + (items.length === 1 ? '' : 's') + ' to this server?';
+                        if (!window.confirm(warning)) { return; }
+
+                        setBrowseStatus('Queueing selected downloads…', 'info');
+                        fedFetch('/Plugins/Federation/Browse/DownloadBatch', {
                             method: 'POST',
-                            body: JSON.stringify({ ServerId: browseState.serverId, ItemId: item.id, Name: item.name })
+                            body: JSON.stringify({
+                                ServerId: browseState.serverId,
+                                Items: items.map(function (item) { return { ItemId: item.id, Name: item.name }; })
+                            })
                         })
-                        .then(function (r) { return r.json(); })
+                        .then(function (r) {
+                            return r.json().then(function (body) {
+                                if (!r.ok) { throw new Error(body.message || body.error || 'The server rejected this download request.'); }
+                                return body;
+                            });
+                        })
                         .then(function (res) {
-                            if (!res.success) {
-                                setItemStatus(idPrefix, idx, res.message || 'Could not start download.', 'err');
-                                return;
+                            var operations = res.operations || [];
+                            var queued = operations.filter(function (op) { return op.success; }).length;
+                            var failed = operations.length - queued;
+                            setBrowseStatus(queued + ' transfer' + (queued === 1 ? '' : 's') + ' queued.' + (failed ? ' ' + failed + ' could not be queued.' : ''), failed ? 'err' : 'ok');
+                            if (queued > 0) {
+                                browseSelected = {};
+                                updateBrowseSelectionBar();
+                                setDownloadView('activity');
                             }
-
-                            setItemStatus(idPrefix, idx, 'Downloading… see the Downloads panel above for progress.', 'ok');
-                            loadDownloads();
                         })
-                        .catch(function (e) { setItemStatus(idPrefix, idx, 'Error: ' + e.message, 'err'); });
-                    }
-
-                    function downloadBrowseItem(idx) {
-                        startBrowseDownload(browseState.items[idx], 'fedBrowseItemStatus', idx);
-                    }
-
-                    function downloadEpisodeItem(idx) {
-                        startBrowseDownload(browseState.seriesEpisodes[idx], 'fedEpisodeItemStatus', idx);
+                        .catch(function (e) { setBrowseStatus('Could not queue downloads: ' + e.message, 'err'); });
                     }
 
                     /* ---------------- TV show drill-down ---------------- */
@@ -3242,32 +3418,40 @@
                             return;
                         }
 
-                        var html = '';
-                        var currentSeason;
+                        var seasons = {};
+                        var seasonOrder = [];
                         episodes.forEach(function (ep, i) {
-                            var season = ep.parentIndexNumber != null ? ep.parentIndexNumber : null;
-                            if (i === 0 || season !== currentSeason) {
-                                currentSeason = season;
-                                html += '<div class="fed-season-heading">' + (season != null ? 'Season ' + season : 'Specials / unnumbered') + '</div>';
-                            }
+                            var seasonKey = ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown';
+                            if (!seasons[seasonKey]) { seasons[seasonKey] = []; seasonOrder.push(seasonKey); }
+                            seasons[seasonKey].push({ item: ep, index: i });
+                        });
 
-                            var epLabel = (ep.indexNumber != null ? 'E' + String(ep.indexNumber).padStart(2, '0') + ' · ' : '') + (ep.name || 'Untitled');
-                            html += '<div class="fed-episode-row">';
-                            html += '<div class="fed-episode-poster" id="fedEpisodePoster' + i + '"></div>';
-                            html += '<button type="button" class="fed-episode-trigger" data-fed-action="browse-episode-info" data-idx="' + i + '">';
-                            html += '<div class="fed-episode-title">' + escapeHtml(epLabel) + '</div>';
-                            html += '</button>';
-                            html += '<div class="fed-episode-actions">';
-                            if (ep.hasLocalCopy) {
-                                html += '<span role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</span>';
-                            }
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat fed-browse-dlbtn" data-fed-action="browse-episode-download" data-idx="' + i + '">Download</button>';
-                            html += '</div></div>';
-                            html += '<div class="fed-srvstatus" id="fedEpisodeItemStatus' + i + '" style="display:none;"></div>';
+                        var html = '';
+                        seasonOrder.forEach(function (seasonKey) {
+                            var rows = seasons[seasonKey];
+                            var seasonLabel = seasonKey === 'unknown' ? 'Specials / unnumbered' : 'Season ' + seasonKey;
+                            var seasonSelected = rows.length > 0 && rows.every(function (row) { return !!browseSelected[row.item.id]; });
+                            html += '<details class="fed-season-folder" open data-season="' + escapeHtml(seasonKey) + '"><summary>';
+                            html += '<input type="checkbox" class="fed-check" data-fed-action="browse-select-season" data-season="' + escapeHtml(seasonKey) + '"' + (seasonSelected ? ' checked' : '') + ' aria-label="Select ' + escapeHtml(seasonLabel) + '">';
+                            html += '<span class="fed-folder-meta"><strong>' + escapeHtml(seasonLabel) + '</strong><span>' + rows.length + ' episode' + (rows.length === 1 ? '' : 's') + '</span></span>';
+                            html += '</summary><div class="fed-folder-body">';
+                            rows.forEach(function (row) {
+                                var ep = row.item, i = row.index;
+                                var epLabel = (ep.indexNumber != null ? 'E' + String(ep.indexNumber).padStart(2, '0') + ' · ' : '') + (ep.name || 'Untitled');
+                                var selected = !!browseSelected[ep.id];
+                                html += '<div class="fed-episode-row">';
+                                html += '<input type="checkbox" class="fed-check" data-fed-action="browse-episode-select" data-idx="' + i + '"' + (selected ? ' checked' : '') + ' aria-label="' + (selected ? 'Deselect ' : 'Select ') + escapeHtml(epLabel) + '">';
+                                html += '<div class="fed-episode-poster" id="fedEpisodePoster' + i + '"></div>';
+                                html += '<button type="button" class="fed-episode-trigger" data-fed-action="browse-episode-info" data-idx="' + i + '"><div class="fed-episode-title">' + escapeHtml(epLabel) + '</div></button>';
+                                if (ep.hasLocalCopy) { html += '<span role="img" aria-label="A matching local copy is already on this server" title="A matching local copy is already on this server">!</span>'; }
+                                html += '</div>';
+                            });
+                            html += '</div></details>';
                         });
                         c.innerHTML = html;
                         c.className = '';
                         loadPostersFor(episodes, 'fedEpisodePoster');
+                        updateBrowseSelectionBar();
                     }
 
                     /* ---------------- Item info card ---------------- */
@@ -3414,23 +3598,62 @@
                         return Object.keys(qualityUpgradeSelected).filter(function (id) { return qualityUpgradeSelected[id]; });
                     }
 
+                    function qualityBytes(candidates) {
+                        return (candidates || []).reduce(function (sum, c) { return sum + (Number(c.localSizeBytes) || 0); }, 0);
+                    }
+
+                    function selectedQualityBytes() {
+                        return qualityBytes(qualityUpgradeCandidates.filter(function (c) { return !!qualityUpgradeSelected[c.localItemId]; }));
+                    }
+
                     function isQualityShowSelected(show) {
-                        return show.episodes.every(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; });
+                        return show.episodes.length > 0 && show.episodes.every(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; });
+                    }
+
+                    function isQualitySeasonSelected(episodes) {
+                        return episodes.length > 0 && episodes.every(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; });
+                    }
+
+                    function qualitySeasonKey(seriesId, seasonKey) {
+                        return seriesId + ':' + seasonKey;
+                    }
+
+                    function findQualityShow(seriesId) {
+                        return groupQualityUpgrades(qualityUpgradeCandidates).shows.filter(function (s) { return s.seriesId === seriesId; })[0];
+                    }
+
+                    function setQualitySelected(id, selected) {
+                        if (!id) { return; }
+                        qualityUpgradeSelected[id] = !!selected;
+                        renderQualityUpgradePanel();
                     }
 
                     function toggleQualitySelect(id) {
-                        qualityUpgradeSelected[id] = !qualityUpgradeSelected[id];
+                        setQualitySelected(id, !qualityUpgradeSelected[id]);
+                    }
+
+                    function setQualityShowSelected(seriesId, selected) {
+                        var show = findQualityShow(seriesId);
+                        if (!show) { return; }
+                        show.episodes.forEach(function (ep) { qualityUpgradeSelected[ep.localItemId] = !!selected; });
                         renderQualityUpgradePanel();
                     }
 
                     function toggleQualitySelectShow(seriesId) {
-                        var show = groupQualityUpgrades(qualityUpgradeCandidates).shows.filter(function (s) { return s.seriesId === seriesId; })[0];
-                        if (!show) {
-                            return;
-                        }
+                        var show = findQualityShow(seriesId);
+                        if (!show) { return; }
+                        setQualityShowSelected(seriesId, !isQualityShowSelected(show));
+                    }
 
-                        var nowSelected = !isQualityShowSelected(show);
-                        show.episodes.forEach(function (ep) { qualityUpgradeSelected[ep.localItemId] = nowSelected; });
+                    function setQualitySeasonSelected(seriesId, seasonKey, selected) {
+                        var show = findQualityShow(seriesId);
+                        if (!show) { return; }
+                        show.episodes.forEach(function (ep) {
+                            var key = ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown';
+                            if (key === seasonKey) {
+                                qualityUpgradeSelected[ep.localItemId] = !!selected;
+                            }
+                        });
                         renderQualityUpgradePanel();
                     }
 
@@ -3444,18 +3667,110 @@
                         renderQualityUpgradePanel();
                     }
 
+                    function readOpenQualityFolders() {
+                        var open = { shows: {}, seasons: {} };
+                        var panel = q('#fedQualityUpgradePanel');
+                        if (!panel) { return open; }
+                        panel.querySelectorAll('details.fed-show-folder[open]').forEach(function (d) {
+                            var id = d.getAttribute('data-series');
+                            if (id) { open.shows[id] = true; }
+                        });
+                        panel.querySelectorAll('details.fed-season-folder[open]').forEach(function (d) {
+                            var key = d.getAttribute('data-season-key');
+                            if (key) { open.seasons[key] = true; }
+                        });
+                        return open;
+                    }
+
                     function renderQualityCard(opts) {
                         var html = '<div class="fed-quality-cardwrap">';
-                        html += '<button type="button" class="fed-catalog-card' + (opts.selected ? ' fed-catalog-card-selected' : '') + '" data-fed-action="' + opts.selectAction + '" data-id="' + escapeHtml(opts.selectId) + '" aria-pressed="' + (opts.selected ? 'true' : 'false') + '" aria-label="' + escapeHtml(opts.title) + '">';
-                        html += '<div class="fed-catalog-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(opts.posterId)) + '\')"><span class="fed-quality-checkbox" aria-hidden="true"></span></div>';
-                        html += '<div class="fed-catalog-name">' + escapeHtml(opts.title) + '</div>';
-                        html += '</button>';
+                        html += '<label class="fed-quality-pick">';
+                        html += '<input type="checkbox" class="fed-check fed-poster-check" data-fed-action="quality-select" data-id="' + escapeHtml(opts.selectId) + '"' + (opts.selected ? ' checked' : '') + ' aria-label="Select ' + escapeHtml(opts.title) + '">';
+                        html += '<span class="fed-catalog-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(opts.posterId)) + '\')"></span>';
+                        html += '<span class="fed-catalog-name">' + escapeHtml(opts.title) + '</span>';
+                        html += '</label>';
                         html += '<div class="fed-hint">' + opts.subtitle + '</div>';
                         if (opts.excludeId) {
                             html += '<a class="fed-quality-exclude" data-fed-action="quality-exclude" data-id="' + escapeHtml(opts.excludeId) + '">Keep local copy; do not ask again</a>';
                         }
                         html += '</div>';
                         return html;
+                    }
+
+                    function renderQualityShow(show, openFolders) {
+                        var seasons = {};
+                        var seasonOrder = [];
+                        show.episodes.forEach(function (ep) {
+                            var key = ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown';
+                            if (!seasons[key]) {
+                                seasons[key] = [];
+                                seasonOrder.push(key);
+                            }
+                            seasons[key].push(ep);
+                        });
+
+                        var selectedCount = show.episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
+                        var showOpen = !!(openFolders && openFolders.shows[show.seriesId]) || selectedCount > 0;
+                        var html = '<details class="fed-show-folder" data-series="' + escapeHtml(show.seriesId) + '"' + (showOpen ? ' open' : '') + '>';
+                        html += '<summary>';
+                        html += '<input type="checkbox" class="fed-check" data-fed-action="quality-select-show" data-id="' + escapeHtml(show.seriesId) + '"' + (isQualityShowSelected(show) ? ' checked' : '') + ' aria-label="Select ' + escapeHtml(show.seriesName) + '">';
+                        html += '<span class="fed-folder-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(show.seriesId)) + '\')"></span>';
+                        html += '<span class="fed-folder-meta"><strong>' + escapeHtml(show.seriesName) + '</strong><span>' + show.episodes.length + ' episode' + (show.episodes.length === 1 ? '' : 's') + ' · ' + escapeHtml(formatBytes(qualityBytes(show.episodes))) + (selectedCount ? ' · ' + selectedCount + ' selected' : '') + '</span></span>';
+                        html += '</summary><div class="fed-folder-body">';
+
+                        seasonOrder.forEach(function (seasonKey) {
+                            var episodes = seasons[seasonKey];
+                            var seasonLabel = seasonKey === 'unknown' ? 'Specials / unnumbered' : 'Season ' + seasonKey;
+                            var seasonId = qualitySeasonKey(show.seriesId, seasonKey);
+                            var seasonSelectedCount = episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
+                            var seasonOpen = !openFolders || !!openFolders.seasons[seasonId] || seasonSelectedCount > 0 || showOpen;
+                            html += '<details class="fed-season-folder" data-season-key="' + escapeHtml(seasonId) + '"' + (seasonOpen ? ' open' : '') + '>';
+                            html += '<summary>';
+                            html += '<input type="checkbox" class="fed-check" data-fed-action="quality-select-season" data-series="' + escapeHtml(show.seriesId) + '" data-season="' + escapeHtml(seasonKey) + '"' + (isQualitySeasonSelected(episodes) ? ' checked' : '') + ' aria-label="Select ' + escapeHtml(seasonLabel) + '">';
+                            html += '<span class="fed-folder-meta"><strong>' + escapeHtml(seasonLabel) + '</strong><span>' + episodes.length + ' episode' + (episodes.length === 1 ? '' : 's') + ' · ' + escapeHtml(formatBytes(qualityBytes(episodes))) + '</span></span>';
+                            html += '</summary><div class="fed-folder-body">';
+                            episodes.forEach(function (ep) {
+                                var tag = ep.indexNumber != null ? 'E' + String(ep.indexNumber).padStart(2, '0') + ' · ' : '';
+                                var selected = !!qualityUpgradeSelected[ep.localItemId];
+                                html += '<div class="fed-episode-row">';
+                                html += '<input type="checkbox" class="fed-check" data-fed-action="quality-select" data-id="' + escapeHtml(ep.localItemId) + '"' + (selected ? ' checked' : '') + ' aria-label="' + (selected ? 'Deselect ' : 'Select ') + escapeHtml(ep.name) + '">';
+                                html += '<div class="fed-episode-poster" style="background-image:url(\'' + escapeHtml(catalogPosterUrl(ep.localItemId)) + '\')"></div>';
+                                html += '<div class="fed-download-info"><div class="fed-episode-title">' + escapeHtml(tag + ep.name) + '</div>';
+                                html += '<div class="fed-hint">Local ' + escapeHtml(formatQuality(ep.localHeight, ep.localBitrate)) + ' → ' + escapeHtml(ep.remoteServerName) + ' ' + escapeHtml(formatQuality(ep.remoteHeight, ep.remoteBitrate)) + ' · ' + escapeHtml(formatBytes(ep.localSizeBytes || 0)) + '</div></div>';
+                                html += '<a class="fed-quality-exclude" data-fed-action="quality-exclude" data-id="' + escapeHtml(ep.localItemId) + '">Keep local</a>';
+                                html += '</div>';
+                            });
+                            html += '</div></details>';
+                        });
+
+                        html += '</div></details>';
+                        return html;
+                    }
+
+                    function syncQualityIndeterminate() {
+                        var panel = q('#fedQualityUpgradePanel');
+                        if (!panel) { return; }
+                        var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
+                        grouped.shows.forEach(function (show) {
+                            var showBox = panel.querySelector('input[data-fed-action="quality-select-show"][data-id="' + show.seriesId + '"]');
+                            var selected = show.episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
+                            if (showBox) {
+                                showBox.indeterminate = selected > 0 && selected < show.episodes.length;
+                            }
+                            var seasons = {};
+                            show.episodes.forEach(function (ep) {
+                                var key = ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown';
+                                (seasons[key] = seasons[key] || []).push(ep);
+                            });
+                            Object.keys(seasons).forEach(function (seasonKey) {
+                                var episodes = seasons[seasonKey];
+                                var box = panel.querySelector('input[data-fed-action="quality-select-season"][data-series="' + show.seriesId + '"][data-season="' + seasonKey + '"]');
+                                var n = episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
+                                if (box) {
+                                    box.indeterminate = n > 0 && n < episodes.length;
+                                }
+                            });
+                        });
                     }
 
                     function renderQualityUpgradePanel() {
@@ -3485,54 +3800,49 @@
                             }
                         });
 
+                        var openFolders = readOpenQualityFolders();
                         var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
                         var count = qualityUpgradeCandidates.length;
                         var selectedCount = qualitySelectedIds().length;
+                        var totalBytes = qualityBytes(qualityUpgradeCandidates);
+                        var selectedBytes = selectedQualityBytes();
 
                         var html = '<div class="fed-qualitypanel">';
-                        html += '<h3 class="fed-subhead">Better copies to review</h3>';
-                        html += '<p class="fieldDescription">' + count + ' title' + (count === 1 ? '' : 's') + ' ' + (count === 1 ? 'has' : 'have') + ' a meaningfully better federated match. Select the ones to replace, then apply - a TV show replaces every one of its selected episodes together.</p>';
-
-                        if (currentConfig.EnableQualityReplacementActions) {
-                            html += '<div class="fed-quality-bulkbar">';
-                            html += '<strong>' + selectedCount + ' selected</strong>';
-                            html += '<a data-fed-action="quality-select-all">Select all</a>';
-                            html += '<a data-fed-action="quality-clear-selection">Clear</a>';
-                            html += '<span class="fed-spacer"></span>';
-                            html += '<button is="emby-button" type="button" class="emby-button button-flat raised" data-fed-action="quality-apply-selected"' + (selectedCount === 0 || qualityUpgradeBusy ? ' disabled' : '') + '>Apply selected (' + selectedCount + ')</button>';
-                            html += '</div>';
-                        }
+                        html += '<h3 class="fed-subhead">Local copies eligible for cleanup</h3>';
+                        html += '<p class="fieldDescription">Every entry has an exact provider-ID match in better quality on a connected server. Removing one does not download anything; it frees local storage and leaves federated playback as the remaining copy.</p>';
+                        html += '<div class="fed-storage-summary">';
+                        html += '<div class="fed-storage-stat"><strong>' + count + '</strong><span>eligible files</span></div>';
+                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(totalBytes)) + '</strong><span>potential cleanup</span></div>';
+                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(selectedBytes)) + '</strong><span>selected cleanup</span></div>';
+                        html += '</div>';
+                        html += '<div class="fed-quality-bulkbar">';
+                        html += '<strong>' + selectedCount + ' selected · ' + escapeHtml(formatBytes(selectedBytes)) + '</strong>';
+                        html += '<a data-fed-action="quality-select-all">Select all</a>';
+                        html += '<a data-fed-action="quality-clear-selection">Clear</a>';
+                        html += '<span class="fed-spacer"></span>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="quality-apply-selected"' + (selectedCount === 0 || qualityUpgradeBusy ? ' disabled' : '') + '>Remove selected · ' + escapeHtml(formatBytes(selectedBytes)) + '</button>';
+                        html += '</div>';
 
                         html += '<div class="fed-quality-grid">';
                         grouped.movies.forEach(function (c) {
                             html += renderQualityCard({
-                                selectAction: 'quality-select',
                                 selectId: c.localItemId,
                                 posterId: c.localItemId,
                                 title: c.name + (c.year ? ' (' + c.year + ')' : ''),
-                                subtitle: 'Local: ' + escapeHtml(formatQuality(c.localHeight, c.localBitrate)) + ' · ' + escapeHtml(c.remoteServerName) + ': ' + escapeHtml(formatQuality(c.remoteHeight, c.remoteBitrate)),
+                                subtitle: 'Local: ' + escapeHtml(formatQuality(c.localHeight, c.localBitrate)) + ' · ' + escapeHtml(formatBytes(c.localSizeBytes || 0)) + '<br>' + escapeHtml(c.remoteServerName) + ': ' + escapeHtml(formatQuality(c.remoteHeight, c.remoteBitrate)),
                                 selected: !!qualityUpgradeSelected[c.localItemId],
                                 excludeId: c.localItemId
                             });
                         });
-                        grouped.shows.forEach(function (show) {
-                            var epCount = show.episodes.length;
-                            html += renderQualityCard({
-                                selectAction: 'quality-select-show',
-                                selectId: show.seriesId,
-                                posterId: show.seriesId,
-                                title: show.seriesName,
-                                subtitle: epCount + ' episode' + (epCount === 1 ? '' : 's') + ' with a better copy on ' + escapeHtml(show.episodes[0].remoteServerName) + ' - selecting replaces the whole show.',
-                                selected: isQualityShowSelected(show)
-                            });
-                        });
                         html += '</div>';
+                        grouped.shows.forEach(function (show) { html += renderQualityShow(show, openFolders); });
 
                         if (qualityUpgradeMessage) {
                             html += '<div class="fed-srvstatus fed-srvstatus-info">' + escapeHtml(qualityUpgradeMessage) + '</div>';
                         }
                         html += '</div>';
                         el.innerHTML = html;
+                        syncQualityIndeterminate();
                     }
 
                     function toggleQualityExclusionsPanel() {
@@ -3598,59 +3908,48 @@
                         .catch(function () { /* best-effort - it'll just be offered again next load */ });
                     }
 
-                    // Bulk-apply, reached only after the two confirmations below -
-                    // a deliberate reversal of this project's earlier "no bulk
-                    // approval, one title at a time" stance, done at the project
-                    // owner's explicit request. Each id is still sent individually
-                    // in one request (QualityUpgradeApplyBody.ItemIds), and if/when
-                    // ApplyQualityUpgrades stops being temporarily disabled it must
-                    // keep re-validating and downloading-then-removing each item on
-                    // its own - selecting many at once is a UI convenience, not a
-                    // license for the server side to skip per-item safety checks.
+                    // Bulk cleanup remains exact-id approval: the browser sends only
+                    // the checked file ids and the server rebuilds the candidate set
+                    // before deleting each one. No replacement download is involved.
                     function applySelectedQualityUpgrades() {
                         var ids = qualitySelectedIds();
                         if (ids.length === 0 || qualityUpgradeBusy) {
                             return;
                         }
 
-                        var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
-                        var selectedShows = grouped.shows.filter(function (s) { return isQualityShowSelected(s); });
-                        var selectedMovies = grouped.movies.filter(function (c) { return qualityUpgradeSelected[c.localItemId]; });
-
+                        var selectedCandidates = qualityUpgradeCandidates.filter(function (c) { return !!qualityUpgradeSelected[c.localItemId]; });
+                        var movieCount = selectedCandidates.filter(function (c) { return c.itemType !== 'Episode'; }).length;
+                        var episodeCount = selectedCandidates.length - movieCount;
                         var summary = [];
-                        if (selectedMovies.length > 0) {
-                            summary.push(selectedMovies.length + ' movie' + (selectedMovies.length === 1 ? '' : 's'));
-                        }
-                        if (selectedShows.length > 0) {
-                            var epTotal = selectedShows.reduce(function (n, s) { return n + s.episodes.length; }, 0);
-                            summary.push(selectedShows.length + ' show' + (selectedShows.length === 1 ? '' : 's') + ' (' + epTotal + ' episode' + (epTotal === 1 ? '' : 's') + ')');
-                        }
+                        if (movieCount > 0) { summary.push(movieCount + ' movie' + (movieCount === 1 ? '' : 's')); }
+                        if (episodeCount > 0) { summary.push(episodeCount + ' episode' + (episodeCount === 1 ? '' : 's')); }
 
-                        if (!window.confirm('Replace ' + summary.join(' and ') + ' with the federated copy? Each one downloads the better copy first and only removes the old local file after that succeeds.')) {
+                        var reclaim = formatBytes(selectedQualityBytes());
+                        if (!window.confirm('Remove the selected local copies (' + summary.join(' and ') + ')? Estimated space freed: ' + reclaim + '. No replacement will be downloaded.')) {
                             return;
                         }
 
-                        if (!window.confirm('This can\'t be easily undone once each download completes. Continue?')) {
+                        if (!window.confirm('Final confirmation: delete these exact local media files from this server? Future playback will depend on the federated server.')) {
                             return;
                         }
 
                         qualityUpgradeBusy = true;
-                        qualityUpgradeMessage = 'Starting ' + ids.length + ' approved replacement' + (ids.length === 1 ? '' : 's') + '…';
+                        qualityUpgradeMessage = 'Removing ' + ids.length + ' approved local cop' + (ids.length === 1 ? 'y' : 'ies') + '…';
                         renderQualityUpgradePanel();
 
-                        fedFetch('/Plugins/Federation/QualityUpgrades/Apply', {
+                        fedFetch('/Plugins/Federation/QualityUpgrades/RemoveLocal', {
                             method: 'POST',
-                            body: JSON.stringify({ ItemIds: ids })
+                            body: JSON.stringify({ ItemIds: ids, Confirm: true })
                         })
                         .then(function (r) { return r.ok ? r.json() : r.text().then(function (text) { throw new Error(text); }); })
                         .then(function (res) {
-                            var operations = res.operations || [];
+                            var operations = res.items || [];
                             if (operations.length === 0) {
                                 // The endpoint validated the whole request before any
                                 // per-item work started (e.g. downloading to this
                                 // server is currently disabled) - nothing to remove
                                 // from the list, just show why.
-                                throw new Error(res.message || 'The replacement could not be started.');
+                                throw new Error(res.message || 'No local copy was removed.');
                             }
 
                             var succeeded = operations.filter(function (op) { return op.success; }).map(function (op) { return op.itemId; });
@@ -3659,14 +3958,11 @@
                             qualityUpgradeCandidates = qualityUpgradeCandidates.filter(function (c) { return succeeded.indexOf(c.localItemId) === -1; });
                             succeeded.forEach(function (id) { delete qualityUpgradeSelected[id]; });
 
-                            qualityUpgradeMessage = succeeded.length + ' of ' + operations.length + ' replacement' + (operations.length === 1 ? '' : 's') + ' started - progress is shown in Downloads.'
+                            qualityUpgradeMessage = succeeded.length + ' of ' + operations.length + ' local cop' + (operations.length === 1 ? 'y' : 'ies') + ' removed · ' + formatBytes(res.reclaimedBytes || 0) + ' reclaimed.'
                                 + (failed.length > 0 ? ' ' + failed.length + ' could not start: ' + failed.map(function (op) { return op.message; }).join('; ') : '');
-                            if (succeeded.length > 0) {
-                                loadDownloads();
-                            }
                         })
                         .catch(function (e) {
-                            qualityUpgradeMessage = 'Could not start replacement: ' + e.message;
+                            qualityUpgradeMessage = 'Cleanup failed: ' + e.message;
                         })
                         .then(function () {
                             qualityUpgradeBusy = false;
@@ -4543,11 +4839,13 @@
                     /* ---------------- Downloads ---------------- */
 
                     function formatBytes(n) {
-                        if (!n && n !== 0) { return ''; }
-                        var units = ['B', 'KB', 'MB', 'GB'];
+                        if (n == null || n === '') { return ''; }
+                        n = Number(n);
+                        if (!isFinite(n) || n < 0) { return '0 B'; }
+                        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
                         var i = 0;
                         while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-                        return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+                        return (i === 0 ? String(Math.round(n)) : n.toFixed(n >= 10 || i >= 3 ? 0 : 1)) + ' ' + units[i];
                     }
 
                     function formatSpeed(bytesPerSecond) {
@@ -4576,8 +4874,8 @@
                         if (!card || !listEl) { return; }
 
                         if (list.length === 0) {
-                            card.style.display = 'none';
-                            listEl.innerHTML = '';
+                            card.style.display = '';
+                            listEl.innerHTML = '<p class="fed-muted">No transfers yet. Choose media in the Select media view.</p>';
                             return;
                         }
 
@@ -4593,7 +4891,7 @@
                                 : '';
                             var cancelBtn = '';
                             if (!d.isComplete) {
-                                statusLine = sizeInfo + (speed ? ' — ' + speed : '') + (eta ? ' — ' + eta : '') + ' — Downloading…';
+                                statusLine = (sizeInfo ? sizeInfo + ' — ' : '') + (speed ? speed + ' — ' : '') + (eta ? eta + ' — ' : '') + escapeHtml(d.status || 'Downloading…');
                                 cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
                             } else if (d.success) {
                                 statusLine = 'Downloaded — ' + formatBytes(d.bytesDownloaded);
@@ -4801,10 +5099,9 @@
                             q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
                             q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
-                            q('#fedChkQualityReplaceActions').checked = currentConfig.EnableQualityReplacementActions === true;
-                            q('#fedQualityReplaceOptIn').style.display = currentConfig.PreferHigherQualityRemotes === true ? 'block' : 'none';
 
                             renderFriends();
+                            loadFriendHealth(false);
                             renderMappings();
                             loadStatus();
                             loadDiagnostics();
@@ -4844,7 +5141,9 @@
                             EnablePlexStrmExport: q('#fedChkPlexStrmExport').checked,
                             PlexStrmExportPath: q('#fedTxtPlexStrmPath').value.trim(),
                             PreferHigherQualityRemotes: q('#fedChkPreferQuality').checked,
-                            EnableQualityReplacementActions: q('#fedChkQualityReplaceActions').checked,
+                            // Retired: quality review is now delete-only storage
+                            // cleanup and never starts a replacement transfer.
+                            EnableQualityReplacementActions: false,
                             RefreshIntervalHours: parseInt(q('#fedTxtRefreshHours').value, 10) || 1,
                             RemoteServers: (currentConfig.RemoteServers || []).map(function (s) {
                                 return {
@@ -4886,7 +5185,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
 
                     function switchTab(tab) {
@@ -4930,6 +5229,10 @@
                             loadBrowseServers();
                         }
 
+                        if (tab === 'storage') {
+                            loadQualityUpgrades();
+                        }
+
                         try {
                             localStorage.setItem(TAB_STORAGE_KEY, tab);
                         } catch (e) { /* localStorage unavailable (private browsing, etc.) - tab still switches, just doesn't persist */ }
@@ -4944,6 +5247,25 @@
 
                         page.dataset.handlersAttached = '1';
 
+                        // A checkbox inside <summary> can also toggle the folder.
+                        // Snapshot open state in capture (before the default
+                        // action) and restore it; do not stopPropagation or the
+                        // checkbox itself never receives the click.
+                        page.addEventListener('click', function (e) {
+                            var t = e.target;
+                            if (!t || t.type !== 'checkbox' || !t.getAttribute('data-fed-action')) {
+                                return;
+                            }
+
+                            var details = t.closest ? t.closest('details') : null;
+                            if (!details) {
+                                return;
+                            }
+
+                            var wasOpen = details.open;
+                            requestAnimationFrame(function () { details.open = wasOpen; });
+                        }, true);
+
                         page.addEventListener('keydown', function (e) {
                             if (e.key === 'Escape' && q('#fedInfoModalRoot').innerHTML) {
                                 closeItemInfoModal();
@@ -4953,6 +5275,15 @@
                         page.addEventListener('click', function (e) {
                             var t = e.target && e.target.closest ? e.target.closest('[data-fed-action]') : null;
                             if (!t || !page.contains(t)) {
+                                return;
+                            }
+
+                            // Native checkboxes must keep their default toggle.
+                            // The change listener below applies the resulting
+                            // checked state. Stop bubbling so a checkbox inside
+                            // <summary> does not also open/close the folder.
+                            if (t.matches && t.matches('input[type="checkbox"]')) {
+                                e.stopPropagation();
                                 return;
                             }
 
@@ -5047,6 +5378,9 @@
                                 case 'save-sharing':
                                     saveSharing(t.getAttribute('data-id'));
                                     break;
+                                case 'save-download-access':
+                                    saveDownloadAccess(t.getAttribute('data-id'));
+                                    break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));
                                     break;
@@ -5126,8 +5460,23 @@
                                 case 'catalog-more':
                                     loadCatalog(false);
                                     break;
-                                case 'browse-download':
-                                    downloadBrowseItem(parseInt(t.getAttribute('data-idx'), 10));
+                                case 'download-view':
+                                    setDownloadView(t.getAttribute('data-view'));
+                                    break;
+                                case 'browse-select':
+                                    toggleBrowseSelection(browseState.items[parseInt(t.getAttribute('data-idx'), 10)]);
+                                    break;
+                                case 'browse-episode-select':
+                                    toggleBrowseSelection(browseState.seriesEpisodes[parseInt(t.getAttribute('data-idx'), 10)]);
+                                    break;
+                                case 'browse-select-season':
+                                    toggleBrowseSeason(t.getAttribute('data-season'));
+                                    break;
+                                case 'browse-clear-selection':
+                                    clearBrowseSelection();
+                                    break;
+                                case 'browse-download-selected':
+                                    downloadSelectedBrowseItems();
                                     break;
                                 case 'browse-more':
                                     loadBrowseItems(false);
@@ -5144,9 +5493,6 @@
                                 case 'browse-episode-info':
                                     showItemInfoModal(browseState.seriesEpisodes[parseInt(t.getAttribute('data-idx'), 10)]);
                                     break;
-                                case 'browse-episode-download':
-                                    downloadEpisodeItem(parseInt(t.getAttribute('data-idx'), 10));
-                                    break;
                                 case 'info-close':
                                     closeItemInfoModal();
                                     break;
@@ -5160,6 +5506,15 @@
                                     break;
                                 case 'quality-select-show':
                                     toggleQualitySelectShow(t.getAttribute('data-id'));
+                                    break;
+                                case 'quality-select-season':
+                                    var seasonShow = findQualityShow(t.getAttribute('data-series'));
+                                    var seasonKey = t.getAttribute('data-season');
+                                    var seasonEps = seasonShow ? seasonShow.episodes.filter(function (ep) {
+                                        var key = ep.parentIndexNumber != null ? String(ep.parentIndexNumber) : 'unknown';
+                                        return key === seasonKey;
+                                    }) : [];
+                                    setQualitySeasonSelected(t.getAttribute('data-series'), seasonKey, !isQualitySeasonSelected(seasonEps));
                                     break;
                                 case 'quality-select-all':
                                     selectAllQualityUpgrades();
@@ -5271,6 +5626,30 @@
                                 return;
                             }
 
+                            var checkAction = t.getAttribute('data-fed-action');
+                            if (t.type === 'checkbox' && checkAction) {
+                                switch (checkAction) {
+                                    case 'quality-select':
+                                        setQualitySelected(t.getAttribute('data-id'), t.checked);
+                                        return;
+                                    case 'quality-select-show':
+                                        setQualityShowSelected(t.getAttribute('data-id'), t.checked);
+                                        return;
+                                    case 'quality-select-season':
+                                        setQualitySeasonSelected(t.getAttribute('data-series'), t.getAttribute('data-season'), t.checked);
+                                        return;
+                                    case 'browse-select':
+                                        setBrowseSelection(browseState.items[parseInt(t.getAttribute('data-idx'), 10)], t.checked);
+                                        return;
+                                    case 'browse-episode-select':
+                                        setBrowseSelection(browseState.seriesEpisodes[parseInt(t.getAttribute('data-idx'), 10)], t.checked);
+                                        return;
+                                    case 'browse-select-season':
+                                        setBrowseSeasonSelected(t.getAttribute('data-season'), t.checked);
+                                        return;
+                                }
+                            }
+
                             if (t.id === 'fedCatalogFriendPick') {
                                 onCatalogFriendPickChange();
                                 return;
@@ -5285,7 +5664,10 @@
                             }
 
                             if (t.id === 'fedChkPreferQuality') {
-                                q('#fedQualityReplaceOptIn').style.display = t.checked ? 'block' : 'none';
+                                if (!t.checked) {
+                                    qualityUpgradeSelected = {};
+                                }
+                                renderQualityUpgradePanel();
                                 return;
                             }
 
@@ -5301,10 +5683,18 @@
 
                             if (t.id === 'fedBrowseType') {
                                 browseState.mediaType = t.value === 'Series' ? 'Series' : 'Movie';
+                                browseSelected = {};
+                                updateBrowseSelectionBar();
                                 resetBrowseSeriesState();
                                 if (browseState.libraryId) {
                                     loadBrowseItems(true);
                                 }
+                                return;
+                            }
+
+                            if (t.classList.contains('fedAllowDownloads')) {
+                                var bulkToggle = q('.fedAllowBulkDownloads[data-id="' + t.getAttribute('data-id') + '"]');
+                                if (bulkToggle && !t.checked) { bulkToggle.checked = false; }
                                 return;
                             }
 
@@ -5438,8 +5828,27 @@
 
                     var downloadsPollInterval = null;
                     var watchingPollInterval = null;
+                    var healthPollInterval = null;
+                    var activePage = null;
+
+                    function stopPagePolling() {
+                        clearInterval(downloadsPollInterval);
+                        clearInterval(watchingPollInterval);
+                        clearInterval(healthPollInterval);
+                        downloadsPollInterval = watchingPollInterval = healthPollInterval = null;
+                        activePage = null;
+                        stopWatchdog();
+                    }
+
+                    function pageIsVisible() {
+                        return activePage && activePage.isConnected && !document.hidden
+                            && !activePage.classList.contains('hide');
+                    }
 
                     function initPage(page) {
+                        if (activePage === page) { return; }
+                        stopPagePolling();
+                        activePage = page;
                         pageEl = page;
                         attachHandlers(page);
 
@@ -5462,24 +5871,30 @@
                             clearInterval(downloadsPollInterval);
                         }
 
-                        downloadsPollInterval = setInterval(loadDownloads, 3000);
+                        downloadsPollInterval = setInterval(function () { if (pageIsVisible()) { loadDownloads(); } }, 3000);
 
                         loadWatching();
                         if (watchingPollInterval) {
                             clearInterval(watchingPollInterval);
                         }
 
-                        watchingPollInterval = setInterval(loadWatching, 5000);
+                        watchingPollInterval = setInterval(function () { if (pageIsVisible()) { loadWatching(); } }, 5000);
+                        healthPollInterval = setInterval(function () { if (pageIsVisible()) { loadFriendHealth(false); } }, 60000);
                     }
 
-                    if (!window.__federationPageshowBound) {
-                        window.__federationPageshowBound = true;
-                        document.addEventListener('pageshow', function (e) {
-                            if (e.target && e.target.id === 'federationConfigPage') {
-                                initPage(e.target);
-                            }
-                        });
+                    function onPageShow(e) {
+                        if (e.target && e.target.id === 'federationConfigPage') { initPage(e.target); }
                     }
+                    function onPageHide(e) {
+                        if (e.target === pageEl) { stopPagePolling(); }
+                    }
+                    document.addEventListener('pageshow', onPageShow);
+                    document.addEventListener('pagehide', onPageHide);
+                    window.__federationDisposePage = function () {
+                        stopPagePolling();
+                        document.removeEventListener('pageshow', onPageShow);
+                        document.removeEventListener('pagehide', onPageHide);
+                    };
 
                     var initial = document.getElementById('federationConfigPage');
                     if (initial) {

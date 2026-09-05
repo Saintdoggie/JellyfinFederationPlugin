@@ -98,6 +98,56 @@ public class RemoteServerClientPlaybackTests
         Assert.Null(handler.LastRemoteUserIdHeader);
     }
 
+    [Theory]
+    [InlineData(false, "\"Purpose\":\"Download\"")]
+    [InlineData(true, "\"Purpose\":\"BulkDownload\"")]
+    public async Task GetDownloadTokenAsync_RequestsPurposeScopedUncachedToken(bool bulk, string expectedJson)
+    {
+        var purpose = bulk ? "BulkDownload" : "Download";
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"tok-123\",\"purpose\":\"" + purpose + "\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "download-purpose-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var first = await client.GetDownloadTokenAsync("item-1", bulk, CancellationToken.None);
+        var second = await client.GetDownloadTokenAsync("item-1", bulk, CancellationToken.None);
+
+        Assert.Equal("tok-123", first.Token);
+        Assert.Equal("tok-123", second.Token);
+        Assert.Contains(expectedJson, handler.LastRequestBody);
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
+    public async Task GetDownloadTokenAsync_UsesStableRemoteDenialMessage()
+    {
+        var handler = new FakeHttpMessageHandler(
+            playbackTokenJson: "{\"error\":\"Bulk downloads are not enabled for this friend.\"}",
+            playbackTokenStatusCode: HttpStatusCode.Forbidden);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "download-denied-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetDownloadTokenAsync("item-1", bulk: true, CancellationToken.None);
+
+        Assert.Null(result.Token);
+        Assert.Equal("Bulk downloads are not enabled for this friend.", result.Error);
+    }
+
+    [Fact]
+    public async Task GetDownloadTokenAsync_OldPeerWithoutPurposeEcho_FailsClosed()
+    {
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"legacy-playback-token\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "legacy-download-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetDownloadTokenAsync("item-1", bulk: false, CancellationToken.None);
+
+        Assert.Null(result.Token);
+        Assert.Contains("too old", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GetPlaybackTokenAsync_CachesAcrossCalls_ForSameServerItemAndUser()
     {
@@ -349,6 +399,7 @@ public class RemoteServerClientPlaybackTests
         private readonly HttpStatusCode _systemInfoStatusCode;
 
         private readonly string _playbackTokenJson;
+        private readonly HttpStatusCode _playbackTokenStatusCode;
         private readonly string _registerUserSessionJson;
         private readonly HttpStatusCode _registerUserSessionStatusCode;
 
@@ -358,6 +409,7 @@ public class RemoteServerClientPlaybackTests
         public string? LastRemoteUserIdHeader { get; private set; }
         public int RegisterUserSessionCallCount { get; private set; }
         public int PlaybackTokenCallCount { get; private set; }
+        public string LastRequestBody { get; private set; } = string.Empty;
 
         public FakeHttpMessageHandler(
             string playbackJson = "{\"MediaSources\":[]}",
@@ -368,6 +420,7 @@ public class RemoteServerClientPlaybackTests
             string systemInfoJson = "{}",
             HttpStatusCode systemInfoStatusCode = HttpStatusCode.OK,
             string playbackTokenJson = "{\"token\":\"tok-123\"}",
+            HttpStatusCode playbackTokenStatusCode = HttpStatusCode.OK,
             string registerUserSessionJson = "{\"token\":\"session-tok-123\"}",
             HttpStatusCode registerUserSessionStatusCode = HttpStatusCode.OK)
         {
@@ -379,6 +432,7 @@ public class RemoteServerClientPlaybackTests
             _systemInfoJson = systemInfoJson;
             _systemInfoStatusCode = systemInfoStatusCode;
             _playbackTokenJson = playbackTokenJson;
+            _playbackTokenStatusCode = playbackTokenStatusCode;
             _registerUserSessionJson = registerUserSessionJson;
             _registerUserSessionStatusCode = registerUserSessionStatusCode;
         }
@@ -391,6 +445,7 @@ public class RemoteServerClientPlaybackTests
             LastRemoteUserIdHeader = request.Headers.TryGetValues(RemoteServerClient.RemoteUserIdHeader, out var values)
                 ? values.FirstOrDefault()
                 : null;
+            LastRequestBody = request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult() ?? string.Empty;
 
             if (path.Equals("/Users", StringComparison.OrdinalIgnoreCase)
                 || System.Text.RegularExpressions.Regex.IsMatch(path, "^/Users/[^/]+/Items"))
@@ -401,7 +456,12 @@ public class RemoteServerClientPlaybackTests
             if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
             {
                 PlaybackTokenCallCount++;
-                return Task.FromResult(Json(_playbackTokenJson));
+                return Task.FromResult(_playbackTokenStatusCode == HttpStatusCode.OK
+                    ? Json(_playbackTokenJson)
+                    : new HttpResponseMessage(_playbackTokenStatusCode)
+                    {
+                        Content = new StringContent(_playbackTokenJson, Encoding.UTF8, "application/json")
+                    });
             }
 
             if (path.Equals("/Plugins/Federation/RegisterUserSession", StringComparison.OrdinalIgnoreCase))

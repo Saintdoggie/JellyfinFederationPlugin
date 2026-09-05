@@ -31,6 +31,7 @@ namespace Jellyfin.Plugin.Federation.Services
         // HttpClient's default timeout is far too short for a whole movie, and
         // this is a one-shot server-side fetch, not a live client-facing relay.
         private static readonly HttpClient BrowseDownloadHttpClient = new HttpClient { Timeout = TimeSpan.FromHours(6) };
+        private static readonly SemaphoreSlim BrowseDownloadSlots = new(2, 2);
 
         private readonly ILibraryManager _libraryManager;
         private readonly FederationLibraryManager _federationManager;
@@ -134,7 +135,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var srcServer = cfg?.RemoteServers?.FirstOrDefault(s => s.Id == source.ServerId);
-            if (srcServer != null && !srcServer.AllowDownloads)
+            if (srcServer != null && srcServer.Kind != ServerKind.Jellyfin && !srcServer.AllowDownloads)
             {
                 return (false, $"Downloads from {srcServer.Name} are disabled (Catalog → {srcServer.Name} → Download access).", null);
             }
@@ -159,7 +160,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// anything visible in the browse picker whether or not it has ever been
         /// synced into a local library.
         /// </summary>
-        public (bool Success, string Message, string? OperationId) StartBrowseDownload(string serverId, string nativeItemId, string itemName)
+        public (bool Success, string Message, string? OperationId) StartBrowseDownload(
+            string serverId,
+            string nativeItemId,
+            string itemName,
+            bool bulk = false)
         {
             if (string.IsNullOrWhiteSpace(serverId) || string.IsNullOrWhiteSpace(nativeItemId))
             {
@@ -178,9 +183,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Downloads are disabled in Catalog → Incoming content filters.", null);
             }
 
-            if (!server.AllowDownloads)
+            // A Jellyfin content owner is authoritative and grants a purpose-
+            // scoped token when the worker starts. For external sources such as
+            // Plex there is no Federation peer endpoint, so the local connection
+            // setting is the only available consent boundary.
+            if (server.Kind != ServerKind.Jellyfin && !server.AllowDownloads)
             {
                 return (false, $"Downloads from {server.Name} are disabled (Catalog → {server.Name} → Download access).", null);
+            }
+
+            if (bulk && server.Kind != ServerKind.Jellyfin && !server.AllowBulkDownloads)
+            {
+                return (false, $"Bulk downloads from {server.Name} are not enabled.", null);
             }
 
             // Reuses the same tracker as StartDownload's per-item dedupe, keyed on
@@ -199,7 +213,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var cts = new CancellationTokenSource();
             _cancellationSources[operationId] = cts;
 
-            _ = Task.Run(() => RunBrowseDownloadAsync(operationId, server, nativeItemId, itemName, cts.Token));
+            _ = Task.Run(() => RunBrowseDownloadAsync(operationId, server, nativeItemId, itemName, bulk, cts.Token));
 
             return (true, "Download started.", operationId);
         }
@@ -358,6 +372,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private async Task RunDownloadAsync(string operationId, Guid itemGuid, FederatedCacheEntry entry, FederatedSource source, CancellationToken cancellationToken)
         {
             string? destinationPath = null;
+            string? partialPath = null;
             try
             {
                 var srcServer = _federationManager.GetServer(source.ServerId);
@@ -378,7 +393,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
                 var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
-                destinationPath = Path.Combine(downloadsRoot, fileName);
+                destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
                 DownloadProgressTracker.Update(operationId, "Downloading...");
@@ -394,7 +410,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    await client.DownloadToFileAsync(source.RemoteItemId.ToString(), destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await client.DownloadToFileAsync(source.RemoteItemId.ToString(), partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -423,8 +439,16 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk: false), partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
+
+                if (!ValidateCompletedDownload(partialPath))
+                {
+                    throw new InvalidDataException("The downloaded file was empty, truncated, or was not valid media.");
+                }
+
+                File.Move(partialPath, destinationPath);
+                partialPath = null;
 
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
@@ -464,13 +488,13 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogInformation("[Federation] Download cancelled for {Name}", entry.Metadata.Name);
                 DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
-                DeletePartialFile(destinationPath);
+                DeletePartialFile(partialPath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Download failed for {Name}", entry.Metadata.Name);
                 DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
-                DeletePartialFile(destinationPath);
+                DeletePartialFile(partialPath);
             }
             finally
             {
@@ -481,11 +505,23 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private async Task RunBrowseDownloadAsync(string operationId, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
+        private async Task RunBrowseDownloadAsync(
+            string operationId,
+            RemoteServer server,
+            string nativeItemId,
+            string itemName,
+            bool bulk,
+            CancellationToken cancellationToken)
         {
             string? destinationPath = null;
+            string? partialPath = null;
+            var slotHeld = false;
             try
             {
+                DownloadProgressTracker.Update(operationId, "Queued...");
+                await BrowseDownloadSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                slotHeld = true;
+
                 var downloadsRoot = GetDownloadsRoot();
                 if (string.IsNullOrEmpty(downloadsRoot))
                 {
@@ -501,7 +537,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 // whatever bytes come back; Jellyfin's own library scan probes
                 // the actual codecs regardless of the extension.
                 var fileName = SafeFileName(itemName) + ".mkv";
-                destinationPath = Path.Combine(downloadsRoot, fileName);
+                destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
                 DownloadProgressTracker.Update(operationId, "Downloading...");
@@ -511,7 +548,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (server.Kind == ServerKind.Jellyfin)
                 {
                     var client = _clientFactory.GetClient(server);
-                    await client.DownloadToFileAsync(nativeItemId, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await client.DownloadToFileAsync(nativeItemId, partialPath, progress, cancellationToken, bulk).ConfigureAwait(false);
                 }
                 else
                 {
@@ -525,8 +562,16 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    await DownloadUrlToFileAsync(url, destinationPath, progress, cancellationToken).ConfigureAwait(false);
+                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk), partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
+
+                if (!ValidateCompletedDownload(partialPath))
+                {
+                    throw new InvalidDataException("The downloaded file was empty, truncated, or was not valid media.");
+                }
+
+                File.Move(partialPath, destinationPath);
+                partialPath = null;
 
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
@@ -538,16 +583,21 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogInformation("[Federation] Browse download cancelled for {Name}", itemName);
                 DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
-                DeletePartialFile(destinationPath);
+                DeletePartialFile(partialPath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Federation] Browse download failed for {Name}", itemName);
                 DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
-                DeletePartialFile(destinationPath);
+                DeletePartialFile(partialPath);
             }
             finally
             {
+                if (slotHeld)
+                {
+                    BrowseDownloadSlots.Release();
+                }
+
                 if (_cancellationSources.TryRemove(operationId, out var cts))
                 {
                     cts.Dispose();
@@ -600,7 +650,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    await DownloadUrlToFileAsync(url, partialPath, progress, cancellationToken).ConfigureAwait(false);
+                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk: false), partialPath, progress, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (!ValidateCompletedDownload(partialPath))
@@ -704,6 +754,12 @@ namespace Jellyfin.Plugin.Federation.Services
             progress.Report((totalRead, totalBytes));
         }
 
+        internal static string MarkExternalDownload(string url, bool bulk)
+        {
+            var separator = url.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+            return url + separator + "federationDownload=true&federationBulk=" + (bulk ? "true" : "false");
+        }
+
         private void DeletePartialFile(string? path)
         {
             if (string.IsNullOrEmpty(path))
@@ -754,7 +810,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            return new string(chars);
+            var safe = new string(chars).Trim().TrimEnd('.');
+            if (string.IsNullOrEmpty(safe))
+            {
+                safe = "download";
+            }
+
+            // Remote/browser names are display metadata, not trusted paths.
+            // Leave ample room for suffixes, extensions, and the staging id on
+            // filesystems with a 255-byte component limit.
+            return safe.Length <= 120 ? safe : safe.Substring(0, 120).TrimEnd();
         }
 
         internal static bool ValidateCompletedDownload(string? path)

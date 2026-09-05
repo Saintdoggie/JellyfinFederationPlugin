@@ -75,8 +75,26 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public string? TryGetLocalKeyForRemoteItem(string serverId, Guid remoteItemId)
         {
-            _remoteIndex.TryGetValue((serverId, remoteItemId), out var key);
-            return key;
+            if (_remoteIndex.TryGetValue((serverId, remoteItemId), out var key)
+                && _entries.TryGetValue(key, out var entry)
+                && entry.GetSourcesSnapshot().Any(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId))
+            {
+                return key;
+            }
+
+            return null;
+        }
+
+        private void RemoveStaleIndexEntries()
+        {
+            foreach (var pair in _remoteIndex)
+            {
+                if (TryGetLocalKeyForRemoteItem(pair.Key.ServerId, pair.Key.RemoteItemId) == null)
+                {
+                    // Compare both key and value so a concurrent re-key is preserved.
+                    ((ICollection<KeyValuePair<(string ServerId, Guid RemoteItemId), string>>)_remoteIndex).Remove(pair);
+                }
+            }
         }
 
         /// <summary>
@@ -302,6 +320,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            RemoveStaleIndexEntries();
             return removed;
         }
 
@@ -315,6 +334,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _entries.TryRemove(k, out _);
             }
+
+            RemoveStaleIndexEntries();
         }
 
         /// <summary>
@@ -323,6 +344,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public void Clear()
         {
             _entries.Clear();
+            _remoteIndex.Clear();
             _lastRefreshUtc = DateTime.MinValue;
         }
 
@@ -493,11 +515,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 var payload = JsonSerializer.Deserialize<CachePayload>(json, CacheJsonOptions);
                 if (payload?.Entries != null)
                 {
-                    foreach (var entry in payload.Entries)
+                    // Playback validates exact server/item membership through this
+                    // index. Restoring only _entries made every persisted stream
+                    // return 404 after restart until its peer synced successfully.
+                    // Rebuild all sources, including fallback servers, before use.
+                    _entries.Clear();
+                    _remoteIndex.Clear();
+                    foreach (var entry in payload.Entries.OrderBy(e => e.LastRefreshedUtc).ThenBy(e => e.Key, StringComparer.Ordinal))
                     {
                         if (!string.IsNullOrEmpty(entry.Key))
                         {
                             _entries[entry.Key] = entry;
+                            foreach (var source in entry.GetSourcesSnapshot())
+                            {
+                                _remoteIndex[(source.ServerId, source.RemoteItemId)] = entry.Key;
+                            }
                         }
                     }
                 }

@@ -2,48 +2,110 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Federation Companion</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #080b10;
+    --surface: rgba(18, 24, 34, .9);
+    --surface-strong: #151c27;
+    --border: rgba(151, 174, 209, .16);
+    --border-strong: rgba(110, 168, 255, .38);
+    --text: #f3f7fc;
+    --muted: #a5b2c4;
+    --blue: #67a4ff;
+    --blue-strong: #397ee8;
+    --green: #66d99a;
+    --amber: #f2c96f;
+    --danger: #ef7777;
+    --shadow: 0 22px 70px rgba(0, 0, 0, .34);
+  }
+  * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #101214;
-    color: #e6e6e6;
+    background:
+      radial-gradient(circle at 12% -10%, rgba(57, 126, 232, .2), transparent 32rem),
+      radial-gradient(circle at 90% 12%, rgba(97, 211, 168, .1), transparent 28rem),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
   }
   header {
-    padding: 24px 32px;
-    border-bottom: 1px solid #23262b;
+    padding: 42px max(28px, calc((100vw - 1080px) / 2));
+    border-bottom: 1px solid var(--border);
+    background: rgba(8, 11, 16, .68);
+    backdrop-filter: blur(18px);
   }
   header h1 {
     margin: 0;
-    font-size: 20px;
-    font-weight: 600;
+    font-size: clamp(28px, 4vw, 46px);
+    letter-spacing: -.035em;
+    font-weight: 750;
   }
   header p {
-    margin: 4px 0 0;
-    color: #9a9fa6;
-    font-size: 13px;
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 16px;
+    max-width: 720px;
+    line-height: 1.55;
+  }
+  .brand-line { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 42px; height: 42px; display: grid; place-items: center;
+    border-radius: 13px;
+    background: linear-gradient(145deg, #7db4ff, #397ee8 62%, #4f54d8);
+    box-shadow: 0 10px 34px rgba(57, 126, 232, .35);
+    font-weight: 900; font-size: 22px;
   }
   main {
-    max-width: 640px;
+    max-width: 1080px;
     margin: 0 auto;
-    padding: 32px;
+    padding: 38px 28px 80px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .direction-heading {
+    grid-column: 1 / -1;
+    margin-top: 20px;
+    padding: 8px 2px 2px;
+  }
+  .direction-heading:first-child { margin-top: 0; }
+  .direction-kicker {
+    color: var(--blue);
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    font-size: 11px;
+    font-weight: 800;
+  }
+  .direction-heading h2 { margin: 7px 0 5px; font-size: 24px; letter-spacing: -.02em; }
+  .direction-heading p { margin: 0; color: var(--muted); line-height: 1.5; max-width: 760px; }
+  #shareCard, #importCard { grid-column: 1 / -1; }
+  #accessCard { grid-column: 1 / -1; border-color: var(--border-strong); }
+  body.owner-locked main > :not(#accessCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
+  #importCard { border-color: rgba(102, 217, 154, .28); }
+  .flow-note {
+    display: flex; gap: 10px; align-items: flex-start;
+    color: var(--muted); font-size: 13px; line-height: 1.5;
+    background: rgba(103, 164, 255, .07); border: 1px solid rgba(103, 164, 255, .14);
+    padding: 12px 14px; border-radius: 10px; margin: 14px 0;
   }
   .card {
-    background: #17191c;
-    border: 1px solid #23262b;
-    border-radius: 10px;
+    background: linear-gradient(160deg, rgba(25, 34, 47, .94), var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 16px;
     padding: 24px;
-    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+    min-width: 0;
   }
-  .card.done { border-color: #2a4a33; }
+  .card.done { border-color: rgba(102, 217, 154, .4); }
   .card h2 {
-    margin: 0 0 12px;
+    margin: 0 0 14px;
     font-size: 15px;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    color: #9a9fa6;
+    letter-spacing: .01em;
+    color: var(--text);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -52,43 +114,56 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 25px;
+    height: 25px;
     border-radius: 50%;
-    background: #2a2e33;
-    color: #e6e6e6;
+    background: #293446;
+    color: var(--text);
     font-size: 12px;
     font-weight: 700;
   }
-  .card.done .step-num { background: #2f8f4e; color: #fff; }
+  .card.done .step-num { background: #2f9860; color: #fff; }
   button {
-    background: #4c8dff;
+    min-height: 44px;
+    background: linear-gradient(180deg, #5c9cf8, var(--blue-strong));
     color: #fff;
-    border: none;
-    border-radius: 6px;
-    padding: 10px 18px;
+    border: 1px solid rgba(255, 255, 255, .09);
+    border-radius: 9px;
+    padding: 10px 17px;
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
   }
+  button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(103, 164, 255, .42); outline-offset: 2px; }
   button:disabled { opacity: .5; cursor: default; }
   button.secondary {
-    background: transparent;
-    border: 1px solid #3a3f47;
-    color: #e6e6e6;
+    background: rgba(255,255,255,.035);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
   }
-  button.danger { background: #a13c3c; }
-  .status-line { color: #9a9fa6; font-size: 13px; margin-top: 10px; }
+  button.danger { background: rgba(199, 73, 73, .18); border-color: rgba(239,119,119,.32); color: #ffaaaa; }
+  .status-line { color: var(--muted); font-size: 13px; margin-top: 10px; line-height: 1.5; }
+  .status-line.error { color: #ffaaaa; }
   .library-row, .peer-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 10px 0;
-    border-bottom: 1px solid #23262b;
+    border-bottom: 1px solid var(--border);
   }
   .library-row:last-child, .peer-row:last-child { border-bottom: none; }
   .library-title { font-size: 14px; }
-  .library-type { color: #9a9fa6; font-size: 12px; margin-left: 8px; }
+  .library-type { color: var(--muted); font-size: 12px; margin-left: 8px; text-transform: capitalize; }
+  .peer-row.import-peer { flex-direction: column; align-items: stretch; gap: 10px; padding: 18px 0; }
+  .peer-row.share-peer { align-items: flex-start; gap: 16px; }
+  .peer-download-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px 14px; }
+  .peer-download-controls label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 7px; }
+  .peer-download-controls input { width: 18px; height: 18px; accent-color: var(--blue-strong); }
+  .peer-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .peer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .peer-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; color: var(--muted); font-size: 13px; }
+  .peer-path { display: block; overflow-wrap: anywhere; color: #c8d7eb; margin-top: 4px; }
   .switch {
     position: relative;
     width: 40px;
@@ -99,7 +174,7 @@
   .slider {
     position: absolute;
     inset: 0;
-    background: #3a3f47;
+    background: #3a4658;
     border-radius: 999px;
     cursor: pointer;
     transition: background .15s;
@@ -115,31 +190,31 @@
     border-radius: 50%;
     transition: transform .15s;
   }
-  input:checked + .slider { background: #4c8dff; }
+  input:checked + .slider { background: var(--blue-strong); }
   input:checked + .slider::before { transform: translateX(18px); }
   .hidden { display: none; }
-  .empty-state { color: #9a9fa6; font-size: 13px; }
+  .empty-state { color: var(--muted); font-size: 13px; line-height: 1.5; }
   code.cmd {
     display: block;
-    background: #0b0c0e;
-    border: 1px solid #23262b;
-    border-radius: 6px;
+    background: #080b10;
+    border: 1px solid var(--border);
+    border-radius: 9px;
     padding: 12px 14px;
     font-size: 13px;
-    color: #7ee787;
+    color: #88edb3;
     white-space: pre-wrap;
     word-break: break-all;
     margin: 10px 0;
   }
-  input[type=text] {
+  input[type=text], select {
     width: 100%;
-    box-sizing: border-box;
-    background: #0b0c0e;
-    border: 1px solid #3a3f47;
-    border-radius: 6px;
-    padding: 10px 12px;
-    color: #e6e6e6;
-    font-size: 14px;
+    min-height: 46px;
+    background: #0b1017;
+    border: 1px solid rgba(151,174,209,.28);
+    border-radius: 9px;
+    padding: 11px 12px;
+    color: var(--text);
+    font-size: 16px;
     margin-bottom: 10px;
   }
   .badge {
@@ -149,16 +224,46 @@
     font-size: 11px;
     font-weight: 700;
   }
-  .badge.ok { background: #2f8f4e33; color: #7ee787; }
-  .badge.warn { background: #8f6e2f33; color: #f0c674; }
+  .badge.ok { background: #2f8f4e33; color: #88edb3; }
+  .badge.warn { background: #8f6e2f33; color: var(--amber); }
+  .code-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+  .inline-form input { margin: 0; }
+  @media (max-width: 760px) {
+    header { padding: 30px 20px; }
+    main { grid-template-columns: 1fr; padding: 24px 16px 60px; }
+    .direction-heading, #shareCard, #importCard { grid-column: 1; }
+    .card { padding: 20px; border-radius: 14px; }
+    .inline-form { grid-template-columns: 1fr; }
+    .peer-header { align-items: flex-start; flex-direction: column; }
+    .peer-row.share-peer, .peer-download-controls { align-items: stretch; flex-direction: column; }
+  }
+  @media (min-width: 1400px) {
+    body { font-size: 17px; }
+    main { max-width: 1240px; gap: 24px; }
+    header { padding-left: max(36px, calc((100vw - 1240px) / 2)); padding-right: max(36px, calc((100vw - 1240px) / 2)); }
+    .card { padding: 30px; }
+    button { min-height: 50px; font-size: 16px; }
+  }
 </style>
 </head>
-<body>
+<body class="owner-locked">
 <header>
-  <h1>Federation Companion</h1>
-  <p>Controls what your Plex server shares with federated Jellyfin friends.</p>
+  <div class="brand-line"><div class="brand-mark" aria-hidden="true">F</div><h1>Federation Companion</h1></div>
+  <p>A private bridge between Plex and Jellyfin. You choose each library and each friend; account credentials stay on this machine.</p>
 </header>
 <main>
+  <div class="card" id="accessCard">
+    <h2><span class="step-num">✓</span> Owner access</h2>
+    <p class="status-line">Companion's public listener is locked so strangers cannot change your sharing choices. Paste the owner key printed in the Companion terminal, or open the URL with <code>#access=…</code> attached.</p>
+    <div class="inline-form"><input type="text" id="ownerKeyInput" placeholder="Companion owner access key" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="unlockBtn">Unlock</button></div>
+    <div class="status-line" id="unlockStatus"></div>
+  </div>
+  <div class="direction-heading">
+    <div class="direction-kicker">Plex → Jellyfin</div>
+    <h2>Share your Plex library</h2>
+    <p>Connect Plex, choose exactly what is visible, then hand your Jellyfin friend a single-use code.</p>
+  </div>
   <div class="card" id="tailscaleCard">
     <h2><span class="step-num">1</span> Tailscale</h2>
     <div id="tailscaleContent"><p class="empty-state">Checking…</p></div>
@@ -180,8 +285,12 @@
       <div class="status-line" id="connectStatus"></div>
     </div>
     <div id="connected" class="hidden">
-      <p>Connected to <strong id="serverName"></strong></p>
+      <p><span class="badge ok">Connected</span> <strong id="serverName"></strong></p>
+      <label class="status-line" for="plexServerSelect">Plex server to share</label>
+      <select id="plexServerSelect" aria-label="Plex server to share"></select>
+      <div class="flow-note"><span aria-hidden="true">↗</span><span>Companion uses this server's public direct HTTPS address when available, with Plex Relay as a fallback. Private LAN-only addresses are last choice because a Jellyfin friend usually cannot reach them.</span></div>
       <button class="secondary" id="refreshBtn">Refresh libraries</button>
+      <div class="status-line" id="serverSelectStatus"></div>
     </div>
   </div>
 
@@ -195,23 +304,48 @@
     <p class="status-line">Generate a one-time code and send it to your friend. They'll paste it into their Jellyfin Federation plugin to link automatically - no copying tokens by hand.</p>
     <button id="generateCodeBtn">Generate connect code</button>
     <code class="cmd hidden" id="connectCode"></code>
+    <div class="code-actions hidden" id="connectCodeActions"><button class="secondary" id="copyCodeBtn">Copy code</button></div>
     <div class="status-line" id="codeStatus"></div>
 
     <h2 style="margin-top:24px">Connected friends</h2>
     <div id="peerList"><p class="empty-state">No one connected yet.</p></div>
   </div>
 
+  <div class="direction-heading">
+    <div class="direction-kicker">Jellyfin → Plex</div>
+    <h2>Watch a Jellyfin friend's library in Plex</h2>
+    <p>Paste the code from your friend once. Companion keeps Plex's library files current and authorizes each stream only when you press Play.</p>
+  </div>
+
   <div class="card" id="importCard">
-    <h2><span class="step-num">6</span> Import from a Jellyfin friend</h2>
-    <p class="status-line">Paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab. This pulls whatever they share and keeps a local <code>.strm</code> export in sync automatically - point a Plex library at the export path shown below for each friend.</p>
-    <input type="text" id="importCodeInput" placeholder="Paste the connect code">
-    <button id="importConnectBtn">Connect</button>
+    <h2><span class="step-num">1</span> Connect a Jellyfin friend</h2>
+    <p class="status-line">Ask your friend to open Federation settings → Companion → “Share Jellyfin with Plex”, then paste their code here.</p>
+    <div class="flow-note"><span aria-hidden="true">🔒</span><span>The long-lived Jellyfin credential stays inside Companion. Plex receives only a stable link cryptographically bound to one exact movie or episode.</span></div>
+    <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Verify &amp; connect</button></div>
     <div class="status-line" id="importConnectStatus"></div>
 
     <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
   </div>
 </main>
 <script>
+let ownerKey = sessionStorage.getItem('federationCompanionOwnerKey') || '';
+const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+if (hashParams.get('access')) {
+  ownerKey = hashParams.get('access').trim();
+  sessionStorage.setItem('federationCompanionOwnerKey', ownerKey);
+  history.replaceState(null, '', location.pathname + location.search);
+}
+
+function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set('X-Companion-Admin', ownerKey);
+  return fetch(url, { ...options, headers });
+}
+
+const accessCard = document.getElementById('accessCard');
+const ownerKeyInput = document.getElementById('ownerKeyInput');
+const unlockBtn = document.getElementById('unlockBtn');
+const unlockStatus = document.getElementById('unlockStatus');
 const tailscaleContent = document.getElementById('tailscaleContent');
 const tailscaleCard = document.getElementById('tailscaleCard');
 const publicUrlInput = document.getElementById('publicUrlInput');
@@ -220,6 +354,8 @@ const publicUrlStatus = document.getElementById('publicUrlStatus');
 const notConnected = document.getElementById('notConnected');
 const connected = document.getElementById('connected');
 const serverNameEl = document.getElementById('serverName');
+const plexServerSelect = document.getElementById('plexServerSelect');
+const serverSelectStatus = document.getElementById('serverSelectStatus');
 const connectStatus = document.getElementById('connectStatus');
 const connectBtn = document.getElementById('connectBtn');
 const refreshBtn = document.getElementById('refreshBtn');
@@ -228,6 +364,8 @@ const libraryList = document.getElementById('libraryList');
 const shareCard = document.getElementById('shareCard');
 const generateCodeBtn = document.getElementById('generateCodeBtn');
 const connectCode = document.getElementById('connectCode');
+const connectCodeActions = document.getElementById('connectCodeActions');
+const copyCodeBtn = document.getElementById('copyCodeBtn');
 const codeStatus = document.getElementById('codeStatus');
 const peerList = document.getElementById('peerList');
 const importCodeInput = document.getElementById('importCodeInput');
@@ -237,28 +375,33 @@ const importPeerList = document.getElementById('importPeerList');
 let knownPlexLibraries = [];
 
 async function loadTailscale() {
-  const res = await fetch('/api/tailscale/status');
-  const data = await res.json();
-  if (data.signedIn) {
-    tailscaleCard.classList.add('done');
-    tailscaleContent.innerHTML = '<span class="badge ok">Connected</span>';
-  } else if (data.installed) {
-    tailscaleContent.innerHTML = '<span class="badge warn">Installed, not signed in</span><p class="status-line">Run this, then sign in when your browser opens:</p><code class="cmd">tailscale up</code>';
-  } else {
-    tailscaleContent.innerHTML = `<span class="badge warn">Not installed</span><p class="status-line">Copy and run this, then sign in when your browser opens:</p><code class="cmd">${escapeHtml(data.installCommand)}</code>`;
+  try {
+    const res = await apiFetch('/api/tailscale/status');
+    const data = await res.json();
+    if (data.signedIn) {
+      tailscaleCard.classList.add('done');
+      tailscaleContent.innerHTML = '<span class="badge ok">Ready</span><p class="status-line">Tailscale is connected on this machine.</p>';
+    } else if (data.installed) {
+      tailscaleContent.innerHTML = '<span class="badge warn">Installed, not signed in</span><p class="status-line">Run this, then sign in when your browser opens:</p><code class="cmd">tailscale up</code>';
+    } else {
+      tailscaleContent.innerHTML = `<span class="badge warn">Not installed</span><p class="status-line">Copy and run this, then sign in when your browser opens:</p><code class="cmd">${escapeHtml(data.installCommand)}</code>`;
+    }
+  } catch (e) {
+    tailscaleContent.innerHTML = '<p class="status-line error">Could not check Tailscale. Refresh this page after Companion finishes starting.</p>';
   }
 }
 
 async function loadPublicUrl() {
-  const res = await fetch('/api/public-url');
+  const res = await apiFetch('/api/public-url');
   const data = await res.json();
   if (data.publicUrl) {
     publicUrlInput.value = data.publicUrl;
+    document.getElementById('publicUrlCard').classList.add('done');
   }
 }
 
 async function loadStatus() {
-  const res = await fetch('/api/status');
+  const res = await apiFetch('/api/status');
   const data = await res.json();
   knownPlexLibraries = data.libraries || [];
   if (data.serverConnected) {
@@ -267,7 +410,9 @@ async function loadStatus() {
     serverNameEl.textContent = data.serverName || 'Plex server';
     librariesCard.classList.remove('hidden');
     shareCard.classList.remove('hidden');
+    document.getElementById('connectCard').classList.add('done');
     renderLibraries(data.libraries || []);
+    loadPlexServers(data.serverMachineIdentifier);
     loadPeers();
   } else {
     notConnected.classList.remove('hidden');
@@ -279,8 +424,23 @@ async function loadStatus() {
   loadImportPeers();
 }
 
+async function loadPlexServers(selectedId) {
+  try {
+    const res = await apiFetch('/api/plex/servers');
+    const servers = await res.json();
+    if (!res.ok) return;
+    plexServerSelect.innerHTML = servers.map(server =>
+      `<option value="${escapeHtml(server.id)}"${server.id === selectedId || server.selected ? ' selected' : ''}>${escapeHtml(server.name)}${server.owned ? ' (owned)' : ' (shared)'}</option>`
+    ).join('');
+    plexServerSelect.classList.toggle('hidden', servers.length < 2);
+    plexServerSelect.previousElementSibling.classList.toggle('hidden', servers.length < 2);
+  } catch (e) {
+    serverSelectStatus.textContent = 'Could not refresh the Plex server list.';
+  }
+}
+
 async function loadImportPeers() {
-  const res = await fetch('/api/import/peers');
+  const res = await apiFetch('/api/import/peers');
   const peers = await res.json();
   if (peers.length === 0) {
     importPeerList.innerHTML = '<p class="empty-state">Not importing from anyone yet.</p>';
@@ -290,30 +450,31 @@ async function loadImportPeers() {
   importPeerList.innerHTML = '';
   for (const peer of peers) {
     const row = document.createElement('div');
-    row.className = 'peer-row';
-    row.style.flexDirection = 'column';
-    row.style.alignItems = 'stretch';
-    row.style.gap = '6px';
+    row.className = 'peer-row import-peer';
 
     const sectionOptions = ['<option value="">Don\'t refresh a Plex section</option>']
       .concat(knownPlexLibraries.map(l => `<option value="${escapeHtml(l.sectionKey)}"${l.sectionKey === peer.plexSectionKey ? ' selected' : ''}>${escapeHtml(l.title)}</option>`))
       .join('');
 
     const lastSync = peer.lastSyncUtc ? new Date(peer.lastSyncUtc).toLocaleString() : 'never';
-    const errorLine = peer.lastError ? `<div class="status-line" style="color:#f0c674">${escapeHtml(peer.lastError)}</div>` : '';
+    const errorLine = peer.lastError ? `<div class="status-line error">${escapeHtml(peer.lastError)}</div>` : '';
+    const syncBadge = peer.lastError
+      ? '<span class="badge warn">Needs attention</span>'
+      : (peer.lastSyncUtc ? '<span class="badge ok">Streaming ready</span>' : '<span class="badge warn">First sync pending</span>');
 
     row.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <strong>${escapeHtml(peer.name)}</strong>
-        <div>
+      <div class="peer-header">
+        <div><strong>${escapeHtml(peer.name)}</strong> ${syncBadge}</div>
+        <div class="peer-actions">
           <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}">Sync now</button>
           <button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
         </div>
       </div>
-      <div class="status-line">Last synced ${lastSync} &middot; ${peer.lastItemCount} item(s) &middot; exporting to <code>${escapeHtml(peer.exportPath)}</code></div>
+      <div class="peer-meta"><span>Last synced: ${lastSync}</span><span>${peer.lastItemCount} item(s)</span></div>
+      <div class="status-line">Plex library folder:<code class="peer-path">${escapeHtml(peer.exportPath)}</code></div>
       ${errorLine}
       <div>
-        <label class="status-line">Refresh this Plex section after a sync: </label>
+        <label class="status-line">Automatically refresh this Plex section after files change:</label>
         <select data-action="plex-section" data-id="${escapeHtml(peer.id)}">${sectionOptions}</select>
       </div>`;
     importPeerList.appendChild(row);
@@ -322,19 +483,20 @@ async function loadImportPeers() {
   importPeerList.querySelectorAll('button[data-action="sync"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      await fetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' });
+      await apiFetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' });
       await loadImportPeers();
     });
   });
   importPeerList.querySelectorAll('button[data-action="remove"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await fetch(`/api/import/peers/${btn.dataset.id}`, { method: 'DELETE' });
+      if (!confirm('Stop syncing this friend? Existing .strm files are kept so Plex does not lose titles unexpectedly.')) return;
+      await apiFetch(`/api/import/peers/${btn.dataset.id}`, { method: 'DELETE' });
       loadImportPeers();
     });
   });
   importPeerList.querySelectorAll('select[data-action="plex-section"]').forEach(sel => {
     sel.addEventListener('change', async () => {
-      await fetch(`/api/import/peers/${sel.dataset.id}/plex-section`, {
+      await apiFetch(`/api/import/peers/${sel.dataset.id}/plex-section`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionKey: sel.value })
@@ -344,7 +506,7 @@ async function loadImportPeers() {
 }
 
 async function loadPeers() {
-  const res = await fetch('/api/peers');
+  const res = await apiFetch('/api/peers');
   const peers = await res.json();
   if (peers.length === 0) {
     peerList.innerHTML = '<p class="empty-state">No one connected yet.</p>';
@@ -353,13 +515,44 @@ async function loadPeers() {
   peerList.innerHTML = '';
   for (const peer of peers) {
     const row = document.createElement('div');
-    row.className = 'peer-row';
-    row.innerHTML = `<span>${escapeHtml(peer.name)}</span><button class="danger" data-id="${escapeHtml(peer.id)}">Revoke</button>`;
+    row.className = 'peer-row share-peer';
+    row.innerHTML = `<div><strong>${escapeHtml(peer.name)}</strong><div class="status-line">Playback remains available while shared. Downloads are separate.</div></div>
+      <div class="peer-download-controls">
+        <label><input type="checkbox" data-action="allow-download" data-id="${escapeHtml(peer.id)}" ${peer.allowDownloads ? 'checked' : ''}> Allow individual downloads</label>
+        <label><input type="checkbox" data-action="allow-bulk" data-id="${escapeHtml(peer.id)}" ${peer.allowBulkDownloads ? 'checked' : ''} ${peer.allowDownloads ? '' : 'disabled'}> Allow bulk downloads</label>
+        <button class="secondary" data-action="save-download" data-id="${escapeHtml(peer.id)}">Save access</button>
+        <button class="danger" data-action="revoke" data-id="${escapeHtml(peer.id)}">Revoke</button>
+      </div>`;
     peerList.appendChild(row);
   }
-  peerList.querySelectorAll('button').forEach(btn => {
+  peerList.querySelectorAll('input[data-action="allow-download"]').forEach(input => {
+    input.addEventListener('change', () => {
+      const bulk = input.closest('.peer-row').querySelector('input[data-action="allow-bulk"]');
+      if (bulk) {
+        bulk.disabled = !input.checked;
+        if (!input.checked) bulk.checked = false;
+      }
+    });
+  });
+  peerList.querySelectorAll('button[data-action="save-download"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await fetch(`/api/peers/${btn.dataset.id}`, { method: 'DELETE' });
+      const row = btn.closest('.peer-row');
+      const allow = row.querySelector('input[data-action="allow-download"]');
+      const bulk = row.querySelector('input[data-action="allow-bulk"]');
+      btn.disabled = true;
+      await apiFetch(`/api/peers/${btn.dataset.id}/download-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowDownloads: !!allow?.checked, allowBulkDownloads: !!bulk?.checked })
+      });
+      btn.textContent = 'Saved';
+      setTimeout(() => { btn.textContent = 'Save access'; btn.disabled = false; }, 1200);
+    });
+  });
+  peerList.querySelectorAll('button[data-action="revoke"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Revoke this Jellyfin server? It will immediately lose access to your Plex connection.')) return;
+      await apiFetch(`/api/peers/${btn.dataset.id}`, { method: 'DELETE' });
       loadPeers();
     });
   });
@@ -377,14 +570,14 @@ function renderLibraries(libraries) {
     row.innerHTML = `
       <div><span class="library-title">${escapeHtml(lib.title)}</span><span class="library-type">${lib.type}</span></div>
       <label class="switch">
-        <input type="checkbox" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''}>
+        <input type="checkbox" aria-label="Share ${escapeHtml(lib.title)}" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''}>
         <span class="slider"></span>
       </label>`;
     libraryList.appendChild(row);
   }
   libraryList.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', async () => {
-      await fetch('/api/libraries/toggle', {
+      await apiFetch('/api/libraries/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionKey: cb.dataset.key, shared: cb.checked })
@@ -400,55 +593,110 @@ function escapeHtml(s) {
 connectBtn.addEventListener('click', async () => {
   connectBtn.disabled = true;
   connectStatus.textContent = 'Opening Plex sign-in…';
-  const res = await fetch('/api/plex/start-signin', { method: 'POST' });
-  const data = await res.json();
-  window.open(data.signInUrl, '_blank');
-  connectStatus.textContent = 'Waiting for you to approve in the Plex tab…';
+  try {
+    const res = await apiFetch('/api/plex/start-signin', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Plex sign-in could not start.');
+    const popup = window.open(data.signInUrl, '_blank');
+    if (popup) popup.opener = null;
+    connectStatus.textContent = popup
+      ? 'Approve access in the Plex tab. This page will finish automatically…'
+      : 'Your browser blocked the Plex tab. Allow pop-ups, then try again.';
+    if (!popup) { connectBtn.disabled = false; return; }
 
-  const poll = setInterval(async () => {
-    const pollRes = await fetch('/api/plex/poll-signin');
-    const pollData = await pollRes.json();
-    if (pollData.complete) {
-      clearInterval(poll);
-      connectStatus.textContent = '';
-      connectBtn.disabled = false;
-      loadStatus();
-    }
-  }, 2000);
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      try {
+        const pollRes = await apiFetch('/api/plex/poll-signin');
+        const pollData = await pollRes.json();
+        if (pollData.complete) {
+          clearInterval(poll);
+          connectStatus.textContent = 'Connected. Loading your libraries…';
+          connectBtn.disabled = false;
+          await loadStatus();
+          connectStatus.textContent = '';
+        } else if (attempts >= 150) {
+          clearInterval(poll);
+          connectStatus.textContent = 'Plex approval timed out. Start sign-in again.';
+          connectBtn.disabled = false;
+        }
+      } catch (e) {
+        clearInterval(poll);
+        connectStatus.textContent = 'Connection check failed. Try again.';
+        connectBtn.disabled = false;
+      }
+    }, 2000);
+  } catch (e) {
+    connectStatus.textContent = e.message;
+    connectBtn.disabled = false;
+  }
 });
 
 refreshBtn.addEventListener('click', async () => {
   refreshBtn.disabled = true;
-  await fetch('/api/libraries/refresh', { method: 'POST' });
+  await apiFetch('/api/libraries/refresh', { method: 'POST' });
   await loadStatus();
   refreshBtn.disabled = false;
 });
 
+plexServerSelect.addEventListener('change', async () => {
+  plexServerSelect.disabled = true;
+  serverSelectStatus.textContent = 'Switching server and checking libraries…';
+  try {
+    const res = await apiFetch('/api/plex/servers/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: plexServerSelect.value })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not switch Plex servers.');
+    serverSelectStatus.textContent = `Connected to ${data.name}.`;
+    await loadStatus();
+  } catch (e) {
+    serverSelectStatus.textContent = e.message;
+  } finally {
+    plexServerSelect.disabled = false;
+  }
+});
+
 savePublicUrlBtn.addEventListener('click', async () => {
   savePublicUrlBtn.disabled = true;
-  const res = await fetch('/api/public-url', {
+  const res = await apiFetch('/api/public-url', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: publicUrlInput.value.trim() })
   });
   const data = await res.json();
   publicUrlStatus.textContent = res.ok ? 'Saved.' : (data.error || 'Could not save.');
+  document.getElementById('publicUrlCard').classList.toggle('done', res.ok);
   savePublicUrlBtn.disabled = false;
 });
 
 generateCodeBtn.addEventListener('click', async () => {
   generateCodeBtn.disabled = true;
   codeStatus.textContent = '';
-  const res = await fetch('/api/connect/generate', { method: 'POST' });
+  const res = await apiFetch('/api/connect/generate', { method: 'POST' });
   const data = await res.json();
   if (res.ok) {
     connectCode.textContent = data.code;
     connectCode.classList.remove('hidden');
+    connectCodeActions.classList.remove('hidden');
     codeStatus.textContent = `Expires in ${data.expiresInMinutes} minutes. Send this to your friend now.`;
   } else {
     codeStatus.textContent = data.error || 'Could not generate a code.';
   }
   generateCodeBtn.disabled = false;
+});
+
+copyCodeBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(connectCode.textContent);
+    copyCodeBtn.textContent = 'Copied';
+    setTimeout(() => { copyCodeBtn.textContent = 'Copy code'; }, 1800);
+  } catch (e) {
+    codeStatus.textContent = 'Copy was blocked by the browser. Select the code above and copy it manually.';
+  }
 });
 
 importConnectBtn.addEventListener('click', async () => {
@@ -461,7 +709,7 @@ importConnectBtn.addEventListener('click', async () => {
   importConnectBtn.disabled = true;
   importConnectStatus.textContent = 'Connecting and running the first sync…';
   try {
-    const res = await fetch('/api/import/connect', {
+    const res = await apiFetch('/api/import/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code })
@@ -480,9 +728,38 @@ importConnectBtn.addEventListener('click', async () => {
   importConnectBtn.disabled = false;
 });
 
-loadTailscale();
-loadPublicUrl();
-loadStatus();
+async function unlockOwner() {
+  if (!ownerKey) {
+    unlockStatus.textContent = 'Paste the owner key printed in the Companion terminal.';
+    return;
+  }
+
+  unlockBtn.disabled = true;
+  unlockStatus.textContent = 'Checking…';
+  try {
+    const res = await apiFetch('/api/status');
+    if (!res.ok) throw new Error('That owner key was not accepted.');
+    sessionStorage.setItem('federationCompanionOwnerKey', ownerKey);
+    document.body.classList.remove('owner-locked');
+    accessCard.classList.add('hidden');
+    unlockStatus.textContent = '';
+    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus()]);
+  } catch (e) {
+    unlockStatus.textContent = e.message || 'Could not unlock Companion.';
+  } finally {
+    unlockBtn.disabled = false;
+  }
+}
+
+unlockBtn.addEventListener('click', () => {
+  ownerKey = ownerKeyInput.value.trim();
+  unlockOwner();
+});
+ownerKeyInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') unlockBtn.click();
+});
+
+if (ownerKey) unlockOwner();
 </script>
 </body>
 </html>

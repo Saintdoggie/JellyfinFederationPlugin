@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -38,6 +40,11 @@ namespace Jellyfin.Plugin.Federation.Api
         /// (see <see cref="Services.FederationFriendService"/>).
         /// </summary>
         private static readonly Version MinimumFederationTokenVersion = new(0, 0, 70);
+        private static readonly HttpClient CompanionLinkHttpClient = new(new HttpClientHandler { AllowAutoRedirect = false })
+        {
+            Timeout = TimeSpan.FromSeconds(30),
+            MaxResponseContentBufferSize = 256 * 1024
+        };
 
         /// <summary>
         /// Upper bound for one internal page fetch while filling a single
@@ -265,6 +272,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
                         server.AllowDownloads = oldServer.AllowDownloads;
+                        server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -1981,6 +1989,156 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Consumes a Federation Companion one-time code server-side. Companion
+        /// returns a revocable, library-scoped relay token; its real Plex server
+        /// credential never reaches Jellyfin or the browser.
+        /// </summary>
+        [HttpPost("ExternalServers/CompanionConnect")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ConnectCompanionPlexSource(
+            [FromBody] ConnectPlexCompanionBody? body,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(body?.Code) || body.Code.Length > 16_384)
+            {
+                return BadRequest(new { success = false, error = "Paste a valid Companion connect code." });
+            }
+
+            CompanionConnectCode? decoded;
+            try
+            {
+                decoded = JsonSerializer.Deserialize<CompanionConnectCode>(
+                    Convert.FromBase64String(body.Code),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                return BadRequest(new { success = false, error = "That connect code could not be read or is incomplete." });
+            }
+
+            if (decoded == null
+                || string.IsNullOrWhiteSpace(decoded.Url)
+                || string.IsNullOrWhiteSpace(decoded.Token)
+                || !Uri.TryCreate(decoded.Url.TrimEnd('/'), UriKind.Absolute, out var companionUri)
+                || (companionUri.Scheme != Uri.UriSchemeHttps
+                    && !(companionUri.Scheme == Uri.UriSchemeHttp && companionUri.IsLoopback))
+                || !string.IsNullOrEmpty(companionUri.UserInfo)
+                || !string.IsNullOrEmpty(companionUri.Query)
+                || !string.IsNullOrEmpty(companionUri.Fragment))
+            {
+                return BadRequest(new { success = false, error = "The code does not contain a safe Companion address." });
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return BadRequest(new { success = false, error = "Plugin not initialized." });
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    companionUri.AbsoluteUri.TrimEnd('/') + "/api/link/complete")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new
+                        {
+                            token = decoded.Token,
+                            requesterName = _applicationHost.FriendlyName
+                        }),
+                        Encoding.UTF8,
+                        "application/json")
+                };
+                using var response = await CompanionLinkHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var error = TryReadCompanionError(responseBody)
+                        ?? "Companion rejected this code. It may have expired or already been used.";
+                    return StatusCode((int)response.StatusCode, new { success = false, error });
+                }
+
+                var linked = JsonSerializer.Deserialize<CompanionLinkResult>(
+                    responseBody,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (linked == null
+                    || string.IsNullOrWhiteSpace(linked.PlexUrl)
+                    || string.IsNullOrWhiteSpace(linked.PlexToken)
+                    || !Uri.TryCreate(linked.PlexUrl, UriKind.Absolute, out var relayUri)
+                    || !SameOrigin(companionUri, relayUri)
+                    || !relayUri.AbsolutePath.StartsWith(companionUri.AbsolutePath.TrimEnd('/') + "/plex/", StringComparison.Ordinal))
+                {
+                    return BadRequest(new { success = false, error = "Companion returned an invalid relay address." });
+                }
+
+                var normalized = linked.PlexUrl.TrimEnd('/');
+                if (config.RemoteServers.Any(s => string.Equals(s.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return BadRequest(new { success = false, error = "This Companion Plex source is already connected." });
+                }
+
+                var server = new RemoteServer
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Kind = ServerKind.Plex,
+                    Name = string.IsNullOrWhiteSpace(linked.ServerName)
+                        ? LimitDisplayName(decoded.Name, "Plex friend")
+                        : LimitDisplayName(linked.ServerName, "Plex friend"),
+                    Url = normalized,
+                    ApiKey = linked.PlexToken,
+                    StreamingMode = StreamingMode.Proxy,
+                    Enabled = true,
+                    AllowedExternalLibraryIds = (linked.Libraries ?? new List<CompanionLinkedLibrary>())
+                        .Where(l => !string.IsNullOrWhiteSpace(l.SectionKey))
+                        .Select(l => l.SectionKey!)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList()
+                };
+                config.RemoteServers.Add(server);
+                Plugin.Instance!.SaveConfiguration();
+                _clientFactory.InvalidateAll();
+                return Ok(new { success = true, server = SanitizeServer(server) });
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not complete a Plex Companion link");
+                return BadRequest(new { success = false, error = "Companion could not be reached or returned an invalid response." });
+            }
+        }
+
+        private static bool SameOrigin(Uri first, Uri second)
+            => string.Equals(first.Scheme, second.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(first.Host, second.Host, StringComparison.OrdinalIgnoreCase)
+                && first.Port == second.Port;
+
+        private static string LimitDisplayName(string? value, string fallback)
+        {
+            var trimmed = value?.Trim();
+            return string.IsNullOrWhiteSpace(trimmed)
+                ? fallback
+                : trimmed[..Math.Min(trimmed.Length, 160)];
+        }
+
+        private static string? TryReadCompanionError(string body)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<CompanionErrorResponse>(
+                    body,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })?.Error;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Replaces a non-Jellyfin (Plex) server's pasted token in place. Kind,
         /// name and every other field survive untouched - this is the "the token
         // expired, here's the new one" path, not a re-add.
@@ -2327,13 +2485,58 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { error = "Invalid item id" });
             }
 
-            if (!_peerAccess.IsItemVisible(caller, RequestingRemoteUserId(), itemGuid))
+            var remoteUserId = RequestingRemoteUserId();
+            if (!_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId);
-            return Ok(new { token, expiresUtc = DateTime.UtcNow.AddHours(24) });
+            var purposeText = request?.Purpose;
+            if (!string.IsNullOrEmpty(purposeText)
+                && !string.Equals(purposeText, "Playback", StringComparison.Ordinal)
+                && !string.Equals(purposeText, "Download", StringComparison.Ordinal)
+                && !string.Equals(purposeText, "BulkDownload", StringComparison.Ordinal))
+            {
+                return BadRequest(new { error = "Unknown token purpose." });
+            }
+
+            var purpose = purposeText switch
+            {
+                "Download" => FederationTokenPurpose.Download,
+                "BulkDownload" => FederationTokenPurpose.BulkDownload,
+                _ => FederationTokenPurpose.Playback
+            };
+
+            if (purpose != FederationTokenPurpose.Playback
+                && !_peerAccess.IsDownloadAllowedForRemoteUser(caller, remoteUserId))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "Downloads are not allowed for this friend." });
+            }
+
+            if (purpose == FederationTokenPurpose.BulkDownload
+                && !_peerAccess.IsBulkDownloadAllowedForRemoteUser(caller, remoteUserId))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "Bulk downloads are not enabled for this friend." });
+            }
+
+            if (purpose == FederationTokenPurpose.Download
+                && !caller.AllowBulkDownloads
+                && !_playbackTokens.TryReserveOrdinaryDownload(caller.FederationId, itemGuid.ToString("N"), out var retryAfter))
+            {
+                return StatusCode(StatusCodes.Status429TooManyRequests, new
+                {
+                    error = "This friend has reached the small-download limit. Enable bulk downloads to allow a larger pull, or try again later.",
+                    retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))
+                });
+            }
+
+            var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId, purpose, remoteUserId);
+            return Ok(new
+            {
+                token,
+                expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(purpose)),
+                purpose = purpose.ToString()
+            });
         }
 
         /// <summary>
@@ -2403,9 +2606,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// every item they might request with it stays visible for the session's
         /// whole 6-hour lifetime.
         /// </summary>
-        private bool IsStreamTokenAuthorized(string? token, Guid itemGuid)
+        private bool IsStreamTokenAuthorized(string? token, Guid itemGuid, bool download = false)
         {
-            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerFederationId))
+            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerFederationId, out var purpose, out var remoteUserId))
             {
                 // The friendship that minted this token must still exist. An
                 // item-scoped token used to keep working for up to 24 hours after
@@ -2413,13 +2616,26 @@ namespace Jellyfin.Plugin.Federation.Api
                 // which friend the mint came from - binding the federation id at
                 // mint time (see IssuePlaybackToken) makes removal revoke it
                 // instantly instead.
-                return _friends.FindByFederationId(ownerFederationId) != null;
+                var owner = _friends.FindByFederationId(ownerFederationId);
+                if (owner == null || !_peerAccess.IsItemVisible(owner, remoteUserId, itemGuid))
+                {
+                    return false;
+                }
+
+                if (!download)
+                {
+                    return purpose == FederationTokenPurpose.Playback;
+                }
+
+                return (purpose == FederationTokenPurpose.Download || purpose == FederationTokenPurpose.BulkDownload)
+                    && _peerAccess.IsDownloadAllowedForRemoteUser(owner, remoteUserId)
+                    && (purpose != FederationTokenPurpose.BulkDownload || _peerAccess.IsBulkDownloadAllowedForRemoteUser(owner, remoteUserId));
             }
 
-            if (_userSessionTokens.TryValidate(token, out var federationId, out var remoteUserId))
+            if (!download && _userSessionTokens.TryValidate(token, out var federationId, out var sessionRemoteUserId))
             {
                 var server = _friends.FindByFederationId(federationId);
-                if (server != null && _peerAccess.IsItemVisible(server, remoteUserId, itemGuid))
+                if (server != null && _peerAccess.IsItemVisible(server, sessionRemoteUserId, itemGuid))
                 {
                     return true;
                 }
@@ -2443,14 +2659,15 @@ namespace Jellyfin.Plugin.Federation.Api
             string itemId,
             [FromQuery] string token,
             CancellationToken cancellationToken,
-            [FromQuery] bool audio = false)
+            [FromQuery] bool audio = false,
+            [FromQuery] bool download = false)
         {
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
                 return BadRequest("Invalid item id");
             }
 
-            if (!IsStreamTokenAuthorized(token, itemGuid))
+            if (!IsStreamTokenAuthorized(token, itemGuid, download))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -3030,6 +3247,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             server.AllowDownloads = body?.AllowDownloads ?? true;
+            server.AllowBulkDownloads = body?.AllowBulkDownloads ?? false;
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Download access updated." });
         }
@@ -3368,10 +3586,10 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult StartDownload([FromBody] DownloadItemBody body)
         {
-            // Temporarily disabled - see the matching guard on BrowseDownload and
-            // ApplyQualityUpgrades below. Restore the _downloadService.StartDownload
-            // call (see git history) to re-enable.
-            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
+            var (success, message, operationId) = _downloadService.StartDownload(body?.ItemId ?? string.Empty);
+            return success
+                ? Ok(new { success, message, operationId })
+                : BadRequest(new { success, message });
         }
 
         /// <summary>
@@ -3799,10 +4017,66 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult BrowseDownload([FromBody] BrowseDownloadBody body)
         {
-            // Temporarily disabled - see the matching guard on StartDownload above
-            // and ApplyQualityUpgrades below. Restore the
-            // _downloadService.StartBrowseDownload call (see git history) to re-enable.
-            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
+            var (success, message, operationId) = _downloadService.StartBrowseDownload(
+                body?.ServerId ?? string.Empty,
+                body?.ItemId ?? string.Empty,
+                body?.Name ?? "Federated item");
+            return success
+                ? Ok(new { success, message, operationId })
+                : BadRequest(new { success, message });
+        }
+
+        /// <summary>
+        /// Starts a reviewed group of selective downloads. Up to three items is
+        /// treated as a small intentional batch; anything larger is marked as a
+        /// bulk pull, causing every Jellyfin source authorization to require the
+        /// content owner's explicit AllowBulkDownloads consent.
+        /// </summary>
+        [HttpPost("Browse/DownloadBatch")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult BrowseDownloadBatch([FromBody] BrowseDownloadBatchBody body)
+        {
+            var items = (body?.Items ?? new List<BrowseDownloadSelection>())
+                .Where(i => !string.IsNullOrWhiteSpace(i.ItemId))
+                .GroupBy(i => i.ItemId!, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
+            if (string.IsNullOrWhiteSpace(body?.ServerId) || items.Count == 0)
+            {
+                return BadRequest(new { success = false, message = "Select at least one item." });
+            }
+
+            if (items.Count > 100)
+            {
+                return BadRequest(new { success = false, message = "A single batch is limited to 100 items." });
+            }
+
+            var bulk = items.Count > 3;
+            var operations = items.Select(item =>
+            {
+                var result = _downloadService.StartBrowseDownload(
+                    body.ServerId!,
+                    item.ItemId!,
+                    string.IsNullOrWhiteSpace(item.Name) ? "Federated item" : item.Name!,
+                    bulk);
+                return new
+                {
+                    itemId = item.ItemId,
+                    success = result.Success,
+                    message = result.Message,
+                    operationId = result.OperationId
+                };
+            }).ToList();
+
+            return Ok(new
+            {
+                success = operations.Any(o => o.success),
+                bulk,
+                operations,
+                message = bulk
+                    ? "Bulk transfer requests were queued; the source server will enforce its bulk-download permission."
+                    : "Selected downloads were queued."
+            });
         }
 
         #endregion
@@ -3842,27 +4116,63 @@ namespace Jellyfin.Plugin.Federation.Api
                 seriesId = c.SeriesId,
                 seriesName = c.SeriesName,
                 parentIndexNumber = c.ParentIndexNumber,
-                indexNumber = c.IndexNumber
+                indexNumber = c.IndexNumber,
+                localSizeBytes = c.LocalSizeBytes
             }).ToList());
         }
 
         /// <summary>
-        /// Admin-triggered from the review list: for each selected item,
-        /// downloads the friend's higher-quality copy and only then removes the
-        /// old local one (see <see cref="FederationDownloadService.StartQualityReplace"/>
-        /// for why in that order). Never runs on its own - this is the only path
-        /// that ever removes anything for a quality upgrade, and it only fires on
-        /// an explicit admin click naming exact item ids; "select all" on the
-        /// config page is just this same call with every candidate's id.
+        /// Compatibility endpoint retained for older settings pages. Replacement
+        /// downloads are retired and always fail closed; current clients use the
+        /// separate delete-only Storage cleanup endpoint below.
         /// </summary>
         [HttpPost("QualityUpgrades/Apply")]
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult ApplyQualityUpgrades([FromBody] QualityUpgradeApplyBody body)
         {
-            // Temporarily disabled - see the matching guard on StartDownload and
-            // BrowseDownload above. Restore the body below (see git history) to
-            // re-enable.
-            return BadRequest(new { success = false, message = "Downloading federated content to this server is temporarily disabled." });
+            return BadRequest(new
+            {
+                success = false,
+                message = "Quality replacement downloads were retired. Use Storage cleanup to remove only the exact local copies you approve."
+            });
+        }
+
+        /// <summary>
+        /// Destructively removes exact approved local files from the better-copy
+        /// review. Every id is re-matched against the current advisor result before
+        /// deletion and no remote download is started.
+        /// </summary>
+        [HttpPost("QualityUpgrades/RemoveLocal")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult RemoveLocalQualityCopies([FromBody] QualityCleanupRemoveBody body)
+        {
+            var ids = (body?.ItemIds ?? new List<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (body?.Confirm != true || ids.Count == 0)
+            {
+                return BadRequest(new { success = false, message = "Explicit confirmation and at least one exact item id are required." });
+            }
+
+            if (ids.Count > 500)
+            {
+                return BadRequest(new { success = false, message = "A single cleanup is limited to 500 files." });
+            }
+
+            var result = _qualityAdvisor.RemoveLocalCopies(ids);
+            return Ok(new
+            {
+                success = result.Items.Any(i => i.Success),
+                reclaimedBytes = result.ReclaimedBytes,
+                items = result.Items.Select(i => new
+                {
+                    itemId = i.ItemId,
+                    success = i.Success,
+                    reclaimedBytes = i.ReclaimedBytes,
+                    message = i.Message
+                })
+            });
         }
 
         /// <summary>
@@ -3988,40 +4298,54 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Ok(new { success = false, message = "No servers configured" });
             }
 
-            var results = new List<object>();
-            foreach (var server in config.RemoteServers)
+            // Bound both fan-out and each probe. One sleeping friend must not
+            // hold the whole roster for the sync client's five-minute timeout.
+            using var concurrency = new SemaphoreSlim(4);
+            var tasks = config.RemoteServers.ToArray().Select(async server =>
             {
-                try
+                var status = !server.Enabled ? "disabled"
+                    : server.Kind == ServerKind.Companion ? "receiver" : "unreachable";
+                if (server.Enabled && server.Kind != ServerKind.Companion)
                 {
-                    // A non-Jellyfin server (Plex) has no /System/Info/Public the
-                    // way Jellyfin defines it - RemoteServerClient would report it
-                    // offline even when it's perfectly reachable. Route external
-                    // kinds through their provider (which also validates the
-                    // token), same as TestServer above.
-                    bool online;
-                    if (server.Kind != ServerKind.Jellyfin)
+                    await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
                     {
-                        online = await _externalCatalogs.For(server)!
-                            .TestConnectionAsync(server, cancellationToken).ConfigureAwait(false) != null;
-                    }
-                    else
-                    {
-                        var client = _clientFactory.GetClient(server);
-                        online = await client.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
-                    }
+                        using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        probe.CancelAfter(TimeSpan.FromSeconds(8));
+                        bool online;
+                        if (server.Kind != ServerKind.Jellyfin)
+                        {
+                            var provider = _externalCatalogs.For(server);
+                            online = provider != null && await provider.TestConnectionAsync(server, probe.Token).ConfigureAwait(false) != null;
+                        }
+                        else
+                        {
+                            // A public ping cannot establish that this friendship
+                            // still works. Check the authenticated peer endpoint.
+                            var (info, _) = await _clientFactory.GetClient(server).GetSystemInfoDetailedAsync(probe.Token).ConfigureAwait(false);
+                            online = info != null;
+                        }
 
-                    results.Add(new
+                        status = online ? "online" : "unreachable";
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                     {
-                        serverId = server.Id,
-                        serverName = server.Name,
-                        online
-                    });
+                        status = "unreachable";
+                    }
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // Never return exception text or credential-bearing URLs.
+                        status = "unreachable";
+                    }
+                    finally
+                    {
+                        concurrency.Release();
+                    }
                 }
-                catch (Exception ex)
-                {
-                    results.Add(new { serverId = server.Id, serverName = server.Name, online = false, error = ex.Message });
-                }
-            }
+
+                return new { serverId = server.Id, serverName = server.Name, online = status == "online", status, checkedAtUtc = DateTime.UtcNow };
+            });
+            var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
             return Ok(new { success = true, results });
         }
@@ -4114,6 +4438,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.SharedLibraryFolderIds,
                 s.ExcludedItemIds,
                 s.AllowDownloads,
+                s.AllowBulkDownloads,
                 RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
                 {
                     r.RemoteUserId,
@@ -4155,6 +4480,45 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Url { get; set; }
 
         public string? Token { get; set; }
+    }
+
+    public class ConnectPlexCompanionBody
+    {
+        public string? Code { get; set; }
+    }
+
+    internal sealed class CompanionConnectCode
+    {
+        public string? Url { get; set; }
+
+        public string? Token { get; set; }
+
+        public string? Name { get; set; }
+    }
+
+    internal sealed class CompanionLinkResult
+    {
+        public string? PlexUrl { get; set; }
+
+        public string? PlexToken { get; set; }
+
+        public string? ServerName { get; set; }
+
+        public List<CompanionLinkedLibrary>? Libraries { get; set; }
+    }
+
+    internal sealed class CompanionLinkedLibrary
+    {
+        public string? SectionKey { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? Type { get; set; }
+    }
+
+    internal sealed class CompanionErrorResponse
+    {
+        public string? Error { get; set; }
     }
 
     public class SetExternalServerTokenBody
@@ -4210,9 +4574,30 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Name { get; set; }
     }
 
+    public class BrowseDownloadBatchBody
+    {
+        public string? ServerId { get; set; }
+
+        public List<BrowseDownloadSelection>? Items { get; set; }
+    }
+
+    public class BrowseDownloadSelection
+    {
+        public string? ItemId { get; set; }
+
+        public string? Name { get; set; }
+    }
+
     public class QualityUpgradeApplyBody
     {
         public List<string>? ItemIds { get; set; }
+    }
+
+    public class QualityCleanupRemoveBody
+    {
+        public List<string>? ItemIds { get; set; }
+
+        public bool Confirm { get; set; }
     }
 
     public class QualityUpgradeExcludeBody
@@ -4223,6 +4608,8 @@ namespace Jellyfin.Plugin.Federation.Api
     public class IssuePlaybackTokenRequest
     {
         public string? ItemId { get; set; }
+
+        public string? Purpose { get; set; }
     }
 
     /// <summary>
@@ -4259,5 +4646,7 @@ namespace Jellyfin.Plugin.Federation.Api
     public class DownloadAccessBody
     {
         public bool AllowDownloads { get; set; } = true;
+
+        public bool AllowBulkDownloads { get; set; } = false;
     }
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace FederationCompanion;
@@ -22,6 +23,13 @@ public sealed class CompanionState
     public string ClientIdentifier { get; set; } = Guid.NewGuid().ToString();
 
     /// <summary>
+    /// Protects every browser/admin API when the same Kestrel listener is
+    /// exposed through Funnel for server-to-server linking and streaming.
+    /// Supplied by the local UI as a header and never returned by an API.
+    /// </summary>
+    public string AdminAccessKey { get; set; } = CompanionSecrets.Create();
+
+    /// <summary>
     /// The signed-in Plex account's auth token, or null when not yet signed in.
     /// This is an account-level token (from the OAuth PIN flow), not a
     /// per-server one - <see cref="PlexClient"/> resolves the actual server
@@ -39,6 +47,8 @@ public sealed class CompanionState
     public string? ServerAccessToken { get; set; }
 
     public string? ServerName { get; set; }
+
+    public string? ServerMachineIdentifier { get; set; }
 
     /// <summary>
     /// This app's own externally-reachable address (a Tailscale Funnel
@@ -83,10 +93,48 @@ public sealed class CompanionState
         {
             if (File.Exists(PathOnDisk))
             {
-                await using var stream = File.OpenRead(PathOnDisk);
-                var loaded = await JsonSerializer.DeserializeAsync<CompanionState>(stream).ConfigureAwait(false);
+                RestrictStateFilePermissions(PathOnDisk);
+                CompanionState? loaded;
+                await using (var stream = File.OpenRead(PathOnDisk))
+                {
+                    loaded = await JsonSerializer.DeserializeAsync<CompanionState>(stream).ConfigureAwait(false);
+                }
+
                 if (loaded != null)
                 {
+                    var migrated = false;
+                    if (!CompanionSecrets.IsValid(loaded.AdminAccessKey))
+                    {
+                        loaded.AdminAccessKey = CompanionSecrets.Create();
+                        migrated = true;
+                    }
+
+                    foreach (var peer in loaded.ImportPeers)
+                    {
+                        // Older state files predate the stable Companion relay.
+                        // Give each peer its own unguessable signing secret on
+                        // first load; it is never returned by an API response.
+                        if (!CompanionSecrets.IsValid(peer.StreamSecret))
+                        {
+                            peer.StreamSecret = CompanionSecrets.Create();
+                            migrated = true;
+                        }
+                    }
+
+                    foreach (var peer in loaded.Peers)
+                    {
+                        if (!CompanionSecrets.IsValid(peer.AccessToken))
+                        {
+                            peer.AccessToken = CompanionSecrets.Create();
+                            migrated = true;
+                        }
+                    }
+
+                    if (migrated)
+                    {
+                        await loaded.SaveAsync().ConfigureAwait(false);
+                    }
+
                     return loaded;
                 }
             }
@@ -115,11 +163,30 @@ public sealed class CompanionState
                 await JsonSerializer.SerializeAsync(stream, this, JsonOpts).ConfigureAwait(false);
             }
 
+            RestrictStateFilePermissions(tempPath);
+
             File.Move(tempPath, PathOnDisk, overwrite: true);
         }
         finally
         {
             SaveLock.Release();
+        }
+    }
+
+    private static void RestrictStateFilePermissions(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Some non-Windows filesystems do not implement Unix mode bits.
         }
     }
 }
@@ -144,6 +211,15 @@ public sealed class CompanionPeer
     public string Name { get; set; } = string.Empty;
 
     public DateTime AddedUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>Revocable credential handed to this Jellyfin peer; never exposed by an owner API.</summary>
+    public string AccessToken { get; set; } = CompanionSecrets.Create();
+
+    /// <summary>Allows intentional one-off server-side saves by this friend.</summary>
+    public bool AllowDownloads { get; set; } = true;
+
+    /// <summary>Separate opt-in for batches larger than three items.</summary>
+    public bool AllowBulkDownloads { get; set; }
 }
 
 public sealed class JellyfinImportPeer
@@ -160,6 +236,20 @@ public sealed class JellyfinImportPeer
     /// <summary>Local folder this peer's .strm files are written into - point a Plex library at this path.</summary>
     public string ExportPath { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Base URL Plex uses to call back into this Companion for stable relay
+    /// links. Captured when the friend is connected, so a background sync does
+    /// not depend on an active browser request to construct playable URLs.
+    /// </summary>
+    public string? PlaybackBaseUrl { get; set; }
+
+    /// <summary>
+    /// Per-peer HMAC key used to bind every public relay URL to one exact media
+    /// item. This is a local credential and must never be serialized by an API
+    /// response or written into a .strm file.
+    /// </summary>
+    public string StreamSecret { get; set; } = CompanionSecrets.Create();
+
     /// <summary>Which of this app's own Plex sections to refresh after a sync that changed something - null until the user picks one.</summary>
     public string? PlexSectionKey { get; set; }
 
@@ -168,4 +258,27 @@ public sealed class JellyfinImportPeer
     public int LastItemCount { get; set; }
 
     public string? LastError { get; set; }
+}
+
+internal static class CompanionSecrets
+{
+    public static string Create()
+        => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
+    public static bool IsValid(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 64)
+        {
+            return false;
+        }
+
+        try
+        {
+            return Convert.FromHexString(value).Length == 32;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
 }

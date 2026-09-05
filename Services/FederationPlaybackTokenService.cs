@@ -1,10 +1,18 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
+    public enum FederationTokenPurpose
+    {
+        Playback = 0,
+        Download = 1,
+        BulkDownload = 2
+    }
+
     /// <summary>
     /// Mints and validates short-lived, single-item-scoped playback tokens used by
     /// Direct-mode federated streaming (see <see cref="FederationMediaSourceProvider"/>
@@ -23,9 +31,14 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationPlaybackTokenService
     {
-        private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(24);
+        private static readonly TimeSpan PlaybackTokenLifetime = TimeSpan.FromHours(24);
+        private static readonly TimeSpan DownloadTokenLifetime = TimeSpan.FromMinutes(15);
+        internal static readonly TimeSpan OrdinaryDownloadWindow = TimeSpan.FromHours(1);
+        internal const int OrdinaryDownloadLimit = 3;
 
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
+        private readonly object _downloadGate = new();
+        private readonly Dictionary<string, Dictionary<string, DateTime>> _ordinaryDownloads = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Mints a fresh token scoped to a single remote item id and the friend
@@ -46,13 +59,72 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </param>
         /// <returns>The newly minted token.</returns>
         public string Issue(string remoteItemId, string federationId)
+            => Issue(remoteItemId, federationId, FederationTokenPurpose.Playback, null);
+
+        public string Issue(
+            string remoteItemId,
+            string federationId,
+            FederationTokenPurpose purpose,
+            string? remoteUserId = null)
         {
             Prune();
 
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-            _tokens[token] = new Entry(remoteItemId, federationId, DateTime.UtcNow + TokenLifetime);
+            _tokens[token] = new Entry(remoteItemId, federationId, purpose, remoteUserId, DateTime.UtcNow + GetLifetime(purpose));
             return token;
         }
+
+        /// <summary>
+        /// Applies the source-owned safety limit for friends that have ordinary
+        /// downloads enabled but not bulk downloads. The caller cannot evade it
+        /// by splitting a library pull into repeated one-item requests: only
+        /// three distinct items per rolling hour are authorized until the source
+        /// admin explicitly enables bulk access. Re-authorizing the same item is
+        /// allowed so an interrupted transfer can retry.
+        /// </summary>
+        public bool TryReserveOrdinaryDownload(
+            string federationId,
+            string remoteItemId,
+            out TimeSpan retryAfter)
+        {
+            var now = DateTime.UtcNow;
+            lock (_downloadGate)
+            {
+                if (!_ordinaryDownloads.TryGetValue(federationId, out var reservations))
+                {
+                    reservations = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                    _ordinaryDownloads[federationId] = reservations;
+                }
+
+                foreach (var expired in reservations
+                    .Where(pair => now - pair.Value >= OrdinaryDownloadWindow)
+                    .Select(pair => pair.Key)
+                    .ToList())
+                {
+                    reservations.Remove(expired);
+                }
+
+                if (reservations.ContainsKey(remoteItemId))
+                {
+                    retryAfter = TimeSpan.Zero;
+                    return true;
+                }
+
+                if (reservations.Count >= OrdinaryDownloadLimit)
+                {
+                    var oldest = reservations.Values.Min();
+                    retryAfter = (oldest + OrdinaryDownloadWindow) - now;
+                    return false;
+                }
+
+                reservations[remoteItemId] = now;
+                retryAfter = TimeSpan.Zero;
+                return true;
+            }
+        }
+
+        public static TimeSpan GetLifetime(FederationTokenPurpose purpose)
+            => purpose == FederationTokenPurpose.Playback ? PlaybackTokenLifetime : DownloadTokenLifetime;
 
         /// <summary>
         /// Validates a token against the remote item id it is being used for. True
@@ -65,8 +137,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// tokens immediately rather than at expiry.
         /// </summary>
         public bool TryValidate(string? token, string? remoteItemId, out string? federationId)
+            => TryValidate(token, remoteItemId, out federationId, out _);
+
+        public bool TryValidate(
+            string? token,
+            string? remoteItemId,
+            out string? federationId,
+            out FederationTokenPurpose purpose)
+            => TryValidate(token, remoteItemId, out federationId, out purpose, out _);
+
+        public bool TryValidate(
+            string? token,
+            string? remoteItemId,
+            out string? federationId,
+            out FederationTokenPurpose purpose,
+            out string? remoteUserId)
         {
             federationId = null;
+            purpose = FederationTokenPurpose.Playback;
+            remoteUserId = null;
             Prune();
 
             if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(remoteItemId))
@@ -86,6 +175,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             federationId = entry.FederationId;
+            purpose = entry.Purpose;
+            remoteUserId = entry.RemoteUserId;
             return string.Equals(entry.RemoteItemId, remoteItemId, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -103,6 +194,11 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private readonly record struct Entry(string RemoteItemId, string FederationId, DateTime ExpiresUtc);
+        private readonly record struct Entry(
+            string RemoteItemId,
+            string FederationId,
+            FederationTokenPurpose Purpose,
+            string? RemoteUserId,
+            DateTime ExpiresUtc);
     }
 }

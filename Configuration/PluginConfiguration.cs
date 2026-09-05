@@ -100,10 +100,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool PreferHigherQualityRemotes { get; set; } = false;
 
         /// <summary>
-        /// Gets or sets a value indicating whether the quality review may show
-        /// destructive replacement actions. This is a second, explicit opt-in
-        /// beyond merely finding better copies. Even when enabled, every movie
-        /// still requires its own affirmative confirmation.
+        /// Legacy compatibility field from the retired download-and-replace
+        /// workflow. Configuration saves force this off; current quality review
+        /// offers only explicit, exact-id local cleanup.
         /// </summary>
         public bool EnableQualityReplacementActions { get; set; } = false;
 
@@ -721,6 +720,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// True by default — downloads still need an authenticated admin request.
         /// </summary>
         public bool AllowDownloads { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether this friend may request a large, multi-item pull
+        /// from this server. False by default: ordinary one-off downloads can be
+        /// allowed without implicitly consenting to somebody copying a sizeable
+        /// part of the library in one action.
+        /// </summary>
+        public bool AllowBulkDownloads { get; set; } = false;
     }
 
     /// <summary>

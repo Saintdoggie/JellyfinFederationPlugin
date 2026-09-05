@@ -1,6 +1,10 @@
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Http;
 
 namespace FederationCompanion;
 
@@ -18,10 +22,17 @@ public sealed class JellyfinImportService
     private const string TokenHeader = "X-Federation-Token";
 
     private readonly HttpClient _http;
+    private readonly HttpClient _streamHttp;
 
     public JellyfinImportService(HttpClient http)
+        : this(http, http)
+    {
+    }
+
+    public JellyfinImportService(HttpClient http, HttpClient streamHttp)
     {
         _http = http;
+        _streamHttp = streamHttp;
     }
 
     public async Task<List<PeerLibrary>> GetLibrariesAsync(string peerUrl, string token, CancellationToken cancellationToken)
@@ -102,6 +113,113 @@ public sealed class JellyfinImportService
 
     public static string BuildStreamUrl(string peerUrl, string itemId, string playbackToken)
         => $"{peerUrl.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(playbackToken)}";
+
+    /// <summary>
+    /// Builds the stable URL written into Plex's .strm file. The URL contains
+    /// an item-bound HMAC capability, never the peer's standing federation
+    /// token or a short-lived upstream playback token.
+    /// </summary>
+    public static string BuildCompanionStreamUrl(string companionBaseUrl, JellyfinImportPeer peer, string itemId)
+    {
+        var capability = CreateStreamCapability(peer.Id, itemId, peer.StreamSecret);
+        return $"{companionBaseUrl.TrimEnd('/')}/stream/{Uri.EscapeDataString(peer.Id)}/{Uri.EscapeDataString(itemId)}?cap={capability}";
+    }
+
+    public static bool IsValidStreamCapability(JellyfinImportPeer peer, string itemId, string? capability)
+    {
+        if (string.IsNullOrWhiteSpace(peer.StreamSecret) || string.IsNullOrWhiteSpace(capability))
+        {
+            return false;
+        }
+
+        try
+        {
+            var expected = CreateStreamCapability(peer.Id, itemId, peer.StreamSecret);
+            return CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(expected),
+                Convert.FromHexString(capability));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Mints fresh upstream authorization at actual play time and relays the
+    /// response to Plex. Range and validator headers are preserved so seeking,
+    /// resume, direct play, and Plex's initial byte probes behave like a direct
+    /// Jellyfin stream.
+    /// </summary>
+    public async Task RelayStreamAsync(
+        JellyfinImportPeer peer,
+        string itemId,
+        HttpRequest incoming,
+        HttpResponse outgoing,
+        CancellationToken cancellationToken)
+    {
+        var minted = await GetPlaybackTokenAsync(peer.Url, peer.Token, itemId, cancellationToken).ConfigureAwait(false);
+        if (minted == null)
+        {
+            outgoing.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
+        var upstreamUrl = BuildStreamUrl(peer.Url, itemId, minted.Value.Token);
+        using var request = new HttpRequestMessage(
+            HttpMethods.IsHead(incoming.Method) ? HttpMethod.Head : HttpMethod.Get,
+            upstreamUrl);
+        request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("identity"));
+
+        CopyRequestHeader(incoming, request, "Range");
+        CopyRequestHeader(incoming, request, "If-Range");
+        CopyRequestHeader(incoming, request, "If-None-Match");
+        CopyRequestHeader(incoming, request, "If-Modified-Since");
+
+        using var response = await _streamHttp.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+
+        outgoing.StatusCode = (int)response.StatusCode;
+        CopyResponseHeader(response, outgoing, "Accept-Ranges");
+        CopyResponseHeader(response, outgoing, "Content-Range");
+        CopyResponseHeader(response, outgoing, "Content-Length");
+        CopyResponseHeader(response, outgoing, "Content-Type");
+        CopyResponseHeader(response, outgoing, "Content-Disposition");
+        CopyResponseHeader(response, outgoing, "ETag");
+        CopyResponseHeader(response, outgoing, "Last-Modified");
+        outgoing.Headers.CacheControl = "private, no-store";
+
+        if (!HttpMethods.IsHead(incoming.Method) && response.Content != null)
+        {
+            await response.Content.CopyToAsync(outgoing.Body, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static string CreateStreamCapability(string peerId, string itemId, string secret)
+    {
+        var key = Convert.FromHexString(secret);
+        var message = Encoding.UTF8.GetBytes($"{peerId}\n{itemId}");
+        return Convert.ToHexString(HMACSHA256.HashData(key, message));
+    }
+
+    private static void CopyRequestHeader(HttpRequest incoming, HttpRequestMessage outgoing, string name)
+    {
+        if (incoming.Headers.TryGetValue(name, out var value))
+        {
+            outgoing.Headers.TryAddWithoutValidation(name, value.ToArray());
+        }
+    }
+
+    private static void CopyResponseHeader(HttpResponseMessage incoming, HttpResponse outgoing, string name)
+    {
+        if (incoming.Headers.TryGetValues(name, out var values)
+            || (incoming.Content != null && incoming.Content.Headers.TryGetValues(name, out values)))
+        {
+            outgoing.Headers[name] = values.ToArray();
+        }
+    }
 
     private sealed class PeerLibrariesResponse
     {

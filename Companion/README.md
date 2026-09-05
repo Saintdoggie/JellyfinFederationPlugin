@@ -27,9 +27,9 @@ cd Companion
 dotnet run
 ```
 
-Then open the printed local URL (defaults to an ASP.NET Core-assigned port; set `ASPNETCORE_URLS` to pin one, e.g. `ASPNETCORE_URLS=http://127.0.0.1:7890 dotnet run`).
+Then open the local URL and append the `#access=...` owner key printed by the app. The key protects all owner/admin actions when the same listener is exposed through Tailscale Funnel. It lives only in that browser tab's session storage, so it is not sent in the URL to the server or left in browser history. The app defaults to an ASP.NET Core-assigned port; set `ASPNETCORE_URLS` to pin one, e.g. `ASPNETCORE_URLS=http://127.0.0.1:7890 dotnet run`.
 
-State (Plex token, server address, public URL, library sharing choices, connected peers) is stored in `companion-state.json` next to the executable - delete it to fully reset/sign out.
+State (Plex token, server address, public URL, owner key, library sharing choices, connected peers) is stored in `companion-state.json` next to the executable. On Unix it is forced to owner-read/write mode (`0600`). Delete it to fully reset/sign out.
 
 ## Walkthrough
 
@@ -41,15 +41,26 @@ The app is a single page, worked top to bottom:
 
 **2. Public address.** Once Tailscale is up, turn on [Funnel](https://tailscale.com/kb/1223/funnel) for this server and paste the resulting `https://...ts.net` address here. This is the address a federated Jellyfin server will actually call.
 
-**3. Plex connection.** Sign in with your Plex account (opens Plex's own sign-in page - your password never touches this app) and it resolves your server automatically.
+**3. Plex connection.** Sign in with your Plex account (opens Plex's own sign-in page - your password never touches this app). Companion prefers a tested public direct HTTPS connection, falls back to Plex Relay, and uses a private LAN address only as a last resort. If your account can see more than one Plex server, select the one you actually want to share.
 
 **4. Libraries to share.** Toggle which of your Plex libraries are visible to federated friends. Off by default; re-scanning never resets a choice you've already made.
 
-**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into their Jellyfin Federation plugin, which uses it to link automatically - no copying tokens by hand. Codes expire after 15 minutes and can only be used once. Connected friends show up below with a revoke button.
+**5. Connect a Jellyfin friend.** Generate a one-time connect code and send it to your friend. They paste it into their Jellyfin Federation plugin, which exchanges it server-to-server for a separate, revocable Companion relay credential—never your real Plex token. Codes expire after 15 minutes and can only be used once. The relay exposes only libraries you currently mark shared; revoking the friend immediately invalidates its credential. Individual downloads can be allowed separately, while bulk downloads stay off until you explicitly enable them for that friend.
 
 ![Connect code and connected friends list](docs/screenshots/companion-connect-friend.jpg)
 
-**6. Import from a Jellyfin friend.** The other direction: paste a connect code a Jellyfin friend generated from their own Federation plugin's Companion tab, and this app pulls whatever they share into a local `.strm` export - point a Plex library at the export path shown for that friend, and Plex plays it straight through their server, same as any other federated title. A background sync keeps the export current (additions and removals) every 30 minutes, or use "Sync now" to force one immediately. Pick a Plex section per friend to have Plex re-scan automatically right after a sync that changed something. Removing a friend here only stops syncing - it never deletes files already written, so nothing already scanned into Plex disappears out from under it.
+**6. Import from a Jellyfin friend.** The other direction is presented as its own flow: paste a connect code a Jellyfin friend generated from their Federation plugin's Companion tab, and this app pulls whatever they share into a local `.strm` export. Point a Plex library at the folder shown for that friend.
+
+The `.strm` files contain stable Companion relay URLs, not the Jellyfin federation credential and not an expiring playback token. When Plex actually presses Play, Companion verifies an item-bound HMAC capability, asks the Jellyfin friend for fresh playback authorization, and relays the movie/episode while preserving `Range`, `HEAD`, content length/type, and cache validators. This fixes playback failing after a 24-hour token expired or after Companion restarted. The standing Jellyfin token and the fresh upstream playback token stay server-side.
+
+A background sync keeps the export current every 30 minutes, or use **Sync now**. Pick a Plex section per friend to have Plex re-scan whenever any `.strm` file changes—including a URL-only migration, not just when the item count changes. Removing a friend stops syncing but deliberately leaves existing files in place; their relay capabilities are revoked because the peer no longer exists in Companion state.
+
+## Security boundaries
+
+- All `/api/*` owner endpoints require the per-install `X-Companion-Admin` key. Only `/api/link/complete` remains public for the one-time, 15-minute, single-use server-to-server claim.
+- `/stream/*` is public because Plex may not send custom headers, but every URL is HMAC-bound to one peer and one exact Jellyfin item. Editing the peer or item id invalidates it.
+- Browser-facing import-peer responses are explicit safe views. They never serialize the Jellyfin federation token or the local stream-signing secret.
+- The Plex password is handled only by Plex's own OAuth page. Plex account/server tokens stay in the owner-only state file. A Jellyfin friend receives a distinct Companion relay token that can be revoked without affecting Plex or another friend.
 
 ## Status
 
@@ -61,6 +72,11 @@ The app is a single page, worked top to bottom:
 - [x] Connect-code exchange - linking to a Jellyfin server is approved from this side, not just the admin's
 - [x] Peer list with revoke
 - [x] Import from a Jellyfin friend - connect-code exchange in the other direction, with an automatic `.strm` export and Plex section refresh
+- [x] Stable Jellyfin-to-Plex stream relay with fresh play-time authorization and byte-range seeking
+- [x] Public-direct/relay-aware Plex endpoint selection for Plex-to-Jellyfin playback
+- [x] Revocable, per-friend Plex facade that enforces the source owner's current library sharing and never exports the real Plex token
+- [x] Owner access key for every browser/admin API on a Funnel-exposed listener
+- [x] Responsive laptop/TV UI with clearly separated Plex → Jellyfin and Jellyfin → Plex flows
 - [ ] Phase 3: pool invites (send/receive/accept) and richer peer management
 - [ ] Bandwidth limit control (raised as a real requirement by a prospective federation friend)
 
