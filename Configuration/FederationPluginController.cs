@@ -340,6 +340,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.LocalFederationId = existing.LocalFederationId;
                     config.IncomingFriendRequests = existing.IncomingFriendRequests;
                     config.OutgoingFriendRequests = existing.OutgoingFriendRequests;
+                    config.IncomingPlexOffers = existing.IncomingPlexOffers;
 
                     // Pools are managed through their own Pools/* endpoints (create,
                     // invite, leave), never sent by the config page's main Save form -
@@ -1984,11 +1985,63 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Claims a Companion-generated Plex share code. The Jellyfin server
-        /// completes the handshake with Companion (or uses a direct Plex
-        /// remote/relay URL in the code) so the Plex owner and this server do
-        /// not need to share a Tailscale tailnet. When Companion is public it
-        /// returns a revocable relay credential instead of the real Plex token.
+        /// Anonymous: a Plex Companion install typed this server's address
+        /// and pushed a share offer. Stored until an admin accepts. The
+        /// connect code never needs to be copied by hand.
+        /// </summary>
+        [HttpPost("PlexOffers")]
+        [AllowAnonymous]
+        public IActionResult ReceivePlexOffer([FromBody] ConnectPlexCompanionBody? body)
+        {
+            var (success, message) = _friends.ReceivePlexOffer(body?.Code);
+            return success ? Ok(new { success, message }) : BadRequest(new { success, error = message, message });
+        }
+
+        [HttpGet("PlexOffers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ListPlexOffers()
+        {
+            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            var offers = (config.IncomingPlexOffers ?? new List<IncomingPlexOffer>())
+                .Where(o => o.CreatedUtc >= DateTime.UtcNow.AddHours(-24))
+                .Select(o => new { o.Id, o.ServerName, o.CompanionUrl, o.CreatedUtc });
+            return Ok(new { incoming = offers });
+        }
+
+        [HttpPost("PlexOffers/{id}/Accept")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> AcceptPlexOffer(string id, CancellationToken cancellationToken)
+        {
+            var (success, message, server) = await _friends.AcceptPlexOfferAsync(id, cancellationToken).ConfigureAwait(false);
+            if (!success || server == null)
+            {
+                return BadRequest(new { success = false, error = message, message });
+            }
+
+            try
+            {
+                await _syncService.SyncServerAsync(server.Id, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Accepted Plex offer {Name} but the first sync failed", server.Name);
+            }
+
+            return Ok(new { success = true, message, server = SanitizeServer(server) });
+        }
+
+        [HttpDelete("PlexOffers/{id}")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult RejectPlexOffer(string id)
+        {
+            var (success, message) = _friends.RejectPlexOffer(id);
+            return success ? Ok(new { success, message }) : BadRequest(new { success, error = message, message });
+        }
+
+        /// <summary>
+        /// Claims a Companion-generated Plex share code. Optional: the usual
+        /// path is the Plex owner typing this server's address so the offer
+        /// arrives under PlexOffers instead.
         /// </summary>
         [HttpPost("ExternalServers/ConnectCode")]
         [Authorize(Policy = "RequiresElevation")]

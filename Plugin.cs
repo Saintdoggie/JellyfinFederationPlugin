@@ -106,6 +106,11 @@ namespace Jellyfin.Plugin.Federation
             {
                 request.ApiKey = ApiKeyProtector.Unprotect(request.ApiKey);
             }
+
+            foreach (var offer in config.IncomingPlexOffers ?? new List<IncomingPlexOffer>())
+            {
+                offer.Code = ApiKeyProtector.Unprotect(offer.Code);
+            }
         }
 
         /// <inheritdoc />
@@ -149,6 +154,11 @@ namespace Jellyfin.Plugin.Federation
             foreach (var request in clone.IncomingFriendRequests ?? new List<FriendRequest>())
             {
                 request.ApiKey = ApiKeyProtector.Protect(request.ApiKey);
+            }
+
+            foreach (var offer in clone.IncomingPlexOffers ?? new List<IncomingPlexOffer>())
+            {
+                offer.Code = ApiKeyProtector.Protect(offer.Code);
             }
 
             return clone;

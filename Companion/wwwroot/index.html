@@ -51,6 +51,13 @@
     max-width: 720px;
     line-height: 1.55;
   }
+  .update-banner {
+    margin-top: 16px; max-width: 720px;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    background: rgba(103, 164, 255, .12); border: 1px solid var(--border-strong);
+    padding: 12px 14px; border-radius: 12px; color: var(--text); font-size: 14px;
+  }
+  .update-banner button { margin: 0; }
   .brand-line { display: flex; align-items: center; gap: 12px; }
   .brand-mark {
     width: 42px; height: 42px; display: grid; place-items: center;
@@ -251,6 +258,10 @@
 <header>
   <div class="brand-line"><div class="brand-mark" aria-hidden="true">F</div><h1>Federation Companion</h1></div>
   <p>A private bridge between Plex and Jellyfin. You choose each library and each friend; account credentials stay on this machine.</p>
+  <div id="updateBanner" class="update-banner hidden">
+    <span id="updateBannerText">A newer Companion is available.</span>
+    <button id="updateNowBtn">Update now</button>
+  </div>
 </header>
 <main>
   <div class="card" id="accessCard">
@@ -262,7 +273,7 @@
   <div class="direction-heading">
     <div class="direction-kicker">Plex → Jellyfin</div>
     <h2>Share your Plex library</h2>
-    <p>Connect Plex, choose exactly what is visible, then hand your Jellyfin friend a single-use code.</p>
+    <p>Connect Plex, choose what is visible, then type your Jellyfin friend's server address. A connect code is optional if they would rather paste one themselves.</p>
   </div>
   <div class="card" id="tailscaleCard">
     <h2><span class="step-num">1</span> Tailscale</h2>
@@ -271,9 +282,12 @@
 
   <div class="card" id="publicUrlCard">
     <h2><span class="step-num">2</span> Your public address</h2>
-    <p class="status-line">Optional. If Plex Remote Access or Plex Relay is on, connect codes use that even when a Funnel URL is saved — your Jellyfin friend does <strong>not</strong> need Tailscale or port forwarding. Funnel (<code>https://yourname.tailXXXXX.ts.net</code>) is only needed when Plex has no public path. Leave blank to skip Funnel. Never paste a 100.x tailnet address.</p>
-    <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net (optional)">
-    <button class="secondary" id="savePublicUrlBtn">Save</button>
+    <p class="status-line">Needed if friends are outside your house (Starlink, no port forwarding). Funnel publishes this app at <code>https://yourname.tailXXXXX.ts.net</code>. Never paste a 100.x tailnet address. Plex Remote Access/Relay is a backup inside the connect request if Funnel TLS is down.</p>
+    <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
+    <div class="inline-form">
+      <button id="enableFunnelBtn">Turn on Funnel</button>
+      <button class="secondary" id="savePublicUrlBtn">Save URL</button>
+    </div>
     <div class="status-line" id="publicUrlStatus"></div>
   </div>
 
@@ -305,8 +319,14 @@
 
   <div class="card hidden" id="shareCard">
     <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Generate a one-time code and send it to your friend. They paste it into Jellyfin Federation and the servers connect over the internet - they do not need to be on your Tailscale.</p>
-    <button id="generateCodeBtn">Generate connect code</button>
+    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. They do not need a code, and they do not need to join your Tailscale.</p>
+    <div class="inline-form">
+      <input type="text" id="inviteUrlInput" placeholder="https://their-jellyfin.example:8096" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="inviteFriendBtn">Send share request</button>
+    </div>
+    <div class="status-line" id="inviteStatus"></div>
+    <p class="status-line" style="margin-top:18px">Optional: generate a code only if they cannot Accept from their dashboard and need to paste one.</p>
+    <button class="secondary" id="generateCodeBtn">Generate connect code</button>
     <code class="cmd hidden" id="connectCode"></code>
     <div class="code-actions hidden" id="connectCodeActions"><button class="secondary" id="copyCodeBtn">Copy code</button></div>
     <div class="status-line" id="codeStatus"></div>
@@ -374,6 +394,13 @@ const connectCode = document.getElementById('connectCode');
 const connectCodeActions = document.getElementById('connectCodeActions');
 const copyCodeBtn = document.getElementById('copyCodeBtn');
 const codeStatus = document.getElementById('codeStatus');
+const inviteUrlInput = document.getElementById('inviteUrlInput');
+const inviteFriendBtn = document.getElementById('inviteFriendBtn');
+const inviteStatus = document.getElementById('inviteStatus');
+const enableFunnelBtn = document.getElementById('enableFunnelBtn');
+const updateBanner = document.getElementById('updateBanner');
+const updateBannerText = document.getElementById('updateBannerText');
+const updateNowBtn = document.getElementById('updateNowBtn');
 const peerList = document.getElementById('peerList');
 const importCodeInput = document.getElementById('importCodeInput');
 const importConnectBtn = document.getElementById('importConnectBtn');
@@ -716,6 +743,85 @@ savePublicUrlBtn.addEventListener('click', async () => {
   savePublicUrlBtn.disabled = false;
 });
 
+enableFunnelBtn.addEventListener('click', async () => {
+  enableFunnelBtn.disabled = true;
+  publicUrlStatus.textContent = 'Turning on Funnel and requesting an HTTPS certificate…';
+  try {
+    const res = await apiFetch('/api/tailscale/funnel', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      publicUrlInput.value = data.funnelUrl || '';
+      document.getElementById('publicUrlCard').classList.add('done');
+      publicUrlStatus.textContent = data.message || 'Funnel is on.';
+    } else {
+      publicUrlStatus.textContent = data.error || 'Could not turn on Funnel. Enable HTTPS Certificates in the Tailscale admin console, then try again.';
+    }
+  } catch (e) {
+    publicUrlStatus.textContent = 'Could not turn on Funnel: ' + e.message;
+  }
+  enableFunnelBtn.disabled = false;
+});
+
+inviteFriendBtn.addEventListener('click', async () => {
+  const url = inviteUrlInput.value.trim();
+  if (!url) {
+    inviteStatus.textContent = 'Enter their Jellyfin address first.';
+    return;
+  }
+  inviteFriendBtn.disabled = true;
+  inviteStatus.textContent = 'Sending share request…';
+  try {
+    const res = await apiFetch('/api/connect/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    inviteStatus.textContent = res.ok ? (data.message || 'Request sent.') : (data.error || 'Could not send the request.');
+  } catch (e) {
+    inviteStatus.textContent = 'Error: ' + e.message;
+  }
+  inviteFriendBtn.disabled = false;
+});
+
+async function loadUpdateStatus() {
+  try {
+    const res = await apiFetch('/api/update/status');
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      return;
+    }
+    if (data.updateAvailable) {
+      updateBanner.classList.remove('hidden');
+      updateBannerText.textContent = data.installedBuild
+        ? 'A newer Companion is available. Update from here — no terminal needed.'
+        : 'A newer Companion is available. This copy was started from source, so reinstall with the install script to apply it.';
+      updateNowBtn.classList.toggle('hidden', !data.installedBuild);
+    } else {
+      updateBanner.classList.add('hidden');
+    }
+  } catch (e) { /* offline is fine */ }
+}
+
+updateNowBtn.addEventListener('click', async () => {
+  if (!confirm('Download the latest Companion and restart? This page will disconnect for a few seconds.')) return;
+  updateNowBtn.disabled = true;
+  updateBannerText.textContent = 'Downloading update…';
+  try {
+    const res = await apiFetch('/api/update/apply', { method: 'POST' });
+    const data = await res.json();
+    updateBannerText.textContent = data.message || data.error || 'Restarting…';
+    if (res.ok) {
+      setTimeout(() => location.reload(), 4000);
+    } else {
+      updateNowBtn.disabled = false;
+    }
+  } catch (e) {
+    updateBannerText.textContent = 'Update failed: ' + e.message;
+    updateNowBtn.disabled = false;
+  }
+});
+
 generateCodeBtn.addEventListener('click', async () => {
   generateCodeBtn.disabled = true;
   codeStatus.textContent = '';
@@ -726,8 +832,8 @@ generateCodeBtn.addEventListener('click', async () => {
     connectCode.classList.remove('hidden');
     connectCodeActions.classList.remove('hidden');
     codeStatus.textContent = data.mode === 'direct'
-      ? `Expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay so your friend does not need Tailscale, Funnel, or port forwarding.`
-      : `Expires in ${data.expiresInMinutes} minutes. This uses your Funnel URL because Plex has no public Remote Access/Relay path. Send it now — Funnel HTTPS must actually work.`;
+      ? `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay.`
+      : `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Funnel so they can reach you outside your home. Prefer sending a share request with their Jellyfin address instead.`;
   } else {
     codeStatus.textContent = data.error || 'Could not generate a code.';
   }
@@ -790,7 +896,7 @@ async function unlockOwner() {
     document.body.classList.remove('owner-locked');
     accessCard.classList.add('hidden');
     unlockStatus.textContent = '';
-    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus()]);
+    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus()]);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {

@@ -201,6 +201,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<FriendRequest> IncomingFriendRequests { get; set; } = new List<FriendRequest>();
 
         /// <summary>
+        /// Gets or sets Plex Companion share offers pushed here by address
+        /// (no connect code required on this side). Admin accepts or rejects.
+        /// </summary>
+        public List<IncomingPlexOffer> IncomingPlexOffers { get; set; } = new List<IncomingPlexOffer>();
+
+        /// <summary>
         /// Gets or sets pool invites this server has sent to already-known friends,
         /// still awaiting their decision. See <see cref="PoolInvite"/>.
         /// </summary>
@@ -953,6 +959,24 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// accept, not kept in sync afterward.
         /// </summary>
         public List<PoolMember>? PoolRoster { get; set; }
+    }
+
+    /// <summary>
+    /// A Plex Companion share pushed to this Jellyfin by server address. The
+    /// connect code stays on this server until an admin accepts; the settings
+    /// page never receives the raw code.
+    /// </summary>
+    public class IncomingPlexOffer
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+
+        public string Code { get; set; } = string.Empty;
+
+        public string ServerName { get; set; } = string.Empty;
+
+        public string CompanionUrl { get; set; } = string.Empty;
+
+        public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     }
 
     /// <summary>

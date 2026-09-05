@@ -671,15 +671,28 @@ namespace Jellyfin.Plugin.Federation.Services
             if (decoded.Claim != false)
             {
                 var claimed = await ClaimCompanionLinkAsync(decoded, cancellationToken).ConfigureAwait(false);
-                if (!claimed.Success)
+                if (claimed.Success)
+                {
+                    plexUrl = claimed.PlexUrl!;
+                    plexToken = claimed.PlexToken!;
+                    serverName = claimed.ServerName!;
+                    libraries = claimed.Libraries;
+                }
+                else if (!string.IsNullOrWhiteSpace(decoded.FallbackUrl)
+                    && !string.IsNullOrWhiteSpace(decoded.FallbackToken))
+                {
+                    // Funnel TLS is often advertised while dead. The same code
+                    // can carry Plex Remote Access/Relay as a backup so the
+                    // Starlink friend still connects.
+                    plexUrl = decoded.FallbackUrl.Trim().TrimEnd('/');
+                    plexToken = decoded.FallbackToken;
+                    serverName = string.IsNullOrWhiteSpace(decoded.Name) ? plexUrl : decoded.Name.Trim();
+                    libraries = decoded.Libraries ?? new List<CompanionSharedLibrary>();
+                }
+                else
                 {
                     return (false, claimed.Message, null);
                 }
-
-                plexUrl = claimed.PlexUrl!;
-                plexToken = claimed.PlexToken!;
-                serverName = claimed.ServerName!;
-                libraries = claimed.Libraries;
             }
             else
             {
@@ -743,6 +756,101 @@ namespace Jellyfin.Plugin.Federation.Services
                 ? " They have not marked any libraries shared yet, so nothing will sync until they do."
                 : $" {shared.Count} shared library(ies) are mapped and will sync.";
             return (true, $"Connected to {server.Name}.{sharedNote}", server);
+        }
+
+        /// <summary>
+        /// Stores a Plex Companion share that was pushed by typing this
+        /// server's address. The admin still has to Accept; the code is not
+        /// applied until then.
+        /// </summary>
+        public (bool Success, string Message) ReceivePlexOffer(string? code)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return (false, "Plugin not initialized.");
+            }
+
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                return (false, "That share request is empty.");
+            }
+
+            CompanionConnectCodePayload? decoded;
+            try
+            {
+                decoded = JsonSerializer.Deserialize<CompanionConnectCodePayload>(
+                    Convert.FromBase64String(code.Trim()),
+                    JsonOpts);
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                return (false, "That share request could not be read.");
+            }
+
+            if (decoded == null || string.IsNullOrWhiteSpace(decoded.Url) || string.IsNullOrWhiteSpace(decoded.Token))
+            {
+                return (false, "That share request is missing an address or token.");
+            }
+
+            config.IncomingPlexOffers ??= new List<IncomingPlexOffer>();
+            config.IncomingPlexOffers.RemoveAll(o => o.CreatedUtc < DateTime.UtcNow.AddHours(-24));
+            if (config.IncomingPlexOffers.Count >= 25)
+            {
+                return (false, "This server already has too many pending Plex share requests. Ask the admin to accept or reject the existing ones.");
+            }
+
+            if (config.IncomingPlexOffers.Any(o => string.Equals(o.Code, code.Trim(), StringComparison.Ordinal)))
+            {
+                return (true, "That share request is already waiting for the admin to accept.");
+            }
+
+            config.IncomingPlexOffers.Add(new IncomingPlexOffer
+            {
+                Code = code.Trim(),
+                ServerName = string.IsNullOrWhiteSpace(decoded.Name) ? decoded.Url : decoded.Name.Trim(),
+                CompanionUrl = decoded.Url.Trim().TrimEnd('/'),
+                CreatedUtc = DateTime.UtcNow
+            });
+            Plugin.Instance!.SaveConfiguration();
+            return (true, "Share request received. The Jellyfin admin can Accept it under Federation → Companion.");
+        }
+
+        public async Task<(bool Success, string Message, RemoteServer? Server)> AcceptPlexOfferAsync(string offerId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var offer = config?.IncomingPlexOffers?.FirstOrDefault(o => o.Id == offerId);
+            if (offer == null)
+            {
+                return (false, "That Plex share request was not found. It may have been accepted or rejected already.", null);
+            }
+
+            var (success, message, server) = await ConnectPlexCompanionAsync(offer.Code, cancellationToken).ConfigureAwait(false);
+            if (success)
+            {
+                config!.IncomingPlexOffers.RemoveAll(o => o.Id == offerId);
+                Plugin.Instance!.SaveConfiguration();
+            }
+
+            return (success, message, server);
+        }
+
+        public (bool Success, string Message) RejectPlexOffer(string offerId)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.IncomingPlexOffers == null)
+            {
+                return (false, "That Plex share request was not found.");
+            }
+
+            var removed = config.IncomingPlexOffers.RemoveAll(o => o.Id == offerId) > 0;
+            if (!removed)
+            {
+                return (false, "That Plex share request was not found.");
+            }
+
+            Plugin.Instance!.SaveConfiguration();
+            return (true, "Plex share request rejected.");
         }
 
         private async Task<(bool Success, string Message, string? PlexUrl, string? PlexToken, string? ServerName, List<CompanionSharedLibrary> Libraries)> ClaimCompanionLinkAsync(
@@ -2163,6 +2271,10 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? Name { get; set; }
 
         public bool? Claim { get; set; }
+
+        public string? FallbackUrl { get; set; }
+
+        public string? FallbackToken { get; set; }
 
         public List<CompanionSharedLibrary>? Libraries { get; set; }
     }

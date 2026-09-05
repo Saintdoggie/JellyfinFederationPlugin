@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Collections.Concurrent;
 using FederationCompanion;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,6 +26,7 @@ builder.Services.AddSingleton(sp => new PlexFederationRelay(
     state,
     new HttpClient { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
+builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
 
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
 
@@ -55,6 +58,26 @@ app.UseStaticFiles();
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {
+    try
+    {
+        var addresses = app.Services.GetRequiredService<IServer>()
+            .Features.Get<IServerAddressesFeature>()
+            ?.Addresses;
+        foreach (var raw in addresses ?? Array.Empty<string>())
+        {
+            var candidate = raw.Replace("*", "127.0.0.1", StringComparison.Ordinal)
+                .Replace("+", "127.0.0.1", StringComparison.Ordinal);
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && uri.Port > 0)
+            {
+                CompanionListen.Port = uri.Port;
+                break;
+            }
+        }
+    }
+    catch (InvalidOperationException)
+    {
+    }
+
     Console.WriteLine();
     Console.WriteLine("Federation Companion owner access:");
     Console.WriteLine($"  Add this to the end of the Companion URL: #access={state.AdminAccessKey}");
@@ -329,7 +352,16 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Can
     if (generated.Claim)
     {
         pendingLinks[generated.Token] = DateTime.UtcNow.AddMinutes(15);
-        payload = new { url = generated.Url, token = generated.Token, name = generated.Name, claim = true };
+        payload = new
+        {
+            url = generated.Url,
+            token = generated.Token,
+            name = generated.Name,
+            claim = true,
+            fallbackUrl = generated.FallbackUrl,
+            fallbackToken = generated.FallbackToken,
+            libraries = generated.Libraries
+        };
     }
     else
     {
@@ -345,6 +377,136 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Can
 
     var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
     return Results.Ok(new { code, expiresInMinutes = 15, mode = generated.Mode });
+});
+
+app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionState s, PlexAuth auth, HttpClient http, CancellationToken ct) =>
+{
+    if (s.ServerBaseUrl == null || s.ServerAccessToken == null)
+    {
+        return Results.BadRequest(new { error = "Connect to Plex first." });
+    }
+
+    if (!TryNormalizeJellyfinInviteUrl(body.Url, out var jellyfinUrl))
+    {
+        return Results.BadRequest(new { error = "Enter your friend's Jellyfin address, like https://their-server.ts.net or https://jellyfin.example.com:8096." });
+    }
+
+    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
+    if (!ConnectCodeFactory.TryGenerate(
+            s.PublicUrl,
+            remotePlexUrl,
+            s.ServerAccessToken,
+            s.ServerName,
+            s.Libraries,
+            () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
+            out var generated,
+            out var generateError)
+        || generated == null)
+    {
+        return Results.BadRequest(new { error = generateError });
+    }
+
+    object payload;
+    if (generated.Claim)
+    {
+        pendingLinks[generated.Token] = DateTime.UtcNow.AddMinutes(15);
+        payload = new
+        {
+            url = generated.Url,
+            token = generated.Token,
+            name = generated.Name,
+            claim = true,
+            fallbackUrl = generated.FallbackUrl,
+            fallbackToken = generated.FallbackToken,
+            libraries = generated.Libraries
+        };
+    }
+    else
+    {
+        payload = new
+        {
+            url = generated.Url,
+            token = generated.Token,
+            name = generated.Name,
+            claim = false,
+            libraries = generated.Libraries
+        };
+    }
+
+    var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
+    try
+    {
+        using var response = await http.PostAsJsonAsync(
+            jellyfinUrl + "/Plugins/Federation/PlexOffers",
+            new { code },
+            ct).ConfigureAwait(false);
+        var bodyText = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var remoteError = TryReadJsonError(bodyText);
+            return Results.BadRequest(new { error = remoteError ?? "That Jellyfin server did not accept the request. Check the address, that Federation is installed, and that it is reachable from here." });
+        }
+
+        return Results.Ok(new
+        {
+            message = $"Share request sent to {jellyfinUrl}. They will see it under Federation → Companion and can Accept. You do not need to send them a code.",
+            mode = generated.Mode
+        });
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+    {
+        return Results.BadRequest(new { error = $"Could not reach {jellyfinUrl}. Use a public https:// address (Funnel or port-forward), not a 100.x Tailscale address unless you share a tailnet." });
+    }
+});
+
+app.MapGet("/api/update/status", async (CompanionUpdater updater, CancellationToken ct) =>
+{
+    var status = await updater.CheckAsync(ct).ConfigureAwait(false);
+    return Results.Ok(new
+    {
+        installedBuild = status.InstalledBuild,
+        updateAvailable = status.UpdateAvailable,
+        localRevision = status.LocalRevision,
+        remoteRevision = status.RemoteRevision,
+        error = status.Error
+    });
+});
+
+app.MapPost("/api/update/apply", async (CompanionUpdater updater, CancellationToken ct) =>
+{
+    var (success, message) = await updater.ApplyAsync(ct).ConfigureAwait(false);
+    if (!success)
+    {
+        return Results.BadRequest(new { error = message });
+    }
+
+    // The restarter waits for this process to exit. Delay the exit so the
+    // HTTP response reaches the browser first.
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(800).ConfigureAwait(false);
+        Environment.Exit(0);
+    });
+    return Results.Ok(new { message });
+});
+
+app.MapPost("/api/tailscale/funnel", async (CompanionState s, CancellationToken ct) =>
+{
+    var port = CompanionListen.Port.GetValueOrDefault();
+    if (port <= 0)
+    {
+        return Results.BadRequest(new { error = "Companion has not bound a local port yet. Wait a second and try again." });
+    }
+
+    var result = await TailscaleHelper.SetUpFunnelAsync(port, ct).ConfigureAwait(false);
+    if (!result.Success || string.IsNullOrWhiteSpace(result.FunnelUrl))
+    {
+        return Results.BadRequest(new { error = result.Message });
+    }
+
+    s.PublicUrl = result.FunnelUrl.TrimEnd('/');
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { funnelUrl = s.PublicUrl, message = result.Message });
 });
 
 app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s, PlexAuth auth, CancellationToken ct) =>
@@ -766,6 +928,45 @@ static object PeerView(CompanionPeer peer) => new
     peer.AllowBulkDownloads
 };
 
+static string? TryReadJsonError(string body)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(body);
+        if (doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+        {
+            return error.GetString();
+        }
+
+        if (doc.RootElement.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
+        {
+            return message.GetString();
+        }
+    }
+    catch (JsonException)
+    {
+    }
+
+    return null;
+}
+
+static bool TryNormalizeJellyfinInviteUrl(string? raw, out string normalized)
+{
+    normalized = string.Empty;
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return false;
+    }
+
+    var trimmed = raw.Trim().TrimEnd('/');
+    if (!trimmed.Contains("://", StringComparison.Ordinal))
+    {
+        trimmed = "https://" + trimmed;
+    }
+
+    return IsSafePeerUrl(trimmed, out normalized);
+}
+
 static bool IsSafePeerUrl(string candidate, out string normalized)
 {
     normalized = string.Empty;
@@ -799,6 +1000,11 @@ static bool FixedTimeEquals(string supplied, string expected)
         && CryptographicOperations.FixedTimeEquals(suppliedBytes, expectedBytes);
 }
 
+internal static class CompanionListen
+{
+    public static int? Port { get; set; }
+}
+
 internal sealed class PendingPin
 {
     public int? Id { get; set; }
@@ -811,6 +1017,8 @@ internal sealed record SetPublicUrlRequest(string Url);
 internal sealed record ConnectLocalPlexRequest(string? Url, string? Token);
 
 internal sealed record LinkCompleteRequest(string Token, string? RequesterName);
+
+internal sealed record InviteFriendRequest(string? Url);
 
 internal sealed record ImportConnectRequest(string? Code);
 
