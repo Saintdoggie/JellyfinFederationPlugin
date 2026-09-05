@@ -350,6 +350,10 @@ said explicitly not to start building it yet:
 - 2026-09-05: Merged the unreleased storage/download/Companion-relay pass onto
   0.0.127 as 0.0.128. Storage cleanup now has native checkboxes, season select,
   episode covers, and a size calculator; Downloads uses the same selection
-  pattern and download-to-this-server is live again. Plugin tests 363, Companion
-  tests include both relay and share-code coverage, 16 jsdom tests. Release
-  archive/checksum still pending.
+  pattern and download-to-this-server is live again.
+- 2026-09-05: Released as 0.0.128. Clean Release build with zero warnings;
+  378 plugin tests passed twice, 31 Companion tests passed twice, 17 jsdom
+  tests passed twice. Project/meta/manifest versions agree; the four-file
+  release archive MD5 is `0cd337e831797e4e75b60802c1549d97`. Live
+  two-server/browser matrix was not repeated this pass (same waiver as
+  0.0.126/0.0.127); publication is at the project owner's explicit direction.
