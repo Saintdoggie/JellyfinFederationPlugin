@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.127",
+        "changelog": "Premium laptop/TV polish and safer media management. Downloads now has remote-only movie/show browsing, season/episode folders, multi-select, source-owned bulk consent, and a separate live activity view with speed, ETA, status, and cancel. Storage cleanup shows covers and reclaim estimates, groups TV by show/season, and removes only exact local files after explicit confirmation and fresh revalidation; automatic better-copy replacement downloads are retired. Playback/download tokens are purpose-scoped and permissions are rechecked when bytes stream. Companion linking now uses revocable per-friend Plex relay credentials instead of exposing the Plex owner's real token, while stable item-bound relays make Jellyfin-to-Plex .strm playback survive token expiry.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.127/Jellyfin.Federation.zip",
+        "checksum": "PENDING_RELEASE_CHECKSUM",
+        "timestamp": "2026-09-05T01:16:50Z"
+      },
+      {
         "version": "0.0.126",
         "changelog": "The 'better copies to review' quality-upgrade panel now shows cover art on every title, groups a TV show's episode candidates under the show itself (selecting the show selects all its episodes), and supports selecting several candidates and applying them together in one request instead of one at a time - gated behind two confirmations. Downloading/replacing content on this server remains temporarily disabled while that flow is reworked, so nothing is actually downloaded or removed yet; this is the review/selection UI ahead of that.",
         "targetAbi": "10.11.0.0",

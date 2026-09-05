@@ -4,11 +4,9 @@ using System.Text.Json.Serialization;
 namespace FederationCompanion;
 
 /// <summary>
-/// Minimal Plex Media Server client for what this app needs: listing library
-/// sections. Deliberately not the full protocol client the Jellyfin plugin's
-/// PlexApiClient is (no item sync, no streaming) - this app never serves
-/// media itself, it only manages what a Jellyfin Federation peer is allowed
-/// to pull directly from the user's own Plex server.
+/// Minimal Plex Media Server management client for listing and refreshing
+/// library sections. Media/catalog relaying lives in
+/// <see cref="PlexFederationRelay"/> so the source credential remains local.
 /// </summary>
 public sealed class PlexClient
 {

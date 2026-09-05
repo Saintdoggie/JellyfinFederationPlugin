@@ -216,6 +216,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogDebug("[Federation] Retrieved {Count} items from remote server {ServerName}", items.Count, _server.Name);
                 return items;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting items from remote server {ServerName}", _server.Name);
@@ -343,7 +347,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/SystemInfo", cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/SystemInfo", cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     var reason = response.StatusCode switch
@@ -361,8 +365,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting system info from remote server {ServerName}", _server.Name);
-                return (null, ex.Message);
+                _logger.LogDebug("Federation connection check failed for {ServerName} ({FailureType})", _server.Name, ex.GetType().Name);
+                return (null, "The peer could not be reached. Check its address and connection, then retry.");
             }
         }
 
@@ -631,6 +635,70 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Requests an uncached, item-scoped token for a server-side file transfer.
+        /// Download tokens are deliberately distinct from playback tokens so the
+        /// content-owning server can apply its download and bulk-download consent
+        /// before any media bytes leave it.
+        /// </summary>
+        public async Task<(string? Token, string? Error)> GetDownloadTokenAsync(
+            string remoteItemId,
+            bool bulk,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new
+                        {
+                            ItemId = remoteItemId,
+                            Purpose = bulk ? "BulkDownload" : "Download"
+                        }),
+                        System.Text.Encoding.UTF8,
+                        "application/json")
+                };
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    string? error = null;
+                    try
+                    {
+                        error = JsonSerializer.Deserialize<DownloadTokenErrorResponse>(body, JsonOpts)?.Error;
+                    }
+                    catch (JsonException)
+                    {
+                        // Keep the stable fallback below; never surface a remote
+                        // HTML/proxy response directly to the administrator.
+                    }
+
+                    return (null, error ?? $"The source server denied this {(bulk ? "bulk " : string.Empty)}download.");
+                }
+
+                var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
+                var expectedPurpose = bulk ? "BulkDownload" : "Download";
+                if (string.IsNullOrEmpty(result?.Token)
+                    || !string.Equals(result.Purpose, expectedPurpose, StringComparison.Ordinal))
+                {
+                    return (null, "The source server is too old to confirm purpose-scoped download permission. Update its Federation plugin first.");
+                }
+
+                return (result.Token, null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not authorize a download for item {ItemId} from {ServerName}", remoteItemId, _server.Name);
+                return (null, "The source server could not be reached to authorize this download.");
+            }
+        }
+
+        /// <summary>
         /// Gets a cached per-user streaming session token (see
         /// <see cref="Api.FederationController.RegisterUserSession"/>), registering
         /// a fresh one if none is cached or the cached one is close to expiry.
@@ -795,7 +863,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// reports.
         /// </param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task DownloadToFileAsync(string itemId, string destinationPath, IProgress<(long BytesRead, long? TotalBytes)>? progress, CancellationToken cancellationToken)
+        public async Task DownloadToFileAsync(
+            string itemId,
+            string destinationPath,
+            IProgress<(long BytesRead, long? TotalBytes)>? progress,
+            CancellationToken cancellationToken,
+            bool bulk = false)
         {
             // Same token-gated DirectStream gateway playback already uses
             // (GetPlaybackTokenAsync) rather than a raw native /Videos/.../stream
@@ -804,13 +877,13 @@ namespace Jellyfin.Plugin.Federation.Services
             // server.ApiKey no longer satisfies Jellyfin's own native auth at
             // all, so this must go through the same short-lived, single-item-
             // scoped token every other Direct-mode fetch uses.
-            var (token, _) = await GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+            var (token, error) = await GetDownloadTokenAsync(itemId, bulk, cancellationToken).ConfigureAwait(false);
             if (token == null)
             {
-                throw new InvalidOperationException($"Could not obtain a playback token from {_server.Name} to download item {itemId}.");
+                throw new InvalidOperationException(error ?? $"Could not obtain download authorization from {_server.Name}.");
             }
 
-            var url = $"{_server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}";
+            var url = $"{_server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}&download=true";
             using var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
@@ -1440,6 +1513,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets when the token expires.</summary>
         public DateTime? ExpiresUtc { get; set; }
+
+        /// <summary>Purpose echoed by newer peers for download-consent verification.</summary>
+        public string? Purpose { get; set; }
+    }
+
+    internal sealed class DownloadTokenErrorResponse
+    {
+        public string? Error { get; set; }
     }
 
     /// <summary>

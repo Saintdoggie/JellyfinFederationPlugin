@@ -15,7 +15,7 @@ function settle() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function makeWindow(isAdmin, showCloudBadge = true) {
+function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
   const dom = new JSDOM(
     '<!doctype html><html><head></head><body>'
       + '<div class="card" data-id="' + itemId + '"><div class="cardScalable"><div class="cardImageContainer"></div></div><div class="cardText"></div></div>'
@@ -28,6 +28,7 @@ function makeWindow(isAdmin, showCloudBadge = true) {
   let badgeEnabled = showCloudBadge;
   dom.window.ApiClient = {
     getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: isAdmin } }),
+    ...(serverAddress ? { serverAddress: () => serverAddress } : {}),
     accessToken: () => 'test-token'
   };
   dom.window.fetch = (url) => {
@@ -119,6 +120,48 @@ test('ordinary viewers never poll admin-only download or sharing state', async (
   dom.window.close();
 });
 
+test('a separately hosted client sends federation requests to its configured server and base path', async () => {
+  const { dom, calls } = makeWindow(true, true, 'https://media.example/jellyfin/');
+  await settle();
+  await settle();
+  assert.ok(calls.length >= 3);
+  assert.ok(calls.every(url => url.startsWith('https://media.example/jellyfin/Plugins/Federation/')));
+  dom.window.close();
+});
+
+test('admin action sheet offers download to this server for federated items', async () => {
+  const { dom } = makeWindow(true);
+  await settle();
+  await settle();
+  dom.window.document.querySelector('.btnMoreCommands').click();
+  await settle();
+  await settle();
+  const labels = [...dom.window.document.querySelectorAll('.federation-actionsheet-item')].map((btn) => btn.textContent.trim());
+  assert.ok(labels.includes('Download to this server'));
+  assert.ok(labels.includes('Download to device'));
+  assert.equal(labels.includes('Cancel server download'), false);
+  assert.ok(badgeScript.includes("federationFetch('/Plugins/Federation/Download'"));
+  assert.equal(badgeScript.includes('temporarily disabled'), false);
+  dom.window.close();
+});
+
+test('injected action buttons have independent SVG icons and accessible text', async () => {
+  const { dom } = makeWindow(true);
+  await settle();
+  await settle();
+  dom.window.document.querySelector('.btnMoreCommands').click();
+  await settle();
+  await settle();
+  const buttons = [...dom.window.document.querySelectorAll('.federation-actionsheet-item')];
+  assert.ok(buttons.length > 0);
+  buttons.forEach(button => {
+    assert.equal(button.querySelector('.federation-action-icon svg')?.getAttribute('viewBox'), '0 0 24 24');
+    assert.equal(button.querySelector('.material-icons'), null);
+    assert.ok(button.textContent.trim().length > 0);
+  });
+  dom.window.close();
+});
+
 test('admin sessions initialize admin-only download and sharing state', async () => {
   const { dom, calls } = makeWindow(true);
   await settle();
@@ -166,25 +209,53 @@ test('catalog and downloads tabs expose distinct local/remote workflows', () => 
   dom.window.close();
 });
 
-test('quality-upgrade review supports multi-select bulk apply, grouped by show, with two confirmations', () => {
-  // Deliberate reversal of this project's earlier "no bulk approval, one
-  // title at a time" stance, done at the project owner's explicit request -
-  // selecting many candidates and applying them together is now supported,
-  // gated behind two separate window.confirm() calls rather than the old
-  // per-item checkbox+button pair.
+test('storage cleanup is delete-only, grouped by show and season, with exact bulk confirmation', () => {
   assert.equal(configPage.includes('data-fed-action="quality-select-all"'), true);
-  // quality-select-show is assigned to a variable and interpolated into the
-  // card markup (renderQualityCard), not a literal HTML attribute, so it is
-  // checked as the string passed to that helper instead.
-  assert.equal(configPage.includes("selectAction: 'quality-select-show'"), true);
+  assert.equal(configPage.includes('data-fed-action="quality-select-show"'), true);
+  assert.equal(configPage.includes('data-fed-action="quality-select-season"'), true);
   assert.equal(configPage.includes('data-fed-action="quality-apply-selected"'), true);
   assert.equal(configPage.includes('data-fed-action="quality-apply-one"'), false);
-  assert.match(configPage, /ItemIds:\s*ids/);
+  assert.match(configPage, /QualityUpgrades\/RemoveLocal/);
+  assert.match(configPage, /ItemIds:\s*ids,\s*Confirm:\s*true/);
+  assert.equal(configPage.includes('QualityUpgrades/Apply\', {'), false);
+  assert.equal(configPage.includes('class="fed-show-folder"'), true);
+  assert.equal(configPage.includes('class="fed-season-folder"'), true);
+  assert.equal(configPage.includes('class="fed-episode-poster"'), true);
+  assert.match(configPage, /type="checkbox" class="fed-check[^"]*" data-fed-action="quality-select"/);
+  assert.match(configPage, /function selectedQualityBytes\(\)/);
+  assert.match(configPage, /function qualityBytes\(/);
+  assert.match(configPage, /Estimated space freed/);
+  assert.equal(configPage.includes('fed-selection-toggle'), false, 'storage and downloads must use native checkboxes, not fake toggle buttons');
 
   const applyFn = configPage.match(/function applySelectedQualityUpgrades\(\) \{[\s\S]*?\n {20}\}/);
   assert.ok(applyFn, 'applySelectedQualityUpgrades function body not found');
   const confirmCalls = applyFn[0].match(/window\.confirm\(/g) || [];
-  assert.equal(confirmCalls.length, 2, 'expected exactly two confirmations before a bulk replacement request is sent');
+  assert.equal(confirmCalls.length, 2, 'expected exactly two confirmations before local files are removed');
+  assert.match(applyFn[0], /No replacement will be downloaded/);
+});
+
+test('storage size calculator totals eligible, selected, show, season, and episode bytes', () => {
+  assert.match(configPage, /potential cleanup/);
+  assert.match(configPage, /selected cleanup/);
+  assert.match(configPage, /Remove selected · /);
+  assert.match(configPage, /formatBytes\(qualityBytes\(show\.episodes\)\)/);
+  assert.match(configPage, /formatBytes\(qualityBytes\(episodes\)\)/);
+  assert.match(configPage, /formatBytes\(ep\.localSizeBytes \|\| 0\)/);
+  assert.match(configPage, /reclaimedBytes/);
+  assert.match(configPage, /localSizeBytes/);
+});
+
+test('downloads separate selection from activity and require bulk source consent', () => {
+  const dom = new JSDOM(configPage);
+  const document = dom.window.document;
+  assert.equal(document.querySelector('#fedDownloadSelectView').getAttribute('role'), 'tabpanel');
+  assert.equal(document.querySelector('#fedDownloadActivityView').getAttribute('role'), 'tabpanel');
+  assert.ok(document.querySelector('[data-fed-action="browse-download-selected"]'));
+  assert.match(configPage, /Browse\/DownloadBatch/);
+  assert.match(configPage, /items\.length > 3/);
+  assert.match(configPage, /Bulk permission required from the source server/);
+  assert.equal(configPage.includes('fedAllowBulkDownloads'), true);
+  dom.window.close();
 });
 
 test('Downloads server dropdown refreshes on every config load, not just once', () => {

@@ -76,7 +76,13 @@
       // no uppercase. Inline svg sized off the surrounding font so it stays
       // proportional.
       '.federation-source-tag{display:inline-flex;align-items:center;gap:.3em;opacity:.7;margin-left:.5em;vertical-align:middle;}',
-      '.federation-source-tag svg{width:1em;height:1em;flex-shrink:0;}',
+      '.federation-source-tag svg{display:block;width:1em;height:1em;flex-shrink:0;}',
+      '.federation-download-ring svg{display:block;}',
+      '.federation-actionsheet-item{display:flex;align-items:center;min-height:3em;text-align:start;}',
+      '.federation-action-icon{display:flex;align-items:center;justify-content:center;flex:0 0 1.5em;width:1.5em;height:1.5em;margin-inline-end:1em;line-height:1;}',
+      '.federation-action-icon svg{display:block;width:1.2em;height:1.2em;transform:none;}',
+      '.federation-actionsheet-item:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:-2px;}',
+      '@media(forced-colors:active){.federation-badge-corner{background:Canvas;color:CanvasText;border:1px solid CanvasText;}}',
 
       // Download/Hide entries injected into the native "..." action sheet
       // (.actionSheetMenuItem) - no rules of our own needed beyond a disabled
@@ -85,6 +91,23 @@
       '.federation-actionsheet-item[data-fed-state="busy"]{opacity:.65;pointer-events:none;}'
     ].join('');
     document.head.appendChild(style);
+  }
+
+  function federationFetch(path, options) {
+    var base = window.location.origin;
+    try {
+      if (window.ApiClient && typeof window.ApiClient.serverAddress === 'function') {
+        base = window.ApiClient.serverAddress().replace(/\/+$/, '');
+      } else {
+        var webAt = window.location.pathname.toLowerCase().indexOf('/web');
+        if (webAt >= 0) { base += window.location.pathname.substring(0, webAt); }
+      }
+    } catch (e) { /* use the current server */ }
+    options = options || {};
+    options.headers = options.headers || {};
+    var token = getToken();
+    if (token) { options.headers['X-Emby-Token'] = token; }
+    return fetch(base + path, options);
   }
 
   function normalizeId(id) {
@@ -114,7 +137,7 @@
   }
 
   function refreshFederatedIds() {
-    return fetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
+    return federationFetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
       .then(function (res) {
         return res.ok ? res.json() : {};
       })
@@ -138,7 +161,7 @@
   }
 
   function refreshClientSettings() {
-    return fetch('/Plugins/Federation/ClientSettings', { credentials: 'same-origin' })
+    return federationFetch('/Plugins/Federation/ClientSettings', { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : {}; })
       .then(function (settings) {
         var wasLoaded = clientSettingsLoaded;
@@ -186,7 +209,7 @@
       return;
     }
 
-    fetch('/Plugins/Federation/Sharing/DisabledIds', { credentials: 'same-origin' })
+    federationFetch('/Plugins/Federation/Sharing/DisabledIds', { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (ids) {
         var next = new Set();
@@ -396,7 +419,7 @@
     }
 
     var token = getToken();
-    fetch('/Plugins/Federation/Downloads', {
+    federationFetch('/Plugins/Federation/Downloads', {
       credentials: 'same-origin',
       headers: token ? { 'X-Emby-Token': token } : {}
     })
@@ -506,7 +529,7 @@
 
     var poll = function () {
       var token = getToken();
-      fetch('/Plugins/Federation/Download/Progress/' + operationId, {
+      federationFetch('/Plugins/Federation/Download/Progress/' + operationId, {
         credentials: 'same-origin',
         headers: token ? { 'X-Emby-Token': token } : {}
       })
@@ -574,7 +597,7 @@
     setButtonState(button, 'busy', 'Cancelling', 'Cancelling download');
 
     var token = getToken();
-    fetch('/Plugins/Federation/Download/Cancel/' + operationId, {
+    federationFetch('/Plugins/Federation/Download/Cancel/' + operationId, {
       method: 'POST',
       credentials: 'same-origin',
       headers: token ? { 'X-Emby-Token': token } : {}
@@ -591,7 +614,7 @@
     setButtonState(button, 'busy', 'Preparing', 'Preparing download');
 
     var token = getToken();
-    fetch('/Plugins/Federation/DownloadUrl/' + itemId, {
+    federationFetch('/Plugins/Federation/DownloadUrl/' + itemId, {
       credentials: 'same-origin',
       headers: token ? { 'X-Emby-Token': token } : {}
     })
@@ -619,7 +642,7 @@
     setButtonState(button, 'busy', 'Starting', 'Starting download');
 
     var token = getToken();
-    fetch('/Plugins/Federation/Download', {
+    federationFetch('/Plugins/Federation/Download', {
       method: 'POST',
       credentials: 'same-origin',
       headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
@@ -677,7 +700,7 @@
     setButtonState(button, 'busy', 'Hiding', 'Hiding this item');
 
     var token = getToken();
-    fetch('/Plugins/Federation/HiddenItems/Hide', {
+    federationFetch('/Plugins/Federation/HiddenItems/Hide', {
       method: 'POST',
       credentials: 'same-origin',
       headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
@@ -719,7 +742,7 @@
     setButtonState(button, 'busy', 'Stopping', 'Stopping sharing');
 
     var token = getToken();
-    fetch('/Plugins/Federation/Sharing/Disable', {
+    federationFetch('/Plugins/Federation/Sharing/Disable', {
       method: 'POST',
       credentials: 'same-origin',
       headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
@@ -745,7 +768,7 @@
     setButtonState(button, 'busy', 'Resuming', 'Resuming sharing');
 
     var token = getToken();
-    fetch('/Plugins/Federation/Sharing/Enable', {
+    federationFetch('/Plugins/Federation/Sharing/Enable', {
       method: 'POST',
       credentials: 'same-origin',
       headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
@@ -843,6 +866,17 @@
   // item) walks up to the nearest .actionSheetMenuItem on any click inside it
   // and closes the sheet right after - so this listener only has to run the
   // command; closing is already handled for us.
+  function actionIcon(name) {
+    if (name === 'visibility_off') { return EYE_OFF_SVG; }
+    var paths = {
+      file_download: 'M11 3h2v10l4-4 1.4 1.4L12 17l-6.4-6.6L7 9l4 4V3ZM5 19h14v2H5v-2Z',
+      cloud_download: 'M19.35 10.04A7.49 7.49 0 0 0 5.3 6.25 5.5 5.5 0 0 0 6 17h13a4.5 4.5 0 0 0 .35-6.96ZM11 17v-6H8l4-5 4 5h-3v6h-2Z',
+      cloud_off: 'M6 5l6 6 6-6 1 1-6 6 6 6-1 1-6-6-6 6-1-1 6-6-6-6 1-1Z',
+      visibility: 'M12 5C7 5 3 8 1 12c2 4 6 7 11 7s9-3 11-7c-2-4-6-7-11-7Zm0 2c4 0 7 2 9 5-2 3-5 5-9 5s-7-2-9-5c2-3 5-5 9-5Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'
+    };
+    return '<svg viewBox="0 0 24 24" fill="currentColor" focusable="false" aria-hidden="true"><path d="' + (paths[name] || paths.file_download) + '"></path></svg>';
+  }
+
   function makeActionSheetItem(iconName, label, dataId, onClick) {
     var button = document.createElement('button');
     button.setAttribute('is', 'emby-button');
@@ -850,7 +884,7 @@
     button.className = 'listItem listItem-button actionSheetMenuItem federation-actionsheet-item';
     button.setAttribute('data-id', dataId);
     button.innerHTML =
-      '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons ' + iconName + '" aria-hidden="true"></span>' +
+      '<span class="federation-action-icon" aria-hidden="true">' + actionIcon(iconName) + '</span>' +
       '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText federation-btn-label"></div></div>';
     button.querySelector('.federation-btn-label').textContent = label;
     button.addEventListener('click', function () { onClick(button); });
@@ -892,10 +926,6 @@
         scroller.insertBefore(downloadToDeviceItem, scroller.firstChild);
 
         if (currentUserIsAdmin) {
-          // Downloading a federated item to this server is temporarily disabled
-          // (see StartDownload's guard in FederationPluginController) - only the
-          // cancel affordance for a download already in flight from before this
-          // was disabled is still offered; new ones can't be started.
           if (active) {
             var downloadItem = makeActionSheetItem(
               'cloud_off',
@@ -904,6 +934,12 @@
               function (btn) { cancelDownload(btn); });
             downloadItem.setAttribute('data-operation-id', active.operationId);
             scroller.insertBefore(downloadItem, scroller.firstChild);
+          } else {
+            scroller.insertBefore(makeActionSheetItem(
+              'cloud_download',
+              'Download to this server',
+              'federation-download-server',
+              function (btn) { startDownload(btn, rawId); }), scroller.firstChild);
           }
 
           var hideItem = makeActionSheetItem(

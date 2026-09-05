@@ -57,6 +57,35 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
         Assert.False(service.IsItemVisible(friend, remoteUserId, otherEpisode.Id, "tv-library"));
     }
 
+    [Fact]
+    public void BulkDownload_DefaultsDenied_WhileOrdinaryDownloadRemainsAllowed()
+    {
+        var service = new FederationPeerAccessService(_library.Object);
+        var friend = new RemoteServer { AllowDownloads = true };
+
+        Assert.True(service.IsDownloadAllowedForRemoteUser(friend, null));
+        Assert.False(service.IsBulkDownloadAllowedForRemoteUser(friend, null));
+
+        friend.AllowBulkDownloads = true;
+        Assert.True(service.IsBulkDownloadAllowedForRemoteUser(friend, null));
+    }
+
+    [Fact]
+    public void BulkDownload_CannotOverrideFriendOrUserDownloadDenial()
+    {
+        var service = new FederationPeerAccessService(_library.Object);
+        var friend = new RemoteServer { AllowDownloads = false, AllowBulkDownloads = true };
+        Assert.False(service.IsBulkDownloadAllowedForRemoteUser(friend, null));
+
+        friend.AllowDownloads = true;
+        friend.RemoteUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = "blocked-downloader",
+            AllowDownload = false
+        });
+        Assert.False(service.IsBulkDownloadAllowedForRemoteUser(friend, "blocked-downloader"));
+    }
+
     private void SetItems(params BaseItem[] items)
     {
         foreach (var item in items)

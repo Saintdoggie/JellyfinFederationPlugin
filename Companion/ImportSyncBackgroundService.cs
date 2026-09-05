@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+
 namespace FederationCompanion;
 
 /// <summary>
@@ -44,15 +47,11 @@ public sealed class ImportSyncBackgroundService : BackgroundService
 public static class ImportSyncCoordinator
 {
     /// <summary>
-    /// Playback tokens minted this run, cached per item id so an unchanged
-    /// item's <c>.strm</c> file isn't rewritten (churning its mtime) just
-    /// because a fresh token string differs from the last one - only
-    /// re-minted once within two hours of the 24h token's expiry, or for an
-    /// item never seen before. Deliberately in-memory only and per-peer: a
-    /// restart just re-mints everything once, which costs nothing but a
-    /// slightly slower first sync.
+    /// A background tick and a manual "sync now" can overlap. Serializing per
+    /// peer prevents two exporters from pruning each other's in-flight files
+    /// and keeps the status fields coherent.
     /// </summary>
-    private static readonly Dictionary<string, Dictionary<string, (string Token, DateTime ExpiresUtc)>> TokenCacheByPeer = new();
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SyncLocks = new();
 
     public static async Task SyncAllAsync(CompanionState state, JellyfinImportService jellyfin, PlexClient plex, ILogger logger, CancellationToken cancellationToken)
     {
@@ -65,16 +64,21 @@ public static class ImportSyncCoordinator
 
     public static async Task SyncOneAsync(CompanionState state, JellyfinImportPeer peer, JellyfinImportService jellyfin, PlexClient plex, ILogger logger, CancellationToken cancellationToken)
     {
-        if (!TokenCacheByPeer.TryGetValue(peer.Id, out var tokenCache))
-        {
-            tokenCache = new Dictionary<string, (string, DateTime)>();
-            TokenCacheByPeer[peer.Id] = tokenCache;
-        }
+        var syncLock = SyncLocks.GetOrAdd(peer.Id, _ => new SemaphoreSlim(1, 1));
+        await syncLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
             var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, cancellationToken).ConfigureAwait(false);
             var entries = new List<(PeerItem Item, string Url)>();
+            var playbackBaseUrl = string.IsNullOrWhiteSpace(peer.PlaybackBaseUrl)
+                ? state.PublicUrl
+                : peer.PlaybackBaseUrl;
+
+            if (string.IsNullOrWhiteSpace(playbackBaseUrl))
+            {
+                throw new InvalidOperationException("No Companion playback address is configured. Reconnect this friend after setting the public address.");
+            }
 
             foreach (var library in libraries)
             {
@@ -85,21 +89,7 @@ public static class ImportSyncCoordinator
                     foreach (var item in items)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-
-                        if (!tokenCache.TryGetValue(item.Id, out var cached) || cached.ExpiresUtc < DateTime.UtcNow.AddHours(2))
-                        {
-                            var minted = await jellyfin.GetPlaybackTokenAsync(peer.Url, peer.Token, item.Id, cancellationToken).ConfigureAwait(false);
-                            if (minted == null)
-                            {
-                                logger.LogWarning("[Companion] Could not mint a playback token for {Name} from {Peer} - skipping this sync", item.Name, peer.Name);
-                                continue;
-                            }
-
-                            cached = minted.Value;
-                            tokenCache[item.Id] = cached;
-                        }
-
-                        entries.Add((item, JellyfinImportService.BuildStreamUrl(peer.Url, item.Id, cached.Token)));
+                        entries.Add((item, JellyfinImportService.BuildCompanionStreamUrl(playbackBaseUrl, peer, item.Id)));
                     }
                 }
             }
@@ -107,14 +97,16 @@ public static class ImportSyncCoordinator
             var exportPath = string.IsNullOrWhiteSpace(peer.ExportPath)
                 ? Path.Combine(AppContext.BaseDirectory, "imported", SafeFolderName(peer.Name))
                 : peer.ExportPath;
-            var previousCount = peer.LastItemCount;
-            var written = StrmExporter.Export(exportPath, entries);
+            var export = StrmExporter.Export(exportPath, entries);
 
             peer.LastSyncUtc = DateTime.UtcNow;
-            peer.LastItemCount = written;
+            peer.LastItemCount = export.ItemCount;
             peer.LastError = null;
 
-            if (written != previousCount && !string.IsNullOrEmpty(peer.PlexSectionKey) && state.ServerBaseUrl != null && state.ServerAccessToken != null)
+            // Plex needs a refresh when any .strm URL changes, not merely when
+            // the number of files changes. This is especially important when
+            // migrating legacy token-bearing files to stable relay URLs.
+            if (export.ChangedFileCount > 0 && !string.IsNullOrEmpty(peer.PlexSectionKey) && state.ServerBaseUrl != null && state.ServerAccessToken != null)
             {
                 try
                 {
@@ -126,13 +118,26 @@ public static class ImportSyncCoordinator
                 }
             }
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             peer.LastError = ex.Message;
             logger.LogWarning(ex, "[Companion] Sync failed for {Peer}", peer.Name);
         }
-
-        await state.SaveAsync().ConfigureAwait(false);
+        finally
+        {
+            try
+            {
+                await state.SaveAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                syncLock.Release();
+            }
+        }
     }
 
     private static IEnumerable<string> MediaTypesFor(string? collectionType)

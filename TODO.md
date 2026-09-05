@@ -5,6 +5,43 @@ ordered by user impact and risk. A polished interface does not compensate for
 an unreliable or weak streaming boundary, so playback and authorization ship
 first.
 
+## Active pass after 0.0.126 — storage cleanup and controlled downloads
+
+- [x] Move better-copy review out of Advanced into a dedicated storage-cleanup
+      workspace with local cover art, estimated reclaimable space, explicit
+      movie/episode selection, and a clearly destructive remove-selected action.
+- [x] Treat TV as shows containing collapsible season/episode folders instead
+      of a flat episode wall; selection and reclaimed-space totals must remain
+      accurate at episode, season, and show level.
+- [x] Remove the quality-replacement download action. A better-copy suggestion
+      may help an admin decide what local file to remove, but it must not silently
+      turn into a full-file transfer from a friend's home connection.
+- [x] Split Downloads into a selection view and a transfer activity view with
+      progress, byte counts, current speed, ETA, completion/failure, and cancel.
+- [x] Add batch selection to Downloads. Small intentional batches remain
+      possible; larger pulls require an explicit bulk-download permission from
+      the server whose library is being consumed, enforced server-side rather
+      than only by a browser checkbox.
+- [x] Add focused controller/service/DOM tests for destructive confirmation,
+      exact-id revalidation, reclaim-size calculation, show/season grouping,
+      batch thresholds, remote bulk consent, and progress-tab rendering.
+- [x] Finish Storage cleanup selection: real native checkboxes on movies, shows,
+      seasons, and episodes (not fake toggle buttons), season-level select with
+      indeterminate partial state, episode cover art, folder open-state kept
+      across re-renders, and a running size calculator (eligible / selected /
+      per-show / per-season / per-episode, plus reclaimed bytes after delete).
+      Downloads uses the same native checkboxes. Admin action sheets can start
+      a download-to-this-server again now that StartDownload is live.
+- [ ] Re-run the full release gate, including two isolated Jellyfin servers and
+      laptop/TV Chromium layouts, before pushing `master`, tagging, or
+      publishing another release. This working tree still has to merge the
+      already-released 0.0.127 share-code work before it can ship as 0.0.128.
+
+- [x] Implement both Plex directions in Companion: a revocable, library-filtered
+      Plex-to-Jellyfin facade with per-friend download consent, and stable
+      item-bound Jellyfin-to-Plex `.strm` relays that mint fresh playback
+      authorization at stream time.
+
 ## Requested next pass (post-1.0.0)
 
 Reported directly by the project owner after 1.0.0 shipped.
@@ -303,3 +340,10 @@ said explicitly not to start building it yet:
   two-server integration matrix and interactive UI smoke test criteria are
   still not satisfied for any change since 0.0.123 (see the 1.0.0/0.1.0
   entries above); same waiver, same reason.
+- 2026-09-05: The 0.0.127 working tree completed the new storage/download and
+  two-way Companion implementation. Focused plugin security/service tests
+  passed 73/73, Companion relay/import tests passed 10/10, and jsdom passed
+  12/12. An isolated Jellyfin 10.11.11 pair passed admin batch download,
+  source bulk-deny/opt-in, token revocation, and ordinary-user federated Range
+  playback. Final exact-tree full-suite repetitions and artifact verification
+  remain pending until the release-gate checkbox above is closed.

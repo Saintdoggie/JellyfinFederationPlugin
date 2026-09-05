@@ -10,4 +10,8 @@
     <UserSecretsId>federation-companion</UserSecretsId>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="FederationCompanion.Tests" />
+  </ItemGroup>
+
 </Project>

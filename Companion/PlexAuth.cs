@@ -93,6 +93,51 @@ public sealed class PlexAuth
         return resources.Where(r => string.Equals(r.Provides, "server", StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
+    /// <summary>
+    /// Selects the address most likely to work from a friend's Jellyfin server.
+    /// A public direct HTTPS connection wins over a LAN address; Plex Relay is
+    /// the fallback. The previous local-first choice made catalog sync appear
+    /// healthy on the Companion machine while every remote movie play failed.
+    /// </summary>
+    public static PlexConnection? SelectFederationConnection(PlexResource server)
+        => OrderFederationConnections(server).FirstOrDefault();
+
+    public static IEnumerable<PlexConnection> OrderFederationConnections(PlexResource server)
+    {
+        return server.Connections
+            .Where(c => Uri.TryCreate(c.Uri, UriKind.Absolute, out var uri)
+                && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+            .OrderBy(c => ConnectionRank(c));
+    }
+
+    private static int ConnectionRank(PlexConnection connection)
+    {
+        var https = Uri.TryCreate(connection.Uri, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps;
+
+        if (!connection.Local && !connection.Relay && https)
+        {
+            return 0;
+        }
+
+        if (!connection.Local && !connection.Relay)
+        {
+            return 1;
+        }
+
+        if (connection.Relay && https)
+        {
+            return 2;
+        }
+
+        if (!connection.Local)
+        {
+            return 3;
+        }
+
+        return https ? 4 : 5;
+    }
+
     private void ApplyHeaders(HttpRequestMessage request)
     {
         request.Headers.TryAddWithoutValidation("X-Plex-Client-Identifier", _clientIdentifier);
@@ -115,8 +160,14 @@ public sealed class PlexAuth
 
 public sealed class PlexResource
 {
+    [JsonPropertyName("clientIdentifier")]
+    public string MachineIdentifier { get; set; } = string.Empty;
+
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("owned")]
+    public bool Owned { get; set; }
 
     [JsonPropertyName("provides")]
     public string Provides { get; set; } = string.Empty;

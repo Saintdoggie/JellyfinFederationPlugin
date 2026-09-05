@@ -20,16 +20,17 @@ public static class StrmExporter
     /// Writes one <c>.strm</c> file per entry, then deletes any previously
     /// written file under <paramref name="basePath"/> that this run didn't
     /// (re)write, and prunes any directory left empty by that cleanup.
-    /// Returns the count actually written (an unchanged file, per
-    /// <see cref="WriteIfChanged"/>, still counts - only items skipped for
-    /// having no stable name/episode number do not).
+    /// Returns both the exported item count and whether the filesystem changed.
+    /// The change count matters to Plex: replacing an expired URL without
+    /// adding/removing an item still requires a section refresh.
     /// </summary>
-    public static int Export(string basePath, IEnumerable<(PeerItem Item, string Url)> entries)
+    public static ExportResult Export(string basePath, IEnumerable<(PeerItem Item, string Url)> entries)
     {
         Directory.CreateDirectory(basePath);
 
         var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var count = 0;
+        var changed = 0;
 
         foreach (var (item, url) in entries)
         {
@@ -46,13 +47,17 @@ public static class StrmExporter
                 Directory.CreateDirectory(dir);
             }
 
-            WriteIfChanged(fullPath, url);
+            if (WriteIfChanged(fullPath, url))
+            {
+                changed++;
+            }
+
             written.Add(fullPath);
             count++;
         }
 
-        RemoveStale(basePath, written);
-        return count;
+        changed += RemoveStale(basePath, written);
+        return new ExportResult(count, changed);
     }
 
     private static string? BuildMoviePath(PeerItem item)
@@ -85,21 +90,22 @@ public static class StrmExporter
         return Path.Combine(ShowsFolderName, series, seasonFolder, fileBase + ".strm");
     }
 
-    private static void WriteIfChanged(string path, string url)
+    private static bool WriteIfChanged(string path, string url)
     {
         if (File.Exists(path))
         {
             var existing = File.ReadAllText(path).TrimEnd('\r', '\n');
             if (string.Equals(existing, url, StringComparison.Ordinal))
             {
-                return;
+                return false;
             }
         }
 
         File.WriteAllText(path, url + "\n");
+        return true;
     }
 
-    private static void RemoveStale(string basePath, HashSet<string> written)
+    private static int RemoveStale(string basePath, HashSet<string> written)
     {
         List<string> existing;
         try
@@ -108,14 +114,15 @@ public static class StrmExporter
         }
         catch (IOException)
         {
-            return;
+            return 0;
         }
         catch (UnauthorizedAccessException)
         {
-            return;
+            return 0;
         }
 
         var removedDirs = new HashSet<string>();
+        var removed = 0;
         foreach (var path in existing)
         {
             if (written.Contains(path))
@@ -126,6 +133,7 @@ public static class StrmExporter
             try
             {
                 File.Delete(path);
+                removed++;
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
                 {
@@ -144,6 +152,8 @@ public static class StrmExporter
         {
             RemoveIfEmpty(dir, basePath);
         }
+
+        return removed;
     }
 
     private static void RemoveIfEmpty(string? dir, string basePath)
@@ -176,3 +186,5 @@ public static class StrmExporter
         return new string(chars);
     }
 }
+
+public readonly record struct ExportResult(int ItemCount, int ChangedFileCount);

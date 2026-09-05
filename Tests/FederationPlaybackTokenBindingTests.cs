@@ -1,3 +1,4 @@
+using System;
 using Jellyfin.Plugin.Federation.Services;
 using Xunit;
 
@@ -39,5 +40,63 @@ public class FederationPlaybackTokenBindingTests
 
         Assert.False(service.TryValidate("no-such-token", "item-1", out var federationId));
         Assert.Null(federationId);
+    }
+
+    [Fact]
+    public void Issue_WithBulkDownloadPurpose_PreservesPurpose()
+    {
+        var service = new FederationPlaybackTokenService();
+        var token = service.Issue("item-1", "friend-a", FederationTokenPurpose.BulkDownload);
+
+        Assert.True(service.TryValidate(token, "item-1", out var federationId, out var purpose));
+        Assert.Equal("friend-a", federationId);
+        Assert.Equal(FederationTokenPurpose.BulkDownload, purpose);
+    }
+
+    [Fact]
+    public void Issue_DefaultPurpose_RemainsPlaybackForOlderCallers()
+    {
+        var service = new FederationPlaybackTokenService();
+        var token = service.Issue("item-1", "friend-a");
+
+        Assert.True(service.TryValidate(token, "item-1", out _, out var purpose));
+        Assert.Equal(FederationTokenPurpose.Playback, purpose);
+    }
+
+    [Fact]
+    public void Issue_UserScopedPlayback_PreservesUserForStreamTimeRecheck()
+    {
+        var service = new FederationPlaybackTokenService();
+        var token = service.Issue("item-1", "friend-a", FederationTokenPurpose.Playback, "viewer-7");
+
+        Assert.True(service.TryValidate(token, "item-1", out _, out _, out var remoteUserId));
+        Assert.Equal("viewer-7", remoteUserId);
+    }
+
+    [Fact]
+    public void OrdinaryDownloads_AreLimitedByDistinctItemEvenWhenCallerSplitsRequests()
+    {
+        var service = new FederationPlaybackTokenService();
+
+        Assert.True(service.TryReserveOrdinaryDownload("friend-a", "item-1", out _));
+        Assert.True(service.TryReserveOrdinaryDownload("friend-a", "item-2", out _));
+        Assert.True(service.TryReserveOrdinaryDownload("friend-a", "item-3", out _));
+        Assert.True(service.TryReserveOrdinaryDownload("friend-a", "item-1", out _));
+        Assert.False(service.TryReserveOrdinaryDownload("friend-a", "item-4", out var retryAfter));
+        Assert.True(retryAfter > TimeSpan.Zero);
+
+        // Limits belong to the source-side friendship, not the entire server.
+        Assert.True(service.TryReserveOrdinaryDownload("friend-b", "item-4", out _));
+    }
+
+    [Fact]
+    public void DownloadTokens_AreShorterLivedThanPlaybackTokens()
+    {
+        Assert.True(
+            FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Download)
+            < FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Playback));
+        Assert.Equal(
+            FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Download),
+            FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.BulkDownload));
     }
 }

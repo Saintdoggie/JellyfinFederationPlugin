@@ -224,6 +224,16 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Bulk pulls require every ordinary download gate plus the separate,
+        /// opt-in friend permission. Keeping this decision here makes the source
+        /// server authoritative for both token minting and focused tests.
+        /// </summary>
+        public bool IsBulkDownloadAllowedForRemoteUser(RemoteServer caller, string? remoteUserId)
+        {
+            return caller.AllowBulkDownloads && IsDownloadAllowedForRemoteUser(caller, remoteUserId);
+        }
+
+        /// <summary>
         /// Resolves the id of the top-level library folder an item belongs to, or
         /// null if it could not be determined (e.g. an item not under any real
         /// library folder). Compared against <see cref="RemoteServer.SharedLibraryFolderIds"/>/

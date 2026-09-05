@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.IO;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Model.Entities;
 using Xunit;
 
@@ -117,5 +119,59 @@ public class FederationQualityAdvisorServiceTests
 
         Assert.Equal(1080, height);
         Assert.Equal(12_000_000, bitrate);
+    }
+
+    [Fact]
+    public void GetLocalFileSize_ReportsCurrentFileLength_AndFailsClosedForMissingPath()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, new byte[1234]);
+            Assert.Equal(1234, FederationQualityAdvisorService.GetLocalFileSize(path));
+            Assert.Equal(0, FederationQualityAdvisorService.GetLocalFileSize(path + ".missing"));
+            Assert.Equal(0, FederationQualityAdvisorService.GetLocalFileSize(null));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void QualityCleanupBatchResult_ReclaimedBytes_SumsOnlySuccessfulItems()
+    {
+        var result = new QualityCleanupBatchResult();
+        result.Items.Add(new QualityCleanupItemResult("a", true, 1000, "ok"));
+        result.Items.Add(new QualityCleanupItemResult("b", false, 5000, "no"));
+        result.Items.Add(new QualityCleanupItemResult("c", true, 250, "ok"));
+        Assert.Equal(1250, result.ReclaimedBytes);
+    }
+
+    [Fact]
+    public void IsExactRemovableLocalFile_RequiresExactApprovedId_LocalOwnership_AndExistingFile()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var movie = new Movie { Id = System.Guid.NewGuid(), Path = path };
+            var candidate = new QualityUpgradeCandidate { LocalItemId = movie.Id.ToString() };
+            Assert.True(FederationQualityAdvisorService.IsExactRemovableLocalFile(movie, candidate));
+
+            candidate.LocalItemId = System.Guid.NewGuid().ToString();
+            Assert.False(FederationQualityAdvisorService.IsExactRemovableLocalFile(movie, candidate));
+
+            candidate.LocalItemId = movie.Id.ToString();
+            movie.ProviderIds = new Dictionary<string, string> { ["FederationKey"] = "remote/item" };
+            Assert.False(FederationQualityAdvisorService.IsExactRemovableLocalFile(movie, candidate));
+
+            movie.ProviderIds.Clear();
+            movie.Path = path + ".missing";
+            Assert.False(FederationQualityAdvisorService.IsExactRemovableLocalFile(movie, candidate));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

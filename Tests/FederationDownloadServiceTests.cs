@@ -432,6 +432,18 @@ public class FederationDownloadServiceTests : IDisposable
     }
 
     [Fact]
+    public void MarkExternalDownload_PreservesExistingQueryAndDeclaresBulkIntent()
+    {
+        var marked = FederationDownloadService.MarkExternalDownload(
+            "https://companion.example/plex/peer/library/parts/7/file.mkv?X-Plex-Token=relay",
+            bulk: true);
+
+        Assert.Contains("X-Plex-Token=relay&", marked, StringComparison.Ordinal);
+        Assert.Contains("federationDownload=true", marked, StringComparison.Ordinal);
+        Assert.Contains("federationBulk=true", marked, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task QualityReplace_DownloadsValidatesAndCommitsBeforeDeletingExactOldItem()
     {
         var events = new ConcurrentQueue<string>();
