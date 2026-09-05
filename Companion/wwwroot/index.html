@@ -271,8 +271,8 @@
 
   <div class="card" id="publicUrlCard">
     <h2><span class="step-num">2</span> Your public address</h2>
-    <p class="status-line">Optional if Plex Remote Access or Plex Relay is already on. Your Jellyfin friend does <strong>not</strong> need to join your Tailscale. Paste a Tailscale <em>Funnel</em> URL (<code>https://yourname.tailXXXXX.ts.net</code>), never a 100.x tailnet address.</p>
-    <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
+    <p class="status-line">Optional. If Plex Remote Access or Plex Relay is on, connect codes use that even when a Funnel URL is saved — your Jellyfin friend does <strong>not</strong> need Tailscale or port forwarding. Funnel (<code>https://yourname.tailXXXXX.ts.net</code>) is only needed when Plex has no public path. Leave blank to skip Funnel. Never paste a 100.x tailnet address.</p>
+    <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net (optional)">
     <button class="secondary" id="savePublicUrlBtn">Save</button>
     <div class="status-line" id="publicUrlStatus"></div>
   </div>
@@ -726,8 +726,8 @@ generateCodeBtn.addEventListener('click', async () => {
     connectCode.classList.remove('hidden');
     connectCodeActions.classList.remove('hidden');
     codeStatus.textContent = data.mode === 'direct'
-      ? `Expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay so your friend does not need Tailscale.`
-      : `Expires in ${data.expiresInMinutes} minutes. Send this to your friend now - they do not need to be on your Tailscale.`;
+      ? `Expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay so your friend does not need Tailscale, Funnel, or port forwarding.`
+      : `Expires in ${data.expiresInMinutes} minutes. This uses your Funnel URL because Plex has no public Remote Access/Relay path. Send it now — Funnel HTTPS must actually work.`;
   } else {
     codeStatus.textContent = data.error || 'Could not generate a code.';
   }

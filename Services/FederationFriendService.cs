@@ -765,7 +765,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!response.IsSuccessStatusCode)
                 {
                     var remoteError = TryReadError(body);
-                    return (false, remoteError ?? "Could not reach the Companion app to finish the connect code. Your friend does not need to be on your Tailscale, but Companion does need a public Funnel URL, or they can generate a code that uses Plex Remote Access/Relay instead.", null, null, null, new List<CompanionSharedLibrary>());
+                    return (false, remoteError ?? "Could not reach the Companion app to finish the connect code. Ask your friend to enable Plex Remote Access / Plex Relay and generate a new code — they do not need port forwarding or a working Funnel for that.", null, null, null, new List<CompanionSharedLibrary>());
                 }
 
                 var claimed = JsonSerializer.Deserialize<CompanionLinkCompleteResponse>(body, JsonOpts);
@@ -785,8 +785,49 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
             {
                 _logger.LogWarning(ex, "[Federation] Companion connect-code claim failed for {Url}", decoded.Url);
-                return (false, "Could not reach the Companion app over the internet. They do not need to join your Tailscale - ask them for a Funnel URL or a code generated after Plex Remote Access/Relay is on.", null, null, null, new List<CompanionSharedLibrary>());
+                return (false, DescribeClaimTransportFailure(decoded.Url, ex), null, null, null, new List<CompanionSharedLibrary>());
             }
+        }
+
+        internal static string DescribeClaimTransportFailure(string? companionUrl, Exception ex)
+        {
+            var host = Uri.TryCreate(companionUrl, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host)
+                ? uri.Host
+                : companionUrl ?? "their Companion app";
+
+            if (IsTlsHandshakeFailure(ex))
+            {
+                return $"Could not complete HTTPS to {host}. Their Tailscale Funnel is advertised but TLS is not serving — DNS and the HTTP redirect work, the certificate handshake does not. This particular code cannot be used until Funnel HTTPS works. Ask them to enable Plex Remote Access (Relay works on Starlink with no port forwarding) and generate a new connect code. Companion will use Plex's own public address instead of Funnel.";
+            }
+
+            if (ex is TaskCanceledException)
+            {
+                return $"Timed out reaching {host}. Ask them to generate a new code after Plex Remote Access / Plex Relay is on — they do not need port forwarding or a working Funnel for that.";
+            }
+
+            return $"Could not reach {host} over the internet. They do not need to join your Tailscale. Ask them to enable Plex Remote Access / Plex Relay and generate a new connect code.";
+        }
+
+        internal static bool IsTlsHandshakeFailure(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                if (current is System.Security.Authentication.AuthenticationException)
+                {
+                    return true;
+                }
+
+                var message = current.Message ?? string.Empty;
+                if (message.Contains("SSL", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("TLS", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("unexpected EOF", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("trust relationship", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string? TryReadError(string body)
