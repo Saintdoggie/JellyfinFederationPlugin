@@ -102,6 +102,21 @@ public class PlexApiClientTests
     }
 
     [Fact]
+    public async Task GetImagePathsAsync_FallsBackToParentThumb_WhenItemHasNoOwnPoster()
+    {
+        const string body = "{\"MediaContainer\":{\"Metadata\":[{" +
+            "\"ratingKey\":\"201\",\"parentThumb\":\"/library/metadata/80/thumb/8\",\"grandparentArt\":\"/library/metadata/70/art/7\"" +
+            "}]}}";
+        var client = BuildClient(new ScriptedPlexHandler(body));
+
+        var result = await client.GetImagePathsAsync("201", CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("/library/metadata/80/thumb/8", result!.Value.Thumb);
+        Assert.Equal("/library/metadata/70/art/7", result.Value.Art);
+    }
+
+    [Fact]
     public async Task GetImagePathsAsync_ReturnsNull_WhenItemNotFound()
     {
         var client = BuildClient(new ScriptedPlexHandler(metadataBody: null));
@@ -175,6 +190,34 @@ public class PlexApiClientTests
         var item = Assert.Single(items);
         var videoStream = Assert.Single(item.Dto.MediaStreams!, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
         Assert.Equal(2043 * 1000, videoStream.BitRate);
+    }
+
+    [Fact]
+    public async Task GetSectionItemsAsync_CopiesCustomPosterMetadataGenresAndCast_FromPlex()
+    {
+        const string body = "{\"MediaContainer\":{\"Metadata\":[{" +
+            "\"ratingKey\":\"500\",\"title\":\"Custom Cut\",\"originalTitle\":\"The Custom Cut\",\"type\":\"movie\"," +
+            "\"summary\":\"Friend's plot.\",\"studio\":\"House Studio\",\"contentRating\":\"R\"," +
+            "\"originallyAvailableAt\":\"1999-12-31\",\"thumb\":\"/library/metadata/500/thumb/custom\"," +
+            "\"Genre\":[{\"tag\":\"Action\"},{\"tag\":\"Noir\"}]," +
+            "\"Role\":[{\"tag\":\"Jane Doe\",\"role\":\"Lead\"}]," +
+            "\"Director\":[{\"tag\":\"A Director\"}]," +
+            "\"Media\":[{\"container\":\"mkv\",\"bitrate\":1000,\"videoCodec\":\"h264\",\"width\":1280,\"height\":720," +
+            "\"audioCodec\":\"aac\",\"audioChannels\":2,\"Part\":[{\"key\":\"/library/parts/5/5/file.mkv\"}]}]" +
+            "}]}}";
+        var client = BuildClient(new ScriptedSectionHandler(body));
+
+        var items = await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None);
+
+        var dto = Assert.Single(items).Dto;
+        Assert.Equal("Custom Cut", dto.Name);
+        Assert.Equal("The Custom Cut", dto.OriginalTitle);
+        Assert.Equal("Friend's plot.", dto.Overview);
+        Assert.Equal("House Studio", Assert.Single(dto.Studios!).Name);
+        Assert.Equal(new[] { "Action", "Noir" }, dto.Genres);
+        Assert.Contains(dto.People!, p => p.Name == "Jane Doe" && p.Role == "Lead" && p.Type == Jellyfin.Data.Enums.PersonKind.Actor);
+        Assert.Contains(dto.People!, p => p.Name == "A Director" && p.Type == Jellyfin.Data.Enums.PersonKind.Director);
+        Assert.Equal(1999, dto.PremiereDate!.Value.Year);
     }
 
     private sealed class ScriptedSectionAndDetailHandler : HttpMessageHandler

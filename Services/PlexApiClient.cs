@@ -283,7 +283,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 foreach (var m in metadata.EnumerateArray())
                 {
-                    return (GetString(m, "thumb"), GetString(m, "art"));
+                    // thumb is whatever Plex is actually showing - including a
+                    // custom uploaded poster. Fall back to parent/show art for
+                    // episodes/seasons that have no still of their own.
+                    var thumb = GetString(m, "thumb") ?? GetString(m, "parentThumb") ?? GetString(m, "grandparentThumb");
+                    var art = GetString(m, "art") ?? GetString(m, "parentArt") ?? GetString(m, "grandparentArt");
+                    return (thumb, art);
                 }
             }
 
@@ -376,10 +381,25 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 Id = RatingKeyToGuid(ratingKey),
                 Name = title,
+                OriginalTitle = GetString(m, "originalTitle"),
                 Overview = GetString(m, "summary"),
                 ProviderIds = ReadGuids(m),
-                OfficialRating = GetString(m, "contentRating")
+                OfficialRating = GetString(m, "contentRating"),
+                Genres = ReadTagArray(m, "Genre"),
+                People = ReadPeople(m)
             };
+
+            var studio = GetString(m, "studio");
+            if (!string.IsNullOrWhiteSpace(studio))
+            {
+                dto.Studios = new[] { new NameGuidPair { Name = studio } };
+            }
+
+            var premiere = GetString(m, "originallyAvailableAt");
+            if (!string.IsNullOrWhiteSpace(premiere) && DateTime.TryParse(premiere, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var premiereDate))
+            {
+                dto.PremiereDate = premiereDate.ToUniversalTime();
+            }
 
             if (GetInt(m, "year") is int year)
             {
@@ -698,6 +718,54 @@ namespace Jellyfin.Plugin.Federation.Services
         /// present on both a Plex friend and a Jellyfin friend dedup into one
         /// federated item instead of appearing twice.
         /// </summary>
+        private static string[] ReadTagArray(JsonElement m, string property)
+        {
+            if (!m.TryGetProperty(property, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return arr.EnumerateArray()
+                .Select(e => GetString(e, "tag"))
+                .Where(s => !string.IsNullOrEmpty(s))
+                .Select(s => s!)
+                .ToArray();
+        }
+
+        private static BaseItemPerson[] ReadPeople(JsonElement m)
+        {
+            var people = new List<BaseItemPerson>();
+            AddPeople(m, "Role", PersonKind.Actor, people);
+            AddPeople(m, "Director", PersonKind.Director, people);
+            AddPeople(m, "Writer", PersonKind.Writer, people);
+            AddPeople(m, "Producer", PersonKind.Producer, people);
+            return people.ToArray();
+        }
+
+        private static void AddPeople(JsonElement m, string property, PersonKind kind, List<BaseItemPerson> people)
+        {
+            if (!m.TryGetProperty(property, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            {
+                return;
+            }
+
+            foreach (var e in arr.EnumerateArray())
+            {
+                var name = GetString(e, "tag");
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                people.Add(new BaseItemPerson
+                {
+                    Name = name,
+                    Role = GetString(e, "role"),
+                    Type = kind
+                });
+            }
+        }
+
         private static Dictionary<string, string> ReadGuids(JsonElement m)
         {
             var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.133",
-  "changelog": "Plex federation repair: third-party federated media is no longer shared onward; Downloads stay bound to the selected server; Plex plays real media through a read-only rclone mount instead of unplayable .strm files. Funnel connect codes use a scoped claim token and no longer include a raw Plex-token fallback.",
+  "version": "0.0.134",
+  "changelog": "Friend libraries merge into your existing Movies and Shows folders by type instead of creating Federated Movies/Shows. Cover art (including custom posters) and media info come from the friend's Plex or Jellyfin server; TMDb is not allowed to re-identify federated items.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-06T18:00:00Z",
+  "timestamp": "2026-09-06T19:30:00Z",
   "imageUrl": "thumb.png"
 }

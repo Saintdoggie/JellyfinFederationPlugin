@@ -147,7 +147,7 @@ public class LibraryProvisioningServiceTests : IDisposable
             x => x.AddVirtualFolder(
                 "Anime",
                 It.IsAny<CollectionTypeOptions?>(),
-                It.Is<LibraryOptions>(o => o.PathInfos != null && o.PathInfos.Length == 1 && o.PathInfos[0].Path != null && o.PathInfos[0].Path.StartsWith(_federationRoot, StringComparison.OrdinalIgnoreCase) && !o.PathInfos[0].Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase)),
+                It.Is<LibraryOptions>(o => o.TypeOptions != null && o.TypeOptions.Any(t => t.MetadataFetchers != null && t.MetadataFetchers.Contains("Federation")) && o.PathInfos != null && o.PathInfos.Length == 1 && o.PathInfos[0].Path != null && o.PathInfos[0].Path.StartsWith(_federationRoot, StringComparison.OrdinalIgnoreCase) && !o.PathInfos[0].Path.StartsWith("federation://", StringComparison.OrdinalIgnoreCase)),
                 true),
             Times.Once);
 

@@ -107,6 +107,31 @@ namespace Jellyfin.Plugin.Federation
 
                 _federationManager.Initialize(cachePath);
 
+                try
+                {
+                    var retired = FederationLibraryTargets.Collapse(config, _federationManager.GetVirtualFolders());
+                    if (retired.Count > 0)
+                    {
+                        Plugin.Instance?.SaveConfiguration();
+                        foreach (var name in retired)
+                        {
+                            try
+                            {
+                                await _provisioning.RemoveLibraryAsync(name).ConfigureAwait(false);
+                                _logger.LogInformation("[Federation] Removed leftover split library {Name}; content now merges into Movies/Shows", name);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "[Federation] Could not remove leftover library {Name}", name);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Failed to collapse split Federated Movies/Shows mappings");
+                }
+
                 if (config.AutoProvisionLibraries)
                 {
                     await _provisioning.EnsureLibrariesAsync(cancellationToken).ConfigureAwait(false);

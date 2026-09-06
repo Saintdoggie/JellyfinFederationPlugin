@@ -419,6 +419,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     return BadRequest(new { error = "Invalid configuration", details = errors });
                 }
 
+                FederationLibraryTargets.Collapse(config, _libraryManager.GetVirtualFolders());
+
                 _logger.LogInformation("[Federation] Updating configuration with {ServerCount} servers", config.RemoteServers?.Count ?? 0);
                 Plugin.Instance?.UpdateConfiguration(config);
                 _clientFactory.InvalidateAll();
@@ -1290,7 +1292,12 @@ namespace Jellyfin.Plugin.Federation.Api
         public IActionResult GetLocalLibraries()
         {
             var folders = _libraryManager.GetVirtualFolders()
-                .Select(f => new { id = f.ItemId, name = f.Name })
+                .Select(f => new
+                {
+                    id = f.ItemId,
+                    name = f.Name,
+                    collectionType = f.CollectionType?.ToString()
+                })
                 .ToList();
 
             return Ok(folders);
@@ -2861,7 +2868,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 // "multiple collection Include" query-splitting warning (no
                 // QuerySplittingBehavior configured), which is a real slow-query hit
                 // repeated on every 200-item page across every mapping, every sync.
-                (includeMediaSources ? "Fields=MediaSources," : "Fields=") + "BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear,DateCreated",
+                (includeMediaSources ? "Fields=MediaSources," : "Fields=") + "BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,OfficialRating,CommunityRating,PremiereDate,ProductionYear,DateCreated,ImageTags,BackdropImageTags",
                 "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
             };
             if (string.Equals(sortBy, "DateCreated", StringComparison.OrdinalIgnoreCase))

@@ -17,7 +17,7 @@ namespace Jellyfin.Plugin.Federation.Providers
     /// Provides images for federated content by building direct URLs to the
     /// primary remote source's image endpoint.
     /// </summary>
-    public class FederationImageProvider : IRemoteImageProvider
+    public class FederationImageProvider : IRemoteImageProvider, IHasOrder
     {
         // Shared for the app lifetime; image responses are disposed by the caller.
         private static readonly HttpClient SharedHttpClient = new HttpClient();
@@ -41,6 +41,9 @@ namespace Jellyfin.Plugin.Federation.Providers
 
         /// <inheritdoc />
         public string Name => "Federation";
+
+        /// <inheritdoc />
+        public int Order => 0;
 
         /// <inheritdoc />
         public bool Supports(BaseItem item) => _federationManager.IsFederatedItem(item);

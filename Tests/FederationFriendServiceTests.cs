@@ -709,8 +709,8 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Equal("plex-server-token", server.ApiKey);
         Assert.Equal(new List<string> { "1", "2" }, server.AllowedExternalLibraryIds);
         Assert.Equal(StreamingMode.Proxy, server.StreamingMode);
-        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Movies" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "1"));
-        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Shows" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "2"));
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Movies" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "1"));
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Shows" && m.RemoteLibrarySources.Any(s => s.RemoteLibraryId == "2"));
     }
 
     [Fact]
@@ -739,7 +739,7 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Equal("https://5-6-7-8.hash.plex.direct:32400", server!.Url);
         Assert.Equal("plex-token", server.ApiKey);
         Assert.Equal(new List<string> { "9" }, server.AllowedExternalLibraryIds);
-        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Federated Movies");
+        Assert.Contains(_plugin.Configuration.LibraryMappings, m => m.LocalLibraryName == "Movies");
     }
 
     [Fact]

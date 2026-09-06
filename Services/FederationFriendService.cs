@@ -956,7 +956,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return null;
         }
 
-        private static void AttachPlexLibraryMappings(PluginConfiguration config, RemoteServer server, IReadOnlyList<CompanionSharedLibrary> libraries)
+        private void AttachPlexLibraryMappings(PluginConfiguration config, RemoteServer server, IReadOnlyList<CompanionSharedLibrary> libraries)
         {
             config.LibraryMappings ??= new List<LibraryMapping>();
             foreach (var library in libraries)
@@ -964,7 +964,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var mediaType = string.Equals(library.Type, "show", StringComparison.OrdinalIgnoreCase)
                     ? "Series"
                     : "Movie";
-                var mappingName = mediaType == "Series" ? "Federated Shows" : "Federated Movies";
+                var mappingName = _federationManager.LocalLibraryNameFor(mediaType);
                 var mapping = config.LibraryMappings.FirstOrDefault(m =>
                     string.Equals(m.LocalLibraryName, mappingName, StringComparison.OrdinalIgnoreCase));
                 if (mapping == null)
@@ -975,7 +975,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         MediaType = mediaType,
                         Enabled = true,
                         AutoProvision = true,
-                        AutoManaged = false
+                        AutoManaged = true
                     };
                     config.LibraryMappings.Add(mapping);
                 }
