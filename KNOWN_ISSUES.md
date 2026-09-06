@@ -33,9 +33,11 @@ Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
   0.0.133 exposes real media through a read-only rclone mount; see
   `Companion/README.md`. Existing legacy Plex libraries are not automatically
   deleted during migration.
-- Windows requires rclone and WinFsp. Linux managed mounts and Plex media decode
-  have passed disposable live tests; Windows host permissions, real Plex clients,
-  and the friend's actual Funnel still need validation.
+- Windows still requires WinFsp (a one-time driver install). Companion downloads
+  or ships rclone itself, so Plex owners should not have to fetch rclone by hand.
+  Linux managed mounts and Plex media decode have passed disposable live tests;
+  Windows host permissions, real Plex clients, and the friend's actual Funnel
+  still need validation.
 - Source files without size/container or episode numbering are reported in the
   import catalog and omitted from the mount. Multi-part videos need additional
   design; combined episode ranges are preserved from source metadata.

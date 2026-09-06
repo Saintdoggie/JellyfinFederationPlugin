@@ -38,6 +38,16 @@ test('Companion previews libraries unchecked and imports only explicit selection
   } finally { dom.window.close(); }
 });
 
+test('Companion local mount does not ask Plex owners to install rclone', () => {
+  const main = html.split('Manual mount')[0];
+  assert.match(main, /WinFsp/);
+  assert.match(main, /downloads the media helper itself/);
+  assert.doesNotMatch(main, /Put rclone\.exe beside Companion/);
+  assert.doesNotMatch(main, /rclone\.org\/downloads/);
+  assert.match(html, /Preparing the media mount\. Companion may download a helper once/);
+  assert.match(html, /id="driverHint"/);
+});
+
 test('Companion recovers mount button after a network failure', async () => {
   const dom = page(async () => { throw new Error('offline'); });
   try {

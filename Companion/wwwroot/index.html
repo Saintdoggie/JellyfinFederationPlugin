@@ -355,8 +355,9 @@
     <details id="mountSetup">
       <summary>Set up playable media in Plex</summary>
       <p class="status-line">Do this once on the Plex machine. Keep Companion and the mount running while Plex scans or plays. For Docker, share the mounted folder with both containers.</p>
-      <p class="status-line"><strong>Plex and Companion on the same Windows computer:</strong> install <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> and <a href="https://rclone.org/downloads/" target="_blank" rel="noopener">rclone</a> once. Put rclone.exe beside Companion or on PATH. Run Companion with the same Windows account as Plex.</p>
+      <p class="status-line"><strong>Plex and Companion on the same Windows computer:</strong> click Start media mount. Companion downloads the media helper itself. Install <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> once (a small Windows driver). Run Companion with the same Windows account as Plex.</p>
       <button id="startLocalMountBtn">Start media mount on this computer</button><div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
+      <p id="driverHint" class="status-line hidden">Windows needs <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> installed once so the media folder can appear. Companion downloads the rest itself.</p>
       <p class="status-line">Companion manages this mount and restores it after restarting. Then choose Add to Plex below.</p>
       <details><summary>Manual mount, separate machines, or Docker</summary>
       <ol>
@@ -1011,12 +1012,18 @@ async function loadMountStatus() {
       : data.message;
     document.getElementById('mountLocalInput').value = data.mediaMountRoot || '';
     document.getElementById('mountPlexInput').value = data.plexMountRoot || '';
+    const hint = document.getElementById('driverHint');
+    if (hint) {
+      hint.classList.toggle('hidden', !!(data.ready || data.driverReady !== false));
+      const link = hint.querySelector('a');
+      if (link && data.driverHelpUrl) link.href = data.driverHelpUrl;
+    }
   } catch { document.getElementById('localMountStatus').textContent = 'Could not check mount status. Retry when Companion is reachable.'; }
 }
 
 document.getElementById('startLocalMountBtn').addEventListener('click', async event => {
   const output = document.getElementById('localMountStatus'); event.target.disabled = true;
-  output.textContent = 'Starting the media mount…';
+  output.textContent = 'Preparing the media mount. Companion may download a helper once…';
   try {
     const res = await apiFetch('/api/media-mount/start', { method: 'POST' });
     if (!res.ok) throw new Error();
