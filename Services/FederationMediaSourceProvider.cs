@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -105,6 +106,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Enumerable.Empty<MediaSourceInfo>();
             }
 
+            var preparationTimer = Stopwatch.StartNew();
             try
             {
                 var key = FederationLibraryManager.GetFederationKey(item);
@@ -456,6 +458,10 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Error getting media sources for {Name}", item.Name);
                 return Enumerable.Empty<MediaSourceInfo>();
+            }
+            finally
+            {
+                _logger.LogDebug("[Federation] Playback source preparation finished in {ElapsedMs} ms", preparationTimer.Elapsed.TotalMilliseconds);
             }
         }
 

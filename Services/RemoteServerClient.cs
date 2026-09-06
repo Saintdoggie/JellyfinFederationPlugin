@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -36,6 +39,7 @@ namespace Jellyfin.Plugin.Federation.Services
         // library rescan or sharing-scope change is picked up within minutes.
         private static readonly ConcurrentDictionary<string, (DateTime Expires, PlaybackInfoResponse Response)> PlaybackInfoCache = new();
         private static readonly TimeSpan PlaybackInfoCacheTtl = TimeSpan.FromMinutes(15);
+        private static readonly PlaybackRequestGate PlaybackInfoRequests = new();
 
         // Same rationale as PlaybackInfoCache above (a client is constructed per
         // call, so this has to be static to survive between them). Keeps one sync
@@ -296,7 +300,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // userId is unused under the scoped-federation-token model - kept
                 // as a parameter only for call-site compatibility. Peer/PlaybackInfo
                 // on the receiving side resolves its own internal user id itself.
-                var cacheKey = $"{_server.Id}:{itemId}";
+                // Metadata is authorized per viewer. Keep credentials/addresses in
+                // the identity too so reconfiguration cannot reuse an old response.
+                // Hash structured values; never put a raw credential in a cache key.
+                var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                    JsonSerializer.Serialize(new[] { _server.Url, _server.ApiKey, localActingUserId ?? string.Empty }))));
+                var cacheKey = $"{_server.Id}:{identity}:{itemId}";
+                using var lease = await PlaybackInfoRequests.EnterAsync(cacheKey, cancellationToken).ConfigureAwait(false);
                 if (PlaybackInfoCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
                 {
                     _logger.LogDebug("[Federation] Using cached playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
@@ -306,11 +316,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 var url = $"/Plugins/Federation/Peer/PlaybackInfo/{itemId}";
                 _logger.LogDebug("[Federation] Getting playback info for item {ItemId} from {ServerName}", itemId, _server.Name);
 
-                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
+                var metadataTimer = Stopwatch.StartNew();
+                using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var playbackInfo = JsonSerializer.Deserialize<PlaybackInfoResponse>(content, JsonOpts);
+                _logger.LogDebug("[Federation] Playback metadata lookup completed in {ElapsedMs} ms", metadataTimer.Elapsed.TotalMilliseconds);
                 _logger.LogInformation(
                     "[Federation] Playback info for item {ItemId} on {ServerName}: {SourceCount} source(s)",
                     itemId,
