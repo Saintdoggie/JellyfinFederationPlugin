@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.134",
+        "changelog": "Friend libraries merge into your existing Movies and Shows folders by type instead of creating Federated Movies/Shows. Cover art (including custom posters) and media info come from the friend's Plex or Jellyfin server; TMDb is not allowed to re-identify federated items.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.134/Jellyfin.Federation.zip",
+        "checksum": "40e66b58f5f85fed8d0440999950be5b",
+        "timestamp": "2026-09-06T19:30:00Z"
+      },
+      {
         "version": "0.0.133",
         "changelog": "Plex federation repair: third-party federated media is no longer shared onward; Downloads stay bound to the selected server; Plex plays real media through a read-only rclone mount instead of unplayable .strm files. Funnel connect codes use a scoped claim token and no longer include a raw Plex-token fallback.",
         "targetAbi": "10.11.0.0",

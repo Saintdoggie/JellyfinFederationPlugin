@@ -234,7 +234,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         Path = shadowPath
                     }
-                }
+                },
+                TypeOptions = SourceOnlyTypeOptions(mapping.MediaType)
             };
 
             await _libraryManager.AddVirtualFolder(
@@ -530,6 +531,28 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return new string(chars);
         }
+
+        private static TypeOptions[] SourceOnlyTypeOptions(string mediaType)
+        {
+            var types = Normalize(mediaType) switch
+            {
+                "series" or "season" or "episode" => new[] { "Series", "Season", "Episode" },
+                "musicalbum" or "audio" => new[] { "MusicAlbum", "Audio" },
+                "book" => new[] { "Book" },
+                "photo" or "photoalbum" => new[] { "Photo", "PhotoAlbum" },
+                "boxset" => new[] { "BoxSet" },
+                _ => new[] { "Movie", "Video" }
+            };
+
+            return types.Select(type => new TypeOptions
+            {
+                Type = type,
+                MetadataFetchers = new[] { "Federation" },
+                ImageFetchers = new[] { "Federation" }
+            }).ToArray();
+        }
+
+        private static string Normalize(string mediaType) => (mediaType ?? string.Empty).Trim().ToLowerInvariant();
 
         private static CollectionTypeOptions? GetCollectionType(string mediaType)
         {

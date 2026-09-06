@@ -625,6 +625,11 @@ namespace Jellyfin.Plugin.Federation.Services
                         foreach (var (item, entry, _) in tierList)
                         {
                             _federationManager.TryPersistMediaStreams(item, entry);
+                            var people = FederationLibraryManager.ToPersonInfos(entry);
+                            if (people.Count > 0)
+                            {
+                                _libraryManager.UpdatePeople(item, people);
+                            }
                         }
                     }
 

@@ -737,6 +737,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.Tags = remoteItem.Tags ?? Metadata.Tags;
                 Metadata.Studios = remoteItem.Studios?.Select(s => s.Name ?? string.Empty).ToArray() ?? Metadata.Studios;
                 Metadata.Artists = remoteItem.Artists != null ? remoteItem.Artists.ToArray() : Metadata.Artists;
+                Metadata.OriginalTitle = remoteItem.OriginalTitle ?? Metadata.OriginalTitle;
                 Metadata.ProviderIds = remoteItem.ProviderIds ?? Metadata.ProviderIds;
                 Metadata.People = remoteItem.People != null
                     ? remoteItem.People.Select(p => new FederatedPerson
@@ -842,6 +843,8 @@ namespace Jellyfin.Plugin.Federation.Services
         public string[]? Studios { get; set; }
 
         public string[]? Artists { get; set; }
+
+        public string? OriginalTitle { get; set; }
 
         public Dictionary<string, string>? ProviderIds { get; set; }
 

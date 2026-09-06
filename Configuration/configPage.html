@@ -743,8 +743,9 @@
                     <div class="verticalSection">
                         <h3 class="sectionTitle">Libraries</h3>
                         <p class="fieldDescription">
-                            Each library you check appears on this server as a virtual library.
-                            Libraries with the same name on different servers are merged into one — duplicates are combined automatically.
+                            Checked libraries are added into your existing Movies and Shows folders by type —
+                            a friend's "TV Shows" still lands in Shows, and "The PSP Experience" lands in Movies.
+                            Cover art and details come from the friend's server (including custom posters), not from TMDb.
                         </p>
 
                         <div id="fedLibraryPicker">
@@ -1184,6 +1185,9 @@
                             // so a page load doesn't have to show "loading" and wait
                             // for a second interaction.
                             renderFriends();
+                            if (pickerLoaded) {
+                                renderPicker();
+                            }
                             return localLibrariesCache;
                         })
                         .catch(function () { return []; });
@@ -4213,6 +4217,76 @@
                         return info ? info.mediaType : null;
                     }
 
+                    function defaultLocalLibraryName(mediaType) {
+                        var t = String(mediaType || '').toLowerCase();
+                        if (t === 'series' || t === 'season' || t === 'episode') {
+                            return 'Shows';
+                        }
+                        if (t === 'musicalbum' || t === 'audio') {
+                            return 'Music';
+                        }
+                        if (t === 'musicvideo') {
+                            return 'Music Videos';
+                        }
+                        if (t === 'book') {
+                            return 'Books';
+                        }
+                        if (t === 'photo' || t === 'photoalbum') {
+                            return 'Photos';
+                        }
+                        if (t === 'boxset') {
+                            return 'Collections';
+                        }
+                        return 'Movies';
+                    }
+
+                    function collectionTypeForMedia(mediaType) {
+                        var t = String(mediaType || '').toLowerCase();
+                        if (t === 'series' || t === 'season' || t === 'episode') {
+                            return 'tvshows';
+                        }
+                        if (t === 'musicalbum' || t === 'audio' || t === 'musicvideo') {
+                            return 'music';
+                        }
+                        if (t === 'book') {
+                            return 'books';
+                        }
+                        if (t === 'photo' || t === 'photoalbum') {
+                            return 'homevideos';
+                        }
+                        if (t === 'boxset') {
+                            return 'boxsets';
+                        }
+                        if (t === 'movie' || t === 'video') {
+                            return 'movies';
+                        }
+                        return '';
+                    }
+
+                    function isLegacySplitLibraryName(name) {
+                        var n = String(name || '').toLowerCase();
+                        return n === 'federated movies' || n === 'federated shows';
+                    }
+
+                    function localDestinationName(mediaType) {
+                        var wanted = collectionTypeForMedia(mediaType);
+                        var libs = localLibrariesCache || [];
+                        var i, lib, ct;
+                        if (wanted) {
+                            for (i = 0; i < libs.length; i++) {
+                                lib = libs[i];
+                                if (isLegacySplitLibraryName(lib.name)) {
+                                    continue;
+                                }
+                                ct = String(lib.collectionType || '').toLowerCase();
+                                if (ct === wanted) {
+                                    return lib.name;
+                                }
+                            }
+                        }
+                        return defaultLocalLibraryName(mediaType);
+                    }
+
                     function loadLibraryPicker(autoAdoptServerIds) {
                         var hint = q('#fedPickerHint');
                         var list = q('#fedPickerList');
@@ -4232,6 +4306,7 @@
                         hint.textContent = 'Loading remote libraries…';
                         hint.style.display = 'block';
                         list.innerHTML = '';
+                        loadLocalLibraries();
                         fedFetch('/Plugins/Federation/GetRemoteLibraries')
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
@@ -4351,6 +4426,7 @@
                                 }
 
                                 meta.push(lib.itemCount + ' items');
+                                meta.push('→ ' + localDestinationName(lib.mediaType));
                                 html += '<label class="fed-librow">';
                                 html += '<input type="checkbox" class="fed-check fedPickLib" data-idx="' + idx + '"' + (lib.selected ? ' checked' : '') + ' />';
                                 html += '<span>' + escapeHtml(lib.libraryName) + '</span>';
@@ -4379,9 +4455,10 @@
                                 return;
                             }
 
-                            var key = lib.libraryName.trim().toLowerCase() + '|' + lib.mediaType;
+                            var dest = localDestinationName(lib.mediaType);
+                            var key = dest.toLowerCase() + '|' + String(lib.mediaType || '').toLowerCase();
                             if (!groups[key]) {
-                                groups[key] = { name: lib.libraryName.trim(), mediaType: lib.mediaType, sources: [] };
+                                groups[key] = { name: dest, mediaType: lib.mediaType, sources: [] };
                                 order.push(key);
                             }
 
@@ -4393,26 +4470,8 @@
                             });
                         });
 
-                        var used = {};
-                        customMappings.forEach(function (m) {
-                            used[(m.LocalLibraryName || '').toLowerCase()] = true;
-                        });
-
                         return order.map(function (key) {
                             var g = groups[key];
-                            var name = g.name;
-                            if (used[name.toLowerCase()]) {
-                                name = name + ' (' + g.mediaType + ')';
-                            }
-
-                            var candidate = name;
-                            var n = 2;
-                            while (used[candidate.toLowerCase()]) {
-                                candidate = name + ' ' + n;
-                                n++;
-                            }
-
-                            used[candidate.toLowerCase()] = true;
                             var serverIds = [];
                             g.sources.forEach(function (s) {
                                 if (serverIds.indexOf(s.ServerId) < 0) {
@@ -4421,7 +4480,7 @@
                             });
 
                             return {
-                                LocalLibraryName: candidate,
+                                LocalLibraryName: g.name,
                                 MediaType: g.mediaType,
                                 RemoteServerIds: serverIds,
                                 RemoteLibrarySources: g.sources,

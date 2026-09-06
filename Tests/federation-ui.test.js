@@ -321,6 +321,15 @@ test('Downloads server dropdown refreshes on every config load, not just once', 
   assert.match(configScript[0], /loadBrowseServers\(\);/);
 });
 
+test('library picker merges friend sections into existing Movies and Shows', () => {
+  assert.match(configPage, /Checked libraries are added into your existing Movies and Shows folders by type/);
+  assert.equal(configPage.includes('Each library you check appears on this server as a virtual library'), false);
+  assert.match(configPage, /function localDestinationName\(/);
+  assert.match(configPage, /function buildAutoMappings\(\) \{[\s\S]*localDestinationName\(lib\.mediaType\)/);
+  assert.match(configPage, /meta\.push\('→ ' \+ localDestinationName\(lib\.mediaType\)\)/);
+  assert.equal(configPage.includes("lib.libraryName.trim().toLowerCase() + '|' + lib.mediaType"), false);
+});
+
 test('Plex share requests can be accepted from the Companion tab without pasting a code', () => {
   assert.match(configPage, /fedPlexOffersIncoming/);
   assert.match(configPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);

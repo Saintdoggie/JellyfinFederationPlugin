@@ -7,6 +7,7 @@ using System.Threading;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
+using PersonInfo = MediaBrowser.Controller.Entities.PersonInfo;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -39,7 +40,9 @@ namespace Jellyfin.Plugin.Federation.Services
             MetadataField.Genres,
             MetadataField.Studios,
             MetadataField.Tags,
-            MetadataField.Runtime
+            MetadataField.Runtime,
+            MetadataField.Cast,
+            MetadataField.ProductionLocations
         };
 
         private readonly ILibraryManager _libraryManager;
@@ -202,14 +205,11 @@ namespace Jellyfin.Plugin.Federation.Services
             // metadata - locking them keeps Jellyfin's own local metadata
             // providers (TMDb, OMDb, ...) from ever running an "identify" search
             // against a federated item and overwriting it with an unrelated
-            // match. Confirmed live: dozens of Plex-sourced movies with weak
-            // source metadata (no clean title match) ended up all displaying the
-            // exact same wrong name from one bad shared search result - looking
-            // like mass duplication, but actually mass mislabeling of otherwise-
-            // distinct items whose own cached data (see FederatedCacheEntry) was
-            // correct the whole time. Cast/ProductionLocations are deliberately
-            // left unlocked - this plugin never sets either, so local enrichment
-            // there is harmless.
+            // match, including custom Plex/Jellyfin artwork and cast. Confirmed
+            // live: dozens of Plex-sourced movies with weak source metadata
+            // ended up all displaying the same wrong TMDb title.
+            item.OriginalTitle = entry.Metadata.OriginalTitle;
+            item.ProductionLocations = Array.Empty<string>();
             item.LockedFields = LockedMetadataFields;
 
             if (item is Episode ep)
@@ -685,6 +685,57 @@ namespace Jellyfin.Plugin.Federation.Services
         /// library sync, outside any HTTP request, so there is no live connection to
         /// read an actual listening port from.
         /// </summary>
+        /// <summary>
+        /// Existing local library that a friend's Movie/Series (etc.) catalog
+        /// should merge into, so checking a Plex "TV Shows" section lands in
+        /// this server's Shows folder rather than creating a new one.
+        /// </summary>
+        public string LocalLibraryNameFor(string mediaType)
+            => FederationLibraryTargets.Resolve(mediaType, _libraryManager.GetVirtualFolders());
+
+        /// <summary>
+        /// Local virtual folders, for collapsing leftover Federated Movies/Shows
+        /// mappings onto the real Movies/Shows libraries at startup.
+        /// </summary>
+        public IReadOnlyList<MediaBrowser.Model.Entities.VirtualFolderInfo> GetVirtualFolders()
+            => (IReadOnlyList<MediaBrowser.Model.Entities.VirtualFolderInfo>?)_libraryManager.GetVirtualFolders()
+               ?? Array.Empty<MediaBrowser.Model.Entities.VirtualFolderInfo>();
+
+        /// <summary>
+        /// Cast/crew copied from the source server, for <see cref="ILibraryManager.UpdatePeople"/>.
+        /// </summary>
+        public static List<PersonInfo> ToPersonInfos(FederatedCacheEntry entry)
+        {
+            var people = new List<PersonInfo>();
+            if (entry.Metadata.People == null)
+            {
+                return people;
+            }
+
+            foreach (var person in entry.Metadata.People)
+            {
+                if (string.IsNullOrWhiteSpace(person.Name))
+                {
+                    continue;
+                }
+
+                var info = new PersonInfo
+                {
+                    Name = person.Name,
+                    Role = person.Role
+                };
+                if (!string.IsNullOrWhiteSpace(person.Type)
+                    && Enum.TryParse<PersonKind>(person.Type, true, out var kind))
+                {
+                    info.Type = kind;
+                }
+
+                people.Add(info);
+            }
+
+            return people;
+        }
+
         public string GetInternalPlaybackBaseUrl()
         {
             var config = Plugin.Instance?.Configuration;
