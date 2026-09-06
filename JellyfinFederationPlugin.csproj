@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
     <AssemblyName>Jellyfin.Plugin.Federation</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
