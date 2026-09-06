@@ -728,6 +728,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 Name = serverName,
                 Url = plexUrl,
                 ApiKey = plexToken,
+                CompanionUrl = decoded.Claim != false
+                    && decoded.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                    && !ConfigValidator.IsPrivateOrLoopbackHost(decoded.Url)
+                    ? decoded.Url.Trim().TrimEnd('/')
+                    : string.Empty,
+                FederationId = Guid.NewGuid().ToString(),
+                IssuedApiKey = FederationTokenAuth.GenerateToken(),
                 StreamingMode = StreamingMode.Proxy,
                 Enabled = true
             };
@@ -1186,13 +1193,32 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, $"No address/key on file for {friend.Name} yet.");
             }
 
+            if (friend.Kind != ServerKind.Jellyfin && !PlexCompanionEndpoint.CanReceivePoolInvite(friend))
+            {
+                return (false, $"{friend.Name} is a Plex friend without a Companion/Funnel address, so a pool invite cannot be delivered. Ask them to turn on Funnel in Companion and reconnect.");
+            }
+
             var config = Plugin.Instance!.Configuration;
             if (config.OutgoingPoolInvites.Any(i => i.PoolId == pool.Id && string.Equals(i.RemoteServerUrl.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
             {
                 return (false, $"{friend.Name} already has a pending invite to this pool.");
             }
 
+            if (string.IsNullOrEmpty(friend.FederationId))
+            {
+                friend.FederationId = friend.Id;
+            }
+
+            if (string.IsNullOrEmpty(friend.IssuedApiKey))
+            {
+                friend.IssuedApiKey = FederationTokenAuth.GenerateToken();
+            }
+
             var inviteId = Guid.NewGuid().ToString();
+            var localUrl = ResolveLocalUrl();
+            var pluginVersion = typeof(Plugin).Assembly.GetName().Version is { } ver
+                ? $"{ver.Major}.{ver.Minor}.{ver.Build}"
+                : string.Empty;
             try
             {
                 var payload = new PoolInviteNoticePayload
@@ -1204,16 +1230,34 @@ namespace Jellyfin.Plugin.Federation.Services
                     OwnerFederationId = pool.OwnerFederationId,
                     OwnerName = pool.OwnerName,
                     Roster = pool.Members.ToList(),
-                    IconBase64 = pool.IconBase64
+                    IconBase64 = pool.IconBase64,
+                    CallbackUrl = localUrl,
+                    CallbackToken = friend.IssuedApiKey,
+                    FederationPluginVersion = pluginVersion
                 };
+
+                string inviteUrl;
+                string authToken;
+                if (friend.Kind == ServerKind.Jellyfin)
+                {
+                    inviteUrl = $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/InviteNotice";
+                    authToken = friend.ApiKey;
+                }
+                else
+                {
+                    inviteUrl = PlexCompanionEndpoint.PoolInviteUrl(PlexCompanionEndpoint.TryGetBaseUrl(friend)!);
+                    authToken = friend.ApiKey;
+                }
+
                 using var response = await PostAuthenticatedAsync(
-                    $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/InviteNotice",
+                    inviteUrl,
                     payload,
-                    friend.ApiKey,
+                    authToken,
                     cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    return (false, $"Could not invite {friend.Name} to the pool (HTTP {(int)response.StatusCode}). Check they're reachable and running a compatible Federation plugin version.");
+                    var kind = friend.Kind == ServerKind.Jellyfin ? "Federation plugin" : "Plex Companion";
+                    return (false, $"Could not invite {friend.Name} to the pool (HTTP {(int)response.StatusCode}). Check they're reachable and running a compatible {kind} version.");
                 }
             }
             catch (Exception ex)
@@ -2407,6 +2451,20 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the pool's current icon, if any.</summary>
         public string? IconBase64 { get; set; }
+
+        /// <summary>
+        /// Our public Jellyfin URL, so a Plex Companion can POST AcceptNotice
+        /// back. Unused for Jellyfin-to-Jellyfin invites.
+        /// </summary>
+        public string? CallbackUrl { get; set; }
+
+        /// <summary>
+        /// Federation token we minted for this Plex friend to call us back.
+        /// </summary>
+        public string? CallbackToken { get; set; }
+
+        /// <summary>This plugin's version, advertised to Companion.</summary>
+        public string? FederationPluginVersion { get; set; }
     }
 
     /// <summary>

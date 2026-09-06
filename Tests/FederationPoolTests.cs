@@ -204,6 +204,56 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AddFriendToPoolAsync_PlexCompanion_PostsToCompanionPoolInvite_NotJellyfinPluginRoute()
+    {
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "plex-1",
+            Kind = ServerKind.Plex,
+            Name = "freakbob",
+            Url = "https://freakbob.tail4e0b6f.ts.net/plex/peer-1",
+            CompanionUrl = "https://freakbob.tail4e0b6f.ts.net",
+            ApiKey = "companion-peer-token",
+            FederationId = "plex-fed"
+        });
+
+        string? seenUrl = null;
+        UseFakeHttp(req =>
+        {
+            seenUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var (success, message) = await _service.AddFriendToPoolAsync(pool.Id, "plex-1", CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Equal("https://freakbob.tail4e0b6f.ts.net/api/pools/invite", seenUrl);
+        Assert.DoesNotContain("/Plugins/Federation/", seenUrl, StringComparison.Ordinal);
+        Assert.Single(_plugin.Configuration.OutgoingPoolInvites);
+    }
+
+    [Fact]
+    public async Task AddFriendToPoolAsync_PlexWithoutCompanion_ExplainsFunnelIsRequired()
+    {
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "plex-1",
+            Kind = ServerKind.Plex,
+            Name = "freakbob",
+            Url = "https://1-2-3.hash.plex.direct:32400",
+            ApiKey = "plex-token"
+        });
+
+        var (success, message) = await _service.AddFriendToPoolAsync(pool.Id, "plex-1", CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Contains("Funnel", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(_plugin.Configuration.OutgoingPoolInvites);
+    }
+
+    [Fact]
     public async Task AddFriendToPoolAsync_UnreachableFriend_DoesNotAddAndReportsFailure()
     {
         // Previously an unreachable friend still ended up in the pool locally

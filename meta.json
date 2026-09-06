@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.134",
-  "changelog": "Friend libraries merge into your existing Movies and Shows folders by type instead of creating Federated Movies/Shows. Cover art (including custom posters) and media info come from the friend's Plex or Jellyfin server; TMDb is not allowed to re-identify federated items.",
+  "version": "0.0.135",
+  "changelog": "Plex Companion now reports a Federation plugin version and can join pools. Inviting a Plex friend no longer fails as an unknown/old plugin; they Accept the pool invite in Companion. Direct Plex Relay friends still need Funnel so the invite can be delivered.",
   "targetAbi": "10.11.0.0",
-  "timestamp": "2026-09-06T19:30:00Z",
+  "timestamp": "2026-09-06T20:30:00Z",
   "imageUrl": "thumb.png"
 }

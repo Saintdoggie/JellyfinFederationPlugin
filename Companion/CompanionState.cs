@@ -110,6 +110,12 @@ public sealed class CompanionState
     /// </summary>
     public List<JellyfinImportPeer> ImportPeers { get; set; } = new();
 
+    /// <summary>
+    /// Pool invites from Jellyfin friends, waiting for the Plex owner to
+    /// Accept. Delivered to <c>/api/pools/invite</c> using a peer token.
+    /// </summary>
+    public List<CompanionPoolInvite> IncomingPoolInvites { get; set; } = new();
+
     private static string PathOnDisk => Path.Combine(AppContext.BaseDirectory, "companion-state.json");
 
     public static async Task<CompanionState> LoadAsync()
@@ -247,6 +253,36 @@ public sealed class CompanionPeer
 
     /// <summary>Separate opt-in for batches larger than three items.</summary>
     public bool AllowBulkDownloads { get; set; }
+}
+
+public sealed class CompanionPoolInvite
+{
+    public string InviteId { get; set; } = string.Empty;
+
+    public string PoolId { get; set; } = string.Empty;
+
+    public string? PoolName { get; set; }
+
+    public string? OwnerName { get; set; }
+
+    public string FromFederationId { get; set; } = string.Empty;
+
+    public string? CallbackUrl { get; set; }
+
+    public string? CallbackToken { get; set; }
+
+    public string? FederationPluginVersion { get; set; }
+
+    public List<CompanionPoolRosterMember> Roster { get; set; } = new();
+
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class CompanionPoolRosterMember
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Url { get; set; } = string.Empty;
 }
 
 public sealed class JellyfinImportPeer

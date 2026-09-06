@@ -46,7 +46,7 @@ var app = builder.Build();
 app.Use(async (context, next) =>
 {
     if (context.Request.Path.StartsWithSegments("/api")
-        && !context.Request.Path.Equals("/api/link/complete", StringComparison.OrdinalIgnoreCase))
+        && !IsPublicCompanionApi(context.Request.Path))
     {
         var supplied = context.Request.Headers["X-Companion-Admin"].ToString();
         if (!FixedTimeEquals(supplied, state.AdminAccessKey))
@@ -114,8 +114,135 @@ app.MapGet("/api/status", (CompanionState s) => Results.Ok(new
     peerCount = s.Peers.Count,
     importPeerCount = s.ImportPeers.Count,
     plexVisibleImportRoot = s.PlexVisibleImportRoot,
-    playbackBaseUrl = s.PlaybackBaseUrl
+    playbackBaseUrl = s.PlaybackBaseUrl,
+    federationPluginVersion = CompanionVersion.FederationPluginVersion(),
+    poolInviteCount = s.IncomingPoolInvites.Count
 }));
+
+app.MapGet("/api/federation/info", () => Results.Ok(new
+{
+    kind = "PlexCompanion",
+    federationPluginVersion = CompanionVersion.FederationPluginVersion(),
+    companionRevision = CompanionVersion.LocalRevision()
+}));
+
+app.MapPost("/api/pools/invite", async (HttpRequest request, CompanionPoolInviteRequest body, CompanionState s) =>
+{
+    var peer = FindPeerByFederationToken(request, s);
+    if (peer == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (string.IsNullOrWhiteSpace(body.InviteId) || string.IsNullOrWhiteSpace(body.PoolId))
+    {
+        return Results.BadRequest(new { error = "Pool invite is missing an id." });
+    }
+
+    s.IncomingPoolInvites.RemoveAll(i => i.CreatedUtc < DateTime.UtcNow.AddHours(-24));
+    if (s.IncomingPoolInvites.Any(i => i.InviteId == body.InviteId))
+    {
+        return Results.Ok();
+    }
+
+    while (s.IncomingPoolInvites.Count >= 25)
+    {
+        s.IncomingPoolInvites.RemoveAt(0);
+    }
+
+    s.IncomingPoolInvites.Add(new CompanionPoolInvite
+    {
+        InviteId = body.InviteId.Trim(),
+        PoolId = body.PoolId.Trim(),
+        PoolName = string.IsNullOrWhiteSpace(body.PoolName) ? "a pool" : body.PoolName.Trim(),
+        OwnerName = body.OwnerName,
+        FromFederationId = body.FromFederationId ?? string.Empty,
+        CallbackUrl = body.CallbackUrl,
+        CallbackToken = body.CallbackToken,
+        FederationPluginVersion = body.FederationPluginVersion,
+        Roster = (body.Roster ?? new List<CompanionPoolRosterWire>())
+            .Select(m => new CompanionPoolRosterMember { Name = m.Name ?? string.Empty, Url = m.Url ?? string.Empty })
+            .ToList(),
+        CreatedUtc = DateTime.UtcNow
+    });
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok();
+});
+
+app.MapGet("/api/pools/invites", (CompanionState s) => Results.Ok(s.IncomingPoolInvites.Select(i => new
+{
+    i.InviteId,
+    i.PoolName,
+    i.OwnerName,
+    i.FederationPluginVersion,
+    memberCount = i.Roster.Count,
+    i.CreatedUtc
+})));
+
+app.MapPost("/api/pools/invites/{id}/accept", async (string id, CompanionState s, HttpClient http, CancellationToken ct) =>
+{
+    var invite = s.IncomingPoolInvites.FirstOrDefault(i => i.InviteId == id);
+    if (invite == null)
+    {
+        return Results.NotFound(new { error = "Pool invite not found." });
+    }
+
+    if (!string.IsNullOrWhiteSpace(invite.CallbackUrl) && !string.IsNullOrWhiteSpace(invite.CallbackToken))
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, invite.CallbackUrl.TrimEnd('/') + "/Plugins/Federation/Pools/AcceptNotice")
+            {
+                Content = JsonContent.Create(new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId })
+            };
+            req.Headers.TryAddWithoutValidation("X-Federation-Token", invite.CallbackToken);
+            using var response = await http.SendAsync(req, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Results.BadRequest(new { error = $"Could not confirm with the Jellyfin server (HTTP {(int)response.StatusCode}). Try again shortly." });
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return Results.BadRequest(new { error = "Could not reach the Jellyfin server to confirm. Check Funnel/public URL on their side." });
+        }
+    }
+
+    s.IncomingPoolInvites.RemoveAll(i => i.InviteId == id);
+    await s.SaveAsync().ConfigureAwait(false);
+
+    return Results.Ok(new { message = $"You joined {invite.PoolName}." });
+});
+
+app.MapPost("/api/pools/invites/{id}/reject", async (string id, CompanionState s, HttpClient http, CancellationToken ct) =>
+{
+    var invite = s.IncomingPoolInvites.FirstOrDefault(i => i.InviteId == id);
+    if (invite == null)
+    {
+        return Results.NotFound(new { error = "Pool invite not found." });
+    }
+
+    if (!string.IsNullOrWhiteSpace(invite.CallbackUrl) && !string.IsNullOrWhiteSpace(invite.CallbackToken))
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, invite.CallbackUrl.TrimEnd('/') + "/Plugins/Federation/Pools/RejectNotice")
+            {
+                Content = JsonContent.Create(new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId })
+            };
+            req.Headers.TryAddWithoutValidation("X-Federation-Token", invite.CallbackToken);
+            await http.SendAsync(req, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Clearing locally still stands if we cannot reach them.
+        }
+    }
+
+    s.IncomingPoolInvites.RemoveAll(i => i.InviteId == id);
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok();
+});
 
 app.MapPost("/api/diagnostics", async (CompanionState s, HttpClient http, CancellationToken ct) =>
 {
@@ -1085,6 +1212,22 @@ static bool IsSafePeerUrl(string candidate, out string normalized)
     return true;
 }
 
+static bool IsPublicCompanionApi(PathString path)
+    => path.Equals("/api/link/complete", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/api/federation/info", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/api/pools/invite", StringComparison.OrdinalIgnoreCase);
+
+static CompanionPeer? FindPeerByFederationToken(HttpRequest request, CompanionState s)
+{
+    var token = request.Headers["X-Federation-Token"].ToString();
+    if (string.IsNullOrEmpty(token))
+    {
+        return null;
+    }
+
+    return s.Peers.FirstOrDefault(p => FixedTimeEquals(token, p.AccessToken));
+}
+
 static bool FixedTimeEquals(string supplied, string expected)
 {
     if (string.IsNullOrEmpty(supplied) || string.IsNullOrEmpty(expected))
@@ -1127,6 +1270,25 @@ internal sealed record SetPlexSectionRequest(string? SectionKey);
 internal sealed record SelectPlexServerRequest(string Id);
 
 internal sealed record SetPeerDownloadAccessRequest(bool AllowDownloads, bool AllowBulkDownloads);
+
+internal sealed class CompanionPoolInviteRequest
+{
+    public string? InviteId { get; set; }
+    public string? FromFederationId { get; set; }
+    public string? PoolId { get; set; }
+    public string? PoolName { get; set; }
+    public string? OwnerName { get; set; }
+    public string? CallbackUrl { get; set; }
+    public string? CallbackToken { get; set; }
+    public string? FederationPluginVersion { get; set; }
+    public List<CompanionPoolRosterWire>? Roster { get; set; }
+}
+
+internal sealed class CompanionPoolRosterWire
+{
+    public string? Name { get; set; }
+    public string? Url { get; set; }
+}
 
 internal sealed class ConnectCodePayload
 {

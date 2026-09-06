@@ -697,6 +697,13 @@ namespace Jellyfin.Plugin.Federation.Api
                     return Ok(new { success = false, message = $"Could not reach {server.Name}, or its token was rejected. Check the address is reachable from this server and the token is still valid." });
                 }
 
+                var companionVersion = await PlexCompanionEndpoint.TryGetVersionAsync(configured, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(companionVersion))
+                {
+                    configured.FederationPluginVersion = companionVersion;
+                    Plugin.Instance?.SaveConfiguration();
+                }
+
                 return Ok(new
                 {
                     success = true,
@@ -704,11 +711,11 @@ namespace Jellyfin.Plugin.Federation.Api
                     serverInfo = new
                     {
                         name = friendlyName,
-                        version = "-",
-                        operatingSystem = configured.Kind.ToString(),
+                        version = companionVersion ?? "Companion",
+                        operatingSystem = "Plex Companion",
                         serverId = configured.Id,
                         suggestedUserId = (string?)null,
-                        federationPluginVersion = (string?)null
+                        federationPluginVersion = companionVersion
                     }
                 });
             }

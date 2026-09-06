@@ -17,6 +17,14 @@ public class CompanionVersionTests
         => Assert.True(CompanionVersion.SameRevision("c7dcb5cfc7c81920", "c7dcb5c"));
 
     [Fact]
+    public void FederationPluginVersion_IsDottedThreePart()
+    {
+        var version = CompanionVersion.FederationPluginVersion();
+        Assert.Matches(@"^\d+\.\d+\.\d+$", version);
+        Assert.NotEqual("0.0.0", version);
+    }
+
+    [Fact]
     public void LooksLikeInstalledBuild_AcceptsCompanionBinary()
     {
         Assert.True(CompanionVersion.LooksLikeInstalledBuild("/home/bob/FederationCompanion/FederationCompanion"));
