@@ -16,7 +16,7 @@ public sealed class PlexFederationRelay
 {
     private readonly CompanionState _state;
     private readonly HttpClient _http;
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _approvedResources = new();
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, ApprovedResource>> _approvedResources = new();
 
     public PlexFederationRelay(CompanionState state, HttpClient http)
     {
@@ -98,8 +98,8 @@ public sealed class PlexFederationRelay
 
         if (path.StartsWith("/library/parts/", StringComparison.Ordinal)
             && _approvedResources.TryGetValue(peer.Id, out var resources)
-            && resources.TryGetValue(path, out var resourceSection)
-            && IsSharedSection(resourceSection))
+            && resources.TryGetValue(path, out var resource)
+            && IsSharedSection(resource.SectionKey))
         {
             var isDownload = string.Equals(incoming.Query["federationDownload"], "true", StringComparison.OrdinalIgnoreCase);
             var isBulkDownload = string.Equals(incoming.Query["federationBulk"], "true", StringComparison.OrdinalIgnoreCase);
@@ -109,6 +109,21 @@ public sealed class PlexFederationRelay
                 return;
             }
 
+            // A part can survive a move to an unshared section. Revalidate
+            // current ownership instead of trusting a previous catalog lookup.
+            var current = await FetchBufferedAsync($"/library/metadata/{resource.RatingKey}", QueryCollection.Empty, cancellationToken).ConfigureAwait(false);
+            if (current == null || !current.IsSuccessStatusCode || !IsSharedMetadata(current.Body))
+            {
+                outgoing.StatusCode = current == null ? StatusCodes.Status502BadGateway : StatusCodes.Status403Forbidden;
+                return;
+            }
+            resources.TryRemove(path, out _);
+            RememberApprovedResources(peer.Id, current.Body);
+            if (!resources.TryGetValue(path, out var refreshed) || !IsSharedSection(refreshed.SectionKey))
+            {
+                outgoing.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
             await RelayRawAsync(path, incoming, outgoing, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -130,7 +145,7 @@ public sealed class PlexFederationRelay
 
             foreach (var item in metadata.EnumerateArray())
             {
-                if (TryGetString(item, "librarySectionID", out var sectionId)
+                if ((TryGetString(item, "librarySectionID", out var sectionId) || TryGetString(container, "librarySectionID", out sectionId))
                     && IsSharedSection(sectionId))
                 {
                     return true;
@@ -146,7 +161,7 @@ public sealed class PlexFederationRelay
     }
 
     private bool IsSharedSection(string sectionKey)
-        => _state.Libraries.Any(l => l.Shared && string.Equals(l.SectionKey, sectionKey, StringComparison.Ordinal));
+        => _state.Libraries.Any(l => CompanionLibraryPolicy.IsShared(_state, l) && string.Equals(l.SectionKey, sectionKey, StringComparison.Ordinal));
 
     private async Task RelayFilteredSectionsAsync(
         HttpRequest incoming,
@@ -192,7 +207,7 @@ public sealed class PlexFederationRelay
 
     private void RememberApprovedResources(string peerId, byte[] metadataBody)
     {
-        var resources = _approvedResources.GetOrAdd(peerId, _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal));
+        var resources = _approvedResources.GetOrAdd(peerId, _ => new ConcurrentDictionary<string, ApprovedResource>(StringComparer.Ordinal));
         try
         {
             using var document = JsonDocument.Parse(metadataBody);
@@ -205,10 +220,11 @@ public sealed class PlexFederationRelay
 
             foreach (var item in metadata.EnumerateArray())
             {
-                if (TryGetString(item, "librarySectionID", out var sectionId)
+                if ((TryGetString(item, "librarySectionID", out var sectionId) || TryGetString(container, "librarySectionID", out sectionId))
                     && IsSharedSection(sectionId))
                 {
-                    RememberStrings(item, sectionId, resources);
+                    if (TryGetString(item, "ratingKey", out var ratingKey))
+                        RememberStrings(item, sectionId, ratingKey, resources);
                 }
             }
         }
@@ -221,7 +237,8 @@ public sealed class PlexFederationRelay
     private static void RememberStrings(
         JsonElement element,
         string sectionId,
-        ConcurrentDictionary<string, string> resources)
+        string ratingKey,
+        ConcurrentDictionary<string, ApprovedResource> resources)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
@@ -232,18 +249,18 @@ public sealed class PlexFederationRelay
                     var value = property.Value.GetString();
                     if (value != null && value.StartsWith("/library/parts/", StringComparison.Ordinal))
                     {
-                        resources[value.Split('?', 2)[0]] = sectionId;
+                        resources[value.Split('?', 2)[0]] = new ApprovedResource(sectionId, ratingKey);
                     }
                 }
 
-                RememberStrings(property.Value, sectionId, resources);
+                RememberStrings(property.Value, sectionId, ratingKey, resources);
             }
         }
         else if (element.ValueKind == JsonValueKind.Array)
         {
             foreach (var child in element.EnumerateArray())
             {
-                RememberStrings(child, sectionId, resources);
+                RememberStrings(child, sectionId, ratingKey, resources);
             }
         }
     }
@@ -420,6 +437,8 @@ public sealed class PlexFederationRelay
 
         outgoing.Headers.CacheControl = "private, no-store";
     }
+
+    private sealed record ApprovedResource(string SectionKey, string RatingKey);
 
     internal sealed record BufferedPlexResponse(int StatusCode, bool IsSuccessStatusCode, string? ContentType, byte[] Body);
 }

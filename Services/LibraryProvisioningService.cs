@@ -342,6 +342,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// lives under <paramref name="federationRoot"/> OR carries the legacy
         /// <c>federation://</c> URI scheme from a prior plugin version.
         /// </summary>
+        internal static bool IsEntirelyFederatedFolder(VirtualFolderInfo vf, string federationRoot)
+            => vf.Locations is { Length: > 0 } && vf.Locations.All(location =>
+                !string.IsNullOrWhiteSpace(location) &&
+                (location.StartsWith("federation://", StringComparison.OrdinalIgnoreCase)
+                 || IsUnderFederationRoot(location, federationRoot)));
+
         internal static bool IsFederationFolder(VirtualFolderInfo vf, string federationRoot)
         {
             if (vf.Locations == null)

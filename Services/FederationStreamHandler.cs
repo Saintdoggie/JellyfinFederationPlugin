@@ -509,8 +509,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     try
                     {
-                        using var remoteReq = new HttpRequestMessage(HttpMethod.Get, url);
-                        var requestRange = rangeStart > 0 || rangeEnd.HasValue
+                        using var remoteReq = new HttpRequestMessage(HttpMethods.IsHead(request.Method) ? HttpMethod.Head : HttpMethod.Get, url);
+                        remoteReq.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                        foreach (var header in new[] { "If-Range", "If-None-Match", "If-Modified-Since" })
+                        {
+                            if (request.Headers.TryGetValue(header, out var value)) remoteReq.Headers.TryAddWithoutValidation(header, value.ToArray());
+                        }
+                        var requestRange = !headersSent ? range : rangeStart > 0 || rangeEnd.HasValue
                             ? $"bytes={rangeStart}-{(rangeEnd.HasValue ? rangeEnd.Value.ToString() : string.Empty)}"
                             : null;
                         if (requestRange != null)
@@ -528,6 +533,8 @@ namespace Jellyfin.Plugin.Federation.Services
                             if (!headersSent)
                             {
                                 response.StatusCode = (int)remoteResp.StatusCode;
+                                if (remoteResp.Content.Headers.ContentRange != null)
+                                    response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
                             }
 
                             return (int)remoteResp.StatusCode;
@@ -590,10 +597,16 @@ namespace Jellyfin.Plugin.Federation.Services
                             if (remoteResp.Content.Headers.ContentRange != null)
                             {
                                 response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
+                                rangeStart = remoteResp.Content.Headers.ContentRange.From ?? rangeStart;
+                                // A suffix request has no absolute bounds until the
+                                // source answers. Resume within that actual range.
+                                rangeEnd = remoteResp.Content.Headers.ContentRange.To ?? rangeEnd;
                             }
 
                             headersSent = true;
                         }
+
+                        if (HttpMethods.IsHead(request.Method)) return null;
 
                         await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                         while (true)

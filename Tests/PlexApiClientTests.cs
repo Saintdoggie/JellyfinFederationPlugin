@@ -19,6 +19,22 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// </summary>
 public class PlexApiClientTests
 {
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"MediaContainer\":{}}")]
+    public async Task IncompleteSection_ThrowsInsteadOfReturningAnEmptyCatalog(string body)
+    {
+        var client = BuildClient(new ScriptedSectionAndDetailHandler(body, "{}"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GenuineEmptyPlexSection_IsSuccessful()
+    {
+        var client = BuildClient(new ScriptedSectionAndDetailHandler("{\"MediaContainer\":{\"size\":0}}", "{}"));
+        Assert.Empty(await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None));
+    }
+
     private sealed class ScriptedPlexHandler : HttpMessageHandler
     {
         private readonly string? _metadataBody;

@@ -2,7 +2,7 @@
   "name": "jellyfin-federation-ui-tests",
   "private": true,
   "scripts": {
-    "test": "node --test Tests/federation-ui.test.js"
+    "test": "node --test Tests/federation-ui.test.js Tests/companion-ui.test.js"
   },
   "devDependencies": {
     "jsdom": "30.0.1"

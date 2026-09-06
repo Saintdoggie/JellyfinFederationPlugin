@@ -522,6 +522,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 await BrowseDownloadSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
                 slotHeld = true;
 
+                var currentServer = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id && s.Enabled);
+                if (currentServer == null) throw new InvalidOperationException("The selected server is no longer connected or enabled.");
+                server = currentServer;
+
                 var downloadsRoot = GetDownloadsRoot();
                 if (string.IsNullOrEmpty(downloadsRoot))
                 {

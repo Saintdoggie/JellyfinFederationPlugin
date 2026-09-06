@@ -4,9 +4,8 @@ namespace FederationCompanion;
 /// Picks how a Plex → Jellyfin connect code is built.
 /// When Companion has a Funnel/public HTTPS URL, that is the intended path
 /// for friends outside the home (Starlink, no port-forward). Plex Remote
-/// Access/Relay is included as a fallback inside the same code so a dead
-/// Funnel TLS handshake can still connect. Funnel-only when Plex has no
-/// public path; Relay-only when Funnel is not configured.
+/// Access/Relay remains the legacy direct mode only when no Funnel is configured.
+/// Scoped Funnel codes never carry a raw Plex-token fallback.
 /// </summary>
 public static class ConnectCodeFactory
 {
@@ -48,9 +47,7 @@ public static class ConnectCodeFactory
                 createClaimToken(),
                 serverName,
                 Claim: true,
-                shared,
-                FallbackUrl: hasPlex ? remotePlexUrl!.Trim().TrimEnd('/') : null,
-                FallbackToken: hasPlex ? serverAccessToken : null);
+                shared);
             error = null;
             return true;
         }

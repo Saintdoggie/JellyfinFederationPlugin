@@ -29,6 +29,16 @@ public sealed class CompanionState
     /// </summary>
     public string AdminAccessKey { get; set; } = CompanionSecrets.Create();
 
+    /// <summary>Read-only media mount credential, separate from administration.</summary>
+    public string MediaAccessKey { get; set; } = CompanionSecrets.Create();
+
+    /// <summary>Mounted media root as seen by Plex; never the .strm export directory.</summary>
+    public string? PlexMountRoot { get; set; }
+
+    public string? MediaMountRoot { get; set; }
+
+    public bool AutoStartMediaMount { get; set; }
+
     /// <summary>
     /// The signed-in Plex account's auth token, or null when not yet signed in.
     /// This is an account-level token (from the OAuth PIN flow), not a
@@ -275,6 +285,17 @@ public sealed class JellyfinImportPeer
 
     /// <summary>Auto-created (or matched) Plex TV library for this import.</summary>
     public string? PlexShowSectionKey { get; set; }
+
+    /// <summary>Null preserves legacy selections; new peers explicitly choose libraries.</summary>
+    public List<string>? SelectedLibraryIds { get; set; }
+
+    public List<PeerLibrary> AvailableLibraries { get; set; } = new();
+
+    public bool PlexRefreshPending { get; set; }
+
+    public List<MountedMediaFile> MountedFiles { get; set; } = new();
+
+    public List<ImportCatalogItem> ImportCatalog { get; set; } = new();
 
     public DateTime? LastSyncUtc { get; set; }
 

@@ -92,13 +92,12 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             // The section's own type decides whether to walk shows+episodes or
             // just movies, so it has to be looked up rather than assumed from the
-            // mapping - and a library that has since been deleted on the remote
-            // must read as a failure (preserve the cache), not as "now empty"
-            // (delete everything).
+            // mapping. Only a successful section-list fetch confirms deletion;
+            // transport or malformed-response failures preserve the cache.
             if (!IsAllowed(server, libraryId))
             {
                 // Deliberately the same "keep cached content, sync nothing new"
-                // outcome as the section-not-found case below, not an empty list:
+                // outcome as a transient fetch failure, not an empty list:
                 // an empty list would read to the caller as "this library is now
                 // empty" and delete everything already synced from it, whereas
                 // this is "not allowed to sync this library at all" - the two
@@ -127,18 +126,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            var sections = await client.GetSectionsAsync(cancellationToken).ConfigureAwait(false);
-            var section = sections.FirstOrDefault(s => string.Equals(s.Key, libraryId, StringComparison.Ordinal));
-            if (section == null)
+            try
             {
-                _logger.LogWarning(
-                    "[Federation] Plex library {LibraryId} was not found on {Server}; keeping its cached content this cycle",
-                    libraryId,
-                    server.Name);
+                var sections = await client.GetSectionsAsync(cancellationToken).ConfigureAwait(false);
+                var section = sections.FirstOrDefault(s => string.Equals(s.Key, libraryId, StringComparison.Ordinal));
+                // Only a successfully read section list can confirm deletion or
+                // revoked visibility. Failure remains null and preserves cache.
+                if (section == null) return Array.Empty<ExternalItem>();
+                return await client.GetSectionItemsAsync(section, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                _logger.LogWarning("[Federation] Plex catalog for {Server} was incomplete; keeping cached items", server.Name);
                 return null;
             }
-
-            return await client.GetSectionItemsAsync(section, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

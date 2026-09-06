@@ -806,7 +806,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         // where two servers federate from each other, would loop
                         // forever. Only pull in content the remote server actually
                         // owns.
-                        if (remoteItem.ProviderIds != null && remoteItem.ProviderIds.ContainsKey("FederationKey"))
+                        if (!PeerCatalogPage.IsOwned(remoteItem))
                         {
                             continue;
                         }

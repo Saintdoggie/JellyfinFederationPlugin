@@ -870,6 +870,13 @@ namespace Jellyfin.Plugin.Federation.Services
             CancellationToken cancellationToken,
             bool bulk = false)
         {
+            var item = await GetItemAsync(itemId, cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (item == null || !PeerCatalogPage.IsOwned(item))
+            {
+                throw new InvalidOperationException("This item is not directly owned and shared by the selected server. Refresh its catalog; forwarded items cannot be downloaded through another friend.");
+            }
+
             // Same token-gated DirectStream gateway playback already uses
             // (GetPlaybackTokenAsync) rather than a raw native /Videos/.../stream
             // URL with server.ApiKey embedded - that URL used to carry a real,

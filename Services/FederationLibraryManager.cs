@@ -749,7 +749,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public static string? GetFederationKey(BaseItem? item)
         {
-            if (item?.ProviderIds != null && item.ProviderIds.TryGetValue("FederationKey", out var key) && !string.IsNullOrEmpty(key))
+            if (item?.ProviderIds != null && TryGetProviderId(item.ProviderIds, "FederationKey", out var key) && !string.IsNullOrEmpty(key))
             {
                 return key;
             }

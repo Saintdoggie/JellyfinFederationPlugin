@@ -2581,6 +2581,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// short-lived token minted for exactly this item, not a standing credential.
         /// </summary>
         [HttpGet("DirectStream/{itemId}")]
+        [HttpHead("DirectStream/{itemId}")]
         [AllowAnonymous]
         public async Task<IActionResult> DirectStream(
             string itemId,
@@ -2789,6 +2790,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var remoteUserId = RequestingRemoteUserId();
             var items = _libraryManager.GetVirtualFolders()
+                .Where(f => !LibraryProvisioningService.IsEntirelyFederatedFolder(f, LibraryProvisioningService.GetFederationRoot()))
                 .Where(f => _peerAccess.IsLibraryVisible(caller, remoteUserId, f.ItemId))
                 .Select(f => new
                 {
@@ -2807,10 +2809,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// real, unfiltered response from this server's own loopback, then drops
         /// every item <paramref name="caller"/> is not allowed to see - excluded
         /// items, anything outside their (or their specific remote user's) shared
-        /// scope - before returning it. <c>parentId</c> is one of this server's
-        /// own library folder ids (from <see cref="GetPeerLibraries"/>), so the
-        /// whole-library scope check uses it directly rather than resolving each
-        /// item's own top parent.
+        /// scope - before returning it. Resolve each item's top library for
+        /// authorization: parentId can also be a series or season, and is not
+        /// itself proof of library membership.
         /// <para>
         /// Filtering happens AFTER the internal page is fetched, which previously
         /// broke every client's paging contract: they page until a response comes
@@ -2833,7 +2834,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] int? limit,
             [FromQuery] string? sortBy,
             [FromQuery] string? sortOrder,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            [FromQuery] bool includeMediaSources = false)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -2859,7 +2861,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 // "multiple collection Include" query-splitting warning (no
                 // QuerySplittingBehavior configured), which is a real slow-query hit
                 // repeated on every 200-item page across every mapping, every sync.
-                "Fields=BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear,DateCreated",
+                (includeMediaSources ? "Fields=MediaSources," : "Fields=") + "BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,ProductionYear,DateCreated",
                 "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
             };
             if (string.Equals(sortBy, "DateCreated", StringComparison.OrdinalIgnoreCase))
@@ -2897,7 +2899,11 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var remoteUserId = RequestingRemoteUserId();
             var pageItems = new System.Text.Json.Nodes.JsonArray();
-            var cursor = Math.Max(0, startIndex ?? 0);
+            // startIndex counts visible items, not raw rows. Starting the raw
+            // query at this offset repeats items whenever earlier rows were
+            // filtered out (and can keep imports paging forever).
+            var remainingSkip = Math.Max(0, startIndex ?? 0);
+            var cursor = 0;
             var safetyPage = 0;
 
             while (pageItems.Count < target)
@@ -2906,14 +2912,14 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 if (++safetyPage > 10_000)
                 {
-                    _logger.LogWarning("[Federation] Peer/Items hit the internal paging safety cap for {Caller} (library {Library}); returning what was collected", caller.Name, parentId ?? "(none)");
-                    break;
+                    _logger.LogWarning("[Federation] Peer/Items hit the internal paging safety cap for {Caller} (library {Library}); refusing incomplete catalog", caller.Name, parentId ?? "(none)");
+                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Catalog paging did not complete. Retry the sync." });
                 }
 
                 // Internal pages are bounded independently of the caller's limit:
                 // fewer visible items than asked for just means another internal
                 // round, not an unbounded single query against our own API.
-                var requestCount = Math.Min(target - pageItems.Count, InternalPeerItemPageSize);
+                var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, InternalPeerItemPageSize);
 
                 var pageParams = new List<string>(queryParams)
                 {
@@ -2922,7 +2928,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 };
 
                 var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
-                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items || items.Count == 0)
+                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+                {
+                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                }
+
+                if (items.Count == 0)
                 {
                     break;
                 }
@@ -2936,8 +2947,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     if (item != null
                         && Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
-                        && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid, parentId))
+                        && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
                     {
+                        if (remainingSkip > 0)
+                        {
+                            remainingSkip--;
+                            continue;
+                        }
+
                         items.Remove(item);
                         pageItems.Add(item);
                     }
@@ -3701,6 +3718,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     .Take(pageSize);
                 return Ok(page.Select(i => new
                 {
+                    sourceServerId = server.Id,
                     id = i.NativeId,
                     name = i.Dto.Name,
                     type = i.Dto.Type.ToString(),
@@ -3718,16 +3736,17 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var client = _clientFactory.GetClient(server);
-            var jfItems = await client.GetItemsAsync(
-                mediaType: requestedKind.ToString(),
-                parentId: libraryId,
-                startIndex: Math.Max(0, startIndex),
-                limit: pageSize,
-                sortBy: "DateCreated",
-                sortOrder: "Descending",
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var ownedPage = await PeerCatalogPage.ReadAsync(
+                (offset, count) => client.GetItemsAsync(
+                    mediaType: requestedKind.ToString(), parentId: libraryId,
+                    startIndex: offset, limit: count, sortBy: "DateCreated", sortOrder: "Descending",
+                    cancellationToken: cancellationToken), startIndex, pageSize, cancellationToken).ConfigureAwait(false);
+            if (ownedPage == null) return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The selected server's catalog could not be read. Retry without changing the source." });
+            Response.Headers["X-Federation-Next-Start"] = ownedPage.NextStartIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var jfItems = ownedPage.Items;
             return Ok((jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>()).Select(i => new
             {
+                sourceServerId = server.Id,
                 id = i.Id.ToString(),
                 name = i.Name,
                 type = i.Type.ToString(),
@@ -3831,13 +3850,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 // matches every descendant, not just direct children, so this
                 // reaches episodes through their season without needing to
                 // enumerate seasons here at all.
-                var jfItems = await client.GetItemsAsync(
-                    mediaType: "Episode",
-                    parentId: seriesId,
-                    sortBy: "EpisodeOrder",
-                    sortOrder: "Ascending",
-                    limit: 2000,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                var ownedPage = await PeerCatalogPage.ReadAsync(
+                    (offset, count) => client.GetItemsAsync(mediaType: "Episode", parentId: seriesId,
+                        startIndex: offset, limit: count, sortBy: "EpisodeOrder", sortOrder: "Ascending",
+                        cancellationToken: cancellationToken), 0, 20000, cancellationToken).ConfigureAwait(false);
+                if (ownedPage == null) return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The selected server's episodes could not be read completely. Retry." });
+                var jfItems = ownedPage.Items;
                 episodes = (jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>())
                     .Select(i => (i.Id.ToString(), i))
                     .ToList();
@@ -3845,6 +3863,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
             return Ok(episodes.Select(e => new
             {
+                sourceServerId = server.Id,
                 id = e.Id,
                 name = e.Dto.Name,
                 type = e.Dto.Type.ToString(),

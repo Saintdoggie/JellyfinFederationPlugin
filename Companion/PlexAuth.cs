@@ -90,7 +90,7 @@ public sealed class PlexAuth
         var resources = await response.Content.ReadFromJsonAsync<List<PlexResource>>(cancellationToken: cancellationToken).ConfigureAwait(false)
             ?? new List<PlexResource>();
 
-        return resources.Where(r => string.Equals(r.Provides, "server", StringComparison.OrdinalIgnoreCase)).ToList();
+        return resources.Where(r => r.Owned && string.Equals(r.Provides, "server", StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
     /// <summary>
@@ -109,6 +109,12 @@ public sealed class PlexAuth
                 && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
             .OrderBy(c => ConnectionRank(c));
     }
+
+    // Companion is the media relay. Its upstream is on the owner's network;
+    // sending that hop through Plex Relay adds a bandwidth-limited hairpin.
+    public static IEnumerable<PlexConnection> OrderLocalConnections(PlexResource server)
+        => OrderFederationConnections(server)
+            .OrderBy(c => c.Local && !c.Relay ? 0 : c.Relay ? 2 : 1);
 
     private static int ConnectionRank(PlexConnection connection)
     {

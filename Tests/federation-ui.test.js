@@ -351,3 +351,51 @@ test('fed-check checkboxes render with a visible native box, not the unupgraded 
   assert.match(configPage, /#federationConfigPage input\.fed-check\s*\{[^}]*appearance:\s*auto/);
   assert.match(configPage, /#federationConfigPage input\.fed-check\s*\{[^}]*opacity:\s*1/);
 });
+
+function browseHarness() {
+  const names = ['loadBrowseItems', 'resetBrowseSeriesState', 'browseSelectionItems', 'onBrowseServerChange'];
+  const source = names.map(name => {
+    const start = configPage.indexOf('                    function ' + name + '(');
+    assert.notEqual(start, -1);
+    const end = configPage.indexOf('\n                    }', start) + '\n                    }'.length;
+    return configPage.slice(start, end);
+  }).join('\n');
+  const pending = [];
+  const nodes = new Map();
+  const q = id => { if (!nodes.has(id)) nodes.set(id, { value: '', style: {}, innerHTML: '', disabled: false }); return nodes.get(id); };
+  const api = new Function('fedFetch', 'q', `
+    var browseState = {serverId:'',libraryId:'lib',mediaType:'Movie',startIndex:0,pageSize:2,items:[],seriesEpisodes:[]};
+    var browseRequestEpoch = 0, browseLoading = false, browseSelected = {};
+    function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus() {}
+    function escapeHtml(x) { return x; } function readJson(r) { return r.json(); }
+    ${source}
+    return {state:browseState, load:loadBrowseItems, changeServer:onBrowseServerChange, selected:browseSelectionItems,
+      select: function(item) {browseSelected[item.id] = item;}};
+  `)(url => new Promise(resolve => pending.push({url, resolve})), q);
+  return { api, pending, q, respond(index, items, cursor = null) { pending[index].resolve({ok:true,headers:{get:()=>cursor},json:async()=>items}); } };
+}
+
+test('Downloads ignores an old server response after the selected server changes', async () => {
+  const h = browseHarness();
+  h.api.state.serverId = 'A'; h.api.load(true);
+  h.api.state.serverId = 'B'; h.api.load(true);
+  h.respond(1, [{id:'b',name:'Owned by B',sourceServerId:'B'}], '7');
+  await settle();
+  h.respond(0, [{id:'a',name:'Owned by A',sourceServerId:'A'}]);
+  await settle();
+  assert.equal(h.api.state.items.length, 1);
+  assert.equal(h.api.state.items[0].id, 'b');
+  assert.equal(h.api.state.startIndex, 7);
+  h.api.select({id:'a',sourceServerId:'A'});
+  assert.equal(h.api.selected().length, 0);
+});
+
+test('Downloads library picker cannot be replaced by a slow previous server', async () => {
+  const h = browseHarness();
+  h.q('#fedBrowseServer').value = 'A'; h.api.changeServer();
+  h.q('#fedBrowseServer').value = 'B'; h.api.changeServer();
+  h.respond(1, [{id:'b',name:'B library'}]); await settle();
+  h.respond(0, [{id:'a',name:'A library'}]); await settle();
+  assert.match(h.q('#fedBrowseLibrary').innerHTML, /B library/);
+  assert.doesNotMatch(h.q('#fedBrowseLibrary').innerHTML, /A library/);
+});

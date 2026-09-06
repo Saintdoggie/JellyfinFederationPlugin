@@ -282,7 +282,7 @@
 
   <div class="card" id="publicUrlCard">
     <h2><span class="step-num">2</span> Your public address</h2>
-    <p class="status-line">Needed if friends are outside your house (Starlink, no port forwarding). Funnel publishes this app at <code>https://yourname.tailXXXXX.ts.net</code>. Never paste a 100.x tailnet address. Plex Remote Access/Relay is a backup inside the connect request if Funnel TLS is down.</p>
+    <p class="status-line">Needed if friends are outside your house (Starlink, no port forwarding). Funnel publishes this app at <code>https://yourname.tailXXXXX.ts.net</code>. Never paste a 100.x tailnet address. Use Test playback below to check that Funnel reaches this app and can relay video.</p>
     <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
     <div class="inline-form">
       <button id="enableFunnelBtn">Turn on Funnel</button>
@@ -308,7 +308,7 @@
       <select id="plexServerSelect" aria-label="Plex server to share"></select>
       <div class="flow-note"><span aria-hidden="true">↗</span><span>Companion uses this server's public direct HTTPS address when available, with Plex Relay as a fallback. Private LAN-only addresses are last choice because a Jellyfin friend usually cannot reach them.</span></div>
       <button class="secondary" id="refreshBtn">Refresh libraries</button>
-      <div class="status-line" id="serverSelectStatus"></div>
+      <div class="status-line" id="serverSelectStatus"></div><button class="secondary" id="diagnoseBtn">Test playback connection</button><div id="diagnoseStatus" class="status-line" role="status" aria-live="polite"></div>
     </div>
   </div>
 
@@ -343,14 +343,37 @@
 
   <div class="card" id="importCard">
     <h2><span class="step-num">1</span> Import from a Jellyfin friend</h2>
-    <p class="status-line">Paste a connect code from their Jellyfin Federation Companion tab. This app pulls what they share and adds Movies/Shows libraries to your Plex automatically.</p>
+    <p class="status-line">Paste a connect code from their Jellyfin Federation Companion tab. Choose which of their shared libraries to import. Plex needs the media mount below to analyze video/audio and play these titles; a catalog or a .strm link alone is not playable media.</p>
     <div class="flow-note"><span aria-hidden="true">🔒</span><span>The long-lived Jellyfin credential stays inside Companion. Plex receives only a stable link cryptographically bound to one exact movie or episode.</span></div>
-    <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Import into Plex</button></div>
-    <div class="status-line" id="importConnectStatus"></div>
-    <input type="text" id="plexVisibleRootInput" placeholder="Path as Plex sees the import folder (optional)">
-    <button class="secondary" id="savePlexRootBtn">Save Plex path</button>
-    <div class="status-line" id="plexRootStatus"></div>
-
+    <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Choose libraries</button></div>
+    <div id="importLibraryPicker"></div><div class="status-line" id="importConnectStatus" role="status" aria-live="polite"></div>
+    <details id="mountSetup">
+      <summary>Set up playable media in Plex</summary>
+      <p class="status-line">Do this once on the Plex machine. Keep Companion and the mount running while Plex scans or plays. For Docker, share the mounted folder with both containers.</p>
+      <p class="status-line"><strong>Plex and Companion on the same Windows computer:</strong> install <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> and <a href="https://rclone.org/downloads/" target="_blank" rel="noopener">rclone</a> once. Put rclone.exe beside Companion or on PATH. Run Companion with the same Windows account as Plex.</p>
+      <button id="startLocalMountBtn">Start media mount on this computer</button><div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
+      <p class="status-line">Companion manages this mount and restores it after restarting. Then choose Add to Plex below.</p>
+      <details><summary>Manual mount, separate machines, or Docker</summary>
+      <ol>
+        <li>Install <a href="https://rclone.org/install/" target="_blank" rel="noopener">rclone</a> and its <a href="https://rclone.org/commands/rclone_mount/" target="_blank" rel="noopener">mount requirements</a> (WinFsp on Windows, FUSE on Linux/macOS).</li>
+        <li><button id="downloadMountBtn" class="secondary">Download private mount configuration</button> Save this on the Plex machine. It grants read access to imported media; keep it private.</li>
+        <li>In that folder, run the command for your system. Use an empty folder on Linux/macOS, or an unused drive letter on Windows.
+          <code class="cmd">rclone mount companion: /path/to/empty-folder --config companion-rclone.conf --read-only --vfs-cache-mode full --vfs-cache-max-size 2G --dir-cache-time 30s</code>
+          <code class="cmd">rclone mount companion: X: --config companion-rclone.conf --read-only --vfs-cache-mode full --vfs-cache-max-size 2G --dir-cache-time 30s</code>
+        </li>
+        <li><label for="mountLocalInput">Mounted folder as Companion sees it</label><input id="mountLocalInput" type="text" placeholder="/path/to/empty-folder or X:\">
+          <label for="mountPlexInput">Same folder as Plex sees it</label><input id="mountPlexInput" type="text" placeholder="Same path, or the path inside the Plex container">
+          <button id="saveMountBtn">Check and save mount</button><div id="mountStatus" class="status-line" role="status"></div>
+        </li>
+        <li>Choose <strong>Add to Plex</strong> on your friend below. Plex will scan the video files and detect their audio/video tracks. Existing libraries made from .strm files are left in place; remove those old library entries in Plex after verifying the new Streaming library.</li>
+      </ol>
+      </details>
+      <details><summary>Companion runs on a different machine</summary>
+        <label for="playbackUrlInput">Companion address reachable from the mount machine</label><input id="playbackUrlInput" type="url" placeholder="http://companion-lan-address:port">
+        <button id="savePlaybackBtn" class="secondary">Save address</button><p class="status-line">Use your LAN address here. Download the mount configuration again after changing it.</p>
+      </details>
+    </details>
+    <details><summary>Legacy link export path mapping</summary><input type="text" id="plexVisibleRootInput" placeholder="Legacy import path"><button id="savePlexRootBtn">Save path</button><div id="plexRootStatus" class="status-line"></div></details>
     <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
   </div>
 </main>
@@ -499,9 +522,9 @@ async function loadImportPeers() {
     const errorLine = peer.lastError ? `<div class="status-line error">${escapeHtml(peer.lastError)}</div>` : '';
     const syncBadge = peer.lastError
       ? '<span class="badge warn">Needs attention</span>'
-      : (peer.lastSyncUtc ? '<span class="badge ok">Streaming ready</span>' : '<span class="badge warn">First sync pending</span>');
+      : (peer.lastSyncUtc ? '<span class="badge ok">Catalog synced</span>' : '<span class="badge warn">First sync pending</span>');
     const inPlex = peer.plexMovieSectionKey || peer.plexShowSectionKey
-      ? `<span class="badge ok">In Plex</span> movies #${escapeHtml(peer.plexMovieSectionKey || '—')} · shows #${escapeHtml(peer.plexShowSectionKey || '—')}`
+      ? '<span class="badge ok">Plex libraries attached</span>'
       : '<span class="badge warn">Not in Plex yet</span>';
 
     row.innerHTML = `
@@ -510,11 +533,13 @@ async function loadImportPeers() {
         <div class="peer-actions">
           <button class="secondary" data-action="add-plex" data-id="${escapeHtml(peer.id)}">Add to Plex</button>
           <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}">Sync now</button>
-          <button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
+          <select aria-label="Remove options" data-cleanup="${escapeHtml(peer.id)}"><option value="keep">Keep legacy links</option><option value="remove">Remove managed legacy links</option></select><button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
         </div>
       </div>
       <div class="peer-meta"><span>Last synced: ${lastSync}</span><span>${peer.lastItemCount} item(s)</span></div>
-      <div class="status-line">Plex library folder:<code class="peer-path">${escapeHtml(peer.exportPath || '')}</code></div>
+      <div class="status-line">${peer.mountedItemCount || 0} item(s) have video file information for the media mount. ${peer.lastItemCount > (peer.mountedItemCount || 0) ? 'Some items need a newer Federation plugin on the source server or a fresh sync.' : ''}</div>
+      <details><summary>Libraries to import</summary><div data-libraries="${escapeHtml(peer.id)}">${(peer.availableLibraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}" ${(peer.selectedLibraryIds == null || peer.selectedLibraryIds.includes(lib.id)) ? 'checked' : ''}> ${escapeHtml(lib.name)}</label>`).join('')}</div><button class="secondary" data-action="libraries" data-id="${escapeHtml(peer.id)}">Save selection and sync</button></details>
+      <details><summary>Source titles and import issues (${peer.importIssueCount || 0})</summary><p class="status-line">Only directly owned source items belong here. Season and episode numbers follow the source metadata.</p><input data-catalog-search type="search" placeholder="Filter by movie or show" aria-label="Filter source titles"><button class="secondary" data-action="catalog" data-id="${escapeHtml(peer.id)}">Check source catalog</button><div data-catalog-results class="status-line"></div></details>
       ${errorLine}`;
     importPeerList.appendChild(row);
   }
@@ -522,27 +547,65 @@ async function loadImportPeers() {
   importPeerList.querySelectorAll('button[data-action="sync"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      await apiFetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' });
-      await loadImportPeers();
+      try { await apiFetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' }); await loadImportPeers(); }
+      catch { importConnectStatus.textContent = 'Sync failed. Check Companion is running and retry.'; }
+      finally { btn.disabled = false; }
     });
   });
   importPeerList.querySelectorAll('button[data-action="remove"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Stop syncing this friend? Existing .strm files are kept so Plex does not lose titles unexpectedly.')) return;
-      await apiFetch(`/api/import/peers/${btn.dataset.id}`, { method: 'DELETE' });
-      loadImportPeers();
+      const cleanup = btn.closest('.peer-row').querySelector('[data-cleanup]').value === 'remove';
+      if (!confirm(cleanup ? 'Disconnect this friend and delete only Companion-managed legacy links? Their mounted media will also disappear.' : 'Disconnect this friend? Mounted media will disappear and legacy links will stop playing.')) return;
+      try { const res = await apiFetch(`/api/import/peers/${btn.dataset.id}?removeFiles=${cleanup}`, { method: 'DELETE' }); if (!res.ok) throw new Error(); await loadImportPeers(); }
+      catch { importConnectStatus.textContent = 'Could not remove the friend. Retry after the current sync finishes.'; }
+    });
+  });
+  importPeerList.querySelectorAll('button[data-action="catalog"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.peer-row'); const output = row.querySelector('[data-catalog-results]');
+      btn.disabled = true; output.textContent = 'Reading committed source catalog…';
+      try {
+        const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/catalog?search=${encodeURIComponent(row.querySelector('[data-catalog-search]').value.trim())}`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        output.replaceChildren();
+        for (const item of data.items) {
+          const line = document.createElement('p');
+          const number = item.episode == null ? '' : ` — S${item.season ?? '?'} E${item.episode}${item.episodeEnd > item.episode ? '-' + item.episodeEnd : ''}`;
+          line.textContent = `${item.series ? item.series + ': ' : ''}${item.title}${number}: ${item.issue || 'Video file available'}`;
+          output.appendChild(line);
+        }
+        if (!data.total) output.textContent = 'No matching source titles. Sync this friend to refresh the catalog.';
+        else if (data.total > data.items.length) output.append('Showing the first 200 matches. Narrow your search.');
+      } catch { output.textContent = 'Could not read the catalog. Retry after checking Companion is running.'; }
+      finally { btn.disabled = false; }
+    });
+  });
+  importPeerList.querySelectorAll('button[data-action="libraries"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const libraryIds = Array.from(btn.closest('.peer-row').querySelectorAll('[data-libraries] input:checked'), cb => cb.value);
+      if (!libraryIds.length && !confirm('Remove all imported titles for this friend from the mount and managed link export?')) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/libraries`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ libraryIds }) });
+        if (!res.ok) throw new Error();
+        await loadImportPeers();
+      } catch { importConnectStatus.textContent = 'Could not save the selection. Check the friend is online and retry.'; }
+      finally { btn.disabled = false; }
     });
   });
   importPeerList.querySelectorAll('button[data-action="add-plex"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
+      try {
       const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/add-to-plex`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         importConnectStatus.textContent = data.error || 'Could not add libraries to Plex.';
       }
       await loadImportPeers();
-      btn.disabled = false;
+      } catch { importConnectStatus.textContent = 'Could not attach Plex libraries. Check the media mount and retry.'; }
+      finally { btn.disabled = false; }
     });
   });
 }
@@ -612,18 +675,21 @@ function renderLibraries(libraries) {
     row.innerHTML = `
       <div><span class="library-title">${escapeHtml(lib.title)}</span><span class="library-type">${lib.type}</span></div>
       <label class="switch">
-        <input type="checkbox" aria-label="Share ${escapeHtml(lib.title)}" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''}>
+        <input type="checkbox" aria-label="Share ${escapeHtml(lib.title)}" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''} ${lib.imported ? 'disabled title="Imported media cannot be shared onward"' : ''}>
         <span class="slider"></span>
       </label>`;
     libraryList.appendChild(row);
   }
   libraryList.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', async () => {
-      await apiFetch('/api/libraries/toggle', {
+      const wanted = cb.checked; cb.disabled = true;
+      try { const res = await apiFetch('/api/libraries/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionKey: cb.dataset.key, shared: cb.checked })
-      });
+        body: JSON.stringify({ sectionKey: cb.dataset.key, shared: wanted })
+      }); if (!res.ok) throw new Error(); }
+      catch { cb.checked = !wanted; serverSelectStatus.textContent = 'Sharing change failed. Please retry.'; }
+      finally { cb.disabled = false; }
     });
   });
 }
@@ -850,35 +916,97 @@ copyCodeBtn.addEventListener('click', async () => {
   }
 });
 
+let previewedImportCode = null;
+importCodeInput.addEventListener('input', () => {
+  previewedImportCode = null;
+  document.getElementById('importLibraryPicker').replaceChildren();
+  importConnectBtn.textContent = 'Choose libraries';
+});
 importConnectBtn.addEventListener('click', async () => {
   const code = importCodeInput.value.trim();
-  if (!code) {
-    importConnectStatus.textContent = 'Paste a connect code first.';
-    return;
-  }
-
+  if (!code) { importConnectStatus.textContent = 'Paste a connect code first.'; return; }
+  const picker = document.getElementById('importLibraryPicker');
+  const preview = previewedImportCode !== code;
+  const libraryIds = Array.from(picker.querySelectorAll('input:checked'), cb => cb.value);
+  if (!preview && !libraryIds.length) { importConnectStatus.textContent = 'Choose at least one library.'; return; }
   importConnectBtn.disabled = true;
-  importConnectStatus.textContent = 'Connecting and running the first sync…';
+  importConnectStatus.textContent = preview ? 'Reading shared libraries…' : 'Importing selected libraries…';
   try {
-    const res = await apiFetch('/api/import/connect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code })
+    const res = await apiFetch(preview ? '/api/import/preview' : '/api/import/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, libraryIds })
     });
     const data = await res.json();
-    if (res.ok) {
-      importCodeInput.value = '';
-      importConnectStatus.textContent = data.plexMovieSectionKey || data.plexShowSectionKey
-        ? `Imported ${data.name} and added it to Plex.`
-        : `Imported ${data.name}. Click Add to Plex if the libraries are not visible yet.`;
-      await loadImportPeers();
+    if (!res.ok) { importConnectStatus.textContent = data.error || 'Could not connect.'; return; }
+    if (preview) {
+      picker.innerHTML = (data.libraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}"> ${escapeHtml(lib.name)}</label>`).join('');
+      previewedImportCode = code;
+      importConnectBtn.textContent = 'Import selected libraries';
+      importConnectStatus.textContent = data.libraries.length ? 'Select only the libraries you want. New libraries will not be added without your selection.' : 'Your friend has not shared any libraries yet.';
     } else {
-      importConnectStatus.textContent = data.error || 'Could not connect.';
+      importCodeInput.value = ''; previewedImportCode = null; picker.replaceChildren();
+      importConnectBtn.textContent = 'Choose libraries';
+      importConnectStatus.textContent = data.lastError || `Catalog imported from ${data.name}. Set up the media mount, then choose Add to Plex.`;
+      await loadImportPeers();
     }
-  } catch (e) {
-    importConnectStatus.textContent = 'Error: ' + e.message;
-  }
-  importConnectBtn.disabled = false;
+  } catch { importConnectStatus.textContent = 'Could not connect. Check Companion and the friend are online, then retry.'; }
+  finally { importConnectBtn.disabled = false; }
+});
+
+async function loadMountStatus() {
+  try {
+    const res = await apiFetch('/api/media-mount/status');
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    document.getElementById('localMountStatus').textContent = data.ready
+      ? 'Media mount is readable.' + (data.autoStartMediaMount ? ' Companion will restore it after a restart.' : ' Keep your mount process running.')
+      : data.message;
+    document.getElementById('mountLocalInput').value = data.mediaMountRoot || '';
+    document.getElementById('mountPlexInput').value = data.plexMountRoot || '';
+  } catch { document.getElementById('localMountStatus').textContent = 'Could not check mount status. Retry when Companion is reachable.'; }
+}
+
+document.getElementById('startLocalMountBtn').addEventListener('click', async event => {
+  const output = document.getElementById('localMountStatus'); event.target.disabled = true;
+  output.textContent = 'Starting the media mount…';
+  try {
+    const res = await apiFetch('/api/media-mount/start', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    const data = await res.json(); output.textContent = data.message;
+  } catch { output.textContent = 'Could not start the mount. Check Companion is running, then retry.'; }
+  finally { event.target.disabled = false; }
+});
+
+document.getElementById('diagnoseBtn').addEventListener('click', async event => {
+  const output = document.getElementById('diagnoseStatus');
+  event.target.disabled = true; output.textContent = 'Testing source video bytes and the Funnel media path…';
+  try {
+    const res = await apiFetch('/api/diagnostics', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    const checks = await res.json();
+    output.textContent = checks.map(c => `${c.success ? 'Passed' : 'Needs attention'} — ${c.stage}: ${c.message}`).join(' ');
+  } catch { output.textContent = 'The check could not finish. Check Companion is running and retry.'; }
+  finally { event.target.disabled = false; }
+});
+document.getElementById('downloadMountBtn').addEventListener('click', async () => {
+  const res = await apiFetch('/api/media-mount/config');
+  if (!res.ok) { document.getElementById('mountStatus').textContent = 'Unlock owner access and retry.'; return; }
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a'); link.href = url; link.download = 'companion-rclone.conf'; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+document.getElementById('saveMountBtn').addEventListener('click', async event => {
+  const output = document.getElementById('mountStatus'); event.target.disabled = true;
+  try {
+    const localPath = document.getElementById('mountLocalInput').value.trim();
+    const plexPath = document.getElementById('mountPlexInput').value.trim() || localPath;
+    const res = await apiFetch('/api/media-mount', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ localPath, plexPath }) });
+    const data = await res.json(); output.textContent = res.ok ? 'Mount is readable. Choose Add to Plex below.' : data.error;
+  } catch { output.textContent = 'Could not check the mount. Check Companion is running.'; }
+  finally { event.target.disabled = false; }
+});
+document.getElementById('savePlaybackBtn').addEventListener('click', async () => {
+  const res = await apiFetch('/api/playback-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: document.getElementById('playbackUrlInput').value.trim() }) });
+  document.getElementById('mountStatus').textContent = res.ok ? 'Address saved. Download the mount configuration again.' : 'Enter a valid Companion address.';
 });
 
 async function unlockOwner() {
@@ -896,7 +1024,7 @@ async function unlockOwner() {
     document.body.classList.remove('owner-locked');
     accessCard.classList.add('hidden');
     unlockStatus.textContent = '';
-    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus()]);
+    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus()]);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {

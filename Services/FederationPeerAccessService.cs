@@ -97,6 +97,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, string? libraryFolderId)
         {
+            // Apply this before every allow-all shortcut. Catalogs and playback
+            // token issuance share this gate; a friend may only receive our
+            // own media, even when remote items live inside a local library.
+            var sourceItem = _libraryManager.GetItemById(itemId);
+            if (sourceItem == null || FederationLibraryManager.GetFederationKey(sourceItem) != null)
+            {
+                return false;
+            }
+
             if (IsItemOrAncestorListed(itemId, Plugin.Instance?.Configuration?.GloballyExcludedItemIds))
             {
                 return false;

@@ -5,7 +5,7 @@ namespace FederationCompanion.Tests;
 public class ConnectCodeFactoryTests
 {
     [Fact]
-    public void TryGenerate_UsesFunnelClaim_WhenPublicUrlIsSet_AndKeepsPlexAsFallback()
+    public void TryGenerate_UsesFunnelClaim_WhenPublicUrlIsSet_WithoutExposingPlexCredential()
     {
         var libraries = new[]
         {
@@ -29,8 +29,8 @@ public class ConnectCodeFactoryTests
         Assert.True(code.Claim);
         Assert.Equal("https://freakbob.tail4e0b6f.ts.net", code.Url);
         Assert.Equal("claim-token", code.Token);
-        Assert.Equal("https://relay.plex.direct:443", code.FallbackUrl);
-        Assert.Equal("plex-token", code.FallbackToken);
+        Assert.Null(code.FallbackUrl);
+        Assert.Null(code.FallbackToken);
         Assert.Equal("1", Assert.Single(code.Libraries).SectionKey);
     }
 

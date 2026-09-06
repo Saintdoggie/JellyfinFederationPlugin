@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace FederationCompanion;
 
 /// <summary>
@@ -24,17 +26,62 @@ public static class StrmExporter
     /// The change count matters to Plex: replacing an expired URL without
     /// adding/removing an item still requires a section refresh.
     /// </summary>
-    public static ExportResult Export(string basePath, IEnumerable<(PeerItem Item, string Url)> entries)
+    public static ExportResult Export(string basePath, IEnumerable<(PeerItem Item, string Url)> entries, string? peerId = null)
     {
+        basePath = Path.GetFullPath(basePath);
         Directory.CreateDirectory(basePath);
+        EnsureNoLinks(basePath, basePath);
+        var manifestPath = Path.Combine(basePath, ".companion-files.json");
+        EnsureNoLinks(basePath, manifestPath);
+        var owned = File.Exists(manifestPath)
+            ? JsonSerializer.Deserialize<List<string>>(File.ReadAllText(manifestPath)) ?? throw new IOException("Invalid export manifest")
+            : new List<string>();
+        // Adopt old exports only when their signed relay URL belongs to this
+        // exact peer. Never sweep arbitrary .strm files from a selected folder.
+        if (!File.Exists(manifestPath) && peerId != null)
+        {
+            foreach (var path in Directory.EnumerateFiles(basePath, "*.strm", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint }))
+            {
+                if (Uri.TryCreate(File.ReadAllText(path).Trim(), UriKind.Absolute, out var uri)
+                    && uri.AbsolutePath.StartsWith("/stream/" + peerId + "/", StringComparison.Ordinal))
+                    owned.Add(Path.GetRelativePath(basePath, path));
+            }
+        }
+        var plan = entries.GroupBy(e => e.Item.Id).Select(g => g.First()).Select(entry =>
+        {
+            var relative = entry.Item.Type == "Movie" ? BuildMoviePath(entry.Item) : BuildEpisodePath(entry.Item);
+            return (entry.Item, entry.Url, Relative: relative);
+        }).Where(e => e.Relative != null).ToList();
+        var collisions = plan.GroupBy(e => e.Relative!, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        plan = plan.Select(e => (e.Item, e.Url, Relative: collisions.Contains(e.Relative!)
+            ? Path.Combine(Path.GetDirectoryName(e.Relative!)!, Path.GetFileNameWithoutExtension(e.Relative) + " [" + SafeFileName(e.Item.Id) + "].strm")
+            : e.Relative)).ToList();
+        var ownedPaths = owned.Select(relative => SafePath(basePath, relative)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        plan = plan.Select(e =>
+        {
+            var relative = e.Relative!;
+            var full = SafePath(basePath, relative);
+            if (File.Exists(full) && !ownedPaths.Contains(full))
+            {
+                relative = Path.Combine(Path.GetDirectoryName(relative)!, Path.GetFileNameWithoutExtension(relative) + " [" + SafeFileName(e.Item.Id) + "].strm");
+                full = SafePath(basePath, relative);
+                if (File.Exists(full) && !ownedPaths.Contains(full))
+                    throw new IOException("An unmanaged file occupies this item's export path. Move it before retrying.");
+            }
+            return (e.Item, e.Url, Relative: (string?)relative);
+        }).ToList();
+        foreach (var relative in owned.Concat(plan.Select(e => e.Relative!)))
+            EnsureNoLinks(basePath, SafePath(basePath, relative));
+        // Record ownership before writing so a retry can clean interrupted runs.
+        AtomicWrite(manifestPath, JsonSerializer.Serialize(owned.Concat(plan.Select(e => e.Relative!)).Distinct().ToList()));
 
         var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var count = 0;
         var changed = 0;
 
-        foreach (var (item, url) in entries)
+        foreach (var (item, url, relativePath) in plan)
         {
-            var relativePath = item.Type == "Movie" ? BuildMoviePath(item) : BuildEpisodePath(item);
             if (relativePath == null)
             {
                 continue;
@@ -56,11 +103,12 @@ public static class StrmExporter
             count++;
         }
 
-        changed += RemoveStale(basePath, written);
+        changed += RemoveStale(basePath, written, owned);
+        AtomicWrite(manifestPath, JsonSerializer.Serialize(written.Select(p => Path.GetRelativePath(basePath, p)).ToList()));
         return new ExportResult(count, changed);
     }
 
-    private static string? BuildMoviePath(PeerItem item)
+    internal static string? BuildMoviePath(PeerItem item)
     {
         var name = SafeFileName(item.Name);
         if (string.IsNullOrEmpty(name))
@@ -89,7 +137,7 @@ public static class StrmExporter
         return name;
     }
 
-    private static string? BuildEpisodePath(PeerItem item)
+    internal static string? BuildEpisodePath(PeerItem item)
     {
         if (item.IndexNumber is not int episodeNumber)
         {
@@ -99,10 +147,12 @@ public static class StrmExporter
         var seasonNumber = item.ParentIndexNumber ?? 0;
         var series = SafeFileName(string.IsNullOrWhiteSpace(item.SeriesName) ? "Unknown Show" : item.SeriesName);
         var seasonFolder = $"Season {seasonNumber:D2}";
+        var episodeRange = $"S{seasonNumber:D2}E{episodeNumber:D2}";
+        if (item.IndexNumberEnd is int end && end > episodeNumber) episodeRange += $"-E{end:D2}";
         var episodeTitle = SafeFileName(item.Name);
         var fileBase = string.IsNullOrEmpty(episodeTitle)
-            ? $"{series} - S{seasonNumber:D2}E{episodeNumber:D2}"
-            : $"{series} - S{seasonNumber:D2}E{episodeNumber:D2} - {episodeTitle}";
+            ? $"{series} - {episodeRange}"
+            : $"{series} - {episodeRange} - {episodeTitle}";
 
         return Path.Combine(ShowsFolderName, series, seasonFolder, fileBase + ".strm");
     }
@@ -118,26 +168,13 @@ public static class StrmExporter
             }
         }
 
-        File.WriteAllText(path, url + "\n");
+        AtomicWrite(path, url + "\n");
         return true;
     }
 
-    private static int RemoveStale(string basePath, HashSet<string> written)
+    private static int RemoveStale(string basePath, HashSet<string> written, List<string> owned)
     {
-        List<string> existing;
-        try
-        {
-            existing = Directory.EnumerateFiles(basePath, "*.strm", SearchOption.AllDirectories).ToList();
-        }
-        catch (IOException)
-        {
-            return 0;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return 0;
-        }
-
+        var existing = owned.Select(relative => SafePath(basePath, relative)).ToList();
         var removedDirs = new HashSet<string>();
         var removed = 0;
         foreach (var path in existing)
@@ -147,22 +184,10 @@ public static class StrmExporter
                 continue;
             }
 
-            try
-            {
-                File.Delete(path);
-                removed++;
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    removedDirs.Add(dir);
-                }
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            File.Delete(path);
+            removed++;
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) removedDirs.Add(dir);
         }
 
         foreach (var dir in removedDirs)
@@ -188,19 +213,50 @@ public static class StrmExporter
         }
     }
 
+    private static string SafePath(string root, string relative)
+    {
+        var full = Path.GetFullPath(Path.Combine(root, relative));
+        if (Path.IsPathRooted(relative) || !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new IOException("Export path is outside its managed folder.");
+        return full;
+    }
+
+    private static void EnsureNoLinks(string root, string path)
+    {
+        for (var current = path; current != null; current = Path.GetDirectoryName(current))
+        {
+            if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("Export paths cannot contain symbolic links.");
+            if (current == root) break;
+        }
+    }
+
+    private static void AtomicWrite(string path, string content)
+    {
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try { File.WriteAllText(temp, content); File.Move(temp, path, overwrite: true); }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
     private static string SafeFileName(string? name)
     {
         var trimmed = string.IsNullOrWhiteSpace(name) ? string.Empty : name.Trim();
         var chars = trimmed.ToCharArray();
         for (var i = 0; i < chars.Length; i++)
         {
-            if (Array.IndexOf(Path.GetInvalidFileNameChars(), chars[i]) >= 0)
+            if (char.IsControl(chars[i]) || "<>:\"/\\|?*".Contains(chars[i]) || Array.IndexOf(Path.GetInvalidFileNameChars(), chars[i]) >= 0)
             {
                 chars[i] = '_';
             }
         }
 
-        return new string(chars);
+        var safe = new string(chars).TrimEnd(' ', '.');
+        if (string.IsNullOrEmpty(safe)) return "Untitled";
+        var stem = safe.Split('.')[0].ToUpperInvariant();
+        if (stem is "CON" or "PRN" or "AUX" or "NUL"
+            || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal)) && stem[3] is >= '1' and <= '9'))
+            safe = "_" + safe;
+        return safe;
     }
 }
 
