@@ -12,7 +12,9 @@ namespace FederationCompanion;
 public sealed class RcloneBootstrapper
 {
     public const string Version = "1.75.1";
-    internal const int MaxArchiveBytes = 80 * 1024 * 1024;
+    // rclone.exe in v1.75.1 is ~81 MiB uncompressed; the zip is ~30 MiB.
+    internal const int MaxArchiveBytes = 100 * 1024 * 1024;
+    internal const int MaxBinaryBytes = 128 * 1024 * 1024;
 
     internal static readonly IReadOnlyDictionary<string, string> ArchiveSha256 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -214,7 +216,7 @@ public sealed class RcloneBootstrapper
         }
 
         var entry = zip.GetEntry(entryName);
-        if (entry == null || entry.Length <= 0 || entry.Length > MaxArchiveBytes)
+        if (entry == null || entry.Length <= 0 || entry.Length > MaxBinaryBytes)
         {
             return null;
         }
@@ -224,7 +226,7 @@ public sealed class RcloneBootstrapper
         await using (var output = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
         await using (var source = entry.Open())
         {
-            await CopyLimitedAsync(source, output, MaxArchiveBytes, cancellationToken).ConfigureAwait(false);
+            await CopyLimitedAsync(source, output, MaxBinaryBytes, cancellationToken).ConfigureAwait(false);
         }
 
         if (File.Exists(destination))
