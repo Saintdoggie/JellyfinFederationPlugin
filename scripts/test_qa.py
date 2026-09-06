@@ -1,9 +1,11 @@
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from qa import check_push_target, fingerprint, reusable
+from qa import ROOT, check_push_target, fingerprint, reusable
+from bundle_rclone import ARCHIVES, VERSION
 
 
 class PushGateTests(unittest.TestCase):
@@ -37,6 +39,16 @@ class PushGateTests(unittest.TestCase):
             self.assertEqual(final, fingerprint(root))
             (root / 'tracked').unlink()
             self.assertNotEqual(final, fingerprint(root))
+
+    def test_rclone_pin_matches_companion_bootstrapper(self):
+        source = (ROOT / 'Companion/RcloneBootstrapper.cs').read_text()
+        version = re.search(r'public const string Version = "([^"]+)"', source)
+        self.assertEqual(VERSION, version.group(1))
+        hashes = dict(re.findall(r'\["([^"]+)"\] = "([0-9a-f]{64})"', source))
+        for os_arch, _binary, sha in ARCHIVES.values():
+            self.assertEqual(sha, hashes[os_arch])
+        workflow = (ROOT / '.github/workflows/companion-release.yml').read_text()
+        self.assertIn('scripts/bundle_rclone.py', workflow)
 
 
 if __name__ == '__main__':

@@ -37,6 +37,7 @@ jobs:
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
             -o dist/${{ matrix.rid }}
           rm -f dist/${{ matrix.rid }}/*.pdb
+          python3 scripts/bundle_rclone.py ${{ matrix.rid }} dist/${{ matrix.rid }}
 
       - name: Zip
         run: |

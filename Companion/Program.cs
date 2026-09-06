@@ -32,6 +32,7 @@ builder.Services.AddSingleton(sp => new PlexFederationRelay(
     new HttpClient { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
 builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
+builder.Services.AddSingleton(sp => new RcloneBootstrapper(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }));
 
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
 builder.Services.AddSingleton<LocalMediaMountService>();
@@ -934,7 +935,11 @@ app.MapMethods("/media/{**path}", new[] { "GET", "HEAD", "OPTIONS", "PROPFIND" }
 app.MapGet("/api/media-mount/status", (CompanionState s, LocalMediaMountService mount) => Results.Ok(new
 {
     ready = MediaMount.IsMounted(s.MediaMountRoot, s.ClientIdentifier), s.MediaMountRoot, s.PlexMountRoot,
-    s.AutoStartMediaMount, mount.Message, windows = OperatingSystem.IsWindows()
+    s.AutoStartMediaMount, mount.Message, windows = OperatingSystem.IsWindows(),
+    driverReady = FilesystemDriver.IsAvailable(),
+    driverName = FilesystemDriver.Name,
+    driverHelpUrl = FilesystemDriver.HelpUrl,
+    helperReady = mount.HelperReady
 }));
 
 app.MapPost("/api/media-mount/start", async (LocalMediaMountService mount, CancellationToken ct) =>

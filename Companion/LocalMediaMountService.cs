@@ -5,11 +5,12 @@ using Microsoft.Extensions.Hosting;
 namespace FederationCompanion;
 
 /// <summary>Owns only the rclone process started by Companion, never an existing user mount.</summary>
-public sealed class LocalMediaMountService(CompanionState state, IHostApplicationLifetime lifetime) : BackgroundService
+public sealed class LocalMediaMountService(CompanionState state, IHostApplicationLifetime lifetime, RcloneBootstrapper rclone) : BackgroundService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
-    public string Message { get; private set; } = "Install rclone and the filesystem driver, then start the local media mount.";
+    public string Message { get; private set; } = "Start the media mount so Plex can play your friend's videos.";
+    public bool HelperReady => rclone.FindExisting() != null;
 
     public async Task<bool> StartMountAsync(CancellationToken ct)
     {
@@ -27,6 +28,16 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
                 return false;
             }
             StopOwnedProcess();
+            if (rclone.FindExisting() == null)
+            {
+                Message = "Downloading the media helper (one-time)…";
+            }
+            var (ready, executable, helperMessage) = await rclone.EnsureAsync(ct).ConfigureAwait(false);
+            if (!ready || string.IsNullOrWhiteSpace(executable))
+            {
+                Message = helperMessage;
+                return false;
+            }
             var root = Path.Combine(AppContext.BaseDirectory, "plex-media");
             if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any())
             {
@@ -44,14 +55,19 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
             await File.WriteAllTextAsync(config,
                 $"[companion]\ntype = webdav\nurl = http://127.0.0.1:{port}/media/\nvendor = other\nbearer_token = {state.MediaAccessKey}\n", ct);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(config, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            var executable = OperatingSystem.IsWindows() ? "rclone.exe" : "rclone";
-            var bundled = Path.Combine(AppContext.BaseDirectory, executable);
-            var start = CreateStartInfo(File.Exists(bundled) ? bundled : executable, config, root);
+            var start = CreateStartInfo(executable, config, root);
             _process = Process.Start(start) ?? throw new InvalidOperationException("Mount process did not start.");
             // Drain without logging: rclone errors can contain item URLs. The
             // owner receives a stable repair message instead of raw process text.
+            var errors = new System.Text.StringBuilder();
             _process.OutputDataReceived += (_, _) => { };
-            _process.ErrorDataReceived += (_, _) => { };
+            _process.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data) && errors.Length < 4000)
+                {
+                    errors.AppendLine(e.Data);
+                }
+            };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
             for (var attempt = 0; attempt < 40; attempt++)
@@ -68,16 +84,15 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
                 }
                 await Task.Delay(250, ct);
             }
+            var output = errors.ToString();
             StopOwnedProcess();
-            Message = OperatingSystem.IsWindows()
-                ? "Mount did not start. Install WinFsp, restart Companion, and retry. Run Companion under the same Windows account as Plex."
-                : "Mount did not start. Check FUSE is installed and available to this user, then retry.";
+            Message = FilesystemDriver.ClassifyFailure(output);
             return false;
         }
         catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             StopOwnedProcess();
-            Message = "Could not start rclone. Install it on PATH or place its executable beside Companion, then retry.";
+            Message = FilesystemDriver.ClassifyFailure(ex.Message);
             return false;
         }
         catch (OperationCanceledException) { StopOwnedProcess(); throw; }

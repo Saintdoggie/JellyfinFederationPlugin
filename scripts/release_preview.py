@@ -22,7 +22,7 @@ checks passed. Windows/WinFsp, the friend's actual Funnel and real Plex clients 
 need testing. This is not the stable rolling release and does not update the plugin
 catalog. Existing assembly versions are retained for this manually installed preview.
 
-Windows: install WinFsp and place rclone.exe beside Companion or on PATH. Extract into
+Windows: install WinFsp once. Companion downloads rclone itself (and preview zips may already include it). Extract into
 a separate test folder, run under the same Windows account as Plex, choose libraries,
 start the media mount and Add to Plex. The source Jellyfin also needs the preview DLL.
 
