@@ -2,9 +2,11 @@
 
 Completed work is removed from this file. Git history and GitHub releases keep the validation record.
 
-## Active Plex repair — handoff updated 2026-09-06
+## Active Plex repair — shipped as 0.0.133
 
-Implementation is on `fix/plex-federation-reliability`; the stable release remains gated. The user authorized pushing and publishing a preview. User explicitly requested continued work and keeping TODO current. See `Companion/TODO.md` for implementation details, exact validation, artifacts, and remaining release gates.
+The Plex ownership/playback repair from `fix/plex-federation-reliability` is
+published in 0.0.133. See `Companion/TODO.md` for implementation details and
+remaining live Windows/Funnel/client checks.
 
 - [x] Fix onward sharing: Helluva Boss was third-party federated media, not the user's own. Do not renumber it. Peer catalog, metadata and playback authorization now exclude imported content; old playback tokens are rechecked. Companion and Downloads also filter older peers' forwarded items.
 - [x] Fix Downloads source isolation: reject delayed responses from a previously selected server; bind selected rows and queued requests to their source. Recheck server state and item ownership when a queued download starts.
@@ -14,7 +16,7 @@ Implementation is on `fix/plex-federation-reliability`; the stable release remai
 - [x] Live disposable Jellyfin/Companion/rclone/Plex checks passed: real H.264/AAC metadata and Plex-served media decode, HEAD, normal/suffix byte ranges, ownership revocation including old tokens, removal/reselect, source outage, and managed mount restart. Browser checks passed at 390/1440/1920px.
 - [ ] Validate the friend's actual **Windows + WinFsp + Plex + Tailscale Funnel** setup, real Plex client playback/transcoding, and the complete two-server ordinary-user/admin release matrix. Linux tests and Windows compilation do not substitute for this.
 - [ ] Review very large catalogs, multi-part video source selection and alternate episode-order matching before claiming universal playback support.
-- [ ] Publish only after the live release gates pass. No stable version bump, production deployment or stable rolling release is included. Preview publication is handled separately by `scripts/release-preview.sh`. Local preview artifacts exist under ignored `artifacts/plex-repair-preview/`.
+- [x] Published as 0.0.133. Remaining live Windows/Funnel/client checks are post-release validation, not a catalog gate. Preview artifacts stay under ignored `artifacts/plex-repair-preview/`.
 
 ## Repeatable checks and preview pushes
 
