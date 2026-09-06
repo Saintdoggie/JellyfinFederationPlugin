@@ -12,14 +12,12 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
 - The plugin also supports Plex as an external catalog source.
 - `Companion/` is a separate ASP.NET Core app for Plex owners. It handles Plex
   sign-in, library consent, one-time connect codes, peers, and Jellyfin-to-Plex
-  `.strm` imports without requiring Jellyfin on the Plex owner's machine.
+  imports through a read-only media mount (legacy `.strm` exports are not
+  native Plex playback).
 - Main plugin target: .NET 9, Jellyfin 10.11.6.
 - Source branch: `master`; GitHub remote: `Saintdoggie/JellyfinFederationPlugin`.
-- Current published baseline is version 0.0.126, release commit `83f6000`.
-  Its GitHub-downloaded archive matched manifest MD5
-  `6e4ea7420b4afe1378db9244d9bfc68c`. Read the later validation entries in
-  `TODO.md`: 0.0.126 passed build/unit gates but did not repeat the live
-  two-server/browser matrix completed for 0.0.123.
+- Current published baseline is version 0.0.133. GitHub releases and
+  `manifest.json` are the catalog of record; `TODO.md` tracks remaining work.
 
 ## Read these files by task
 

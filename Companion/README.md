@@ -2,7 +2,8 @@
 
 Companion connects a Plex owner with private Jellyfin Federation friends. Each owner chooses what to share. **A friend's federated imports must never be shared onward as if they were local media.**
 
-The current Plex repair is still under validation; see [TODO.md](TODO.md) for release status. A source checkout containing these changes does not mean they are in the published installers yet.
+Plugin 0.0.133 and the matching Companion rolling build include the Plex
+mount repair. See [TODO.md](TODO.md) for remaining Windows/Funnel/client checks.
 
 ## Plex → Jellyfin
 
@@ -19,7 +20,7 @@ Switching Plex servers resets library sharing choices because different servers 
 
 Plex may match the title and poster of an imported `.strm` file while showing **Video: None / Audio: None**. That file contains a text URL, not video bytes Plex can analyze. The repair uses a read-only media mount so Plex reads the real media, including video/audio tracks and byte ranges.
 
-1. Update the source Jellyfin Federation plugin and Companion to builds containing this repair.
+1. Update the source Jellyfin Federation plugin to 0.0.133 (or later) and Companion from the rolling `companion-latest` installer.
 2. On the Plex computer, install [WinFsp](https://winfsp.dev/rel/) and [rclone](https://rclone.org/downloads/). Put `rclone.exe` beside Companion or on PATH. Use the same Windows account for Plex and Companion; elevated and ordinary user sessions can see different mounts.
 3. Paste a code from the source Jellyfin's Companion tab. Click **Choose libraries**, select the libraries to import, and confirm the selection. New source libraries will not automatically be selected for newly connected peers.
 4. Open **Set up playable media in Plex** and click **Start media mount on this computer**. Companion creates its own `plex-media` mount and restores it after restarting. Keep Companion running during Plex scans and playback.

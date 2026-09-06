@@ -27,11 +27,11 @@ Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
   scoped HMAC capability and are revalidated against current server, cache, source,
   and access-rule state at stream time.
 
-## Plex repair in progress (2026-09-06, unreleased)
+## Plex repair remaining after 0.0.133
 
 - Legacy Companion `.strm` exports do not give native Plex playable video/audio.
-  The working-tree repair exposes real media through a read-only rclone mount;
-  see `Companion/README.md`. Existing legacy Plex libraries are not automatically
+  0.0.133 exposes real media through a read-only rclone mount; see
+  `Companion/README.md`. Existing legacy Plex libraries are not automatically
   deleted during migration.
 - Windows requires rclone and WinFsp. Linux managed mounts and Plex media decode
   have passed disposable live tests; Windows host permissions, real Plex clients,

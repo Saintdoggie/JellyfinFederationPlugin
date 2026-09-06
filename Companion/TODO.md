@@ -1,6 +1,6 @@
 # Federation Companion — active Plex repair handoff
 
-Updated 2026-09-06. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`. Changes are on `fix/plex-federation-reliability`; the user authorized a pushed preview while stable publication remains gated. Read root `AGENTS.md` and `TODO.md` before continuing. User requested continued work and current handoff notes. No subagents were used.
+Updated 2026-09-06. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`. The Plex ownership/playback repair is published in plugin 0.0.133. Read root `AGENTS.md` and `TODO.md` before continuing.
 
 ## User clarification and root causes
 
@@ -41,7 +41,7 @@ The peer authorization service lacked a FederationKey exclusion before allow-all
 - [ ] Alternate Plex/TMDB/TVDB episode matching. Files preserve source numbering; the importer cannot repair incorrect source metadata or guarantee matching with a different Plex episode-order setting.
 - [ ] Different-user Linux FUSE permissions, macOS mounting, and Docker mount propagation across restarts. Fixture PMS used container root to match the mount owner, so it does not prove normal Plex-user permissions.
 - [ ] Legacy direct Plex-token connections have broader credential boundaries. Reconnect through the scoped Companion Funnel flow; bytes already downloaded/cached cannot be remotely erased.
-- [ ] Repeat changed behavior tests and complete live release gates before publishing. No stable release/version bump/production deployment is included; preview publication is separately authorized.
+- [x] Published as plugin 0.0.133. Repeat live Windows/Funnel/client checks after install; they remain post-release validation.
 
 ## Local preview artifacts
 
