@@ -321,6 +321,12 @@ test('Downloads server dropdown refreshes on every config load, not just once', 
   assert.match(configScript[0], /loadBrowseServers\(\);/);
 });
 
+test('Plex friends can be invited into pools; Companion receivers cannot', () => {
+  assert.match(configPage, /Plex Companion \/ Federation v/);
+  assert.match(configPage, /if \(server\.Kind !== 2\) \{\s*html \+= renderFriendPoolsBlock\(server\);/);
+  assert.match(configPage, /\/api\/pools\/invite/);
+});
+
 test('library picker merges friend sections into existing Movies and Shows', () => {
   assert.match(configPage, /Checked libraries are added into your existing Movies and Shows folders by type/);
   assert.equal(configPage.includes('Each library you check appears on this server as a virtual library'), false);

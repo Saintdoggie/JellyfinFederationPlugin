@@ -11,6 +11,12 @@ function page(fetch) {
 }
 const json = data => ({ ok: true, json: async () => data });
 
+test('Companion shows pool invites so Plex owners can join a Federation pool', () => {
+  assert.match(html, /id="poolInviteList"/);
+  assert.match(html, /\/api\/pools\/invites/);
+  assert.match(html, /companionPluginVersion/);
+});
+
 test('Companion previews libraries unchecked and imports only explicit selections', async () => {
   const requests = [];
   const dom = page(async (url, opts) => { requests.push([url, opts]);

@@ -18,6 +18,17 @@ public static class CompanionVersion
         @"from ([0-9a-f]{7,40})",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Same 0.0.x series as the Jellyfin plugin this Companion was shipped
+    /// with, so pool invites and Test-connection can treat a Plex friend as a
+    /// compatible Federation peer instead of "plugin version unknown".
+    /// </summary>
+    public static string FederationPluginVersion()
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version;
+        return version == null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
+
     public static string Rid()
     {
         if (OperatingSystem.IsWindows())

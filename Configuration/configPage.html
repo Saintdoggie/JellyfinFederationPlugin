@@ -1927,13 +1927,14 @@
                                 if (advOpen) {
 
                                     // Per-user access rules are pushed to a friend's own
-                                    // server through this plugin's Peer/* endpoints, and
-                                    // pools are a federation-token concept - neither has
-                                    // an equivalent on a Plex source (see GetRemoteUsers'
-                                    // own "Per-user permissions only apply to Jellyfin
-                                    // friends" message server-side).
+                                    // Jellyfin plugin. Plex has no equivalent user list.
+                                    // Pools do work for Plex Companion: it advertises a
+                                    // Federation plugin version and accepts invites at
+                                    // /api/pools/invite.
                                     if (server.Kind !== 1) {
                                         html += renderRemoteUserAccessBlock(server);
+                                    }
+                                    if (server.Kind !== 2) {
                                         html += renderFriendPoolsBlock(server);
                                     }
 
@@ -2351,9 +2352,14 @@
                             if (res.success) {
                                 setServerDot(i, 'ok');
                                 var pluginVer = res.serverInfo.federationPluginVersion;
+                                var isPlex = (currentConfig.RemoteServers[i] || {}).Kind === 1;
                                 var pluginVerText = pluginVer
-                                    ? ' &middot; Federation plugin v' + escapeHtml(pluginVer)
-                                    : ' &middot; Federation plugin not detected (old version, or not installed)';
+                                    ? (isPlex
+                                        ? ' &middot; Plex Companion / Federation v' + escapeHtml(pluginVer)
+                                        : ' &middot; Federation plugin v' + escapeHtml(pluginVer))
+                                    : (isPlex
+                                        ? ' &middot; Plex Companion did not report a version (update Companion)'
+                                        : ' &middot; Federation plugin not detected (old version, or not installed)');
                                 setServerStatus(i, '<strong>Connected</strong>: ' + escapeHtml(res.serverInfo.name) + ' v' + escapeHtml(res.serverInfo.version) + pluginVerText, 'ok');
                             } else {
                                 setServerDot(i, 'err');

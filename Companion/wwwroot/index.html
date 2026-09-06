@@ -331,6 +331,11 @@
     <div class="code-actions hidden" id="connectCodeActions"><button class="secondary" id="copyCodeBtn">Copy code</button></div>
     <div class="status-line" id="codeStatus"></div>
 
+    <h2 style="margin-top:24px">Pool invites</h2>
+    <p class="status-line">Jellyfin friends can invite this Plex Companion into a Federation pool. Companion reports plugin version <span id="companionPluginVersion">…</span> so those invites are not rejected as an unknown plugin.</p>
+    <div id="poolInviteList"><p class="empty-state">No pool invites yet.</p></div>
+    <div class="status-line" id="poolInviteStatus"></div>
+
     <h2 style="margin-top:24px">Connected friends</h2>
     <div id="peerList"><p class="empty-state">No one connected yet.</p></div>
   </div>
@@ -480,6 +485,9 @@ async function loadStatus() {
     renderLibraries(data.libraries || []);
     loadPlexServers(data.serverMachineIdentifier);
     loadPeers();
+    loadPoolInvites();
+    const verEl = document.getElementById('companionPluginVersion');
+    if (verEl && data.federationPluginVersion) verEl.textContent = data.federationPluginVersion;
   } else {
     notConnected.classList.remove('hidden');
     connected.classList.add('hidden');
@@ -608,6 +616,47 @@ async function loadImportPeers() {
       finally { btn.disabled = false; }
     });
   });
+}
+
+async function loadPoolInvites() {
+  const list = document.getElementById('poolInviteList');
+  const status = document.getElementById('poolInviteStatus');
+  if (!list) return;
+  try {
+    const res = await apiFetch('/api/pools/invites');
+    const invites = await res.json();
+    if (!Array.isArray(invites) || invites.length === 0) {
+      list.innerHTML = '<p class="empty-state">No pool invites yet.</p>';
+      return;
+    }
+    list.innerHTML = invites.map(inv => `<div class="peer-row share-peer">
+      <div><strong>${escapeHtml(inv.poolName || 'Pool')}</strong>
+        <div class="status-line">${escapeHtml(inv.ownerName || 'A Jellyfin friend')} invited this Companion${inv.federationPluginVersion ? ' · plugin v' + escapeHtml(inv.federationPluginVersion) : ''} · ${inv.memberCount || 0} member${inv.memberCount === 1 ? '' : 's'}</div>
+      </div>
+      <div class="peer-download-controls">
+        <button data-pool-accept="${escapeHtml(inv.inviteId)}">Accept</button>
+        <button class="danger" data-pool-reject="${escapeHtml(inv.inviteId)}">Reject</button>
+      </div>
+    </div>`).join('');
+    list.querySelectorAll('[data-pool-accept]').forEach(btn => btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      status.textContent = 'Joining…';
+      try {
+        const res = await apiFetch('/api/pools/invites/' + btn.getAttribute('data-pool-accept') + '/accept', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.message || data.error || (res.ok ? 'Joined the pool.' : 'Could not join.');
+      } catch { status.textContent = 'Could not reach Companion to accept.'; }
+      await loadPoolInvites();
+    }));
+    list.querySelectorAll('[data-pool-reject]').forEach(btn => btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try { await apiFetch('/api/pools/invites/' + btn.getAttribute('data-pool-reject') + '/reject', { method: 'POST' }); }
+      catch {}
+      await loadPoolInvites();
+    }));
+  } catch {
+    list.innerHTML = '<p class="empty-state">Could not load pool invites.</p>';
+  }
 }
 
 async function loadPeers() {

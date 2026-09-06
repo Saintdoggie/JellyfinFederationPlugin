@@ -562,6 +562,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string Url { get; set; } = string.Empty;
 
         /// <summary>
+        /// Companion Funnel/public root for a <see cref="ServerKind.Plex"/>
+        /// friend (e.g. <c>https://name.ts.net</c>), distinct from
+        /// <see cref="Url"/> which may be the <c>/plex/{peer}</c> media path.
+        /// Pool invites and Companion version checks use this.
+        /// </summary>
+        public string CompanionUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Last Federation / Plex Companion version reported by this friend.
+        /// Empty when never probed. Plex Companion reports the same
+        /// <c>0.0.x</c> series as this plugin.
+        /// </summary>
+        public string FederationPluginVersion { get; set; } = string.Empty;
+
+        /// <summary>
         /// Gets or sets the federation token this friend minted for this server to
         /// use calling them - sent as the <c>X-Federation-Token</c> header on every
         /// server-to-server call to their <c>/Plugins/Federation/...</c> endpoints
