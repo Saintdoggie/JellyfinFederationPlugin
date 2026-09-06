@@ -16,7 +16,7 @@ import urllib.request
 
 
 def smoke(repo, dotnet, published_app, tools):
-    work = Path(tempfile.mkdtemp(prefix='plex-live-', dir=repo / 'artifacts/qa'))
+    work = Path(tempfile.mkdtemp(prefix='federation-plex-qa-'))
     os.chmod(work, 0o700)
     engine = tools['engine']
     suffix = secrets.token_hex(5)
@@ -251,4 +251,4 @@ def smoke(repo, dotnet, published_app, tools):
         for name in reversed(created):
             subprocess.run([engine, 'rm', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Retain private fixture data for debugging; never recursively delete through a mount.
-        print('LIVE: disposable servers/process stopped; private fixture data retained under artifacts/qa.', flush=True)
+        print('LIVE: disposable servers/process stopped; private fixture data retained in the system temporary directory.', flush=True)
