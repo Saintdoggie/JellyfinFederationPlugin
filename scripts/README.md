@@ -1,5 +1,41 @@
 # Repeatable validation and pushes
 
+## Jellyfin-to-Jellyfin startup benchmark
+
+After a Release build, run `python3 scripts/jellyfin_startup.py --samples 20`.
+This creates two disposable Jellyfin servers on a unique container network and
+loopback host ports, imports synthetic H.264/AAC media, and compares local and
+federated metadata/first-byte/range timings. Four simultaneous requests also verify
+the returned bytes against the source. It requires ffmpeg and a locally cached
+Jellyfin image; `--image` selects that image without pulling it.
+
+The JSON report defaults to `artifacts/qa/jellyfin-startup.json` and contains no
+credentials or private URLs. Private fixture state remains in a mode-0700 system
+temporary directory. Only generated containers/network are removed on completion.
+This measures HTTP startup on a local container network using an admin identity;
+it does **not** measure first rendered frame, client codec negotiation, transcoding,
+WAN conditions or watch-party synchronization. The first measured request is not
+guaranteed cache-cold after library scanning. See `STREAMING_REDESIGN.md` for the
+remaining benchmark matrix.
+
+For a real Chromium video-frame callback measurement, also pass
+`--playwright-module /absolute/path/to/node_modules/playwright` and optionally
+`--chromium /absolute/path/to/chrome`. `--browser-samples` defaults to 3 per path.
+This uses a plain video element and the native static stream route; it does not
+substitute for jellyfin-web negotiation or transcode testing. Browser credentials
+are passed to the subprocess through stdin; never publish private fixture logs.
+
+Add `--transcode` to compare actual local and federated software conversion to
+H.264/AAC MP4. The probe verifies a smaller decoded frame, rather than trusting a
+successful HTTP response. `--codec hevc10 --height 1080 --transcode-width 1280`
+generates a 10-bit HEVC MKV and tests conversion with a 1280-pixel width ceiling;
+Jellyfin may choose smaller output for the specified bitrate. HEVC cases skip the
+raw browser probe and measure converted playback. Use a separate `--output` path
+for each case to retain comparable reports. This is forced conversion of synthetic
+SDR media, not HDR tone mapping or automatic device-profile negotiation.
+
+## Build and release gates
+
 From the repository root:
 
 ```sh

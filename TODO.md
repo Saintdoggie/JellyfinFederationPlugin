@@ -1,5 +1,30 @@
 # Jellyfin Federation — remaining work
 
+## Top priority — major streaming redesign and federated watch parties
+
+**Scope clarification: Jellyfin-to-Jellyfin only for this phase.** User reports
+30–60+ seconds to start, depending on quality/codec. Detailed architecture map,
+phased implementation, proposed performance targets, access rules and rollout:
+[STREAMING_REDESIGN.md](STREAMING_REDESIGN.md).
+
+- [x] Map current playback path and write the phased redesign/party plan.
+- [x] Initial code: coordinate duplicate metadata requests, isolate cache by viewer/address/credential, add metadata and first-body-write debug timing. Four focused regressions pass; not yet a measured end-to-end speed improvement.
+- [x] Initial two-Jellyfin HTTP benchmark passed (20 samples/path plus four concurrent requests, exact Range bytes). Local-network H.264/AAC first-byte p95 26.4 ms; does not reproduce the reported codec/WAN delay. See the plan for full evidence and limits.
+- [x] Optional Chromium first-frame probe passed (three new browser instances per path): federated 58.1–67.7 ms on synthetic static MP4 over the local container network. This is not jellyfin-web codec negotiation.
+- [x] Added/ran verified H.264 conversion and 1080p HEVC Main 10 SDR conversion benchmarks. Federated HEVC first frames 1.171–1.200 s versus local 1.170–1.206 s (three probes each); does not reproduce the reported WAN/client delay. HTTP/Range integrity passed, including concurrent reads. Added total source-preparation timing; 47 focused regressions passed.
+- [x] Final implementation gate passed: clean builds, 425 plugin + 60 Companion + 29 JavaScript tests twice, plus Python gate tests. All disposable benchmark containers/networks were cleaned up. Final documentation records the result; push automation must validate the final committed snapshot.
+- [ ] Next: controlled-WAN/cold-cache cases, actual jellyfin-web negotiation, offline-alternate timing, and a regression for importing while source media analysis is incomplete (fresh fixture reproduced a native stream extension error). Clean builds and 425 plugin + 60 Companion + 29 JS tests previously passed twice. Rerun the gate on frozen files before pushing. Current branch: `work/jellyfin-streaming-redesign`; no redesign release yet.
+
+User request (2026-09-06): federated content takes too long to start. Treat this as a substantial architectural redesign, potentially rebuilding the streaming subsystem, rather than a small performance patch. Support watching federated media with multiple friends at the same time. This is delicate work: preserve working behavior while replacing the parts that measurements and design review show need rebuilding.
+
+- [ ] Map the complete playback architecture and propose the replacement design: source selection, metadata, authorization, transport/relay, Plex media mounts, buffering, transcoding, session lifecycle and watch-party synchronization. Document migration, compatibility and rollback before implementation; unrelated plugin systems are outside this rebuild unless a concrete dependency requires changes.
+- [ ] Measure Jellyfin-to-Jellyfin startup before changing the architecture: metadata lookup, authorization/token requests, source connection, first byte, client buffering and transcoding. Include controlled WAN conditions and the actual connection when available; Plex/Companion redesign is deferred.
+- [ ] Remove measured startup bottlenecks and unnecessary requests/hops while preserving current sharing checks, credential isolation, Range/seek behavior, cancellation and source fallback. Record comparable before/after timings; do not assume larger buffers improve startup.
+- [ ] Design and implement watch parties for federated content: assess Jellyfin SyncPlay integration first, then define supported clients and same-server versus cross-server participation, invitations, synchronized play/pause/seek, late joining and reconnects.
+- [ ] Require each participant to have their own authorized access to the source media. Party membership must never grant access to another friend's imported library, expose credentials or bypass revoked sharing.
+- [ ] Test concurrent viewers, slow connections, buffering, seeking, disconnects, source outages and access revocation with bounded resource use. Keep independent playback reliable when party members stall or leave.
+- [ ] Keep this checklist updated with measured findings, implementation progress, validation evidence and remaining limitations so another model can take over safely. Do not publish streaming architecture changes before focused regressions and the applicable live playback matrix pass.
+
 Completed work is removed from this file. Git history and GitHub releases keep the validation record.
 
 ## Fast federated playback start (target: 4-30 s from click)

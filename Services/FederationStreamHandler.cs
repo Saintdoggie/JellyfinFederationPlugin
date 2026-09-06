@@ -681,6 +681,8 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var rangeStart = 0L;
             byte[]? buffer = null;
+            var startupTimer = Stopwatch.StartNew();
+            var firstByteWritten = false;
             try
             {
                 var range = request.Headers["Range"].FirstOrDefault();
@@ -874,6 +876,11 @@ namespace Jellyfin.Plugin.Federation.Services
                             // response, so the extra flush was just per-chunk syscall
                             // overhead on the hot path of every byte relayed.
                             await response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                            if (!firstByteWritten)
+                            {
+                                firstByteWritten = true;
+                                _logger.LogDebug("[Federation] Relay first body write completed in {ElapsedMs} ms", startupTimer.Elapsed.TotalMilliseconds);
+                            }
                             rangeStart += read;
                             consecutiveFailures = 0;
 
