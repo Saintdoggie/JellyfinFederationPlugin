@@ -69,18 +69,19 @@ public static class ImportSyncCoordinator
 
         try
         {
+            if (!state.ImportPeers.Contains(peer)) return;
+
             var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, cancellationToken).ConfigureAwait(false);
+            peer.AvailableLibraries = libraries;
             var entries = new List<(PeerItem Item, string Url)>();
-            var playbackBaseUrl = string.IsNullOrWhiteSpace(peer.PlaybackBaseUrl)
-                ? state.PublicUrl
-                : peer.PlaybackBaseUrl;
+            var playbackBaseUrl = FirstNonEmpty(state.PlaybackBaseUrl, peer.PlaybackBaseUrl, state.PublicUrl);
 
             if (string.IsNullOrWhiteSpace(playbackBaseUrl))
             {
                 throw new InvalidOperationException("No Companion playback address is configured. Reconnect this friend after setting the public address.");
             }
 
-            foreach (var library in libraries)
+            foreach (var library in libraries.Where(l => peer.SelectedLibraryIds == null || peer.SelectedLibraryIds.Contains(l.Id, StringComparer.OrdinalIgnoreCase)))
             {
                 var mediaTypes = MediaTypesFor(library.CollectionType);
                 foreach (var mediaType in mediaTypes)
@@ -97,7 +98,15 @@ public static class ImportSyncCoordinator
             var exportPath = string.IsNullOrWhiteSpace(peer.ExportPath)
                 ? Path.Combine(AppContext.BaseDirectory, "imported", SafeFolderName(peer.Name))
                 : peer.ExportPath;
-            var export = StrmExporter.Export(exportPath, entries);
+            if (!state.ImportPeers.Contains(peer)) return;
+            var mountedCatalog = MediaMount.BuildCatalog(entries.Select(e => e.Item));
+            var export = StrmExporter.Export(exportPath, entries, peer.Id);
+            peer.PlexRefreshPending |= !peer.MountedFiles.OrderBy(f => f.Path, StringComparer.Ordinal)
+                .SequenceEqual(mountedCatalog.Files.OrderBy(f => f.Path, StringComparer.Ordinal));
+            peer.ExportPath = exportPath;
+            peer.MountedFiles = mountedCatalog.Files;
+            peer.ImportCatalog = mountedCatalog.Items;
+            peer.PlexRefreshPending |= export.ChangedFileCount > 0;
 
             peer.LastSyncUtc = DateTime.UtcNow;
             peer.LastItemCount = export.ItemCount;
@@ -110,8 +119,9 @@ public static class ImportSyncCoordinator
                 .Where(k => !string.IsNullOrEmpty(k))
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
-            if (export.ChangedFileCount > 0 && sectionKeys.Count > 0 && state.ServerBaseUrl != null && state.ServerAccessToken != null)
+            if (peer.PlexRefreshPending && sectionKeys.Count > 0 && state.ServerBaseUrl != null && state.ServerAccessToken != null)
             {
+                peer.PlexRefreshPending = false;
                 foreach (var key in sectionKeys)
                 {
                     try
@@ -120,7 +130,10 @@ public static class ImportSyncCoordinator
                     }
                     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                     {
-                        logger.LogWarning(ex, "[Companion] Synced {Peer} but could not trigger a Plex library refresh", peer.Name);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        peer.PlexRefreshPending = true;
+                        peer.LastError = "Catalog saved. Plex could not refresh its libraries; the next sync will retry.";
+                        logger.LogWarning("[Companion] Plex refresh pending for {Peer}", peer.Name);
                     }
                 }
             }
@@ -131,8 +144,8 @@ public static class ImportSyncCoordinator
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            peer.LastError = ex.Message;
-            logger.LogWarning(ex, "[Companion] Sync failed for {Peer}", peer.Name);
+            peer.LastError = "Sync did not complete. Check the friend’s address, sharing permission, and export folder, then retry. The last successful catalog has been kept.";
+            logger.LogWarning("[Companion] Sync failed for {Peer}: {ErrorType}", peer.Name, ex.GetType().Name);
         }
         finally
         {
@@ -145,6 +158,19 @@ public static class ImportSyncCoordinator
                 syncLock.Release();
             }
         }
+    }
+
+    public static async Task RemoveAsync(CompanionState state, JellyfinImportPeer peer, bool removeFiles, CancellationToken cancellationToken)
+    {
+        var syncLock = SyncLocks.GetOrAdd(peer.Id, _ => new SemaphoreSlim(1, 1));
+        await syncLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (removeFiles) StrmExporter.Export(peer.ExportPath, Array.Empty<(PeerItem, string)>(), peer.Id);
+            state.ImportPeers.Remove(peer);
+            await state.SaveAsync().ConfigureAwait(false);
+        }
+        finally { syncLock.Release(); }
     }
 
     private static IEnumerable<string> MediaTypesFor(string? collectionType)

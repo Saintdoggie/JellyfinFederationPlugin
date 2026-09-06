@@ -17,17 +17,21 @@ public static class PlexImportManager
             throw new InvalidOperationException("Connect this app to Plex first, then add the friend to Plex.");
         }
 
-        var plexRoot = PlexVisibleRoot(state, peer);
-        Directory.CreateDirectory(Path.Combine(peer.ExportPath, "Movies"));
-        Directory.CreateDirectory(Path.Combine(peer.ExportPath, "Shows"));
+        if (string.IsNullOrWhiteSpace(state.PlexMountRoot) || !MediaMount.IsMounted(state.MediaMountRoot, state.ClientIdentifier))
+            throw new InvalidOperationException("Set up the media mount first. Plex cannot analyze or play a text .strm file.");
+        if (peer.MountedFiles.Count == 0)
+            throw new InvalidOperationException("No playable media was found. Update the friend's Federation plugin and sync again.");
+        var plexRoot = state.PlexMountRoot.TrimEnd('/', '\\').Replace('\\', '/') + "/" + peer.Id;
 
-        var movieName = $"{peer.Name} Movies";
-        var showName = $"{peer.Name} Shows";
+        var movieName = $"{peer.Name} Movies (Streaming)";
+        var showName = $"{peer.Name} Shows (Streaming)";
         var moviePath = $"{plexRoot}/Movies";
         var showPath = $"{plexRoot}/Shows";
 
+        if (peer.MountedFiles.Any(f => f.Path.StartsWith("Movies/", StringComparison.Ordinal)))
         peer.PlexMovieSectionKey = await plex.EnsureSectionAsync(
             state.ServerBaseUrl, state.ServerAccessToken, movieName, "movie", moviePath, cancellationToken).ConfigureAwait(false);
+        if (peer.MountedFiles.Any(f => f.Path.StartsWith("Shows/", StringComparison.Ordinal)))
         peer.PlexShowSectionKey = await plex.EnsureSectionAsync(
             state.ServerBaseUrl, state.ServerAccessToken, showName, "show", showPath, cancellationToken).ConfigureAwait(false);
         peer.PlexSectionKey ??= peer.PlexMovieSectionKey;

@@ -17,23 +17,19 @@ public sealed class PlexClient
         _http = http;
     }
 
-    public async Task<string?> GetServerNameAsync(string baseUrl, string token, CancellationToken cancellationToken)
+    public async Task<string?> GetMachineIdentifierAsync(string baseUrl, string token, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}/identity");
         request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
-
         using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
+        response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<PlexIdentityResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
-        return string.IsNullOrWhiteSpace(body?.MediaContainer?.MachineIdentifier)
-            ? "Plex Media Server"
-            : "Plex Media Server";
+        return body?.MediaContainer?.MachineIdentifier;
     }
+
+    public Task<string?> GetServerNameAsync(string baseUrl, string token, CancellationToken cancellationToken)
+        => Task.FromResult<string?>("Plex Media Server");
 
     public async Task<List<CompanionLibrary>> GetSectionsAsync(string baseUrl, string token, CancellationToken cancellationToken)
     {
@@ -77,8 +73,7 @@ public sealed class PlexClient
         var existing = (await GetSectionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(s =>
                 string.Equals(s.Type, type, StringComparison.OrdinalIgnoreCase)
-                && (s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase))
-                    || string.Equals(s.Title, name, StringComparison.OrdinalIgnoreCase)));
+                && s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase)));
         if (existing != null)
         {
             return existing.SectionKey;
@@ -95,8 +90,7 @@ public sealed class PlexClient
         var created = (await GetSectionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(s =>
                 string.Equals(s.Type, type, StringComparison.OrdinalIgnoreCase)
-                && (s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase))
-                    || string.Equals(s.Title, name, StringComparison.OrdinalIgnoreCase)));
+                && s.Locations.Any(p => string.Equals(NormalizePlexPath(p), normalized, StringComparison.OrdinalIgnoreCase)));
 
         return created?.SectionKey
             ?? throw new InvalidOperationException("Plex accepted the new library but it did not show up in the section list.");

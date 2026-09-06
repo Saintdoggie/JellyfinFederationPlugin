@@ -86,6 +86,33 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
         Assert.False(service.IsBulkDownloadAllowedForRemoteUser(friend, "blocked-downloader"));
     }
 
+    [Theory]
+    [InlineData(true, "FederationKey")]
+    [InlineData(false, "FederationKey")]
+    [InlineData(true, "federationkey")]
+    public void FederatedItem_IsNeverVisibleThroughPeerAuthorization(bool shareAll, string providerKey)
+    {
+        var item = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid(), ProviderIds = new() { [providerKey] = "another-friend/item" } };
+        SetItems(item);
+        var friend = new RemoteServer { ShareAllLibraries = shareAll, SharedLibraryFolderIds = new() { "local-library" } };
+        var service = new FederationPeerAccessService(_library.Object);
+        Assert.False(service.IsItemVisible(friend, null, item.Id, "local-library"));
+        Assert.False(service.IsItemVisible(friend, null, Guid.NewGuid(), "local-library"));
+        item.ProviderIds.Clear();
+        Assert.True(service.IsItemVisible(friend, null, item.Id, "local-library"));
+    }
+
+    [Fact]
+    public void OutgoingLibraries_HideOnlyWhollyFederatedFolders()
+    {
+        var folder = new MediaBrowser.Model.Entities.VirtualFolderInfo { Locations = new[] { "/data/federation/friend" } };
+        Assert.True(LibraryProvisioningService.IsEntirelyFederatedFolder(folder, "/data/federation"));
+        folder.Locations = new[] { "/data/federation/friend", "/data/movies" };
+        Assert.False(LibraryProvisioningService.IsEntirelyFederatedFolder(folder, "/data/federation"));
+        folder.Locations = new[] { "/data/federation-other" };
+        Assert.False(LibraryProvisioningService.IsEntirelyFederatedFolder(folder, "/data/federation"));
+    }
+
     private void SetItems(params BaseItem[] items)
     {
         foreach (var item in items)

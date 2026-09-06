@@ -44,7 +44,7 @@ public sealed class JellyfinImportService
         response.EnsureSuccessStatusCode();
 
         var body = await response.Content.ReadFromJsonAsync<PeerLibrariesResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
-        return body?.Items ?? new List<PeerLibrary>();
+        return body?.Items ?? throw new JsonException("The friend returned an invalid library list. Existing imports were kept.");
     }
 
     /// <summary>
@@ -66,7 +66,7 @@ public sealed class JellyfinImportService
 
             var url = $"{peerUrl.TrimEnd('/')}/Plugins/Federation/Peer/Items"
                 + $"?parentId={Uri.EscapeDataString(parentId)}&mediaType={Uri.EscapeDataString(mediaType)}"
-                + $"&startIndex={startIndex}&limit={pageSize}";
+                + $"&startIndex={startIndex}&limit={pageSize}&includeMediaSources=true";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation(TokenHeader, token);
 
@@ -74,10 +74,18 @@ public sealed class JellyfinImportService
             response.EnsureSuccessStatusCode();
 
             var body = await response.Content.ReadFromJsonAsync<PeerItemsResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
-            var page = body?.Items ?? new List<PeerItem>();
+            var page = body?.Items ?? throw new JsonException("The friend returned an incomplete catalog. Existing imports were kept.");
+            if (page.Any(item => !Guid.TryParse(item.Id, out _)))
+            {
+                throw new JsonException("The friend returned invalid item identifiers. Existing imports were kept.");
+            }
+
+            var rawCount = page.Count;
+            // Defense for older peers that accidentally shared federated items.
+            page.RemoveAll(item => item.ProviderIds?.Keys.Any(key => string.Equals(key, "FederationKey", StringComparison.OrdinalIgnoreCase)) == true);
             items.AddRange(page);
 
-            if (page.Count < pageSize)
+            if (rawCount < pageSize)
             {
                 break;
             }
@@ -257,6 +265,15 @@ public sealed class PeerLibrary
 
 public sealed class PeerItem
 {
+    [JsonPropertyName("MediaSources")]
+    public List<PeerMediaSource>? MediaSources { get; set; }
+
+    [JsonPropertyName("DateCreated")]
+    public DateTime? DateCreated { get; set; }
+
+    [JsonPropertyName("ProviderIds")]
+    public Dictionary<string, string>? ProviderIds { get; set; }
+
     [JsonPropertyName("Id")]
     public string Id { get; set; } = string.Empty;
 
@@ -272,9 +289,18 @@ public sealed class PeerItem
     [JsonPropertyName("IndexNumber")]
     public int? IndexNumber { get; set; }
 
+    [JsonPropertyName("IndexNumberEnd")]
+    public int? IndexNumberEnd { get; set; }
+
     [JsonPropertyName("ParentIndexNumber")]
     public int? ParentIndexNumber { get; set; }
 
     [JsonPropertyName("SeriesName")]
     public string? SeriesName { get; set; }
+}
+
+public sealed class PeerMediaSource
+{
+    public string? Container { get; set; }
+    public long? Size { get; set; }
 }

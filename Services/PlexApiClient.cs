@@ -105,7 +105,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var doc = await GetJsonAsync("/library/sections", cancellationToken).ConfigureAwait(false);
             if (doc == null)
             {
-                return Array.Empty<PlexSection>();
+                throw new InvalidOperationException("Plex libraries could not be read. Cached items have been kept.");
             }
 
             using (doc)
@@ -114,7 +114,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     || !container.TryGetProperty("Directory", out var dirs)
                     || dirs.ValueKind != JsonValueKind.Array)
                 {
-                    return Array.Empty<PlexSection>();
+                    if (container.ValueKind == JsonValueKind.Object && container.TryGetProperty("size", out var size) && size.TryGetInt32(out var count) && count == 0) return Array.Empty<PlexSection>();
+                    throw new InvalidOperationException("Plex returned an invalid library list. Cached items have been kept.");
                 }
 
                 var sections = new List<PlexSection>();
@@ -172,17 +173,30 @@ namespace Jellyfin.Plugin.Federation.Services
                 var doc = await GetJsonAsync(path, cancellationToken).ConfigureAwait(false);
                 if (doc == null)
                 {
-                    break;
+                    throw new InvalidOperationException("Plex catalog could not be read completely. Cached items have been kept.");
                 }
 
                 var pageCount = 0;
                 using (doc)
                 {
-                    if (!doc.RootElement.TryGetProperty("MediaContainer", out var container)
-                        || !container.TryGetProperty("Metadata", out var metadata)
-                        || metadata.ValueKind != JsonValueKind.Array)
+                    if (!doc.RootElement.TryGetProperty("MediaContainer", out var container))
                     {
-                        break;
+                        throw new InvalidOperationException("Plex returned an invalid catalog. Cached items have been kept.");
+                    }
+
+                    if (!container.TryGetProperty("Metadata", out var metadata))
+                    {
+                        if (container.TryGetProperty("size", out var size) && size.TryGetInt32(out var count) && count == 0)
+                        {
+                            break;
+                        }
+
+                        throw new InvalidOperationException("Plex returned an incomplete catalog. Cached items have been kept.");
+                    }
+
+                    if (metadata.ValueKind != JsonValueKind.Array)
+                    {
+                        throw new InvalidOperationException("Plex returned an invalid catalog. Cached items have been kept.");
                     }
 
                     foreach (var m in metadata.EnumerateArray())

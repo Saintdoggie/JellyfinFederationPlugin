@@ -92,7 +92,7 @@ public sealed class PlexFederationRelayTests
         var revoked = NewContext();
         await relay.RelayAsync(peer, "library/parts/77/file.mkv", revoked.Request, revoked.Response, CancellationToken.None);
         Assert.Equal(StatusCodes.Status403Forbidden, revoked.Response.StatusCode);
-        Assert.Equal(2, handler.CallCount);
+        Assert.Equal(3, handler.CallCount);
     }
 
     [Fact]
@@ -107,6 +107,28 @@ public sealed class PlexFederationRelayTests
 
         Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
         Assert.Equal(0, context.Response.Body.Length);
+    }
+
+    [Fact]
+    public async Task PreviouslyApprovedPart_IsRevokedWhenPlexMovesItemToPrivateLibrary()
+    {
+        var section = "1";
+        var handler = new RecordingHandler(request =>
+        {
+            Assert.Equal("/library/metadata/100", request.RequestUri!.AbsolutePath);
+            return Json(JsonSerializer.Serialize(new { MediaContainer = new { Metadata = new[] {
+                new { ratingKey = "100", librarySectionID = section, Media = new[] { new { Part = new[] { new { key = "/library/parts/77/file.mkv" } } } } }
+            } } }));
+        });
+        var (relay, peer, _) = CreateRelay(handler);
+        var metadata = NewContext();
+        await relay.RelayAsync(peer, "library/metadata/100", metadata.Request, metadata.Response, CancellationToken.None);
+        Assert.Equal(200, metadata.Response.StatusCode);
+        section = "2";
+        var stream = NewContext();
+        await relay.RelayAsync(peer, "library/parts/77/file.mkv", stream.Request, stream.Response, CancellationToken.None);
+        Assert.Equal(403, stream.Response.StatusCode);
+        Assert.Equal(2, handler.CallCount);
     }
 
     private static (PlexFederationRelay Relay, CompanionPeer Peer, CompanionState State) CreateRelay(HttpMessageHandler handler)

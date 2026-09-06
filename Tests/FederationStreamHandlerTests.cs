@@ -158,6 +158,28 @@ public class FederationStreamHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task SuffixRange_ResumesWithinTheSourcesAbsoluteBounds()
+    {
+        var calls = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            calls++;
+            Assert.Equal(calls == 1 ? "bytes=-20" : "bytes=90-99", req.Headers.Range!.ToString());
+            var resp = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = calls == 1 ? new PartialThenFailContent(new byte[10], 20) : new ByteArrayContent(new byte[10])
+            };
+            resp.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(calls == 1 ? 80 : 90, 99, 100);
+            return resp;
+        }));
+        var (request, response, body) = MakeContext("bytes=-20");
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+        Assert.Equal(2, calls);
+        Assert.Equal(20, response.ContentLength);
+        Assert.Equal(20, body.Length);
+    }
+
+    [Fact]
     public async Task InitialZeroStartRequest_ContentLengthMatchesFullBody()
     {
         // The one case the bug happened to get right by coincidence (0 + length ==

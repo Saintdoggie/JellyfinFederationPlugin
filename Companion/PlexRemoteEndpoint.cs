@@ -67,6 +67,8 @@ public static class PlexRemoteEndpoint
     public static bool IsPublicHttpsUrl(string? url)
         => Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var uri)
             && uri.Scheme == Uri.UriSchemeHttps
+            && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment)
+            && !url!.Any(char.IsControl)
             && !IsLanOrPrivateHost(url);
 
     /// <summary>

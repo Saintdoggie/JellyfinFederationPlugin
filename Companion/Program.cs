@@ -6,7 +6,11 @@ using FederationCompanion;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "wwwroot")) ? AppContext.BaseDirectory : null
+});
 
 // A single shared HttpClient for both Plex.tv (account/sign-in) and the
 // user's own Plex Media Server - this app makes a handful of requests per
@@ -21,6 +25,7 @@ builder.Services.AddSingleton(sp => new JellyfinImportService(
 // either reads or mutates the same single-user state, and concurrent writes
 // already serialize through CompanionState's own save lock.
 var state = await CompanionState.LoadAsync();
+await state.SaveAsync();
 builder.Services.AddSingleton(state);
 builder.Services.AddSingleton(sp => new PlexFederationRelay(
     state,
@@ -29,6 +34,8 @@ builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClien
 builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
 
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
+builder.Services.AddSingleton<LocalMediaMountService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalMediaMountService>());
 
 var app = builder.Build();
 
@@ -103,12 +110,29 @@ app.MapGet("/api/status", (CompanionState s) => Results.Ok(new
     serverConnected = !string.IsNullOrEmpty(s.ServerBaseUrl),
     serverName = s.ServerName,
     serverMachineIdentifier = s.ServerMachineIdentifier,
-    libraries = s.Libraries,
+    libraries = s.Libraries.Select(l => new { l.SectionKey, l.Title, l.Type, shared = CompanionLibraryPolicy.IsShared(s, l), imported = CompanionLibraryPolicy.IsImported(s, l) }),
     peerCount = s.Peers.Count,
     importPeerCount = s.ImportPeers.Count,
     plexVisibleImportRoot = s.PlexVisibleImportRoot,
     playbackBaseUrl = s.PlaybackBaseUrl
 }));
+
+app.MapPost("/api/diagnostics", async (CompanionState s, HttpClient http, CancellationToken ct) =>
+{
+    var library = s.Libraries.FirstOrDefault(l => CompanionLibraryPolicy.IsShared(s, l));
+    if (library == null || s.ServerBaseUrl == null || s.ServerAccessToken == null)
+        return Results.Ok(new[] { new ConnectionCheck("Plex", false, "Connect Plex and select a local library to share first.") });
+    var checks = new List<ConnectionCheck>
+    {
+        await ConnectionDiagnostics.ProbeAsync(http, s.ServerBaseUrl, s.ServerAccessToken, library.SectionKey, library.Type, "Local Plex media", ct)
+    };
+    var peer = s.Peers.FirstOrDefault();
+    if (peer != null && PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl))
+        checks.Add(await ConnectionDiagnostics.ProbeAsync(http, s.PublicUrl + "/plex/" + peer.Id, peer.AccessToken, library.SectionKey, library.Type, "Public media path", ct));
+    else
+        checks.Add(new("Public media path", false, "Connect a Jellyfin friend through Funnel to test the complete public media path."));
+    return Results.Ok(checks);
+});
 
 app.MapPost("/api/plex/start-signin", async (HttpRequest req, PlexAuth auth, CancellationToken ct) =>
 {
@@ -146,6 +170,7 @@ app.MapGet("/api/plex/poll-signin", async (PlexAuth auth, PlexClient plex, Compa
         var (connection, libraries) = await ResolvePlexConnectionAsync(server, plex, ct).ConfigureAwait(false);
         if (connection != null)
         {
+            CompanionLibraryPolicy.PrepareServerChange(s, server.MachineIdentifier);
             s.ServerBaseUrl = connection.Uri;
             s.ServerAccessToken = server.AccessToken;
             s.ServerName = server.Name;
@@ -197,6 +222,7 @@ app.MapPost("/api/plex/servers/select", async (SelectPlexServerRequest body, Ple
         return Results.BadRequest(new { error = "Plex reported this server, but none of its connection addresses answered." });
     }
 
+    CompanionLibraryPolicy.PrepareServerChange(s, server.MachineIdentifier);
     s.ServerBaseUrl = connection.Uri;
     s.ServerAccessToken = server.AccessToken;
     s.ServerName = server.Name;
@@ -220,6 +246,10 @@ app.MapPost("/api/plex/connect-local", async (ConnectLocalPlexRequest body, Plex
     try
     {
         var libraries = await plex.GetSectionsAsync(url, body.Token.Trim(), ct).ConfigureAwait(false);
+        var machineIdentifier = await plex.GetMachineIdentifierAsync(url, body.Token.Trim(), ct).ConfigureAwait(false);
+        CompanionLibraryPolicy.PrepareServerChange(s, machineIdentifier);
+        s.ServerMachineIdentifier = machineIdentifier;
+        s.PlexAccountToken = null;
         s.ServerBaseUrl = url;
         s.ServerAccessToken = body.Token.Trim();
         s.ServerName = await plex.GetServerNameAsync(url, body.Token.Trim(), ct).ConfigureAwait(false) ?? "Plex Media Server";
@@ -243,12 +273,13 @@ app.MapPost("/api/playback-url", async (SetPublicUrlRequest body, CompanionState
     }
 
     if (!Uri.TryCreate(body.Url, UriKind.Absolute, out var parsed)
-        || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+        || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+        || !string.IsNullOrEmpty(parsed.UserInfo) || !string.IsNullOrEmpty(parsed.Query) || !string.IsNullOrEmpty(parsed.Fragment) || body.Url.Any(char.IsControl))
     {
         return Results.BadRequest(new { error = "Enter the http(s) address Plex should call back to this app on Play." });
     }
 
-    s.PlaybackBaseUrl = body.Url.Trim().TrimEnd('/');
+    s.PlaybackBaseUrl = parsed.AbsoluteUri.TrimEnd('/');
     await s.SaveAsync().ConfigureAwait(false);
     return Results.Ok(new { playbackBaseUrl = s.PlaybackBaseUrl });
 });
@@ -281,6 +312,8 @@ app.MapPost("/api/libraries/toggle", async (ToggleLibraryRequest body, Companion
         return Results.NotFound(new { error = "Unknown library." });
     }
 
+    if (body.Shared && CompanionLibraryPolicy.IsImported(s, library))
+        return Results.BadRequest(new { error = "Imported libraries belong to a friend and cannot be shared onward." });
     library.Shared = body.Shared;
     await s.SaveAsync().ConfigureAwait(false);
     return Results.Ok(library);
@@ -335,7 +368,7 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Can
             remotePlexUrl,
             s.ServerAccessToken,
             s.ServerName,
-            s.Libraries,
+            s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)),
             () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
             out var generated,
             out var generateError)
@@ -397,7 +430,7 @@ app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionSta
             remotePlexUrl,
             s.ServerAccessToken,
             s.ServerName,
-            s.Libraries,
+            s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)),
             () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
             out var generated,
             out var generateError)
@@ -543,13 +576,11 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
 
     return Results.Ok(new
     {
-        // Prefer Plex's own Remote Access/Relay address so playback does not
-        // depend on Funnel TLS. Funnel relay (revocable, never the real Plex
-        // token) is only used when Plex has no public path of its own.
+        // Funnel carries the scoped relay credential; the Plex token stays local.
         plexUrl = share.PlexUrl,
         plexToken = share.PlexToken,
         serverName = s.ServerName,
-        libraries = s.Libraries.Where(l => l.Shared).Select(l => new { l.SectionKey, l.Title, l.Type })
+        libraries = s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)).Select(l => new { l.SectionKey, l.Title, l.Type })
     });
 });
 
@@ -614,17 +645,22 @@ app.MapPost("/api/import/connect", async (ImportConnectRequest body, HttpRequest
         return Results.Conflict(new { error = "That Jellyfin friend is already connected." });
     }
 
+    List<PeerLibrary> availableLibraries;
     // Validate the code before persisting it. A typo or expired/revoked token
     // should not leave a permanently broken peer row behind.
     try
     {
-        await jellyfin.GetLibrariesAsync(peerUrl, decoded.Token, ct).ConfigureAwait(false);
+        availableLibraries = await jellyfin.GetLibrariesAsync(peerUrl, decoded.Token, ct).ConfigureAwait(false);
     }
     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
     {
         logger.LogWarning(ex, "[Companion] Rejected a Jellyfin connect code because its catalog could not be reached");
         return Results.BadRequest(new { error = "The Jellyfin server could not verify this code. Check its public address and generate a fresh code." });
     }
+
+    if (body.LibraryIds == null || body.LibraryIds.Count == 0
+        || body.LibraryIds.Any(id => !availableLibraries.Any(l => l.Id == id)))
+        return Results.BadRequest(new { error = "Choose the libraries to import before connecting." });
 
     var importName = decoded.Name?.Trim();
     var peer = new JellyfinImportPeer
@@ -634,6 +670,8 @@ app.MapPost("/api/import/connect", async (ImportConnectRequest body, HttpRequest
             : importName[..Math.Min(importName.Length, 160)],
         Url = peerUrl,
         Token = decoded.Token,
+        SelectedLibraryIds = body.LibraryIds.Distinct().ToList(),
+        AvailableLibraries = availableLibraries,
         PlaybackBaseUrl = !string.IsNullOrWhiteSpace(s.PublicUrl)
             ? s.PublicUrl
             : $"{request.Scheme}://{request.Host}"
@@ -647,7 +685,7 @@ app.MapPost("/api/import/connect", async (ImportConnectRequest body, HttpRequest
     // waiting up to 30 minutes for the background timer's first tick.
     await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
 
-    if (!string.IsNullOrEmpty(s.ServerBaseUrl) && !string.IsNullOrEmpty(s.ServerAccessToken))
+    if (peer.LastError == null && !string.IsNullOrWhiteSpace(s.PlexMountRoot) && !string.IsNullOrEmpty(s.ServerBaseUrl) && !string.IsNullOrEmpty(s.ServerAccessToken))
     {
         try
         {
@@ -657,7 +695,7 @@ app.MapPost("/api/import/connect", async (ImportConnectRequest body, HttpRequest
         catch (Exception ex)
         {
             logger.LogWarning(ex, "[Companion] Imported {Peer} but could not add Plex libraries automatically", peer.Name);
-            peer.LastError = "Imported, but Plex libraries were not created automatically: " + ex.Message;
+            peer.LastError = "Catalog saved. Check the media mount, then choose Add to Plex.";
             await s.SaveAsync().ConfigureAwait(false);
         }
     }
@@ -677,7 +715,7 @@ app.MapPost("/api/import/peers/{id}/add-to-plex", async (string id, CompanionSta
     {
         await PlexImportManager.AttachAsync(s, plex, peer, ct).ConfigureAwait(false);
         await s.SaveAsync().ConfigureAwait(false);
-        return Results.Ok(peer);
+        return Results.Ok(ImportPeerView(peer));
     }
     catch (Exception ex)
     {
@@ -685,23 +723,9 @@ app.MapPost("/api/import/peers/{id}/add-to-plex", async (string id, CompanionSta
     }
 });
 
-app.MapMethods("/import-stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (string peerId, string itemId, HttpContext ctx, CompanionState s, JellyfinImportService jellyfin, CancellationToken ct) =>
-{
-    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == peerId);
-    if (peer == null)
-    {
-        return Results.NotFound();
-    }
-
-    var minted = await jellyfin.GetPlaybackTokenAsync(peer.Url, peer.Token, itemId, ct).ConfigureAwait(false);
-    if (minted == null)
-    {
-        return Results.Json(new { error = "Could not authorize playback from the Jellyfin friend." }, statusCode: StatusCodes.Status502BadGateway);
-    }
-
-    var upstream = JellyfinImportService.BuildStreamUrl(peer.Url, itemId, minted.Value.Token);
-    return Results.Redirect(upstream, permanent: false);
-});
+// Retire the old unsigned redirect: it allowed arbitrary peer/item reads.
+app.MapMethods("/import-stream/{peerId}/{itemId}", new[] { "GET", "HEAD" },
+    () => Results.StatusCode(StatusCodes.Status410Gone));
 
 app.MapPost("/api/import/peers/{id}/plex-section", async (string id, SetPlexSectionRequest body, CompanionState s) =>
 {
@@ -728,19 +752,87 @@ app.MapPost("/api/import/peers/{id}/sync", async (string id, CompanionState s, J
     return Results.Ok(ImportPeerView(peer));
 });
 
-app.MapDelete("/api/import/peers/{id}", async (string id, CompanionState s) =>
+app.MapDelete("/api/import/peers/{id}", async (string id, bool? removeFiles, CompanionState s, CancellationToken ct) =>
 {
-    // Stops tracking/syncing only - already-written .strm files are left on
-    // disk untouched, so removing a peer here never silently deletes media
-    // Plex still has scanned in.
-    var removed = s.ImportPeers.RemoveAll(p => p.Id == id) > 0;
-    if (!removed)
-    {
-        return Results.NotFound();
-    }
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null) return Results.NotFound();
+    await ImportSyncCoordinator.RemoveAsync(s, peer, removeFiles == true, ct).ConfigureAwait(false);
+    return Results.Ok(new { removed = true });
+});
 
+app.MapPost("/api/import/preview", async (ImportConnectRequest body, JellyfinImportService jellyfin, CancellationToken ct) =>
+{
+    try
+    {
+        var decoded = JsonSerializer.Deserialize<ConnectCodePayload>(Convert.FromBase64String(body.Code ?? ""),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (decoded == null || string.IsNullOrWhiteSpace(decoded.Token) || !IsSafePeerUrl(decoded.Url ?? "", out var url))
+            return Results.BadRequest(new { error = "The code needs a valid Jellyfin address and token." });
+        var libraries = await jellyfin.GetLibrariesAsync(url, decoded.Token, ct).ConfigureAwait(false);
+        return Results.Ok(new { name = decoded.Name, libraries = libraries.Select(l => new { l.Id, l.Name, l.CollectionType }) });
+    }
+    catch (Exception ex) when (ex is FormatException or JsonException or HttpRequestException or TaskCanceledException)
+    {
+        return Results.BadRequest(new { error = "Could not read this friend's libraries. Check the address and ask for a fresh code." });
+    }
+});
+
+app.MapGet("/api/import/peers/{id}/catalog", (string id, string? search, CompanionState s) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null) return Results.NotFound();
+    var items = peer.ImportCatalog.Where(i => string.IsNullOrWhiteSpace(search)
+        || i.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
+        || (i.Series?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false))
+        .OrderBy(i => i.Series).ThenBy(i => i.Season).ThenBy(i => i.Episode).ThenBy(i => i.Title).ToList();
+    return Results.Ok(new { total = items.Count, items = items.Take(200), issueCount = peer.ImportCatalog.Count(i => i.Issue != null) });
+});
+
+app.MapPost("/api/import/peers/{id}/libraries", async (string id, SelectImportLibrariesRequest body, CompanionState s, JellyfinImportService jellyfin, PlexClient plex, ILogger<Program> logger, CancellationToken ct) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null) return Results.NotFound();
+    var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, ct).ConfigureAwait(false);
+    if (body.LibraryIds == null || body.LibraryIds.Any(id => !libraries.Any(l => l.Id == id)))
+        return Results.BadRequest(new { error = "Refresh the library list and choose currently shared libraries." });
+    peer.SelectedLibraryIds = body.LibraryIds.Distinct().ToList();
+    await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
+    return Results.Ok(ImportPeerView(peer));
+});
+
+app.MapMethods("/media/{**path}", new[] { "GET", "HEAD", "OPTIONS", "PROPFIND" },
+    (string? path, HttpContext ctx, CompanionState s, JellyfinImportService jellyfin, CancellationToken ct)
+        => MediaMount.HandleAsync(s, jellyfin, ctx, path, ct));
+
+app.MapGet("/api/media-mount/status", (CompanionState s, LocalMediaMountService mount) => Results.Ok(new
+{
+    ready = MediaMount.IsMounted(s.MediaMountRoot, s.ClientIdentifier), s.MediaMountRoot, s.PlexMountRoot,
+    s.AutoStartMediaMount, mount.Message, windows = OperatingSystem.IsWindows()
+}));
+
+app.MapPost("/api/media-mount/start", async (LocalMediaMountService mount, CancellationToken ct) =>
+    Results.Ok(new { ready = await mount.StartMountAsync(ct), message = mount.Message }));
+
+app.MapGet("/api/media-mount/config", (HttpRequest request, HttpResponse response, CompanionState s) =>
+{
+    response.Headers.CacheControl = "no-store";
+    var baseUrl = s.PlaybackBaseUrl ?? $"{request.Scheme}://{request.Host}{request.PathBase}";
+    var config = $"[companion]\ntype = webdav\nurl = {baseUrl.TrimEnd('/')}/media/\nvendor = other\nbearer_token = {s.MediaAccessKey}\n";
+    return Results.File(Encoding.UTF8.GetBytes(config), "text/plain", "companion-rclone.conf");
+});
+
+app.MapPost("/api/media-mount", async (SetMediaMountRequest body, CompanionState s) =>
+{
+    if (string.IsNullOrWhiteSpace(body.LocalPath) || !Path.IsPathFullyQualified(body.LocalPath)
+        || string.IsNullOrWhiteSpace(body.PlexPath) || body.PlexPath.Any(char.IsControl))
+        return Results.BadRequest(new { error = "Enter the mounted folder path as Companion and Plex see it." });
+    if (!MediaMount.IsMounted(body.LocalPath, s.ClientIdentifier))
+        return Results.BadRequest(new { error = "The media mount is not readable at that folder. Start the mount, then retry." });
+    s.AutoStartMediaMount = false;
+    s.MediaMountRoot = body.LocalPath;
+    s.PlexMountRoot = body.PlexPath;
     await s.SaveAsync().ConfigureAwait(false);
-    return Results.Ok();
+    return Results.Ok(new { ready = true });
 });
 
 // Plex-compatible, revocable facade consumed by the Jellyfin plugin. It is
@@ -871,7 +963,7 @@ static void MergeLibraries(CompanionState s, List<CompanionLibrary> fresh)
     {
         if (existingByKey.TryGetValue(lib.SectionKey, out var existing))
         {
-            lib.Shared = existing.Shared;
+            lib.Shared = existing.Shared && !CompanionLibraryPolicy.IsImported(s, lib);
         }
     }
 
@@ -883,11 +975,13 @@ static async Task<(PlexConnection? Connection, List<CompanionLibrary> Libraries)
     PlexClient plex,
     CancellationToken cancellationToken)
 {
-    foreach (var candidate in PlexAuth.OrderFederationConnections(server))
+    foreach (var candidate in PlexAuth.OrderLocalConnections(server))
     {
         try
         {
-            var libraries = await plex.GetSectionsAsync(candidate.Uri, server.AccessToken, cancellationToken).ConfigureAwait(false);
+            using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            probe.CancelAfter(TimeSpan.FromSeconds(8));
+            var libraries = await plex.GetSectionsAsync(candidate.Uri, server.AccessToken, probe.Token).ConfigureAwait(false);
             return (candidate, libraries);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -916,7 +1010,11 @@ static object ImportPeerView(JellyfinImportPeer peer) => new
     peer.PlexShowSectionKey,
     peer.LastSyncUtc,
     peer.LastItemCount,
-    peer.LastError
+    peer.LastError,
+    availableLibraries = peer.AvailableLibraries.Select(l => new { l.Id, l.Name, l.CollectionType }),
+    peer.SelectedLibraryIds,
+    mountedItemCount = peer.MountedFiles.Count,
+    importIssueCount = peer.ImportCatalog.Count(i => i.Issue != null)
 };
 
 static object PeerView(CompanionPeer peer) => new
@@ -1020,7 +1118,9 @@ internal sealed record LinkCompleteRequest(string Token, string? RequesterName);
 
 internal sealed record InviteFriendRequest(string? Url);
 
-internal sealed record ImportConnectRequest(string? Code);
+internal sealed record ImportConnectRequest(string? Code, List<string>? LibraryIds = null);
+internal sealed record SelectImportLibrariesRequest(List<string>? LibraryIds);
+internal sealed record SetMediaMountRequest(string LocalPath, string PlexPath);
 
 internal sealed record SetPlexSectionRequest(string? SectionKey);
 

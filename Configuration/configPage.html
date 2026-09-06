@@ -3080,6 +3080,8 @@
                         seriesId: null, seriesName: null, seriesEpisodes: []
                     };
                     var browseSelected = {};
+                    var browseRequestEpoch = 0;
+                    var browseLoading = false;
                     var downloadView = 'select';
 
                     function setDownloadView(view) {
@@ -3100,7 +3102,7 @@
                         var available = browseState.items.concat(browseState.seriesEpisodes || []);
                         var byId = {};
                         available.forEach(function (item) { byId[item.id] = item; });
-                        return Object.keys(browseSelected).filter(function (id) { return browseSelected[id]; }).map(function (id) { return byId[id] || browseSelected[id]; });
+                        return Object.keys(browseSelected).filter(function (id) { return browseSelected[id]; }).map(function (id) { return byId[id] || browseSelected[id]; }).filter(function (item) { return item.sourceServerId === browseState.serverId; });
                     }
 
                     function updateBrowseSelectionBar() {
@@ -3152,6 +3154,8 @@
                     // place that invalidates the current episode view: switching
                     // server/library/media type, or the explicit back link.
                     function resetBrowseSeriesState() {
+                        browseRequestEpoch++;
+                        browseLoading = false;
                         browseState.seriesId = null;
                         browseState.seriesName = null;
                         browseState.seriesEpisodes = [];
@@ -3214,6 +3218,8 @@
                         browseState.items = [];
                         browseSelected = {};
                         resetBrowseSeriesState();
+                        var requestEpoch = browseRequestEpoch;
+                        updateBrowseSelectionBar();
                         setBrowseStatus('', 'info');
                         var list = q('#fedBrowseList');
                         if (list) {
@@ -3236,6 +3242,7 @@
                         fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(serverId) + '/Libraries')
                         .then(function (r) { return readJson(r); })
                         .then(function (libs) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
                             libs = libs || [];
                             if (libs.length === 0) {
                                 libSel.innerHTML = '<option value="">No libraries found - is the server reachable?</option>';
@@ -3250,6 +3257,7 @@
                             libSel.disabled = false;
                         })
                         .catch(function (e) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
                             libSel.innerHTML = '<option value="">Error loading libraries</option>';
                             setBrowseStatus('Error: ' + e.message, 'err');
                         });
@@ -3277,32 +3285,54 @@
                     }
 
                     function loadBrowseItems(reset) {
+                        if (!reset && browseLoading) { return; }
                         if (reset) {
+                            browseRequestEpoch++;
                             browseState.startIndex = 0;
                             browseState.items = [];
+                            browseSelected = {};
+                            renderBrowseList();
                         }
-
+                        if (!browseState.serverId || !browseState.libraryId) { return; }
+                        browseLoading = true;
+                        var requestEpoch = browseRequestEpoch;
+                        var sourceServerId = browseState.serverId;
+                        var nextStart = null;
                         setBrowseStatus('Loading…', 'info');
-                        var url = '/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId)
+                        var url = '/Plugins/Federation/Browse/' + encodeURIComponent(sourceServerId)
                             + '/Items?libraryId=' + encodeURIComponent(browseState.libraryId)
                             + '&type=' + encodeURIComponent(browseState.mediaType)
                             + '&sort=DateCreatedDescending'
                             + '&startIndex=' + browseState.startIndex + '&limit=' + browseState.pageSize;
                         fedFetch(url)
-                        .then(function (r) { return readJson(r); })
+                        .then(function (r) {
+                            var cursor = r.headers.get('X-Federation-Next-Start');
+                            if (cursor !== null && /^\d+$/.test(cursor)) { nextStart = Number(cursor); }
+                            return readJson(r).then(function (items) {
+                                if (!r.ok || !Array.isArray(items)) { throw new Error(items.error || items.message || 'Could not read this server’s catalog.'); }
+                                return items;
+                            });
+                        })
                         .then(function (items) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
+                            if (items.some(function (item) { return item.sourceServerId && item.sourceServerId !== sourceServerId; })) {
+                                throw new Error('The catalog response did not match the selected server. Refresh and retry.');
+                            }
+                            items = items.map(function (item) { return Object.assign({}, item, { sourceServerId: sourceServerId }); });
+                            browseLoading = false;
                             setBrowseStatus('', 'info');
-                            items = items || [];
                             browseState.items = browseState.items.concat(items);
-                            browseState.startIndex += items.length;
+                            browseState.startIndex = nextStart !== null ? nextStart : browseState.startIndex + items.length;
                             browseState.lastBatchFull = items.length >= browseState.pageSize;
                             renderBrowseList();
                             var moreWrap = q('#fedBrowseMoreWrap');
-                            if (moreWrap) {
-                                moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none';
-                            }
+                            if (moreWrap) { moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none'; }
                         })
-                        .catch(function (e) { setBrowseStatus('Error: ' + e.message, 'err'); });
+                        .catch(function (e) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
+                            browseLoading = false;
+                            setBrowseStatus('Error: ' + e.message, 'err');
+                        });
                     }
 
                     // Cover art can't just be an <img src="..."> pointing at
@@ -3405,6 +3435,8 @@
                     function downloadSelectedBrowseItems() {
                         var items = browseSelectionItems();
                         if (items.length === 0) { return; }
+                        var sourceServerId = browseState.serverId;
+                        var requestEpoch = browseRequestEpoch;
                         var isBulk = items.length > 3;
                         var warning = isBulk
                             ? 'This requests ' + items.length + ' files. The source server must have explicitly allowed bulk downloads. Continue?'
@@ -3415,7 +3447,7 @@
                         fedFetch('/Plugins/Federation/Browse/DownloadBatch', {
                             method: 'POST',
                             body: JSON.stringify({
-                                ServerId: browseState.serverId,
+                                ServerId: sourceServerId,
                                 Items: items.map(function (item) { return { ItemId: item.id, Name: item.name }; })
                             })
                         })
@@ -3426,6 +3458,7 @@
                             });
                         })
                         .then(function (res) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
                             var operations = res.operations || [];
                             var queued = operations.filter(function (op) { return op.success; }).length;
                             var failed = operations.length - queued;
@@ -3436,7 +3469,7 @@
                                 setDownloadView('activity');
                             }
                         })
-                        .catch(function (e) { setBrowseStatus('Could not queue downloads: ' + e.message, 'err'); });
+                        .catch(function (e) { if (requestEpoch !== browseRequestEpoch) { return; } setBrowseStatus('Could not queue downloads: ' + e.message, 'err'); });
                     }
 
                     /* ---------------- TV show drill-down ---------------- */
@@ -3447,6 +3480,8 @@
                             return;
                         }
 
+                        var requestEpoch = ++browseRequestEpoch;
+                        var sourceServerId = browseState.serverId;
                         browseState.seriesId = item.id;
                         browseState.seriesName = item.name;
 
@@ -3468,11 +3503,13 @@
                         fedFetch(url)
                         .then(function (r) { return readJson(r); })
                         .then(function (episodes) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
                             setBrowseStatus('', 'info');
-                            browseState.seriesEpisodes = episodes || [];
+                            browseState.seriesEpisodes = (episodes || []).filter(function (ep) { return !ep.sourceServerId || ep.sourceServerId === sourceServerId; }).map(function (ep) { return Object.assign({}, ep, { sourceServerId: sourceServerId }); });
                             renderSeriesEpisodes();
                         })
                         .catch(function (e) {
+                            if (requestEpoch !== browseRequestEpoch) { return; }
                             setBrowseStatus('Error loading episodes: ' + e.message, 'err');
                             browseState.seriesEpisodes = [];
                             renderSeriesEpisodes();

@@ -2,6 +2,27 @@
 
 Completed work is removed from this file. Git history and GitHub releases keep the validation record.
 
+## Active Plex repair — handoff updated 2026-09-06
+
+Implementation is on `fix/plex-federation-reliability`; the stable release remains gated. The user authorized pushing and publishing a preview. User explicitly requested continued work and keeping TODO current. See `Companion/TODO.md` for implementation details, exact validation, artifacts, and remaining release gates.
+
+- [x] Fix onward sharing: Helluva Boss was third-party federated media, not the user's own. Do not renumber it. Peer catalog, metadata and playback authorization now exclude imported content; old playback tokens are rechecked. Companion and Downloads also filter older peers' forwarded items.
+- [x] Fix Downloads source isolation: reject delayed responses from a previously selected server; bind selected rows and queued requests to their source. Recheck server state and item ownership when a queued download starts.
+- [x] Replace native Plex `.strm` playback assumptions with authenticated read-only WebDAV media plus an rclone mount. Preserve source media containers/sizes, season/episode ranges and explicit library selection; show reasons for missing media information.
+- [x] Implement managed mount start/restart, scoped source consent, current Plex part ownership checks, import cleanup that preserves unrelated files, and catalog preservation on failures.
+- [x] Final automated runs passed twice: **404 plugin + 59 Companion + 26 JavaScript tests = 489**. Release build/publish and Windows x64 self-contained preview compilation passed. Diff whitespace check clean.
+- [x] Live disposable Jellyfin/Companion/rclone/Plex checks passed: real H.264/AAC metadata and Plex-served media decode, HEAD, normal/suffix byte ranges, ownership revocation including old tokens, removal/reselect, source outage, and managed mount restart. Browser checks passed at 390/1440/1920px.
+- [ ] Validate the friend's actual **Windows + WinFsp + Plex + Tailscale Funnel** setup, real Plex client playback/transcoding, and the complete two-server ordinary-user/admin release matrix. Linux tests and Windows compilation do not substitute for this.
+- [ ] Review very large catalogs, multi-part video source selection and alternate episode-order matching before claiming universal playback support.
+- [ ] Publish only after the live release gates pass. No stable version bump, production deployment or stable rolling release is included. Preview publication is handled separately by `scripts/release-preview.sh`. Local preview artifacts exist under ignored `artifacts/plex-repair-preview/`.
+
+## Repeatable checks and preview pushes
+
+- `scripts/test.sh --all`: clean builds, automated suites twice, Windows cross-build, and a fresh disposable Plex/Jellyfin/rclone smoke fixture.
+- `scripts/push.sh`: require a committed review branch, run/reuse a matching full gate, push the exact tested commit without force or release side effects.
+- `scripts/release-preview.sh`: explicit preview publication with Windows and plugin ZIPs/checksums; never replaces companion-latest or changes the manifest.
+- Validation receipts expire after 24 hours and are invalidated by changed files/toolchains/images. See `scripts/README.md`; Windows/Funnel/client release checks remain explicit.
+
 ## Usability and interface
 
 - [ ] Split the large embedded settings page into maintainable assets or bounded modules without breaking Jellyfin's plugin page loader.

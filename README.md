@@ -11,4 +11,4 @@ Disclaimer: this fork has been primarily written by AI, and has not had a human-
 The goal of this plugin is to sync Jellyfin servers together, merging connected servers' libraries together as seemlessly as possible. This is NOT a true federation plugin. It does not let you federate with unknown public jellyfin servers.
 
 ## Plex
-Note: this also contains a *very* experimental Plex plugin. Use at your own risk.
+Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports. The mount repair is currently unreleased; see [active validation work](Companion/TODO.md).

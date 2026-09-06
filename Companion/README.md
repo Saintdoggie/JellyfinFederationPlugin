@@ -1,88 +1,78 @@
 # Federation Companion
 
-A standalone app a Plex-owning friend runs on their own machine to control what they share with federated Jellyfin servers - no Jellyfin required on their end.
+Companion connects a Plex owner with private Jellyfin Federation friends. Each owner chooses what to share. **A friend's federated imports must never be shared onward as if they were local media.**
 
-Unlike the original setup (a Jellyfin admin manually enters the friend's raw Plex token into the Federation plugin), this app lets the Plex owner sign in themselves, pick which libraries to share, and generate a one-time connect code that links a Jellyfin friend's Federation plugin automatically. The Jellyfin friend does **not** need to be on the same Tailscale tailnet: Companion prefers Plex Remote Access / Plex Relay for the actual media path, and a Tailscale Funnel URL is only needed if you want the one-time claim to go through this app.
+The current Plex repair is still under validation; see [TODO.md](TODO.md) for release status. A source checkout containing these changes does not mean they are in the published installers yet.
 
-## Install
+## Plex → Jellyfin
 
-**macOS / Linux:**
+1. Run Companion on the Plex owner's computer and unlock it with the owner key shown at startup.
+2. Sign into Plex and select a server you own, or enter its local address and token. Companion uses a tested local upstream connection; a remote friend connects through the public Companion relay.
+3. Select your local libraries to share. Imported libraries cannot be selected for onward sharing.
+4. Configure a public HTTPS Companion address, usually Tailscale Funnel. Funnel must point to Companion's listening port, not directly to Plex. Your friend does not need to join your tailnet.
+5. Send a share request to the friend's Jellyfin address or generate a connect code. A Funnel code contains a short-lived claim token; after claiming, each friend gets a separate revocable relay credential.
+6. Use **Test playback connection**. It reads actual video bytes and checks Range seeking, separately from listing the catalog. A successful local check does not prove the friend's network can reach the Funnel.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/Companion/install.sh | bash
+Switching Plex servers resets library sharing choices because different servers can reuse the same section IDs. Removing a friend revokes its Companion relay credential. Direct Plex connections created by older versions have different credential/consent boundaries; reconnect through Companion to use its current sharing controls.
+
+## Jellyfin → Plex on Windows
+
+Plex may match the title and poster of an imported `.strm` file while showing **Video: None / Audio: None**. That file contains a text URL, not video bytes Plex can analyze. The repair uses a read-only media mount so Plex reads the real media, including video/audio tracks and byte ranges.
+
+1. Update the source Jellyfin Federation plugin and Companion to builds containing this repair.
+2. On the Plex computer, install [WinFsp](https://winfsp.dev/rel/) and [rclone](https://rclone.org/downloads/). Put `rclone.exe` beside Companion or on PATH. Use the same Windows account for Plex and Companion; elevated and ordinary user sessions can see different mounts.
+3. Paste a code from the source Jellyfin's Companion tab. Click **Choose libraries**, select the libraries to import, and confirm the selection. New source libraries will not automatically be selected for newly connected peers.
+4. Open **Set up playable media in Plex** and click **Start media mount on this computer**. Companion creates its own `plex-media` mount and restores it after restarting. Keep Companion running during Plex scans and playback.
+5. Click **Add to Plex** for the friend. The new Movies/Shows libraries have `(Streaming)` in their names. Let Plex scan them, then verify video/audio details and playback.
+6. Once the new libraries work, remove the old `.strm` library entries in Plex. Companion does not delete those Plex entries automatically.
+
+See [rclone's Windows mount requirements and account-visibility notes](https://rclone.org/commands/rclone_mount/#installing-on-windows). Windows-specific runtime validation remains in TODO; local Linux tests do not replace testing on the actual friend's Windows host.
+
+## Manual mounts, Linux/macOS, and Docker
+
+The advanced setup can download a private `companion-rclone.conf`. Its token permits read access to imported media, so keep it private. Use a Companion address reachable from the mount machine, then download the configuration again after changing that address.
+
+Example for an empty Linux mount directory:
+
+```sh
+rclone mount companion: /path/to/empty-folder --config companion-rclone.conf --read-only --vfs-cache-mode full --vfs-cache-max-size 2G --dir-cache-time 30s
 ```
 
-**Windows (PowerShell):**
+Example for an unused Windows drive letter:
+
+```powershell
+rclone mount companion: X: --config companion-rclone.conf --read-only --vfs-cache-mode full --vfs-cache-max-size 2G --dir-cache-time 30s
+```
+
+Use the platform prerequisites in the [rclone mount documentation](https://rclone.org/commands/rclone_mount/). On Linux, Plex running under a different user may need `--allow-other` and the corresponding FUSE configuration. The app's local-mount button does not change system FUSE permissions. Docker needs the mounted filesystem visible inside both the Plex and Companion containers; configure mount propagation or mount before creating the containers. Enter the path each container sees, and verify Plex can read it before relying on a scan.
+
+## Sync, removal, and troubleshooting
+
+- Sync runs at startup and every 30 minutes; **Sync now** runs the same path. Successful syncs add/remove media based on selected, currently shared source libraries. Source failures preserve the last committed catalog.
+- **Source titles and import issues** shows exact source season/episode numbers and explains why an item lacks usable media information. Combined episodes preserve their source episode range. The importer does not infer numbering from release dates.
+- If a title comes from another federated server, it must not appear in the outgoing catalog. Upgrade the source plugin and sync existing imports to remove previously forwarded entries. Receiving-side filtering also protects against older peers returning a `FederationKey`.
+- Removing an import disconnects its mounted media immediately. You can separately remove only Companion-owned legacy links; unrelated files are preserved. Plex's scan/trash settings govern its remaining unavailable database entries.
+- A source title can differ from Plex's matched title if their episode-order settings differ. Compare source numbering before changing anything; see [Plex episode ordering](https://support.plex.tv/articles/naming-and-organizing-your-tv-show-files/#toc-1). Do not renumber third-party libraries to work around onward-sharing bugs.
+- An offline mount and an empty catalog are different conditions. Configure Plex's automatic trash behavior appropriately for an occasionally unavailable network filesystem.
+
+## Running and state
+
+Published install commands remain:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/Companion/install.sh | bash
+```
 
 ```powershell
 irm https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/Companion/install.ps1 | iex
 ```
 
-Either command downloads a self-contained build (no separate .NET install needed), unpacks it to `~/FederationCompanion` (or `%USERPROFILE%\FederationCompanion` on Windows), and starts it. It prints a local URL - open that in a browser to continue.
+To run a source build:
 
-To run from source instead:
-
-```bash
-cd Companion
-dotnet run
+```sh
+dotnet run --project Companion/FederationCompanion.csproj
 ```
 
-Then open the local URL and append the `#access=...` owner key printed by the app. The key protects all owner/admin actions when the same listener is exposed through Tailscale Funnel. It lives only in that browser tab's session storage, so it is not sent in the URL to the server or left in browser history. The app defaults to an ASP.NET Core-assigned port; set `ASPNETCORE_URLS` to pin one, e.g. `ASPNETCORE_URLS=http://127.0.0.1:7890 dotnet run`.
+Open the listener URL with the `#access=...` owner key printed at startup. Browser owner APIs require `X-Companion-Admin`. State is in `companion-state.json` beside the executable; it contains credentials and is restricted to the Unix owner where supported. Keep state/private mount configuration when updating, and never publish them.
 
-State (Plex token, server address, public URL, owner key, library sharing choices, connected peers) is stored in `companion-state.json` next to the executable. On Unix it is forced to owner-read/write mode (`0600`). Delete it to fully reset/sign out.
-
-## Walkthrough
-
-The app is a single page, worked top to bottom:
-
-**1. Tailscale.** The app checks whether Tailscale is installed and signed in on this machine, and shows the exact command to run if not (`winget`/`brew`/`curl` depending on OS). It never runs anything on your behalf here - Tailscale changes network configuration, so you review and run the command yourself.
-
-![Tailscale, public address, and Plex connection steps](docs/screenshots/companion-setup-steps.jpg)
-
-**2. Public address.** Optional if Plex Remote Access or Plex Relay is already enabled. Funnel is the public Tailscale hostname (`https://...ts.net`) a Jellyfin friend can call *without joining your tailnet*. Do not paste a `100.x` tailnet address here — that only works for people already on your Tailscale.
-
-**3. Plex connection.** Sign in with your Plex account (opens Plex's own sign-in page - your password never touches this app), or paste a local Plex address + token if you do not want to use plex.tv. Companion prefers a tested public direct HTTPS connection, falls back to Plex Relay, and uses a private LAN address only as a last resort. If your account can see more than one Plex server, select the one you actually want to share.
-
-**4. Libraries to share.** Toggle which of your Plex libraries are visible to federated friends. Off by default; re-scanning never resets a choice you've already made.
-
-**5. Connect a Jellyfin friend.** Type their Jellyfin address and send a share request. They Accept it under Federation → Companion — no code to copy. A connect code is still available as a backup. Turn on Funnel in step 2 if they are outside your house (Starlink, no port forwarding). Companion can also update itself from the banner at the top of the page.
-
-![Connect code and connected friends list](docs/screenshots/companion-connect-friend.jpg)
-
-**6. Import from a Jellyfin friend.** Paste a connect code from their Federation plugin Companion tab. Companion pulls what they share and **adds Movies/Shows libraries to your Plex automatically**. The `.strm` files contain stable Companion relay URLs: when Plex presses Play, Companion mints fresh Jellyfin playback authorization and preserves Range/HEAD. A background sync keeps the export current every 30 minutes. Removing a friend here only stops syncing; it never deletes files already written.
-
-## Security boundaries
-
-- All `/api/*` owner endpoints require the per-install `X-Companion-Admin` key. Only `/api/link/complete` remains public for the one-time, 15-minute, single-use server-to-server claim.
-- `/stream/*` is public because Plex may not send custom headers, but every URL is HMAC-bound to one peer and one exact Jellyfin item. Editing the peer or item id invalidates it.
-- Browser-facing import-peer responses are explicit safe views. They never serialize the Jellyfin federation token or the local stream-signing secret.
-- The Plex password is handled only by Plex's own OAuth page. Plex account/server tokens stay in the owner-only state file. A Jellyfin friend receives a distinct Companion relay token that can be revoked without affecting Plex or another friend.
-
-## Status
-
-- [x] Standalone Kestrel web app, runs on a local port
-- [x] Plex OAuth sign-in (PIN flow - no password ever touches this app)
-- [x] Library picker with persisted sharing choices
-- [x] Tailscale detection and setup guidance
-- [x] Public URL configuration
-- [x] Connect-code exchange - linking to a Jellyfin server is approved from this side, not just the admin's
-- [x] Peer list with revoke
-- [x] Import from a Jellyfin friend - connect-code exchange in the other direction, with an automatic `.strm` export and Plex section refresh
-- [x] Stable Jellyfin-to-Plex stream relay with fresh play-time authorization and byte-range seeking
-- [x] Public-direct/relay-aware Plex endpoint selection for Plex-to-Jellyfin playback
-- [x] Revocable, per-friend Plex facade that enforces the source owner's current library sharing and never exports the real Plex token
-- [x] Owner access key for every browser/admin API on a Funnel-exposed listener
-- [x] Responsive laptop/TV UI with clearly separated Plex → Jellyfin and Jellyfin → Plex flows
-- [ ] Phase 3: pool invites (send/receive/accept) and richer peer management
-- [ ] Bandwidth limit control (raised as a real requirement by a prospective federation friend)
-
-## Building a release yourself
-
-`.github/workflows/companion-release.yml` builds all four platforms and publishes them to the repo's `companion-latest` release automatically on every push that touches `Companion/**`. To do it locally instead:
-
-```bash
-dotnet publish Companion/FederationCompanion.csproj -c Release -r <rid> --self-contained true \
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/<rid>
-```
-
-where `<rid>` is one of `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64`.
+The WebDAV mount uses a separate read-only credential. Item streams request fresh authorization from the actual content owner. New Funnel claims do not include the real Plex token as an automatic fallback. The legacy unsigned `/import-stream` endpoint is retired.
