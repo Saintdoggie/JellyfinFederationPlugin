@@ -15,6 +15,7 @@ public sealed class RcloneBootstrapperTests
         Assert.EndsWith(".zip", RcloneBootstrapper.DownloadUrl());
         Assert.True(RcloneBootstrapper.ArchiveSha256.ContainsKey(RcloneBootstrapper.ArchiveOsArch()));
         Assert.All(RcloneBootstrapper.ArchiveSha256.Values, sha => Assert.Equal(64, sha.Length));
+        Assert.True(RcloneBootstrapper.MaxBinaryBytes > 85_192_704);
     }
 
     [Theory]

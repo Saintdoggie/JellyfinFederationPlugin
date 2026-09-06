@@ -20,7 +20,8 @@ ARCHIVES = {
     'osx-x64': ('osx-amd64', 'rclone', '29253d0288b8fbbac46baad6e5f6add6cb01d462c79f10805bbd4631c4cdf82c'),
     'osx-arm64': ('osx-arm64', 'rclone', 'c61d7a371c62bcbbe882c3423aa4b8bf63485c248dd0f692997b8f0c3f6d0c6f'),
 }
-MAX_BYTES = 80 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+MAX_BINARY_BYTES = 128 * 1024 * 1024
 
 
 def bundle(rid: str, dest: str) -> Path:
@@ -31,8 +32,8 @@ def bundle(rid: str, dest: str) -> Path:
     url = f'{BASE}/{name}'
     request = urllib.request.Request(url, headers={'User-Agent': 'FederationCompanion-bundle/1.75.1'})
     with urllib.request.urlopen(request, timeout=120) as response:
-        data = response.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
+        data = response.read(MAX_ARCHIVE_BYTES + 1)
+    if len(data) > MAX_ARCHIVE_BYTES:
         raise SystemExit(f'{name} exceeded the size limit')
     digest = hashlib.sha256(data).hexdigest()
     if digest != expected:
@@ -49,7 +50,7 @@ def bundle(rid: str, dest: str) -> Path:
             file_name = Path(normalized).name.lower()
             if file_name not in ('rclone', 'rclone.exe'):
                 continue
-            if info.file_size > MAX_BYTES:
+            if info.file_size > MAX_BINARY_BYTES:
                 raise SystemExit('rclone entry exceeded the size limit')
             target = target_dir / binary
             target.write_bytes(archive.read(info))

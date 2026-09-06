@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from qa import ROOT, check_push_target, fingerprint, reusable
-from bundle_rclone import ARCHIVES, VERSION
+from bundle_rclone import ARCHIVES, MAX_BINARY_BYTES, VERSION
 
 
 class PushGateTests(unittest.TestCase):
@@ -49,6 +49,8 @@ class PushGateTests(unittest.TestCase):
             self.assertEqual(sha, hashes[os_arch])
         workflow = (ROOT / '.github/workflows/companion-release.yml').read_text()
         self.assertIn('scripts/bundle_rclone.py', workflow)
+        # rclone 1.75.1 windows-amd64 rclone.exe is 85,192,704 bytes uncompressed.
+        self.assertGreater(MAX_BINARY_BYTES, 85_192_704)
 
 
 if __name__ == '__main__':
