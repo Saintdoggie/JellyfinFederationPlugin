@@ -35,4 +35,12 @@ public class CompanionVersionTests
     [Fact]
     public void ReadDnsName_TrimsTrailingDot()
         => Assert.Equal("freakbob.tail4e0b6f.ts.net", TailscaleHelper.ReadDnsName("{\"Self\":{\"DNSName\":\"freakbob.tail4e0b6f.ts.net.\"}}"));
+
+    [Fact]
+    public void RestartScript_StopsRcloneBeforeReplacingInstall()
+    {
+        var text = CompanionUpdater.WindowsRestartCommands(@"C:\Users\bob\FederationCompanion", @"C:\Temp\stage", "FederationCompanion.exe", 4321);
+        Assert.Contains("taskkill /F /IM rclone.exe", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("xcopy", text, StringComparison.OrdinalIgnoreCase);
+    }
 }

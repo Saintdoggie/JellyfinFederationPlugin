@@ -636,7 +636,7 @@ app.MapGet("/api/update/status", async (CompanionUpdater updater, CancellationTo
     });
 });
 
-app.MapPost("/api/update/apply", async (CompanionUpdater updater, CancellationToken ct) =>
+app.MapPost("/api/update/apply", async (CompanionUpdater updater, IHostApplicationLifetime lifetime, CancellationToken ct) =>
 {
     var (success, message) = await updater.ApplyAsync(ct).ConfigureAwait(false);
     if (!success)
@@ -644,12 +644,12 @@ app.MapPost("/api/update/apply", async (CompanionUpdater updater, CancellationTo
         return Results.BadRequest(new { error = message });
     }
 
-    // The restarter waits for this process to exit. Delay the exit so the
-    // HTTP response reaches the browser first.
+    // Graceful stop lets the mount service close rclone.exe so the restarter
+    // can replace it. Environment.Exit skipped that and left the file locked.
     _ = Task.Run(async () =>
     {
         await Task.Delay(800).ConfigureAwait(false);
-        Environment.Exit(0);
+        lifetime.StopApplication();
     });
     return Results.Ok(new { message });
 });

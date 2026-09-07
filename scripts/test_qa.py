@@ -61,6 +61,8 @@ class PushGateTests(unittest.TestCase):
         self.assertIn('The media folder starts by itself', script)
         self.assertIn('Stop-Process', script)
         self.assertIn('FederationCompanion', script)
+        self.assertIn('taskkill.exe', script)
+        self.assertIn('rclone.exe', script)
 
 
 if __name__ == '__main__':

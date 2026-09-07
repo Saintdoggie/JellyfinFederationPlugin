@@ -29,13 +29,22 @@ function Test-WinFsp {
 }
 
 function Stop-RunningCompanion {
-    Write-Host "Stopping Companion if it is already running so files can be replaced..."
-    Get-Process -Name FederationCompanion -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Seconds 1
-    Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
+    Write-Host "Stopping Companion and its media helper so files can be replaced..."
+    foreach ($name in @("FederationCompanion", "rclone")) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        & taskkill.exe /F /IM "$name.exe" 2>$null | Out-Null
+    }
+    Start-Sleep -Seconds 2
+    $rclone = Join-Path $installDir "rclone.exe"
+    if (Test-Path $rclone) {
+        try {
+            $stale = Join-Path $installDir ("rclone.exe.old-" + [guid]::NewGuid().ToString("N"))
+            Move-Item -LiteralPath $rclone -Destination $stale -Force
+            Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "rclone.exe is still closing..."
+        }
+    }
 }
 
 Write-Host "Downloading Federation Companion (win-x64)..."
