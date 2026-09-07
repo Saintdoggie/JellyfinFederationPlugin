@@ -101,6 +101,7 @@ public sealed class CompanionUpdater
                 :wait
                 timeout /t 1 /nobreak >nul
                 tasklist /FI "PID eq {pid}" | find "{pid}" >nul && goto wait
+                timeout /t 2 /nobreak >nul
                 xcopy /E /Y /Q "{stagingDir}\*" "{installDir}\"
                 rmdir /S /Q "{stagingDir}"
                 cd /d "{installDir}"
