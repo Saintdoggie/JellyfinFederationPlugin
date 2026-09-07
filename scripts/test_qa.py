@@ -59,6 +59,8 @@ class PushGateTests(unittest.TestCase):
         self.assertIn(sha.upper(), script)
         self.assertIn('winfsp-2.2.26215.msi', script)
         self.assertIn('The media folder starts by itself', script)
+        self.assertIn('Stop-Process', script)
+        self.assertIn('FederationCompanion', script)
 
 
 if __name__ == '__main__':

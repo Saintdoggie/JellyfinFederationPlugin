@@ -28,11 +28,34 @@ function Test-WinFsp {
     return $false
 }
 
+function Stop-RunningCompanion {
+    Write-Host "Stopping Companion if it is already running so files can be replaced..."
+    Get-Process -Name FederationCompanion -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 1
+    Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 1
+}
+
 Write-Host "Downloading Federation Companion (win-x64)..."
 Invoke-WebRequest -Uri $url -OutFile $archive
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Expand-Archive -Path $archive -DestinationPath $installDir -Force
+Stop-RunningCompanion
+$extracted = $false
+foreach ($attempt in 1..5) {
+    try {
+        Expand-Archive -Path $archive -DestinationPath $installDir -Force
+        $extracted = $true
+        break
+    } catch {
+        if ($attempt -eq 5) { throw }
+        Write-Host "Waiting for rclone.exe to close, then retrying ($attempt/5)..."
+        Stop-RunningCompanion
+    }
+}
+if (-not $extracted) { throw "Could not replace Companion files. Close Companion and rclone, then run this again." }
 Remove-Item $archive
 
 if (-not (Test-WinFsp)) {
