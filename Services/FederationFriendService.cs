@@ -880,7 +880,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!response.IsSuccessStatusCode)
                 {
                     var remoteError = TryReadError(body);
+                    if (LooksLikePlexInsteadOfCompanion(body))
+                    {
+                        return (false, "That public address is Plex, not Companion. Ask your friend to Update Companion and send the share request again — it will use Plex's own public path so you can Accept without calling Companion through Funnel.", null, null, null, new List<CompanionSharedLibrary>());
+                    }
+
                     return (false, remoteError ?? "Could not reach the Companion app to finish the connect code. Ask your friend to enable Plex Remote Access / Plex Relay and generate a new code — they do not need port forwarding or a working Funnel for that.", null, null, null, new List<CompanionSharedLibrary>());
+                }
+
+                if (LooksLikePlexInsteadOfCompanion(body))
+                {
+                    return (false, "That public address is Plex, not Companion. Ask your friend to Update Companion and send the share request again — it will use Plex's own public path so you can Accept without calling Companion through Funnel.", null, null, null, new List<CompanionSharedLibrary>());
                 }
 
                 var claimed = JsonSerializer.Deserialize<CompanionLinkCompleteResponse>(body, JsonOpts);
@@ -921,6 +931,18 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return $"Could not reach {host} over the internet. They do not need to join your Tailscale. Ask them to enable Plex Remote Access / Plex Relay and generate a new connect code.";
+        }
+
+        internal static bool LooksLikePlexInsteadOfCompanion(string? body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return false;
+            }
+
+            return body.Contains("MediaContainer", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("Plex Media Server", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("<html", StringComparison.OrdinalIgnoreCase) && body.Contains("plex", StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool IsTlsHandshakeFailure(Exception ex)

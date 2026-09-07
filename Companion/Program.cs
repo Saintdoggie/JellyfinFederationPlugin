@@ -484,7 +484,7 @@ app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s
     return Results.Ok(new { publicUrl = s.PublicUrl });
 });
 
-app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, CancellationToken ct) =>
+app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, HttpClient http, CancellationToken ct) =>
 {
     if (s.ServerBaseUrl == null || s.ServerAccessToken == null)
     {
@@ -492,8 +492,9 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Can
     }
 
     var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
+    var companionUrl = await CompanionFunnelIfReachableAsync(http, s, ct).ConfigureAwait(false);
     if (!ConnectCodeFactory.TryGenerate(
-            s.PublicUrl,
+            companionUrl,
             remotePlexUrl,
             s.ServerAccessToken,
             s.ServerName,
@@ -554,8 +555,9 @@ app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionSta
     }
 
     var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
+    var companionUrl = await CompanionFunnelIfReachableAsync(http, s, ct).ConfigureAwait(false);
     if (!ConnectCodeFactory.TryGenerate(
-            s.PublicUrl,
+            companionUrl,
             remotePlexUrl,
             s.ServerAccessToken,
             s.ServerName,
@@ -1048,6 +1050,11 @@ app.MapMethods("/stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (
 });
 
 app.Run();
+
+static async Task<string?> CompanionFunnelIfReachableAsync(HttpClient http, CompanionState s, CancellationToken cancellationToken)
+    => await CompanionSelfCheck.PublicUrlIsThisCompanionAsync(http, s.PublicUrl, cancellationToken).ConfigureAwait(false)
+        ? s.PublicUrl
+        : null;
 
 static async Task<string?> ResolveFriendFacingPlexUrlAsync(CompanionState s, PlexAuth auth, CancellationToken cancellationToken)
 {
