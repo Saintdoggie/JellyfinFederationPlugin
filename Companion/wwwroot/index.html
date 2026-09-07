@@ -352,14 +352,13 @@
     <div class="flow-note"><span aria-hidden="true">🔒</span><span>The long-lived Jellyfin credential stays inside Companion. Plex receives only a stable link cryptographically bound to one exact movie or episode.</span></div>
     <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Choose libraries</button></div>
     <div id="importLibraryPicker"></div><div class="status-line" id="importConnectStatus" role="status" aria-live="polite"></div>
+    <p class="status-line">Companion starts the playable media folder by itself after install. Keep Companion running while Plex scans or plays, then choose Add to Plex below.</p>
+    <div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
+    <p id="driverHint" class="status-line hidden">Windows needs to approve a one-time media driver install. Companion does the rest.</p>
+    <button id="startLocalMountBtn" class="secondary">Retry media mount</button>
     <details id="mountSetup">
-      <summary>Set up playable media in Plex</summary>
-      <p class="status-line">Do this once on the Plex machine. Keep Companion and the mount running while Plex scans or plays. For Docker, share the mounted folder with both containers.</p>
-      <p class="status-line"><strong>Plex and Companion on the same Windows computer:</strong> click Start media mount. Companion downloads the media helper itself. Install <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> once (a small Windows driver). Run Companion with the same Windows account as Plex.</p>
-      <button id="startLocalMountBtn">Start media mount on this computer</button><div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
-      <p id="driverHint" class="status-line hidden">Windows needs <a href="https://winfsp.dev/rel/" target="_blank" rel="noopener">WinFsp</a> installed once so the media folder can appear. Companion downloads the rest itself.</p>
-      <p class="status-line">Companion manages this mount and restores it after restarting. Then choose Add to Plex below.</p>
-      <details><summary>Manual mount, separate machines, or Docker</summary>
+      <summary>Advanced: manual mount, separate machines, or Docker</summary>
+      <p class="status-line">Only needed when Companion and Plex are not on the same computer. For Docker, share the mounted folder with both containers.</p>
       <ol>
         <li>Install <a href="https://rclone.org/install/" target="_blank" rel="noopener">rclone</a> and its <a href="https://rclone.org/commands/rclone_mount/" target="_blank" rel="noopener">mount requirements</a> (WinFsp on Windows, FUSE on Linux/macOS).</li>
         <li><button id="downloadMountBtn" class="secondary">Download private mount configuration</button> Save this on the Plex machine. It grants read access to imported media; keep it private.</li>
@@ -373,7 +372,6 @@
         </li>
         <li>Choose <strong>Add to Plex</strong> on your friend below. Plex will scan the video files and detect their audio/video tracks. Existing libraries made from .strm files are left in place; remove those old library entries in Plex after verifying the new Streaming library.</li>
       </ol>
-      </details>
       <details><summary>Companion runs on a different machine</summary>
         <label for="playbackUrlInput">Companion address reachable from the mount machine</label><input id="playbackUrlInput" type="url" placeholder="http://companion-lan-address:port">
         <button id="savePlaybackBtn" class="secondary">Save address</button><p class="status-line">Use your LAN address here. Download the mount configuration again after changing it.</p>
@@ -1081,6 +1079,7 @@ async function unlockOwner() {
     accessCard.classList.add('hidden');
     unlockStatus.textContent = '';
     await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus()]);
+    if (!window._federationMountPoll) window._federationMountPoll = setInterval(loadMountStatus, 4000);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {

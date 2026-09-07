@@ -33,6 +33,7 @@ builder.Services.AddSingleton(sp => new PlexFederationRelay(
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
 builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
 builder.Services.AddSingleton(sp => new RcloneBootstrapper(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }));
+builder.Services.AddSingleton(sp => new WinFspInstaller(new HttpClient { Timeout = TimeSpan.FromMinutes(2) }));
 
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
 builder.Services.AddSingleton<LocalMediaMountService>();
