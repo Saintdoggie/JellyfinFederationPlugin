@@ -5,12 +5,15 @@ using Microsoft.Extensions.Hosting;
 namespace FederationCompanion;
 
 /// <summary>Owns only the rclone process started by Companion, never an existing user mount.</summary>
-public sealed class LocalMediaMountService(CompanionState state, IHostApplicationLifetime lifetime, RcloneBootstrapper rclone) : BackgroundService
+public sealed class LocalMediaMountService(CompanionState state, IHostApplicationLifetime lifetime, RcloneBootstrapper rclone, WinFspInstaller winfsp) : BackgroundService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
-    public string Message { get; private set; } = "Start the media mount so Plex can play your friend's videos.";
+    public string Message { get; private set; } = "Companion starts the media folder by itself after install.";
     public bool HelperReady => rclone.FindExisting() != null;
+
+    internal static bool ShouldManageMount(CompanionState current)
+        => current.AutoStartMediaMount || string.IsNullOrEmpty(current.MediaMountRoot);
 
     public async Task<bool> StartMountAsync(CancellationToken ct)
     {
@@ -28,6 +31,16 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
                 return false;
             }
             StopOwnedProcess();
+            if (OperatingSystem.IsWindows() && !FilesystemDriver.IsAvailable())
+            {
+                Message = "Installing the Windows media driver (one-time; Windows may ask for permission)…";
+                await winfsp.EnsureAsync(ct).ConfigureAwait(false);
+                if (!FilesystemDriver.IsAvailable())
+                {
+                    Message = FilesystemDriver.MissingMessage();
+                    return false;
+                }
+            }
             if (rclone.FindExisting() == null)
             {
                 Message = "Downloading the media helper (one-time)…";
@@ -114,7 +127,7 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
         do
         {
-            if (state.AutoStartMediaMount && !MediaMount.IsMounted(state.MediaMountRoot, state.ClientIdentifier))
+            if (ShouldManageMount(state) && !MediaMount.IsMounted(state.MediaMountRoot, state.ClientIdentifier))
                 await StartMountAsync(stoppingToken);
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));

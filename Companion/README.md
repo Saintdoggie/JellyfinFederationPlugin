@@ -20,12 +20,10 @@ Switching Plex servers resets library sharing choices because different servers 
 
 Plex may match the title and poster of an imported `.strm` file while showing **Video: None / Audio: None**. That file contains a text URL, not video bytes Plex can analyze. The repair uses a read-only media mount so Plex reads the real media, including video/audio tracks and byte ranges.
 
-1. Update the source Jellyfin Federation plugin to 0.0.133 (or later) and Companion from the rolling `companion-latest` installer.
-2. On the Plex computer, install [WinFsp](https://winfsp.dev/rel/) once (a Windows filesystem driver). Companion downloads rclone itself when you click **Start media mount**, and new Companion zips already include it. Use the same Windows account for Plex and Companion; elevated and ordinary user sessions can see different mounts.
-3. Paste a code from the source Jellyfin's Companion tab. Click **Choose libraries**, select the libraries to import, and confirm the selection. New source libraries will not automatically be selected for newly connected peers.
-4. Open **Set up playable media in Plex** and click **Start media mount on this computer**. Companion creates its own `plex-media` mount and restores it after restarting. Keep Companion running during Plex scans and playback.
-5. Click **Add to Plex** for the friend. The new Movies/Shows libraries have `(Streaming)` in their names. Let Plex scan them, then verify video/audio details and playback.
-6. Once the new libraries work, remove the old `.strm` library entries in Plex. Companion does not delete those Plex entries automatically.
+1. On the Plex computer, install Companion with `install.ps1` (or the in-app Update). The installer installs the Windows media driver if needed; Companion downloads rclone itself and starts the media folder. Use the same Windows account for Plex and Companion.
+2. Sign in, then paste a code from the friend's Jellyfin Federation Companion tab. Click **Choose libraries**, select the libraries to import, and confirm. Keep Companion running while Plex scans or plays.
+3. Click **Add to Plex** for the friend. The new Movies/Shows libraries have `(Streaming)` in their names. Let Plex scan them, then verify video/audio details and playback.
+4. Once the new libraries work, remove the old `.strm` library entries in Plex. Companion does not delete those Plex entries automatically.
 
 See [rclone's Windows mount requirements and account-visibility notes](https://rclone.org/commands/rclone_mount/#installing-on-windows). Windows-specific runtime validation remains in TODO; local Linux tests do not replace testing on the actual friend's Windows host.
 

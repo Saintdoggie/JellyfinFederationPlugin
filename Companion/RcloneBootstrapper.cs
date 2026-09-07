@@ -343,7 +343,7 @@ public static class FilesystemDriver
     }
 
     internal const string WindowsMissing =
-        "Install WinFsp once (a small Windows driver so Plex can see the media folder), then retry. Download it from https://winfsp.dev/rel/ — run Companion with the same Windows account as Plex.";
+        "Windows needs to approve the media driver install (one UAC prompt). Approve it, keep Companion running, and it will finish the rest.";
 
     public static string MissingMessage()
     {

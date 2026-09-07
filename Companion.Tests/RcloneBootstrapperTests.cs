@@ -123,7 +123,7 @@ public sealed class RcloneBootstrapperTests
     {
         var message = FilesystemDriver.ClassifyFailure("Cannot find WinFsp, please install it from http://www.secfs.net/winfsp/");
         Assert.DoesNotContain("secfs.net", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("WinFsp", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("media driver", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("rclone", FilesystemDriver.MissingMessage(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -134,6 +134,49 @@ public sealed class RcloneBootstrapperTests
         Assert.Equal("/tmp/rclone", start.FileName);
         Assert.Contains("mount", start.ArgumentList);
         Assert.Contains("--read-only", start.ArgumentList);
+    }
+
+    [Fact]
+    public void ShouldManageMount_StartsItselfUnlessAManualPathWasSaved()
+    {
+        Assert.True(LocalMediaMountService.ShouldManageMount(new CompanionState()));
+        Assert.True(LocalMediaMountService.ShouldManageMount(new CompanionState { AutoStartMediaMount = true, MediaMountRoot = "/mnt" }));
+        Assert.False(LocalMediaMountService.ShouldManageMount(new CompanionState { AutoStartMediaMount = false, MediaMountRoot = "/mnt" }));
+    }
+
+    [Fact]
+    public void WinFspInstaller_UsesPinnedChecksummedMsi()
+    {
+        Assert.Equal("2ecb5c89405488a95bbd8a01875e02c48534fd37bbdfd84488f7590464d65944", WinFspInstaller.Sha256);
+        Assert.Contains("winfsp-2.2.26215.msi", WinFspInstaller.DownloadUrl);
+        var start = WinFspInstaller.CreateInstallStartInfo(@"C:\Temp\winfsp.msi");
+        Assert.Equal("msiexec.exe", start.FileName);
+        Assert.Equal("runas", start.Verb);
+        Assert.Contains("/qn", start.Arguments);
+    }
+
+    [Fact]
+    public async Task WinFspInstaller_RejectsWrongChecksumAndOnlyAttemptsOnce()
+    {
+        var calls = 0;
+        var dir = Path.Combine(Path.GetTempPath(), "fed-winfsp-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var http = new HttpClient(new Handler(_ =>
+            {
+                calls++;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("not-an-msi"u8.ToArray()) };
+            }));
+            var installer = new WinFspInstaller(http, dir, _ => throw new Exception("must not launch"), driverInstalled: () => false, windows: true);
+            Assert.False(await installer.EnsureAsync(CancellationToken.None));
+            Assert.False(await installer.EnsureAsync(CancellationToken.None));
+            Assert.Equal(1, calls);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
     }
 
     private static byte[] ZipWith(string entryName, byte[] content)
