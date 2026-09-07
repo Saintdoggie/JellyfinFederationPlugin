@@ -341,6 +341,7 @@ test('Plex share requests can be accepted from the Companion tab without pasting
   assert.match(configPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
   assert.match(configPage, /accept-plex-offer/);
   assert.match(configPage, /this<\/em> server's public address/);
+  assert.match(configPage, /Funnel opens Plex/);
 });
 
 test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {

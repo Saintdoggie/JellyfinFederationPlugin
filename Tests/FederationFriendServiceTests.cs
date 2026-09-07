@@ -841,6 +841,26 @@ public class FederationFriendServiceTests : IDisposable
             new HttpRequestException("SSL", new System.IO.IOException("unexpected EOF"))));
     }
 
+    [Fact]
+    public async Task ConnectPlexCompanionAsync_FunnelIsPlex_TellsFriendToResendDirectShare()
+    {
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("<MediaContainer size=\"0\"></MediaContainer>", Encoding.UTF8, "application/xml")
+            }));
+
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            """{"url":"https://plexpal.tail123456.ts.net","token":"claim-token","name":"plexpal","claim":true}"""));
+
+        var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
+
+        Assert.False(success);
+        Assert.Null(server);
+        Assert.Contains("Plex, not Companion", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("send the share request again", message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
