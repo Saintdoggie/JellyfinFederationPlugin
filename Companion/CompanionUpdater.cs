@@ -95,18 +95,7 @@ public sealed class CompanionUpdater
         if (OperatingSystem.IsWindows())
         {
             var cmd = Path.Combine(Path.GetTempPath(), "federation-companion-restart.cmd");
-            var exe = Path.GetFileName(processPath);
-            File.WriteAllText(cmd, $"""
-                @echo off
-                :wait
-                timeout /t 1 /nobreak >nul
-                tasklist /FI "PID eq {pid}" | find "{pid}" >nul && goto wait
-                timeout /t 2 /nobreak >nul
-                xcopy /E /Y /Q "{stagingDir}\*" "{installDir}\"
-                rmdir /S /Q "{stagingDir}"
-                cd /d "{installDir}"
-                start "" "{exe}"
-                """);
+            File.WriteAllText(cmd, WindowsRestartCommands(installDir, stagingDir, Path.GetFileName(processPath), pid));
             return cmd;
         }
 
@@ -131,6 +120,19 @@ public sealed class CompanionUpdater
 
         return sh;
     }
+
+    internal static string WindowsRestartCommands(string installDir, string stagingDir, string exe, int pid) => $"""
+        @echo off
+        :wait
+        timeout /t 1 /nobreak >nul
+        tasklist /FI "PID eq {pid}" | find "{pid}" >nul && goto wait
+        taskkill /F /IM rclone.exe >nul 2>nul
+        timeout /t 2 /nobreak >nul
+        xcopy /E /Y /Q "{stagingDir}\*" "{installDir}\"
+        rmdir /S /Q "{stagingDir}"
+        cd /d "{installDir}"
+        start "" "{exe}"
+        """;
 
     private static void LaunchRestarter(string script)
     {

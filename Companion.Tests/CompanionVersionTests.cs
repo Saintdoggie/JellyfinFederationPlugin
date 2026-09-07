@@ -35,4 +35,12 @@ public class CompanionVersionTests
     [Fact]
     public void ReadDnsName_TrimsTrailingDot()
         => Assert.Equal("plexpal.tail123456.ts.net", TailscaleHelper.ReadDnsName("{\"Self\":{\"DNSName\":\"plexpal.tail123456.ts.net.\"}}"));
+
+    [Fact]
+    public void RestartScript_StopsRcloneBeforeReplacingInstall()
+    {
+        var text = CompanionUpdater.WindowsRestartCommands(@"C:\Users\bob\FederationCompanion", @"C:\Temp\stage", "FederationCompanion.exe", 4321);
+        Assert.Contains("taskkill /F /IM rclone.exe", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("xcopy", text, StringComparison.OrdinalIgnoreCase);
+    }
 }
