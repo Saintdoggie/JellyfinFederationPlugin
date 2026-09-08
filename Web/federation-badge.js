@@ -106,7 +106,7 @@
     options = options || {};
     options.headers = options.headers || {};
     var token = getToken();
-    if (token) { options.headers['X-Emby-Token'] = token; }
+    if (token) { options.headers['Authorization'] = 'MediaBrowser Token="' + encodeURIComponent(token) + '"'; }
     return fetch(base + path, options);
   }
 
@@ -421,7 +421,7 @@
     var token = getToken();
     federationFetch('/Plugins/Federation/Downloads', {
       credentials: 'same-origin',
-      headers: token ? { 'X-Emby-Token': token } : {}
+      headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
     })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (list) {
@@ -531,7 +531,7 @@
       var token = getToken();
       federationFetch('/Plugins/Federation/Download/Progress/' + operationId, {
         credentials: 'same-origin',
-        headers: token ? { 'X-Emby-Token': token } : {}
+        headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
       })
         .then(function (res) { return res.ok ? res.json() : null; })
         .then(function (data) {
@@ -600,7 +600,7 @@
     federationFetch('/Plugins/Federation/Download/Cancel/' + operationId, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: token ? { 'X-Emby-Token': token } : {}
+      headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
     }).catch(function () { /* the next progress poll tick reconciles state regardless */ });
   }
 
@@ -616,7 +616,7 @@
     var token = getToken();
     federationFetch('/Plugins/Federation/DownloadUrl/' + itemId, {
       credentials: 'same-origin',
-      headers: token ? { 'X-Emby-Token': token } : {}
+      headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
@@ -645,7 +645,7 @@
     federationFetch('/Plugins/Federation/Download', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}),
       body: JSON.stringify({ ItemId: itemId })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
@@ -703,7 +703,7 @@
     federationFetch('/Plugins/Federation/HiddenItems/Hide', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}),
       body: JSON.stringify({ ItemId: itemId })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
@@ -745,7 +745,7 @@
     federationFetch('/Plugins/Federation/Sharing/Disable', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}),
       body: JSON.stringify({ ItemId: itemId })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
@@ -771,7 +771,7 @@
     federationFetch('/Plugins/Federation/Sharing/Enable', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-Emby-Token': token } : {}),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}),
       body: JSON.stringify({ ItemId: itemId })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })

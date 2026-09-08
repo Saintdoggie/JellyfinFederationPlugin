@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.136",
+        "changelog": "Jellyfin 12 support: rebuilt for .NET 10 and Jellyfin 12 APIs. Settings, badges, peer catalog, artwork and streaming use supported native authentication with legacy auth disabled. Older Jellyfin 10.11 servers should keep 0.0.135.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-08T13:01:10Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.136/Jellyfin.Federation.zip",
+        "checksum": "5d86a28ce529d60d51133daab06b2c07"
+      },
+      {
         "version": "0.0.135",
         "changelog": "Plex Companion now reports a Federation plugin version and can join pools. Inviting a Plex friend no longer fails as an unknown/old plugin; they Accept the pool invite in Companion. Direct Plex Relay friends still need Funnel so the invite can be delivered.",
         "targetAbi": "10.11.0.0",
@@ -33,7 +41,7 @@
       },
       {
         "version": "0.0.132",
-        "changelog": "Plex Companion can send a share request by typing the Jellyfin address — connect codes are optional. Companion can update itself from the UI, turn Funnel on (with HTTPS cert) for Starlink/no-port-forward, and Funnel stays the off-home media path with Plex Relay as handshake fallback.",
+        "changelog": "Plex Companion can send a share request by typing the Jellyfin address \u2014 connect codes are optional. Companion can update itself from the UI, turn Funnel on (with HTTPS cert) for Starlink/no-port-forward, and Funnel stays the off-home media path with Plex Relay as handshake fallback.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.132/Jellyfin.Federation.zip",
         "checksum": "bb99814fad4ea6b165ae6937490a8d5f",

@@ -48,7 +48,7 @@ def dotnet_path():
     for option in options:
         if option and Path(option).is_file():
             return str(Path(option).resolve())
-    raise RuntimeError('Install .NET SDK 9, or set DOTNET to its executable path.')
+    raise RuntimeError('Install .NET SDK 10, or set DOTNET to its executable path.')
 
 
 def live_tools():
@@ -59,7 +59,7 @@ def live_tools():
         raise RuntimeError('The disposable live gate needs Linux with /dev/fuse. See scripts/README.md.')
     if not engine or not ffmpeg or not Path(rclone).is_file():
         raise RuntimeError('Live gate needs Podman/Docker, ffmpeg and rclone. See scripts/README.md.')
-    images = [os.environ.get('JELLYFIN_TEST_IMAGE', 'docker.io/jellyfin/jellyfin:latest'),
+    images = [os.environ.get('JELLYFIN_TEST_IMAGE', 'docker.io/jellyfin/jellyfin:12.0'),
               os.environ.get('PLEX_TEST_IMAGE', 'docker.io/plexinc/pms-docker:latest')]
     # Resolve once to immutable local image IDs. Never pull or update an image implicitly.
     image_ids = [run([engine, 'image', 'inspect', image, '--format', '{{.Id}}'], capture=True) for image in images]
@@ -76,8 +76,8 @@ def validate(*, full=False, reuse=False):
     dotnet = dotnet_path()
     tooling = {'dotnet': run([dotnet, '--version'], capture=True),
                'node': run(['node', '--version'], capture=True), 'npm': run(['npm', '--version'], capture=True)}
-    if not tooling['dotnet'].startswith('9.'):
-        raise RuntimeError('Use .NET SDK 9 for the Jellyfin 10.11 validation gate.')
+    if not tooling['dotnet'].startswith('10.'):
+        raise RuntimeError('Use .NET SDK 10 for the Jellyfin 12 validation gate (also install .NET 9 for Companion tests).')
     tools = live_tools() if full else None
     if tools:
         tooling.update(tools)

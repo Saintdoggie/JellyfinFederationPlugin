@@ -22,7 +22,7 @@ builds and private runtime fixtures live in ignored `artifacts/qa/`.
 
 ## Prerequisites
 
-The normal gate needs Python 3, .NET SDK 9, Node/npm and Git. `DOTNET` can select an
+The normal gate needs Python 3, .NET SDK 10 (plus .NET 9 runtime for Companion tests), Node/npm and Git. `DOTNET` can select an
 SDK executable; otherwise PATH and `$HOME/.dotnet/dotnet` are checked. The scripts run
 `npm ci`, so dependencies match `package-lock.json`. CI runs the same automated gate.
 
@@ -35,7 +35,7 @@ permissions or silently install system software.
 Load the test images once:
 
 ```sh
-podman pull docker.io/jellyfin/jellyfin:latest
+podman pull docker.io/jellyfin/jellyfin:12.0
 podman pull docker.io/plexinc/pms-docker:latest
 ```
 

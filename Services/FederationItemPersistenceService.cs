@@ -41,6 +41,7 @@ namespace Jellyfin.Plugin.Federation.Services
         };
 
         private readonly ILibraryManager _libraryManager;
+        private readonly IItemPersistenceService _itemPersistence;
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
 
@@ -50,9 +51,11 @@ namespace Jellyfin.Plugin.Federation.Services
         public FederationItemPersistenceService(
             ILibraryManager libraryManager,
             ILogger<FederationItemPersistenceService> logger,
-            FederationLibraryManager federationManager)
+            FederationLibraryManager federationManager,
+            IItemPersistenceService itemPersistence)
         {
             _libraryManager = libraryManager;
+            _itemPersistence = itemPersistence;
             _logger = logger;
             _federationManager = federationManager;
         }
@@ -824,7 +827,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (badIds.Count > 0)
             {
-                BaseItem.ItemRepository.DeleteItem(badIds);
+                _itemPersistence.DeleteItem(badIds);
             }
 
             return badIds.Count;
