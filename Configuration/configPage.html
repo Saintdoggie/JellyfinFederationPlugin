@@ -1041,7 +1041,7 @@
 
                         var token = getToken();
                         if (token) {
-                            headers['X-Emby-Token'] = token;
+                            headers['Authorization'] = 'MediaBrowser Token="' + encodeURIComponent(token) + '"';
                         }
 
                         if (options.body && !headers['Content-Type']) {
@@ -3349,7 +3349,7 @@
                     // Cover art can't just be an <img src="..."> pointing at
                     // Browse/{serverId}/Image the way catalogPosterUrl points
                     // straight at Jellyfin's own native image route - that route
-                    // needs the same X-Emby-Token header every other plugin call
+                    // needs the same Authorization header every other plugin call
                     // gets via fedFetch, which a plain <img> tag has no way to
                     // send. Fetched as an authenticated blob instead and turned
                     // into an object URL, one item at a time after the grid

@@ -2617,9 +2617,9 @@ namespace Jellyfin.Plugin.Federation.Api
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
             var endpoint = audio ? "Audio" : "Videos";
-            var loopbackUrl = $"{localUrl}/{endpoint}/{itemGuid:N}/stream?api_key={Uri.EscapeDataString(internalRelayKey)}&Static=true";
+            var loopbackUrl = $"{localUrl}/{endpoint}/{itemGuid:N}/stream?Static=true";
 
-            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken).ConfigureAwait(false);
+            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -2663,10 +2663,10 @@ namespace Jellyfin.Plugin.Federation.Api
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
             var indexSegment = index.HasValue ? $"/{index.Value}" : string.Empty;
-            var tagParam = string.IsNullOrEmpty(tag) ? string.Empty : $"&tag={Uri.EscapeDataString(tag)}";
-            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}?api_key={Uri.EscapeDataString(internalRelayKey)}{tagParam}";
+            var tagParam = string.IsNullOrEmpty(tag) ? string.Empty : $"?tag={Uri.EscapeDataString(tag)}";
+            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}{tagParam}";
 
-            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken).ConfigureAwait(false);
+            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -2731,10 +2731,9 @@ namespace Jellyfin.Plugin.Federation.Api
         {
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
-            var separator = path.Contains('?', StringComparison.Ordinal) ? "&" : "?";
-            var url = $"{localUrl}{path}{separator}api_key={Uri.EscapeDataString(internalRelayKey)}";
-
-            using var response = await InternalJsonHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
+            request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
+            using var response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return null;

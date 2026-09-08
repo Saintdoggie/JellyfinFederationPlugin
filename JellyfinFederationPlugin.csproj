@@ -1,15 +1,17 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
     <AssemblyName>Jellyfin.Plugin.Federation</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Nullable>enable</Nullable>
-    <Version>0.0.135</Version>
-    <AssemblyVersion>0.0.135.0</AssemblyVersion>
-    <FileVersion>0.0.135.0</FileVersion>
+    <Version>0.0.136</Version>
+    <AssemblyVersion>0.0.136.0</AssemblyVersion>
+    <FileVersion>0.0.136.0</FileVersion>
+    <!-- Keep the catalog DLL reproducible when its archive/checksum are committed. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -44,8 +46,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.6" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.6" />
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0" />
   </ItemGroup>
 
   <ItemGroup>

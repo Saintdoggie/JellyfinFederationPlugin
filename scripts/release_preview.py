@@ -47,7 +47,7 @@ See Companion-setup.md and the repository TODO for validation scope and limitati
         archive.write(ROOT / 'Companion/README.md', 'Companion-setup.md')
     plugin = output / 'Jellyfin-Federation-preview.zip'
     with zipfile.ZipFile(plugin, 'w', zipfile.ZIP_DEFLATED) as archive:
-        archive.write(ROOT / 'bin/Release/net9.0/Jellyfin.Plugin.Federation.dll', 'Jellyfin.Plugin.Federation.dll')
+        archive.write(ROOT / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', 'Jellyfin.Plugin.Federation.dll')
         archive.writestr('PREVIEW.txt', notes)
     checksum = output / 'SHA256SUMS.txt'
     checksum.write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n' for path in [windows, plugin]))

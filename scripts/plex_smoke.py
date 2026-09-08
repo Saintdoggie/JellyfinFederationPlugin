@@ -121,7 +121,7 @@ def smoke(repo, dotnet, published_app, tools):
         config = work / 'jellyfin'
         plugin = config / 'plugins/Federation'
         plugin.mkdir(parents=True)
-        shutil.copy(repo / 'bin/Release/net9.0/Jellyfin.Plugin.Federation.dll', plugin)
+        shutil.copy(repo / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
         jf = container(jf_name, ['-p', '127.0.0.1::8096', '-v', f'{config}:/config', '-v', f'{media}:/media:ro'], tools['jellyfin_image'])
         stage = 'Jellyfin startup and import'
         wait_for(lambda: request(jf, '/System/Info/Public'), 'Jellyfin did not start')
@@ -132,8 +132,8 @@ def smoke(repo, dotnet, published_app, tools):
         request(jf, '/Startup/RemoteAccess', data={'EnableRemoteAccess': True, 'EnableAutomaticPortMapping': False}, expected=204)
         request(jf, '/Startup/Complete', data={}, expected=204)
         auth = request(jf, '/Users/AuthenticateByName', data={'Username': 'qa-admin', 'Pw': password},
-                       headers={'X-Emby-Authorization': 'MediaBrowser Client="Federation QA", Device="Disposable", DeviceId="federation-qa", Version="1"'})
-        admin = {'X-Emby-Token': auth['AccessToken']}
+                       headers={'Authorization': 'MediaBrowser Client="Federation QA", Device="Disposable", DeviceId="federation-qa", Version="1"'})
+        admin = {'Authorization': 'MediaBrowser Token="' + auth['AccessToken'] + '"'}
         user = auth['User']['Id']
         for name, kind, path in [('QA Movies', 'movies', '/media/Movies'), ('QA Shows', 'tvshows', '/media/Shows')]:
             request(jf, '/Library/VirtualFolders?' + urllib.parse.urlencode({'name': name, 'collectionType': kind, 'refreshLibrary': 'true'}),

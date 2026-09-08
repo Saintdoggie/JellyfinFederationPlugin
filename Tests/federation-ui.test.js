@@ -24,6 +24,7 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
     { runScripts: 'outside-only', url: 'http://localhost/web/index.html#!/details?id=' + itemId }
   );
   const calls = [];
+  const requests = [];
   const intervals = [];
   let badgeEnabled = showCloudBadge;
   dom.window.ApiClient = {
@@ -31,7 +32,8 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
     ...(serverAddress ? { serverAddress: () => serverAddress } : {}),
     accessToken: () => 'test-token'
   };
-  dom.window.fetch = (url) => {
+  dom.window.fetch = (url, options) => {
+    requests.push({ url: String(url), options });
     calls.push(String(url));
     let data = {};
     if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
@@ -48,6 +50,7 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
   return {
     dom,
     calls,
+    requests,
     intervals,
     setCloudBadge: (enabled) => { badgeEnabled = enabled; }
   };
@@ -414,4 +417,18 @@ test('Downloads library picker cannot be replaced by a slow previous server', as
   h.respond(0, [{id:'a',name:'A library'}]); await settle();
   assert.match(h.q('#fedBrowseLibrary').innerHTML, /B library/);
   assert.doesNotMatch(h.q('#fedBrowseLibrary').innerHTML, /A library/);
+});
+
+// Jellyfin 12 disables X-Emby-Token by default. Exercise actual browser requests.
+test('badge requests authenticate with the supported Jellyfin 12 header', async () => {
+  const { dom, requests } = makeWindow(true);
+  await settle();
+  await settle();
+  assert.ok(requests.length > 0);
+  for (const { url, options } of requests) {
+    assert.equal(options.headers.Authorization, 'MediaBrowser Token="test-token"');
+    assert.equal(options.headers['X-Emby-Token'], undefined);
+    assert.ok(!url.includes('test-token'));
+  }
+  dom.window.close();
 });

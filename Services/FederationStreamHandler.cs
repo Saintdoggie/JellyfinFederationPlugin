@@ -435,9 +435,10 @@ namespace Jellyfin.Plugin.Federation.Services
             string loopbackUrl,
             HttpRequest request,
             HttpResponse response,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? internalRelayKey = null)
         {
-            await RelayAsync(loopbackUrl, request, response, cancellationToken).ConfigureAwait(false);
+            await RelayAsync(loopbackUrl, request, response, cancellationToken, internalRelayKey: internalRelayKey).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -472,7 +473,8 @@ namespace Jellyfin.Plugin.Federation.Services
             HttpRequest request,
             HttpResponse response,
             CancellationToken cancellationToken,
-            int? capMbps = null)
+            int? capMbps = null,
+            string? internalRelayKey = null)
         {
             var rangeStart = 0L;
             try
@@ -511,6 +513,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         using var remoteReq = new HttpRequestMessage(HttpMethods.IsHead(request.Method) ? HttpMethod.Head : HttpMethod.Get, url);
                         remoteReq.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                        if (internalRelayKey != null)
+                        {
+                            remoteReq.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
+                        }
                         foreach (var header in new[] { "If-Range", "If-None-Match", "If-Modified-Since" })
                         {
                             if (request.Headers.TryGetValue(header, out var value)) remoteReq.Headers.TryAddWithoutValidation(header, value.ToArray());

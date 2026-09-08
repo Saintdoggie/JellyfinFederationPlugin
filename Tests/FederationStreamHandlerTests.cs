@@ -126,6 +126,37 @@ public class FederationStreamHandlerTests : IDisposable
         return (context.Request, context.Response, body);
     }
 
+    [Theory]
+    [InlineData("GET")]
+    [InlineData("HEAD")]
+    public async Task DirectGateway_UsesNativeAuthorizationWithoutLeakingOrForwardingViewerCredentials(string method)
+    {
+        const string relayKey = "internal-key";
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            Assert.Equal(method, req.Method.Method);
+            Assert.Equal("MediaBrowser Token=\"internal-key\"", req.Headers.Authorization?.ToString());
+            Assert.DoesNotContain(relayKey, req.RequestUri!.ToString());
+            Assert.False(req.Headers.Contains("X-Emby-Token"));
+            Assert.Equal("bytes=2-4", req.Headers.Range?.ToString());
+            var result = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(method == "HEAD" ? Array.Empty<byte>() : new byte[] { 2, 3, 4 })
+            };
+            result.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(2, 4, 10);
+            result.Content.Headers.ContentLength = 3;
+            return result;
+        }));
+        var (request, response, body) = MakeContext("bytes=2-4");
+        request.Method = method;
+        request.Headers.Authorization = "MediaBrowser Token=\"viewer-key\"";
+        await _handler.HandleDirectGatewayAsync("http://127.0.0.1/Videos/item/stream?Static=true", request, response, CancellationToken.None, relayKey);
+
+        Assert.Equal(206, response.StatusCode);
+        Assert.Equal(method == "HEAD" ? 0 : 3, body.Length);
+        Assert.DoesNotContain(relayKey, string.Join(" ", response.Headers));
+    }
+
     [Fact]
     public async Task Seek_MidFileRangeRequest_ContentLengthMatchesTheActualPartialBodySize()
     {

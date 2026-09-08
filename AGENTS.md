@@ -14,10 +14,10 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
   sign-in, library consent, one-time connect codes, peers, and Jellyfin-to-Plex
   imports through a read-only media mount (legacy `.strm` exports are not
   native Plex playback).
-- Main plugin target: .NET 9, Jellyfin 10.11.6.
+- Main plugin target: .NET 10, Jellyfin 12.0.0. Companion remains .NET 9.
 - Source branch: `master`; GitHub remote: `Saintdoggie/JellyfinFederationPlugin`.
-- Current published baseline is version 0.0.133. GitHub releases and
-  `manifest.json` are the catalog of record; `TODO.md` tracks remaining work.
+- Jellyfin 12 release is version 0.0.136; 0.0.135 remains the Jellyfin 10.11
+  build. GitHub releases and `manifest.json` are the catalog of record; `TODO.md` tracks remaining work.
 
 ## Read these files by task
 
