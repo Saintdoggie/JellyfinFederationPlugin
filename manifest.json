@@ -16,6 +16,14 @@
         "checksum": "d34568a067046ff789d14b8ca12899f0"
       },
       {
+        "version": "0.0.140",
+        "changelog": "Files downloaded from a friend stay local and are not shared onward.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:51:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.140/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.138",
         "changelog": "Proxy stream HMAC binds download=true; GetDownloadUrl honors EnableContentDownloading.",
         "targetAbi": "12.0.0.0",
