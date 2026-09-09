@@ -368,10 +368,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// this never touches server storage at all, it just resolves a URL that
         /// streams straight to whoever asked. Shares this method's item/source
         /// resolution (and its failure messages) with StartDownload rather than
-        /// duplicating it.
+        /// duplicating it. The HMAC on the returned URL is minted for download;
+        /// a play signature is not sufficient. <paramref name="enableContentDownloading"/>
+        /// is the acting user's Jellyfin <c>EnableContentDownloading</c> policy,
+        /// resolved by the caller from the session, never from a query string.
         /// </summary>
-        public (bool Success, string Message, string? Url, string? FileName) GetDownloadUrl(string localItemId)
+        public (bool Success, string Message, string? Url, string? FileName) GetDownloadUrl(string localItemId, bool enableContentDownloading)
         {
+            if (!enableContentDownloading)
+            {
+                return (false, "Downloading is disabled for this user.", null, null);
+            }
+
             if (!Guid.TryParse(localItemId, out var itemGuid))
             {
                 return (false, "Invalid item id.", null, null);
@@ -396,7 +404,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Could not find this item's source server.", null, null);
             }
 
-            var url = _federationManager.BuildStaticPath(entry.ItemType, source);
+            var url = _federationManager.BuildStaticPath(entry.ItemType, source, download: true);
             if (url == null)
             {
                 return (false, "This source is not currently available for download.", null, null);
@@ -405,7 +413,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mp4" : entry.Metadata.Container.Trim().TrimStart('.');
             var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
             var separator = url.Contains('?', StringComparison.Ordinal) ? "&" : "?";
-            var downloadUrl = $"{url}{separator}download=true&fileName={Uri.EscapeDataString(fileName)}";
+            var downloadUrl = $"{url}{separator}fileName={Uri.EscapeDataString(fileName)}";
 
             return (true, "OK", downloadUrl, fileName);
         }
