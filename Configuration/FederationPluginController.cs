@@ -2674,6 +2674,9 @@ namespace Jellyfin.Plugin.Federation.Api
         /// rationale). Anonymous for the same reason as <see cref="Stream"/> - media
         /// players fetch media URLs without Jellyfin auth headers - but bounded to a
         /// short-lived token minted for exactly this item, not a standing credential.
+        /// Optional <c>capMbps</c>/<c>maxHeight</c> come from the viewing peer's
+        /// <see cref="Services.WanBandwidthMonitor.GetEffectiveCapMbps"/> so a WAN
+        /// link requests a lower-bitrate transcode; LAN/uncapped stays Static=true.
         /// </summary>
         [HttpGet("DirectStream/{itemId}")]
         [HttpHead("DirectStream/{itemId}")]
@@ -2683,7 +2686,9 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string token,
             CancellationToken cancellationToken,
             [FromQuery] bool audio = false,
-            [FromQuery] bool download = false)
+            [FromQuery] bool download = false,
+            [FromQuery] int? capMbps = null,
+            [FromQuery] int maxHeight = 0)
         {
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
@@ -2697,8 +2702,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
-            var endpoint = audio ? "Audio" : "Videos";
-            var loopbackUrl = $"{localUrl}/{endpoint}/{itemGuid:N}/stream?Static=true";
+            // Downloads and audio stay raw. Video uses the viewing peer's WAN cap
+            // (capMbps/maxHeight on the DirectStream URL) so LAN Direct is unchanged
+            // and a classified WAN link gets a lower-bitrate transcode instead of
+            // Static=true.
+            var appliedCap = audio || download ? null : capMbps;
+            var loopbackUrl = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(localUrl, itemGuid, audio, appliedCap, maxHeight);
 
             await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();

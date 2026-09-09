@@ -465,7 +465,7 @@
                         A pool is a named group of Federation servers who all federate with every other member, not just you.
                         Create a pool and invite servers into it - each invite still goes through an accept step, so every
                         server's admin has to agree before it joins anyone's pool, whether they're a brand new contact or
-                        already a friend. To invite a friend you're already connected to, use their entry under People above.
+                        already a friend. To invite a friend you're already connected to, use their entry under Friends above.
                     </p>
 
                     <div class="fed-inline">
@@ -666,7 +666,7 @@
                         </div>
                         <p class="fed-hint">
                             To share something again, use "Share again" on this item's own detail page (everyone), or
-                            the People tab's per-friend/per-user editors (one friend or user).
+                            the Friends tab's per-friend/per-user editors (one friend or user).
                         </p>
                     </div>
                 </div>
@@ -878,7 +878,7 @@
                     <!--
                         Hidden Items: purely local, receiving-side suppression - the admin
                         chose not to see something a friend is sharing (a worse rip they
-                        already own, unwanted clutter, ...), independent of the People
+                        already own, unwanted clutter, ...), independent of the Friends
                         panel's per-friend sharing permissions (which control what a
                         friend can see of THIS server's own content - the opposite
                         direction). See Configuration/FederationPluginController.cs's
@@ -934,7 +934,7 @@
                     // Per-friend management panel open/closed state, keyed by
                     // server.Id, preserved across the DOM rebuilds renderFriends()
                     // does on every reload. Undefined (never toggled) means closed -
-                    // the panel starts collapsed so the People list reads as a plain
+                    // the panel starts collapsed so the Friends list reads as a plain
                     // roster until an admin asks to manage someone.
                     var expandedFriends = {};
 
@@ -1744,12 +1744,13 @@
                             setFriendPoolStatus(friendId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
                                 loadPoolInvites();
+                                loadPools();
                             }
                         })
                         .catch(function (e) { setFriendPoolStatus(friendId, 'Failed: ' + e.message, 'err'); });
                     }
 
-                    /* ---------------- People (friends) ---------------- */
+                    /* ---------------- Friends ---------------- */
 
                     /* A switched-off server is the single easiest way to end up with an
                        empty federated library and no visible reason for it: every card
@@ -3063,8 +3064,13 @@
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setPoolStatus(res.message, res.success ? 'ok' : 'err');
-                            if (res.success && urlEl) {
-                                urlEl.value = '';
+                            if (res.success) {
+                                if (urlEl) {
+                                    urlEl.value = '';
+                                }
+
+                                loadPoolInvites();
+                                loadPools();
                             }
                         })
                         .catch(function (e) { setPoolStatus('Failed: ' + e.message, 'err'); });
@@ -4333,7 +4339,7 @@
                                 var configured = (currentConfig.RemoteServers || []).length;
                                 var enabled = (currentConfig.RemoteServers || []).filter(function (x) { return x.Enabled !== false; }).length;
                                 hint.textContent = (configured > 0 && enabled === 0)
-                                    ? 'Nothing to show: every connected friend is switched off. Re-enable one under People to pick their libraries.'
+                                    ? 'Nothing to show: every connected friend is switched off. Re-enable one under Friends to pick their libraries.'
                                     : 'No servers available yet.';
                                 return;
                             }
@@ -4594,7 +4600,7 @@
                     // (same endpoint the item detail page's own "Stop sharing" button
                     // uses); "Hide from one friend"/"...one of their users" reuse the
                     // existing Friends/{id}/Sharing and Friends/{id}/RemoteUserRule
-                    // endpoints the People tab's per-friend editors already call, just
+                    // endpoints the Friends tab's per-friend editors already call, just
                     // pre-filled with whatever that friend/user already had plus the
                     // newly selected items merged in - selecting cover art here is a
                     // faster way to build the same exclude/block lists, not a second

@@ -12,9 +12,11 @@ using PersonInfo = MediaBrowser.Controller.Entities.PersonInfo;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Entities;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -52,12 +54,17 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal const int ProxySignatureLifetimeHours = 24;
 
+        internal const int DefaultLoopbackPort = 8096;
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<FederationLibraryManager> _logger;
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly FederationItemCache _cache;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly IMediaStreamRepository _mediaStreamRepository;
+        private readonly IHttpContextAccessor? _httpContextAccessor;
+        private readonly IServerApplicationHost? _applicationHost;
+        private int _observedListenPort;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationLibraryManager"/> class.
@@ -68,7 +75,9 @@ namespace Jellyfin.Plugin.Federation.Services
             IRemoteServerClientFactory clientFactory,
             FederationItemCache cache,
             WanBandwidthMonitor bandwidthMonitor,
-            IMediaStreamRepository mediaStreamRepository)
+            IMediaStreamRepository mediaStreamRepository,
+            IHttpContextAccessor? httpContextAccessor = null,
+            IServerApplicationHost? applicationHost = null)
         {
             _libraryManager = libraryManager;
             _logger = logger;
@@ -76,6 +85,8 @@ namespace Jellyfin.Plugin.Federation.Services
             _cache = cache;
             _bandwidthMonitor = bandwidthMonitor;
             _mediaStreamRepository = mediaStreamRepository;
+            _httpContextAccessor = httpContextAccessor;
+            _applicationHost = applicationHost;
         }
 
         /// <summary>
@@ -716,6 +727,49 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Query-string suffix for the token-gated DirectStream URL. Empty when
+        /// audio or when no WAN cap applies (LAN, Off, unclassified, or a fast
+        /// WAN link). DirectStream honors these by requesting a lower-bitrate
+        /// transcode from this server's native loopback endpoint instead of
+        /// <c>Static=true</c>.
+        /// </summary>
+        public string BuildDirectStreamCapQuery(RemoteServer server, bool isAudio)
+        {
+            if (isAudio)
+            {
+                return string.Empty;
+            }
+
+            var capMbps = _bandwidthMonitor.GetEffectiveCapMbps(server);
+            if (capMbps is null or <= 0)
+            {
+                return string.Empty;
+            }
+
+            var height = server.WanMaxHeight > 0 ? $"&maxHeight={server.WanMaxHeight}" : string.Empty;
+            return $"&capMbps={capMbps.Value}{height}";
+        }
+
+        /// <summary>
+        /// Native loopback stream URL used by DirectStream. LAN/uncapped stays
+        /// <c>Static=true</c>; a positive WAN cap requests h264/aac at that bitrate.
+        /// Audio is never capped.
+        /// </summary>
+        public static string BuildDirectGatewayLoopbackUrl(string localBaseUrl, Guid itemId, bool audio, int? capMbps, int maxHeight = 0)
+        {
+            var endpoint = audio ? "Audio" : "Videos";
+            var baseUrl = $"{localBaseUrl.TrimEnd('/')}/{endpoint}/{itemId:N}/stream";
+            if (audio || capMbps is null or <= 0)
+            {
+                return $"{baseUrl}?Static=true";
+            }
+
+            var videoBitrateBps = capMbps.Value * 1_000_000L;
+            var heightParam = maxHeight > 0 ? $"&MaxHeight={maxHeight}" : string.Empty;
+            return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
+        }
+
+        /// <summary>
         /// Item types whose media is streamed directly. Container types (Series,
         /// Season, BoxSet, PhotoAlbum) are folders and must never get a stream path.
         /// Photo/Book are not streamed through the media pipeline either.
@@ -774,25 +828,6 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Base URL the server-side transcoder uses when fetching a Proxy-mode
-        /// federated stream from itself. Deliberately loopback by default and NOT
-        /// the public URL from <see cref="GetLocalServerUrl"/>: on a tunnel/VPS
-        /// setup (which is the common case), routing through the public host
-        /// makes every byte round-trip out through DNS/CDN/tunnel and back to
-        /// the same process, adding several seconds of latency and the full
-        /// tunnel RTT to playback startup. Clients never see this URL - it is
-        /// only consumed by the local ffmpeg process running inside the same
-        /// Jellyfin instance, which reaches itself fastest over loopback.
-        ///
-        /// An admin can override this via Configuration.InternalServerUrl (Advanced
-        /// settings on the plugin page) for the uncommon case where loopback isn't
-        /// actually reachable, or the Kestrel port isn't the default 8096. Port is
-        /// otherwise hardcoded to 8096 rather than detected, unlike
-        /// FederationMediaSourceProvider's equivalent: this runs during background
-        /// library sync, outside any HTTP request, so there is no live connection to
-        /// read an actual listening port from.
-        /// </summary>
-        /// <summary>
         /// Existing local library that a friend's Movie/Series (etc.) catalog
         /// should merge into, so checking a Plex "TV Shows" section lands in
         /// this server's Shows folder rather than creating a new one.
@@ -843,6 +878,11 @@ namespace Jellyfin.Plugin.Federation.Services
             return people;
         }
 
+        /// <summary>
+        /// Base URL the server-side transcoder uses when fetching a Proxy-mode
+        /// federated stream from itself. Prefers <c>InternalServerUrl</c>, then the
+        /// live Kestrel port, then the configured <c>HttpPort</c>, then 8096.
+        /// </summary>
         public string GetInternalPlaybackBaseUrl()
         {
             var config = Plugin.Instance?.Configuration;
@@ -851,7 +891,59 @@ namespace Jellyfin.Plugin.Federation.Services
                 return config.InternalServerUrl.TrimEnd('/');
             }
 
-            return "http://127.0.0.1:8096";
+            return $"http://127.0.0.1:{ResolveLoopbackListenPort()}";
+        }
+
+        /// <summary>
+        /// True when <paramref name="url"/> is this plugin's default loopback
+        /// fallback (<c>127.0.0.1:8096</c> / <c>localhost:8096</c>) and
+        /// <paramref name="liveBaseUrl"/> is a different reachable base, so a
+        /// sync-stamped Path would send ffmpeg at a dead port.
+        /// </summary>
+        internal static bool IsDeadDefaultLoopbackUrl(string? url, string? liveBaseUrl)
+        {
+            if (string.IsNullOrEmpty(url)
+                || string.IsNullOrEmpty(liveBaseUrl)
+                || !Uri.TryCreate(url, UriKind.Absolute, out var stamped)
+                || !Uri.TryCreate(liveBaseUrl, UriKind.Absolute, out var live))
+            {
+                return false;
+            }
+
+            return stamped.IsLoopback
+                && stamped.Port == DefaultLoopbackPort
+                && live.Port > 0
+                && live.Port != DefaultLoopbackPort;
+        }
+
+        internal int ResolveLoopbackListenPort()
+        {
+            var livePort = _httpContextAccessor?.HttpContext?.Connection?.LocalPort ?? 0;
+            if (livePort > 0)
+            {
+                _observedListenPort = livePort;
+                return livePort;
+            }
+
+            if (_observedListenPort > 0)
+            {
+                return _observedListenPort;
+            }
+
+            try
+            {
+                var configured = _applicationHost?.HttpPort ?? 0;
+                if (configured > 0)
+                {
+                    return configured;
+                }
+            }
+            catch (Exception)
+            {
+                // Test doubles may not implement HttpPort.
+            }
+
+            return DefaultLoopbackPort;
         }
 
         /// <summary>

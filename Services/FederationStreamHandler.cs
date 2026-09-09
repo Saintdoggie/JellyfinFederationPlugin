@@ -174,7 +174,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var audioFlag = isAudio ? "&audio=true" : string.Empty;
-            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
+            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, isAudio);
+            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}{capQuery}";
         }
 
         /// <summary>

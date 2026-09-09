@@ -758,6 +758,58 @@ test('catalog hide-from-user keeps prior ids when GET omits BlockedItemIds', asy
   assert.deepEqual(h.posts[1].body.BlockedItemIds, ['item-old', 'item-new', 'item-newer']);
 });
 
+function poolMembershipHarness(success) {
+  const source = ['addFriendToPool', 'invitePool'].map(extractConfigFunction).join('\n');
+  const fetches = [];
+  const nodes = new Map();
+  const q = (sel) => {
+    if (!nodes.has(sel)) {
+      nodes.set(sel, { value: '', style: {}, innerHTML: '', textContent: '' });
+    }
+    return nodes.get(sel);
+  };
+  q('.fedPoolPick[data-friend="friend-1"]').value = 'pool-1';
+  q('#fedPoolInvite-pool-1').value = 'https://friend.example';
+  const api = new Function('fedFetch', 'q', `
+    function setFriendPoolStatus() {}
+    function setPoolStatus() {}
+    function readJson(r) { return r.json(); }
+    var loadPoolsCalls = 0;
+    var loadInvitesCalls = 0;
+    function loadPools() { loadPoolsCalls += 1; }
+    function loadPoolInvites() { loadInvitesCalls += 1; }
+    ${source}
+    return {
+      add: addFriendToPool,
+      invite: invitePool,
+      counts: function () { return { pools: loadPoolsCalls, invites: loadInvitesCalls }; }
+    };
+  `)((url, request) => {
+    fetches.push({ url, body: request && request.body ? JSON.parse(request.body) : null });
+    return Promise.resolve({ ok: true, json: async () => ({ success, message: 'ok' }) });
+  }, q);
+  return { api, fetches, q };
+}
+
+test('adding a friend to a pool and sending an invite refresh pool lists', async () => {
+  const ok = poolMembershipHarness(true);
+  ok.api.add('friend-1');
+  ok.api.invite('pool-1');
+  await settle();
+  assert.equal(ok.fetches.length, 2);
+  assert.match(ok.fetches[0].url, /Pools\/pool-1\/AddFriend/);
+  assert.match(ok.fetches[1].url, /Pools\/pool-1\/Invite/);
+  assert.deepEqual(ok.api.counts(), { pools: 2, invites: 2 });
+  assert.equal(ok.q('#fedPoolInvite-pool-1').value, '');
+
+  const fail = poolMembershipHarness(false);
+  fail.api.add('friend-1');
+  fail.api.invite('pool-1');
+  await settle();
+  assert.deepEqual(fail.api.counts(), { pools: 0, invites: 0 });
+  assert.equal(fail.q('#fedPoolInvite-pool-1').value, 'https://friend.example');
+});
+
 test('badge requests authenticate with the supported Jellyfin 12 header', async () => {
   const { dom, requests } = makeWindow(true);
   await settle();
