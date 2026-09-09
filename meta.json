@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.143",
-  "changelog": "Device download works for universally allowed items even when other titles have per-user rules.",
+  "version": "0.0.146",
+  "changelog": "Companion local Plex connect and media-folder path send the owner access header.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-09T01:52:15Z",
+  "timestamp": "2026-09-09T01:54:30Z",
   "imageUrl": "thumb.png"
 }

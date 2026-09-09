@@ -749,7 +749,7 @@ function escapeHtml(s) {
 connectLocalBtn.addEventListener('click', async () => {
   connectLocalBtn.disabled = true;
   connectStatus.textContent = 'Connecting to local Plex…';
-  const res = await fetch('/api/plex/connect-local', {
+  const res = await apiFetch('/api/plex/connect-local', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: localPlexUrl.value.trim(), token: localPlexToken.value.trim() })
@@ -764,7 +764,7 @@ connectLocalBtn.addEventListener('click', async () => {
 
 savePlexRootBtn.addEventListener('click', async () => {
   savePlexRootBtn.disabled = true;
-  const res = await fetch('/api/plex-visible-root', {
+  const res = await apiFetch('/api/plex-visible-root', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: plexVisibleRootInput.value.trim() })
