@@ -1267,17 +1267,20 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Server-to-server: a friend telling us the complete, current list of
         /// per-remote-user overrides they've configured for our own local users.
         /// Requires a valid federation token - see <see cref="FederationTokenAuth"/>.
+        /// Identity is the authenticated caller, not <c>payload.FromFederationId</c>
+        /// (a token for friend A must not write friend B's rules).
         /// </summary>
         [HttpPost("Friends/RemoteUserRules")]
         [AllowAnonymous]
         public IActionResult ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload)
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
 
-            _friends.ReceiveRemoteUserAccessRules(payload);
+            _friends.ReceiveRemoteUserAccessRules(caller, payload);
             return Ok();
         }
 
@@ -1742,17 +1745,19 @@ namespace Jellyfin.Plugin.Federation.Api
         /// a pool. Anonymous at the ASP.NET layer like every genuine peer endpoint -
         /// authenticated instead via the federation token, which never satisfies
         /// RequiresElevation (it isn't registered with Jellyfin's own auth manager).
+        /// Identity is the authenticated caller, not <c>payload.FromFederationId</c>.
         /// </summary>
         [HttpPost("Pools/InviteNotice")]
         [AllowAnonymous]
         public async Task<IActionResult> ReceivePoolInviteNotice([FromBody] PoolInviteNoticePayload payload, CancellationToken cancellationToken)
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
 
-            await _friends.ReceivePoolInviteNotice(payload, cancellationToken).ConfigureAwait(false);
+            await _friends.ReceivePoolInviteNotice(caller, payload, cancellationToken).ConfigureAwait(false);
             return Ok();
         }
 
@@ -1793,18 +1798,20 @@ namespace Jellyfin.Plugin.Federation.Api
         /// see <see cref="ReceivePoolInviteNotice"/> for that. Anonymous at the
         /// ASP.NET layer like every genuine peer endpoint - authenticated instead
         /// via the federation token, which never satisfies RequiresElevation (it
-        /// isn't registered with Jellyfin's own auth manager).
+        /// isn't registered with Jellyfin's own auth manager). Identity is the
+        /// authenticated caller, not <c>payload.FromFederationId</c>.
         /// </summary>
         [HttpPost("Pools/Notice")]
         [AllowAnonymous]
         public async Task<IActionResult> ReceivePoolNotice([FromBody] PoolNoticePayload payload, CancellationToken cancellationToken)
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
 
-            await _friends.ReceivePoolNotice(payload, cancellationToken).ConfigureAwait(false);
+            await _friends.ReceivePoolNotice(caller, payload, cancellationToken).ConfigureAwait(false);
             return Ok();
         }
 

@@ -307,14 +307,15 @@ public class FederationPoolTests : IDisposable
         // already a member of - no accept step, this is a roster sync. The
         // resulting fan-out to a member we don't know yet still goes through the
         // ordinary friend-request handshake, same as the accept-flow path.
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
         _plugin.Configuration.Pools.Add(new FederationPool
         {
             Id = "pool-1",
@@ -342,6 +343,7 @@ public class FederationPoolTests : IDisposable
         });
 
         await _service.ReceivePoolNotice(
+            bob,
             new PoolNoticePayload
             {
                 FromFederationId = "bob-fed-id",
@@ -376,16 +378,18 @@ public class FederationPoolTests : IDisposable
         // Introductions to a genuinely new pool must go through
         // ReceivePoolInviteNotice (which requires an accept) - a plain roster-sync
         // notice can never be used to join a pool for the first time.
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
 
         await _service.ReceivePoolNotice(
+            bob,
             new PoolNoticePayload { FromFederationId = "bob-fed-id", PoolId = "pool-1", PoolName = "Movie Night" },
             CancellationToken.None);
 
@@ -398,7 +402,16 @@ public class FederationPoolTests : IDisposable
         var called = false;
         UseFakeHttp(req => { called = true; return new HttpResponseMessage(HttpStatusCode.OK); });
 
+        var stranger = new RemoteServer
+        {
+            Id = "stranger",
+            Name = "Stranger",
+            Url = "http://stranger.example",
+            FederationId = "someone-we-dont-know"
+        };
+
         await _service.ReceivePoolNotice(
+            stranger,
             new PoolNoticePayload { FromFederationId = "someone-we-dont-know", PoolId = "pool-1" },
             CancellationToken.None);
 
@@ -407,18 +420,86 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceivePoolNotice_TokenForA_ClaimingB_DoesNotMutatePoolAsB()
+    {
+        var alice = new RemoteServer
+        {
+            Id = "friend-a",
+            Name = "Alice",
+            Url = "http://alice.example",
+            ApiKey = "key-a",
+            IssuedApiKey = "token-alice",
+            FederationId = "alice-fed-id"
+        };
+        var bob = new RemoteServer
+        {
+            Id = "friend-b",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-b",
+            IssuedApiKey = "token-bob",
+            FederationId = "bob-fed-id"
+        };
+        _plugin.Configuration.RemoteServers.Add(alice);
+        _plugin.Configuration.RemoteServers.Add(bob);
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IconBase64 = "original-icon",
+            Members = new List<PoolMember>
+            {
+                new PoolMember { FederationId = "self-fed-id", Name = "This Server", Url = "http://local.test:8096" },
+                new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
+            }
+        });
+
+        var called = false;
+        UseFakeHttp(req => { called = true; return new HttpResponseMessage(HttpStatusCode.OK); });
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Headers[FederationTokenAuth.Header] = "token-alice";
+        var caller = FederationTokenAuth.ResolveCaller(httpContext.Request);
+        Assert.Same(alice, caller);
+
+        await _service.ReceivePoolNotice(
+            caller!,
+            new PoolNoticePayload
+            {
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Hijacked",
+                IconBase64 = "hijacked-icon",
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { FederationId = "mallory-fed-id", Name = "Mallory", Url = "http://mallory.example" }
+                }
+            },
+            CancellationToken.None);
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("Movie Night", pool.Name);
+        Assert.Equal("original-icon", pool.IconBase64);
+        Assert.DoesNotContain(pool.Members, m => m.Url == "http://mallory.example");
+        Assert.DoesNotContain(pool.Members, m => m.Url == "http://alice.example");
+        Assert.False(called);
+    }
+
+    [Fact]
     public async Task ReceivePoolInviteNotice_NewPool_StagesIncomingInviteWithoutJoining()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
 
         await _service.ReceivePoolInviteNotice(
+            bob,
             new PoolInviteNoticePayload
             {
                 InviteId = "invite-1",
@@ -438,21 +519,70 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceivePoolInviteNotice_TokenForA_ClaimingB_DoesNotStageInviteAsB()
+    {
+        var alice = new RemoteServer
+        {
+            Id = "friend-a",
+            Name = "Alice",
+            Url = "http://alice.example",
+            ApiKey = "key-a",
+            IssuedApiKey = "token-alice",
+            FederationId = "alice-fed-id"
+        };
+        var bob = new RemoteServer
+        {
+            Id = "friend-b",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-b",
+            IssuedApiKey = "token-bob",
+            FederationId = "bob-fed-id"
+        };
+        _plugin.Configuration.RemoteServers.Add(alice);
+        _plugin.Configuration.RemoteServers.Add(bob);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Headers[FederationTokenAuth.Header] = "token-alice";
+        var caller = FederationTokenAuth.ResolveCaller(httpContext.Request);
+        Assert.Same(alice, caller);
+
+        await _service.ReceivePoolInviteNotice(
+            caller!,
+            new PoolInviteNoticePayload
+            {
+                InviteId = "invite-hijack",
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Hijacked",
+                OwnerFederationId = "bob-fed-id",
+                OwnerName = "Bob",
+                Roster = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+            },
+            CancellationToken.None);
+
+        Assert.Empty(_plugin.Configuration.Pools);
+        Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
+    }
+
+    [Fact]
     public async Task ReceivePoolInviteNotice_PoolAlreadyJoined_SyncsInsteadOfStagingAnotherInvite()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
         _plugin.Configuration.Pools.Add(new FederationPool { Id = "pool-1", Name = "Movie Night" });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
 
         await _service.ReceivePoolInviteNotice(
+            bob,
             new PoolInviteNoticePayload
             {
                 InviteId = "invite-1",
@@ -471,14 +601,15 @@ public class FederationPoolTests : IDisposable
     [Fact]
     public async Task ReceivePoolNotice_OversizedIcon_IsIgnored_AndRosterStillSyncs()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
         _plugin.Configuration.Pools.Add(new FederationPool
         {
             Id = "pool-1",
@@ -502,6 +633,7 @@ public class FederationPoolTests : IDisposable
         });
 
         await _service.ReceivePoolNotice(
+            bob,
             new PoolNoticePayload
             {
                 FromFederationId = "bob-fed-id",
@@ -526,16 +658,18 @@ public class FederationPoolTests : IDisposable
     [Fact]
     public async Task ReceivePoolInviteNotice_OversizedIcon_IsNotStored_InviteStillStaged()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
 
         await _service.ReceivePoolInviteNotice(
+            bob,
             new PoolInviteNoticePayload
             {
                 InviteId = "invite-1",
@@ -558,14 +692,15 @@ public class FederationPoolTests : IDisposable
     [Fact]
     public async Task ReceivePoolInviteNotice_OversizedIconOnJoinedPool_DoesNotOverwrite_AndRosterStillSyncs()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             Name = "Bob",
             Url = "http://bob.example",
             ApiKey = "key-1",
             FederationId = "bob-fed-id"
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
         _plugin.Configuration.Pools.Add(new FederationPool
         {
             Id = "pool-1",
@@ -576,6 +711,7 @@ public class FederationPoolTests : IDisposable
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
 
         await _service.ReceivePoolInviteNotice(
+            bob,
             new PoolInviteNoticePayload
             {
                 InviteId = "invite-1",
