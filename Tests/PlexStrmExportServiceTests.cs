@@ -166,4 +166,88 @@ public class PlexStrmExportServiceTests : IDisposable
 
         Assert.False(Directory.Exists(_exportPath));
     }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Export_PreservesForeignStrm_AndRemovesOnlyOwned()
+    {
+        EnableExport();
+        Directory.CreateDirectory(_exportPath);
+        var foreignRoot = Path.Combine(_exportPath, "personal.strm");
+        var foreignNestedDir = Path.Combine(_exportPath, "Movies", "My Own Movie (2018)");
+        var foreignNested = Path.Combine(foreignNestedDir, "My Own Movie (2018).strm");
+        Directory.CreateDirectory(foreignNestedDir);
+        await File.WriteAllTextAsync(foreignRoot, "https://personal.example/video");
+        await File.WriteAllTextAsync(foreignNested, "plugin://plugin.video.kodi/play");
+
+        AddMovie("Keep Me", 2021);
+        var removedId = Guid.NewGuid();
+        AddMovie("Remove Me", 2019, removedId);
+        var service = new PlexStrmExportService(NullLogger<PlexStrmExportService>.Instance, _federationManager);
+        await service.ExportAsync(System.Threading.CancellationToken.None);
+
+        var keepPath = Path.Combine(_exportPath, "Movies", "Keep Me (2021)", "Keep Me (2021).strm");
+        var removedFolder = Path.Combine(_exportPath, "Movies", "Remove Me (2019)");
+        var removedPath = Path.Combine(removedFolder, "Remove Me (2019).strm");
+        Assert.True(File.Exists(keepPath));
+        Assert.True(File.Exists(removedPath));
+        Assert.Equal("https://personal.example/video", await File.ReadAllTextAsync(foreignRoot));
+        Assert.Equal("plugin://plugin.video.kodi/play", await File.ReadAllTextAsync(foreignNested));
+
+        _cache.PruneServerSources("Movies", "serverA", new[] { _federationManager.GetAllEntries().Single(e => e.Metadata.Name == "Keep Me").GetPrimarySource()!.RemoteItemId });
+        await service.ExportAsync(System.Threading.CancellationToken.None);
+
+        Assert.True(File.Exists(keepPath));
+        Assert.False(File.Exists(removedPath));
+        Assert.False(Directory.Exists(removedFolder));
+        Assert.True(File.Exists(foreignRoot));
+        Assert.True(File.Exists(foreignNested));
+        Assert.Equal("https://personal.example/video", await File.ReadAllTextAsync(foreignRoot));
+        Assert.Equal("plugin://plugin.video.kodi/play", await File.ReadAllTextAsync(foreignNested));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Export_AdoptsPluginStreamUrlsWithoutManifest_ThenRemovesWhenStale()
+    {
+        EnableExport();
+        var stalePlugin = Path.Combine(_exportPath, "Movies", "Old Export (2010)", "Old Export (2010).strm");
+        Directory.CreateDirectory(Path.GetDirectoryName(stalePlugin)!);
+        await File.WriteAllTextAsync(
+            stalePlugin,
+            "http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId=deadbeefdeadbeefdeadbeefdeadbeef&sig=old\n");
+        var foreign = Path.Combine(_exportPath, "personal.strm");
+        await File.WriteAllTextAsync(foreign, "https://personal.example/video");
+
+        var service = new PlexStrmExportService(NullLogger<PlexStrmExportService>.Instance, _federationManager);
+        await service.ExportAsync(System.Threading.CancellationToken.None);
+
+        Assert.False(File.Exists(stalePlugin));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(stalePlugin)));
+        Assert.Equal(foreign, Assert.Single(Directory.GetFiles(_exportPath, "*.strm", SearchOption.AllDirectories)));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Export_DoesNotOverwriteUnmanagedStrmAtSamePath()
+    {
+        EnableExport();
+        var path = Path.Combine(_exportPath, "Movies", "Johnny English (2003)", "Johnny English (2003).strm");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "https://personal.example/keep");
+        AddMovie("Johnny English", 2003);
+        var service = new PlexStrmExportService(NullLogger<PlexStrmExportService>.Instance, _federationManager);
+
+        await service.ExportAsync(System.Threading.CancellationToken.None);
+
+        Assert.Equal("https://personal.example/keep", await File.ReadAllTextAsync(path));
+        Assert.Equal(path, Assert.Single(Directory.GetFiles(_exportPath, "*.strm", SearchOption.AllDirectories)));
+    }
+
+    [Fact]
+    public void IsPluginStreamUrl_AcceptsFederationProxyAndRejectsForeign()
+    {
+        Assert.True(PlexStrmExportService.IsPluginStreamUrl(
+            "http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId=abc\n"));
+        Assert.False(PlexStrmExportService.IsPluginStreamUrl("https://personal.example/video"));
+        Assert.False(PlexStrmExportService.IsPluginStreamUrl("plugin://plugin.video.kodi/play"));
+        Assert.False(PlexStrmExportService.IsPluginStreamUrl("not a url"));
+    }
 }
