@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.143",
+        "changelog": "Device download works for universally allowed items even when other titles have per-user rules.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:52:15Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.143/Jellyfin.Federation.zip",
+        "checksum": "c1b4af9acf131c54948327b8aa7e23e2"
+      },
+      {
         "version": "0.0.142",
         "changelog": "Per-user BlockedItemIds round-trip through configuration GET; catalog hide-from-user merges instead of wiping.",
         "targetAbi": "12.0.0.0",

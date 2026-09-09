@@ -466,7 +466,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// button for every other user while preserving the rule boundary for items
         /// that genuinely differ by user.
         /// </summary>
-        public string? BuildStaticPath(FederatedCacheEntry entry, FederatedSource src)
+        public string? BuildStaticPath(FederatedCacheEntry entry, FederatedSource src, bool download = false)
         {
             var server = GetServer(src.ServerId);
             if (server == null || !server.Enabled
@@ -479,7 +479,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            return BuildProxyStreamUrl(entry.ItemType, src);
+            return BuildProxyStreamUrl(entry.ItemType, src, download: download);
         }
 
         /// <summary>

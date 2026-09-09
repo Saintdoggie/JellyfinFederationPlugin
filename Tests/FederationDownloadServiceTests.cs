@@ -292,11 +292,12 @@ public class FederationDownloadServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetDownloadUrl_ServerHasFriendUserAccessRules_Fails()
+    public void GetDownloadUrl_FriendUserAccessRulesThatDoNotRestrictItem_ReturnsDownloadUrl()
     {
-        // A per-remote-user restriction can't be enforced through a static URL
-        // handed straight to a browser download - same guard BuildStaticPath
-        // already applies for the item.Path it stamps for Jellyfin clients.
+        // Other titles on this server may have per-user rules. AllLibraries
+        // without a rating or item restriction still allows this exact item
+        // for every configured user, so the userless static download URL is
+        // safe — same as BuildStaticPath(entry, source) / persistence.
         _plugin.Configuration.RemoteServers.Add(new RemoteServer
         {
             Id = "server-1",
@@ -304,7 +305,58 @@ public class FederationDownloadServiceTests : IDisposable
             Url = "http://friend.example:8096",
             ApiKey = "federation-secret",
             Enabled = true,
-            FriendUserAccessRules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule() }
+            FriendUserAccessRules = new List<RemoteUserAccessRule>
+            {
+                new RemoteUserAccessRule
+                {
+                    RemoteUserId = Guid.NewGuid().ToString("N"),
+                    Mode = RemoteUserAccessMode.AllLibraries
+                }
+            }
+        });
+
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Open Movie", Container = "mkv" }, 0, "Movie");
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
+
+        Assert.True(success, message);
+        Assert.NotNull(url);
+        Assert.Contains("/Plugins/Federation/Stream?", url);
+        Assert.Contains("download=true", url);
+        Assert.Equal("Open Movie.mkv", fileName);
+        Assert.Contains(Uri.EscapeDataString(fileName!), url);
+
+        var playSig = _federationManager.CreateProxySignature("server-1", remoteItemId, false, null);
+        var downloadSig = _federationManager.CreateProxySignature("server-1", remoteItemId, false, null, download: true);
+        Assert.Contains($"sig={downloadSig}", url);
+        Assert.DoesNotContain($"sig={playSig}", url);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_FriendUserAccessRulesThatRestrictItem_Fails()
+    {
+        // A user-dependent restriction still cannot be enforced through a
+        // userless static URL handed to a browser download.
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "federation-secret",
+            Enabled = true,
+            FriendUserAccessRules = new List<RemoteUserAccessRule>
+            {
+                new RemoteUserAccessRule
+                {
+                    RemoteUserId = Guid.NewGuid().ToString("N"),
+                    Mode = RemoteUserAccessMode.Blocked
+                }
+            }
         });
 
         var itemId = Guid.NewGuid();

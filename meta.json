@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.142",
-  "changelog": "Per-user BlockedItemIds round-trip through configuration GET; catalog hide-from-user merges instead of wiping.",
+  "version": "0.0.143",
+  "changelog": "Device download works for universally allowed items even when other titles have per-user rules.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-09T01:49:00Z",
+  "timestamp": "2026-09-09T01:52:15Z",
   "imageUrl": "thumb.png"
 }
