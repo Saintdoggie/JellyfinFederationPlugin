@@ -444,7 +444,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// carry enough context to evaluate per-user library/rating rules.
         /// </para>
         /// </summary>
-        public string? BuildStaticPath(string itemType, FederatedSource src)
+        public string? BuildStaticPath(string itemType, FederatedSource src, bool download = false)
         {
             var server = GetServer(src.ServerId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -457,7 +457,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            return BuildProxyStreamUrl(itemType, src);
+            return BuildProxyStreamUrl(itemType, src, download: download);
         }
 
         /// <summary>
@@ -487,7 +487,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="BuildStaticPath"/>). Contains an item-scoped HMAC capability,
         /// never the remote server credential used to create it.
         /// </summary>
-        private string? BuildProxyStreamUrl(string itemType, FederatedSource src, string? requestingUserId = null)
+        private string? BuildProxyStreamUrl(string itemType, FederatedSource src, string? requestingUserId = null, bool download = false)
         {
             var server = GetServer(src.ServerId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -505,19 +505,20 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = GetInternalPlaybackBaseUrl();
             var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
             var userFlag = string.IsNullOrEmpty(requestingUserId) ? string.Empty : $"&requestingUserId={Uri.EscapeDataString(requestingUserId)}";
-            var signature = CreateProxySignature(src.ServerId, src.RemoteItemId, IsAudioType(itemType), requestingUserId);
-            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{userFlag}&sig={signature}";
+            var downloadFlag = download ? "&download=true" : string.Empty;
+            var signature = CreateProxySignature(src.ServerId, src.RemoteItemId, IsAudioType(itemType), requestingUserId, download);
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{userFlag}{downloadFlag}&sig={signature}";
         }
 
         /// <summary>
         /// Creates an item/user-scoped signature for the capability media URL. The
         /// configured remote credential is only HMAC key material and never appears
         /// in the URL; changing or removing the server immediately invalidates it.
-        /// v2 binds a UTC unix-hour expiry 24 hours ahead so a leaked Path dies
-        /// without waiting for API-key rotation.
+        /// v2 binds a UTC unix-hour expiry and the download purpose so a play URL
+        /// cannot be turned into an attachment download by appending <c>download=true</c>.
         /// </summary>
-        public string CreateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId)
-            => CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, DateTimeOffset.UtcNow);
+        public string CreateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, bool download = false)
+            => CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, DateTimeOffset.UtcNow, download);
 
         /// <summary>
         /// Test seam for minting a signature at a chosen UTC time.
@@ -527,7 +528,8 @@ namespace Jellyfin.Plugin.Federation.Services
             Guid remoteItemId,
             bool isAudio,
             string? requestingUserId,
-            DateTimeOffset utcNow)
+            DateTimeOffset utcNow,
+            bool download = false)
         {
             var server = GetServer(serverId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -537,16 +539,18 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
             var expUnixHour = GetUtcUnixHour(utcNow) + ProxySignatureLifetimeHours;
-            var payload = BuildProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour);
+            var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download);
             return $"{ComputeProxySignatureMac(server.ApiKey, payload)}.{expUnixHour}";
         }
 
         /// <summary>
-        /// Validates a proxy URL signature in constant time. v1 (no expiry) is
-        /// rejected; persisted Paths are restamped on the next sync.
+        /// Validates a proxy URL signature in constant time. v2 binds expiry and
+        /// download purpose. Legacy v1 (64 hex, no expiry) remains play-only so
+        /// persisted Paths keep working until the next restamp; it never authorizes
+        /// <c>download=true</c>.
         /// </summary>
-        public bool ValidateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, string? signature)
-            => ValidateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, signature, DateTimeOffset.UtcNow);
+        public bool ValidateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, string? signature, bool download = false)
+            => ValidateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, signature, DateTimeOffset.UtcNow, download);
 
         /// <summary>
         /// Test seam for validating a signature against a chosen UTC time.
@@ -557,31 +561,11 @@ namespace Jellyfin.Plugin.Federation.Services
             bool isAudio,
             string? requestingUserId,
             string? signature,
-            DateTimeOffset utcNow)
+            DateTimeOffset utcNow,
+            bool download = false)
         {
             if (string.IsNullOrEmpty(signature)
                 || (!string.IsNullOrEmpty(requestingUserId) && !Guid.TryParse(requestingUserId, out _)))
-            {
-                return false;
-            }
-
-            // v1 was 64 hex digits and never expired. Reject that shape (and any
-            // other obviously malformed token) before touching the HMAC.
-            var separator = signature.IndexOf('.');
-            if (separator != 64 || signature.Length < 66)
-            {
-                return false;
-            }
-
-            for (var i = 0; i < 64; i++)
-            {
-                if (!Uri.IsHexDigit(signature[i]))
-                {
-                    return false;
-                }
-            }
-
-            if (!long.TryParse(signature.AsSpan(65), NumberStyles.None, CultureInfo.InvariantCulture, out var expUnixHour))
             {
                 return false;
             }
@@ -593,26 +577,67 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
-            var payload = BuildProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour);
-            var expectedMac = ComputeProxySignatureMac(server.ApiKey, payload);
-            var expectedBytes = Encoding.UTF8.GetBytes(expectedMac);
-            var suppliedBytes = Encoding.UTF8.GetBytes(signature.Substring(0, 64));
-            var macOk = expectedBytes.Length == suppliedBytes.Length
-                && CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
-            var notExpired = GetUtcUnixHour(utcNow) < expUnixHour;
-            return macOk & notExpired;
+            var v1Expected = ComputeProxySignatureMac(
+                server.ApiKey,
+                BuildV1ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser));
+            var isV1Shape = signature.Length == 64;
+            for (var i = 0; i < signature.Length && isV1Shape; i++)
+            {
+                isV1Shape = Uri.IsHexDigit(signature[i]);
+            }
+
+            var v1Match = isV1Shape && MacEquals(v1Expected, signature);
+
+            var v2Match = false;
+            var separator = signature.IndexOf('.');
+            if (separator == 64 && signature.Length >= 66)
+            {
+                var hexOk = true;
+                for (var i = 0; i < 64; i++)
+                {
+                    if (!Uri.IsHexDigit(signature[i]))
+                    {
+                        hexOk = false;
+                        break;
+                    }
+                }
+
+                if (hexOk
+                    && long.TryParse(signature.AsSpan(65), NumberStyles.None, CultureInfo.InvariantCulture, out var expUnixHour))
+                {
+                    var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download);
+                    var expectedMac = ComputeProxySignatureMac(server.ApiKey, payload);
+                    var macOk = MacEquals(expectedMac, signature.Substring(0, 64));
+                    var notExpired = GetUtcUnixHour(utcNow) < expUnixHour;
+                    v2Match = macOk & notExpired;
+                }
+            }
+
+            return download ? v2Match : (v2Match | v1Match);
         }
 
         private static long GetUtcUnixHour(DateTimeOffset utcNow)
             => utcNow.ToUnixTimeSeconds() / 3600;
 
-        private static string BuildProxySignaturePayload(
+        private static string BuildV1ProxySignaturePayload(string serverId, Guid remoteItemId, bool isAudio, string normalizedUser)
+            => $"v1\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}";
+
+        private static string BuildV2ProxySignaturePayload(
             string serverId,
             Guid remoteItemId,
             bool isAudio,
             string normalizedUser,
-            long expUnixHour)
-            => $"v2\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}\n{expUnixHour}";
+            long expUnixHour,
+            bool download)
+            => $"v2\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}\n{expUnixHour}\n{(download ? "1" : "0")}";
+
+        private static bool MacEquals(string expected, string supplied)
+        {
+            var expectedBytes = Encoding.UTF8.GetBytes(expected);
+            var suppliedBytes = Encoding.UTF8.GetBytes(supplied);
+            return expectedBytes.Length == suppliedBytes.Length
+                && CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
+        }
 
         private static string ComputeProxySignatureMac(string apiKey, string payload)
         {

@@ -3,10 +3,13 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using Microsoft.AspNetCore.Authorization;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
@@ -182,7 +185,7 @@ public class FederationDownloadServiceTests : IDisposable
     [Fact]
     public void GetDownloadUrl_InvalidItemId_Fails()
     {
-        var (success, message, url, fileName) = _service.GetDownloadUrl("not-a-guid");
+        var (success, message, url, fileName) = _service.GetDownloadUrl("not-a-guid", enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Contains("Invalid item id", message);
@@ -196,7 +199,7 @@ public class FederationDownloadServiceTests : IDisposable
         var itemId = Guid.NewGuid();
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns((MediaBrowser.Controller.Entities.BaseItem?)null);
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Contains("not found", message, StringComparison.OrdinalIgnoreCase);
@@ -211,7 +214,7 @@ public class FederationDownloadServiceTests : IDisposable
         var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string>() };
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Contains("friend's server", message);
@@ -226,7 +229,7 @@ public class FederationDownloadServiceTests : IDisposable
         var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = "Movies/raw/server-1/" + Guid.NewGuid() } };
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Contains("source server", message);
@@ -248,7 +251,7 @@ public class FederationDownloadServiceTests : IDisposable
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
         _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Some Movie", Container = "mkv" }, 0, "Movie");
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Null(url);
@@ -271,7 +274,7 @@ public class FederationDownloadServiceTests : IDisposable
         // only invalid on Windows; these tests run on Linux).
         _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Movie / The Sequel", Container = "mkv" }, 0, "Movie");
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.True(success, message);
         Assert.NotNull(url);
@@ -279,6 +282,13 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.Contains("download=true", url);
         Assert.Equal("Movie _ The Sequel.mkv", fileName);
         Assert.Contains(Uri.EscapeDataString(fileName!), url);
+
+        var playSig = _federationManager.CreateProxySignature("server-1", remoteItemId, false, null);
+        var downloadSig = _federationManager.CreateProxySignature("server-1", remoteItemId, false, null, download: true);
+        Assert.Contains($"sig={downloadSig}", url);
+        Assert.DoesNotContain($"sig={playSig}", url);
+        Assert.True(_federationManager.ValidateProxySignature("server-1", remoteItemId, false, null, downloadSig, download: true));
+        Assert.False(_federationManager.ValidateProxySignature("server-1", remoteItemId, false, null, playSig, download: true));
     }
 
     [Fact]
@@ -304,11 +314,45 @@ public class FederationDownloadServiceTests : IDisposable
         _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
         _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Restricted Movie", Container = "mkv" }, 0, "Movie");
 
-        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString());
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: true);
 
         Assert.False(success);
         Assert.Null(url);
         Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ContentDownloadingDisabled_Fails()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "server-1", Name = "Friend", Url = "http://friend.example:8096", ApiKey = "federation-secret", Enabled = true });
+
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Some Movie", Container = "mkv" }, 0, "Movie");
+
+        var (success, message, url, fileName) = _service.GetDownloadUrl(itemId.ToString(), enableContentDownloading: false);
+
+        Assert.False(success);
+        Assert.Contains("disabled", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(url);
+        Assert.Null(fileName);
+    }
+
+    [Fact]
+    public void GetDownloadUrl_ControllerResolvesUserFromSession_NotQueryString()
+    {
+        var method = typeof(FederationController).GetMethod(nameof(FederationController.GetDownloadUrl));
+        Assert.NotNull(method);
+        var parameters = method!.GetParameters();
+        Assert.Single(parameters);
+        Assert.Equal("localItemId", parameters[0].Name);
+        Assert.Null(method.GetCustomAttribute<AllowAnonymousAttribute>());
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.NotNull(authorize);
+        Assert.True(string.IsNullOrEmpty(authorize!.Policy));
     }
 
     [Fact]

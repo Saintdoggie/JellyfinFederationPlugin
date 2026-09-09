@@ -6,11 +6,14 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using Jellyfin.Plugin.Federation.Tasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -71,6 +74,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly TailscaleService _tailscale;
         private readonly ITaskManager _taskManager;
         private readonly FederationQualityAdvisorService _qualityAdvisor;
+        private readonly IAuthorizationContext _authorizationContext;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -94,7 +98,8 @@ namespace Jellyfin.Plugin.Federation.Api
             ExternalCatalogRegistry externalCatalogs,
             TailscaleService tailscale,
             ITaskManager taskManager,
-            FederationQualityAdvisorService qualityAdvisor)
+            FederationQualityAdvisorService qualityAdvisor,
+            IAuthorizationContext authorizationContext)
         {
             _logger = logger;
             _syncService = syncService;
@@ -118,6 +123,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _tailscale = tailscale;
             _taskManager = taskManager;
             _qualityAdvisor = qualityAdvisor;
+            _authorizationContext = authorizationContext;
         }
 
         /// <summary>
@@ -2283,8 +2289,8 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Proxy stream endpoint (Proxy mode). Streams the body through this server so
         /// the remote api_key never reaches clients. Anonymous because media players
         /// fetch media source URLs without Jellyfin auth headers; bounded by a
-        /// cryptographic signature to one configured server, item, media kind and
-        /// (for per-request paths) local user.
+        /// cryptographic signature to one configured server, item, media kind,
+        /// download purpose, and (for per-request paths) local user.
         /// </summary>
         [HttpGet("Stream")]
         [AllowAnonymous]
@@ -2306,10 +2312,9 @@ namespace Jellyfin.Plugin.Federation.Api
             // This endpoint has to remain anonymous because Jellyfin's ffmpeg
             // fetch does not forward the viewer's auth header. The URL itself is
             // therefore an item/user-scoped capability: changing the server, item,
-            // media kind or claimed user invalidates it. This replaces the old
-            // enumerable serverId+itemId URL and makes a forged requestingUserId
-            // useless.
-            if (!_federationManager.ValidateProxySignature(serverId, itemGuid, audio, requestingUserId, sig))
+            // media kind, download purpose or claimed user invalidates it. A play
+            // signature must not authorize attachment downloads.
+            if (!_federationManager.ValidateProxySignature(serverId, itemGuid, audio, requestingUserId, sig, download))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -2345,14 +2350,10 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            // download=true is the only difference from a normal play request: a
-            // Content-Disposition header so the browser saves the file to the
-            // viewer's own device instead of playing it inline - see
-            // GetDownloadUrl below, which is what actually hands this URL to
-            // clients. Header value is untrusted input (this endpoint is
-            // capability URL and callable directly), so strip anything that could
-            // inject an extra header/response-split rather than trusting it was
-            // already sanitized upstream.
+            // download=true is HMAC-bound (see ValidateProxySignature above). A
+            // Content-Disposition header makes the browser save the file instead
+            // of playing it inline. Header value is untrusted input, so strip
+            // anything that could inject an extra header/response-split.
             if (download)
             {
                 var safeName = string.IsNullOrWhiteSpace(fileName) ? "download" : fileName;
@@ -2380,24 +2381,51 @@ namespace Jellyfin.Plugin.Federation.Api
         /// after the download service has applied the source's download policy.
         /// Requiring a normal Jellyfin login here prevents anonymous callers from
         /// minting capabilities while still allowing ordinary viewers to use
-        /// "save this to my phone" without granting dashboard elevation. This
-        /// endpoint does not yet check the
-        /// caller's own <c>EnableContentDownloading</c> user policy the way
-        /// Jellyfin's native per-item downloads do - a known gap, not a
-        /// deliberate design choice.
+        /// "save this to my phone" without granting dashboard elevation. Honors
+        /// the acting user's <c>EnableContentDownloading</c> policy, resolved
+        /// from the session, never from a query string.
         /// </para>
         /// </summary>
         [HttpGet("DownloadUrl/{localItemId}")]
         [Authorize]
-        public IActionResult GetDownloadUrl(string localItemId)
+        public async Task<IActionResult> GetDownloadUrl(string localItemId)
         {
-            var (success, message, url, fileName) = _downloadService.GetDownloadUrl(localItemId);
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            var enableContentDownloading = user.HasPermission(PermissionKind.EnableContentDownloading);
+            var (success, message, url, fileName) = _downloadService.GetDownloadUrl(localItemId, enableContentDownloading);
             if (!success)
             {
-                return BadRequest(new { success, message });
+                return enableContentDownloading
+                    ? BadRequest(new { success, message })
+                    : StatusCode(StatusCodes.Status403Forbidden, new { success, message });
             }
 
             return Ok(new { success, message, url, fileName });
+        }
+
+        /// <summary>
+        /// Resolves the logged-in Jellyfin user from the current request session.
+        /// Never reads a user id from the query string.
+        /// </summary>
+        private async Task<Jellyfin.Database.Implementations.Entities.User?> ResolveActingUserAsync()
+        {
+            var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+            if (info?.User != null)
+            {
+                return info.User;
+            }
+
+            if (info == null || info.UserId == Guid.Empty)
+            {
+                return null;
+            }
+
+            return _userManager.GetUserById(info.UserId);
         }
 
         /// <summary>

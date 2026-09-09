@@ -267,6 +267,7 @@ public class FederationStreamPathTests : IDisposable
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, "not-a-user-id", signature));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, new string('z', 64)));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature + "00"));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, download: true));
     }
 
     [Fact]
@@ -293,7 +294,7 @@ public class FederationStreamPathTests : IDisposable
         var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
         var signature = _manager.CreateProxySignature("serverA", itemId, false, userId, mintedAt);
         var expUnixHour = (mintedAt.ToUnixTimeSeconds() / 3600) + FederationLibraryManager.ProxySignatureLifetimeHours;
-        var payload = $"v2\nserverA\n{itemId:N}\n0\n{userId}\n{expUnixHour}";
+        var payload = $"v2\nserverA\n{itemId:N}\n0\n{userId}\n{expUnixHour}\n0";
         var mac = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
 
         Assert.Equal($"{mac}.{expUnixHour}", signature);
@@ -342,17 +343,32 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void ProxySignature_LegacyV1_IsRejected()
+    public void ProxySignature_LegacyV1_IsPlayOnly()
     {
         AddServer(StreamingMode.Proxy);
         var itemId = Guid.NewGuid();
-        var payload = $"v1\nserverA\n{itemId:N}\n0\n";
+        var userId = Guid.NewGuid().ToString("N");
+        var payload = $"v1\nserverA\n{itemId:N}\n0\n{userId}";
         var v1 = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
 
         Assert.Equal(64, v1.Length);
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1, mintedAt));
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1));
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1, download: true));
+    }
+
+    [Fact]
+    public void ProxySignature_PlayDoesNotAuthorizeDownload_AndDownloadDoesNotAuthorizePlay()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var play = _manager.CreateProxySignature("serverA", itemId, false, null);
+        var download = _manager.CreateProxySignature("serverA", itemId, false, null, download: true);
+
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, null, play));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, play, download: true));
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, null, download, download: true));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, download));
+        Assert.NotEqual(play, download);
     }
 
     [Fact]
