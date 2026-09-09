@@ -2437,7 +2437,8 @@ namespace Jellyfin.Plugin.Federation.Api
             if (!string.IsNullOrEmpty(purposeText)
                 && !string.Equals(purposeText, "Playback", StringComparison.Ordinal)
                 && !string.Equals(purposeText, "Download", StringComparison.Ordinal)
-                && !string.Equals(purposeText, "BulkDownload", StringComparison.Ordinal))
+                && !string.Equals(purposeText, "BulkDownload", StringComparison.Ordinal)
+                && !string.Equals(purposeText, "Image", StringComparison.Ordinal))
             {
                 return BadRequest(new { error = "Unknown token purpose." });
             }
@@ -2446,10 +2447,12 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 "Download" => FederationTokenPurpose.Download,
                 "BulkDownload" => FederationTokenPurpose.BulkDownload,
+                "Image" => FederationTokenPurpose.Image,
                 _ => FederationTokenPurpose.Playback
             };
 
             if (purpose != FederationTokenPurpose.Playback
+                && purpose != FederationTokenPurpose.Image
                 && !_peerAccess.IsDownloadAllowedForRemoteUser(caller, remoteUserId))
             {
                 return StatusCode(StatusCodes.Status403Forbidden, new { error = "Downloads are not allowed for this friend." });
@@ -2489,8 +2492,10 @@ namespace Jellyfin.Plugin.Federation.Api
         /// credential tier alongside the federation token
         /// (<see cref="FederationTokenAuth"/>): the federation token proves "this
         /// is friend X" and is used for browsing/admin-ish calls, but is never
-        /// itself accepted by <see cref="DirectStream"/>/<see cref="DirectImage"/> -
-        /// only a session token minted here is. Requires a valid federation token
+        /// itself accepted by <see cref="DirectStream"/> or <see cref="DirectImage"/>.
+        /// Client-visible Direct-mode Paths use item-scoped playback tokens;
+        /// session tokens minted here may still be used on server-side DirectStream
+        /// relays that never reach a browser. Requires a valid federation token
         /// to call (a friend registering on its own users' behalf), same as
         /// <see cref="IssuePlaybackToken"/>. A user this friend's admin has fully
         /// blocked via a <see cref="RemoteUserAccessRule"/> is rejected at
@@ -2564,13 +2569,17 @@ namespace Jellyfin.Plugin.Federation.Api
                     return false;
                 }
 
-                if (!download)
+                if (!FederationPlaybackTokenService.AllowsDirectStream(purpose, download))
                 {
-                    return purpose == FederationTokenPurpose.Playback;
+                    return false;
                 }
 
-                return (purpose == FederationTokenPurpose.Download || purpose == FederationTokenPurpose.BulkDownload)
-                    && _peerAccess.IsDownloadAllowedForRemoteUser(owner, remoteUserId)
+                if (!download)
+                {
+                    return true;
+                }
+
+                return _peerAccess.IsDownloadAllowedForRemoteUser(owner, remoteUserId)
                     && (purpose != FederationTokenPurpose.BulkDownload || _peerAccess.IsBulkDownloadAllowedForRemoteUser(owner, remoteUserId));
             }
 
@@ -2584,6 +2593,28 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Image counterpart of <see cref="IsStreamTokenAuthorized"/>: only an
+        /// item-scoped Image-purpose token is accepted. Playback and session
+        /// tokens are rejected so a poster URL cannot fetch the media file, and
+        /// a stream URL cannot be reused as artwork.
+        /// </summary>
+        private bool IsImageTokenAuthorized(string? token, Guid itemGuid)
+        {
+            if (!_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerFederationId, out var purpose, out var remoteUserId))
+            {
+                return false;
+            }
+
+            if (!FederationPlaybackTokenService.AllowsDirectImage(purpose))
+            {
+                return false;
+            }
+
+            var owner = _friends.FindByFederationId(ownerFederationId);
+            return owner != null && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid);
         }
 
         /// <summary>
@@ -2634,12 +2665,13 @@ namespace Jellyfin.Plugin.Federation.Api
         /// federation-token model that key is no longer a real Jellyfin
         /// credential at all, so that URL would just 401 for anyone with the
         /// option on, and was an unnecessary leak for anyone without it (an
-        /// unauthenticated hotlink to a friend's own native API). Reuses the
-        /// same short-lived, single-item-scoped token
-        /// <see cref="FederationPlaybackTokenService"/> already mints for
+        /// unauthenticated hotlink to a friend's own native API). Uses a
+        /// short-lived, single-item-scoped Image-purpose token
+        /// <see cref="FederationPlaybackTokenService"/> mints separately from
         /// Direct-mode video/audio - a browser &lt;img&gt; tag can't send a
         /// custom header, so this has to be a query-string token, not
-        /// <see cref="FederationTokenAuth"/>'s header.
+        /// <see cref="FederationTokenAuth"/>'s header. Image tokens are not
+        /// accepted by <see cref="DirectStream"/>.
         /// </summary>
         [HttpGet("Peer/Images/{itemId}/{imageType}/{index?}")]
         [AllowAnonymous]
@@ -2656,7 +2688,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest("Invalid item id");
             }
 
-            if (!IsStreamTokenAuthorized(token, itemGuid))
+            if (!IsImageTokenAuthorized(token, itemGuid))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -3901,8 +3933,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Cover art for one item in the Browse tab's catalog grid, proxied
         /// through this server so neither kind of remote credential ever reaches
         /// the admin's browser directly: a Jellyfin peer's image is fetched using
-        /// a short-lived, single-item-scoped token (the same one
-        /// <see cref="FederationStreamHandler"/> mints for playback - see
+        /// a short-lived, single-item-scoped Image-purpose token (see
         /// <c>Peer/Images</c> on the receiving side), and a Plex source's image
         /// URL carries a real, whole-server Plex token that must never leave the
         /// server (see <see cref="IExternalCatalogProvider.GetImagesAsync"/>'s own
@@ -3936,7 +3967,7 @@ namespace Jellyfin.Plugin.Federation.Api
             else
             {
                 var client = _clientFactory.GetClient(server);
-                var (token, _) = await client.GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+                var (token, _) = await client.GetImageTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
                 imageUrl = token == null
                     ? null
                     : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{itemId}/Primary?token={Uri.EscapeDataString(token)}";
