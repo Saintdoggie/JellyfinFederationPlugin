@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller;
+using MediaBrowser.Model.Dto;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Security;
 using Microsoft.AspNetCore.Http;
@@ -238,6 +239,105 @@ public class FederationRemoteUserAccessTests : IDisposable
         var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
 
         Assert.True(accessControl.IsAllowed(server, localUserId, "Movies", remoteItemId));
+    }
+
+    [Fact]
+    public void IsAllowed_BlockedSeries_HidesSeasonAndEpisodeViaCacheParentKeys()
+    {
+        var (cache, seriesId, seasonId, episodeId, otherEpisodeId) = MakeShowHierarchy();
+        var localUserId = Guid.NewGuid();
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = localUserId.ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries,
+            BlockedItemIds = new List<string> { seriesId.ToString("N") }
+        });
+
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
+
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", seriesId));
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", seasonId));
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", episodeId));
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", otherEpisodeId));
+    }
+
+    [Fact]
+    public void IsAllowed_BlockedSeason_HidesEpisodeButNotTheSeries()
+    {
+        var (cache, seriesId, seasonId, episodeId, otherEpisodeId) = MakeShowHierarchy();
+        var localUserId = Guid.NewGuid();
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = localUserId.ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries,
+            BlockedItemIds = new List<string> { seasonId.ToString() }
+        });
+
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
+
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", seriesId));
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", seasonId));
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", episodeId));
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", otherEpisodeId));
+    }
+
+    [Fact]
+    public void IsAllowed_CertainItemsSeries_AllowsDescendantEpisode()
+    {
+        var (cache, seriesId, seasonId, episodeId, otherEpisodeId) = MakeShowHierarchy();
+        var localUserId = Guid.NewGuid();
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = localUserId.ToString("N"),
+            Mode = RemoteUserAccessMode.CertainItems,
+            ItemIds = new List<string> { seriesId.ToString("N") }
+        });
+
+        var accessControl = new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance, cache);
+
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", seriesId));
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", seasonId));
+        Assert.True(accessControl.IsAllowed(server, localUserId, "TV", episodeId));
+        Assert.False(accessControl.IsAllowed(server, localUserId, "TV", otherEpisodeId));
+    }
+
+    [Fact]
+    public void IsAllowedForEveryConfiguredUser_BlockedSeries_HidesEpisodeWhenCacheWalksParents()
+    {
+        var (cache, seriesId, _, episodeId, otherEpisodeId) = MakeShowHierarchy();
+        var server = new RemoteServer { Id = "server-a", Name = "Alice" };
+        server.FriendUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = Guid.NewGuid().ToString("N"),
+            Mode = RemoteUserAccessMode.AllLibraries,
+            BlockedItemIds = new List<string> { seriesId.ToString("N") }
+        });
+
+        Assert.False(RemoteAccessControlService.IsAllowedForEveryConfiguredUser(server, "TV", episodeId, null, cache));
+        Assert.True(RemoteAccessControlService.IsAllowedForEveryConfiguredUser(server, "TV", otherEpisodeId, null, cache));
+        Assert.True(RemoteAccessControlService.IsAllowedForEveryConfiguredUser(server, "TV", episodeId, null));
+    }
+
+    private static (FederationItemCache Cache, Guid SeriesId, Guid SeasonId, Guid EpisodeId, Guid OtherEpisodeId) MakeShowHierarchy()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var seriesId = Guid.NewGuid();
+        var seasonId = Guid.NewGuid();
+        var episodeId = Guid.NewGuid();
+        var otherSeriesId = Guid.NewGuid();
+        var otherEpisodeId = Guid.NewGuid();
+
+        var series = cache.UpsertRaw("TV", "server-a", seriesId, new BaseItemDto { Name = "Show" }, 0, "Series");
+        var season = cache.UpsertRaw("TV", "server-a", seasonId, new BaseItemDto { Name = "Season 1" }, 0, "Season", parentKey: series.Key);
+        cache.UpsertRaw("TV", "server-a", episodeId, new BaseItemDto { Name = "Pilot" }, 0, "Episode", parentKey: season.Key);
+
+        var otherSeries = cache.UpsertRaw("TV", "server-a", otherSeriesId, new BaseItemDto { Name = "Other Show" }, 0, "Series");
+        cache.UpsertRaw("TV", "server-a", otherEpisodeId, new BaseItemDto { Name = "Other Pilot" }, 0, "Episode", parentKey: otherSeries.Key);
+
+        return (cache, seriesId, seasonId, episodeId, otherEpisodeId);
     }
 }
 

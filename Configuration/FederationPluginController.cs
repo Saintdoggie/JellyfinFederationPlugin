@@ -2358,7 +2358,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     server,
                     entry.MappingName,
                     itemGuid,
-                    entry.Metadata.OfficialRating))
+                    entry.Metadata.OfficialRating,
+                    _cache))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }

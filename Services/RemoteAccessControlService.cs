@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Plugin.Federation.Configuration;
 using Microsoft.Extensions.Logging;
@@ -90,13 +91,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return true;
             }
 
-            // Mirrors FederationPeerAccessService's own BlockedItemIds check on the
-            // friend's side - the authoritative enforcement already happened there
-            // (they never sent us this item to begin with), this is only a second
-            // layer in case we already cached/materialized it under an older copy
-            // of their rule before it was pushed.
-            if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
-                .Any(id => Guid.TryParse(id, out var blockedGuid) && blockedGuid == remoteItemId))
+            // Mirrors FederationPeerAccessService.IsItemOrAncestorListed: a series
+            // block/allow also covers cached seasons and episodes.
+            if (IsRemoteItemOrAncestorListed(_cache, server.Id, remoteItemId, rule.BlockedItemIds))
             {
                 _logger.LogInformation(
                     "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-item block)",
@@ -137,8 +134,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return true;
 
                 case RemoteUserAccessMode.CertainItems:
-                    var allowedItem = rule.ItemIds != null && rule.ItemIds.Any(id =>
-                        Guid.TryParse(id, out var itemGuid) && itemGuid == remoteItemId);
+                    var allowedItem = IsRemoteItemOrAncestorListed(_cache, server.Id, remoteItemId, rule.ItemIds);
                     if (!allowedItem)
                     {
                         _logger.LogInformation(
@@ -199,14 +195,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Whether a shared, user-agnostic item path is safe for this item. Jellyfin
         /// stores one Path for every local user, so it may only be stamped when every
-        /// configured override permits this exact item; users without an override
-        /// inherit the already-filtered server scope and are therefore allowed.
+        /// configured override permits this item, including a series-level block that
+        /// covers nested seasons/episodes via the federation cache parent chain.
+        /// Users without an override inherit the already-filtered server scope.
         /// </summary>
         public static bool IsAllowedForEveryConfiguredUser(
             RemoteServer? server,
             string? mappingName,
             Guid remoteItemId,
-            string? officialRating)
+            string? officialRating,
+            FederationItemCache? cache = null)
         {
             if (server?.FriendUserAccessRules == null || server.FriendUserAccessRules.Count == 0)
             {
@@ -215,8 +213,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             foreach (var rule in server.FriendUserAccessRules)
             {
-                if ((rule.BlockedItemIds ?? new System.Collections.Generic.List<string>())
-                    .Any(id => Guid.TryParse(id, out var blocked) && blocked == remoteItemId))
+                if (IsRemoteItemOrAncestorListed(cache, server.Id, remoteItemId, rule.BlockedItemIds))
                 {
                     return false;
                 }
@@ -231,8 +228,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     RemoteUserAccessMode.Blocked => false,
                     RemoteUserAccessMode.AllLibraries => true,
-                    RemoteUserAccessMode.CertainItems => (rule.ItemIds ?? new System.Collections.Generic.List<string>())
-                        .Any(id => Guid.TryParse(id, out var item) && item == remoteItemId),
+                    RemoteUserAccessMode.CertainItems => IsRemoteItemOrAncestorListed(cache, server.Id, remoteItemId, rule.ItemIds),
                     RemoteUserAccessMode.CertainLibraries => IsInAllowedLibrary(server, mappingName, rule),
                     _ => true
                 };
@@ -262,6 +258,67 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return !string.IsNullOrEmpty(remoteLibraryId)
                 && rule.LibraryFolderIds.Any(id => string.Equals(id, remoteLibraryId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// True when <paramref name="remoteItemId"/> or a cached series/season
+        /// ancestor is in <paramref name="configuredIds"/>. The walk follows
+        /// <see cref="FederatedCacheEntry.ParentKey"/> and is bounded/cycle-safe.
+        /// Exact id still matches when the cache has no parent links.
+        /// </summary>
+        private static bool IsRemoteItemOrAncestorListed(
+            FederationItemCache? cache,
+            string? serverId,
+            Guid remoteItemId,
+            IEnumerable<string>? configuredIds)
+        {
+            var listed = new HashSet<Guid>();
+            foreach (var id in configuredIds ?? Array.Empty<string>())
+            {
+                if (Guid.TryParse(id, out var parsed))
+                {
+                    listed.Add(parsed);
+                }
+            }
+
+            if (listed.Count == 0)
+            {
+                return false;
+            }
+
+            if (listed.Contains(remoteItemId))
+            {
+                return true;
+            }
+
+            if (cache == null || string.IsNullOrEmpty(serverId))
+            {
+                return false;
+            }
+
+            var key = cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemId);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var depth = 0; depth < 64 && !string.IsNullOrEmpty(key) && visited.Add(key); depth++)
+            {
+                var entry = cache.GetEntryByKey(key);
+                if (entry == null)
+                {
+                    break;
+                }
+
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (string.Equals(source.ServerId, serverId, StringComparison.OrdinalIgnoreCase)
+                        && listed.Contains(source.RemoteItemId))
+                    {
+                        return true;
+                    }
+                }
+
+                key = entry.ParentKey;
+            }
+
+            return false;
         }
 
         /// <summary>

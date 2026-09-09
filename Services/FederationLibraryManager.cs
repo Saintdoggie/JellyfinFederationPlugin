@@ -474,7 +474,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     server,
                     entry.MappingName,
                     src.RemoteItemId,
-                    entry.Metadata.OfficialRating))
+                    entry.Metadata.OfficialRating,
+                    _cache))
             {
                 return null;
             }
