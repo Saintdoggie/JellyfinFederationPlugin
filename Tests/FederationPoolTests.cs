@@ -469,6 +469,131 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceivePoolNotice_OversizedIcon_IsIgnored_AndRosterStillSyncs()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IconBase64 = "aWNvbg==",
+            Members = new List<PoolMember>
+            {
+                new PoolMember { FederationId = "self-fed-id", Name = "This Server", Url = "http://local.test:8096" },
+                new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
+            }
+        });
+
+        UseFakeHttp(req =>
+        {
+            if (req.RequestUri!.ToString().EndsWith("/Plugins/Federation/Friends/Request", StringComparison.Ordinal))
+            {
+                return Json(HttpStatusCode.OK, new { success = true, serverName = "Introduced" });
+            }
+
+            throw new InvalidOperationException("Unexpected request to " + req.RequestUri);
+        });
+
+        await _service.ReceivePoolNotice(
+            new PoolNoticePayload
+            {
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Movie Night",
+                OwnerFederationId = "fed-owner",
+                OwnerName = "Owner",
+                IconBase64 = new string('A', FederationFriendService.MaxPoolIconBase64Length + 1),
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
+                    new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
+                }
+            },
+            CancellationToken.None);
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Contains(pool.Members, m => m.Url == "http://owner.example");
+    }
+
+    [Fact]
+    public async Task ReceivePoolInviteNotice_OversizedIcon_IsNotStored_InviteStillStaged()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+
+        await _service.ReceivePoolInviteNotice(
+            new PoolInviteNoticePayload
+            {
+                InviteId = "invite-1",
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Movie Night",
+                OwnerFederationId = "fed-owner",
+                OwnerName = "Owner",
+                IconBase64 = new string('A', FederationFriendService.MaxPoolIconBase64Length + 1),
+                Roster = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+            },
+            CancellationToken.None);
+
+        Assert.Empty(_plugin.Configuration.Pools);
+        var invite = Assert.Single(_plugin.Configuration.IncomingPoolInvites);
+        Assert.Equal("pool-1", invite.PoolId);
+        Assert.Null(invite.IconBase64);
+    }
+
+    [Fact]
+    public async Task ReceivePoolInviteNotice_OversizedIconOnJoinedPool_DoesNotOverwrite_AndRosterStillSyncs()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            ApiKey = "key-1",
+            FederationId = "bob-fed-id"
+        });
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IconBase64 = "aWNvbg=="
+        });
+
+        UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
+
+        await _service.ReceivePoolInviteNotice(
+            new PoolInviteNoticePayload
+            {
+                InviteId = "invite-1",
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                PoolName = "Movie Night",
+                IconBase64 = new string('A', FederationFriendService.MaxPoolIconBase64Length + 1),
+                Roster = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+            },
+            CancellationToken.None);
+
+        Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
+    }
+
+    [Fact]
     public async Task AcceptPoolInviteAsync_Success_JoinsPoolAndFansOutToUnknownMembers()
     {
         _plugin.Configuration.RemoteServers.Add(new RemoteServer

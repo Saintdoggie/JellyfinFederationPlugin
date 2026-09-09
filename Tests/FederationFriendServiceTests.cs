@@ -103,6 +103,21 @@ public class FederationFriendServiceTests : IDisposable
     private static HttpResponseMessage Json(HttpStatusCode status, object body)
         => new HttpResponseMessage(status) { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
 
+    private void FillIncomingFriendRequests(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest
+            {
+                Id = $"req-{i}",
+                RemoteServerUrl = $"http://sender-{i}.example",
+                RemoteServerName = $"Sender {i}",
+                ApiKey = $"key-{i}",
+                CreatedUtc = DateTime.UtcNow
+            });
+        }
+    }
+
     [Fact]
     public void GetOrCreateLocalFederationId_IsStableAcrossCalls()
     {
@@ -441,6 +456,113 @@ public class FederationFriendServiceTests : IDisposable
         Assert.True(result.Success);
         var incoming = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
         Assert.False(incoming.Verified);
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_DuplicateRequestId_IsIdempotent()
+    {
+        var verifyCalls = 0;
+        UseFakeHttp(_ =>
+        {
+            verifyCalls++;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var payload = new FriendRequestPayload
+        {
+            RequestId = "req-dup",
+            FromServerUrl = "http://sender.example",
+            FromServerName = "Sender",
+            ApiKeyForYou = "key-from-sender",
+            SupportsFederationToken = true
+        };
+
+        var first = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
+        var second = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal(2, verifyCalls);
+        var incoming = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+        Assert.Equal("req-dup", incoming.Id);
+        Assert.Equal("key-from-sender", incoming.ApiKey);
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_AtCap_RejectsNewRequest()
+    {
+        FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests);
+        var calls = 0;
+        UseFakeHttp(_ =>
+        {
+            calls++;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var result = await _service.ReceiveFriendRequestAsync(
+            new FriendRequestPayload
+            {
+                RequestId = "req-new",
+                FromServerUrl = "http://new-sender.example",
+                FromServerName = "New Sender",
+                ApiKeyForYou = "key-new",
+                SupportsFederationToken = true
+            },
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("too many pending friend requests", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, calls);
+        Assert.Equal(FederationFriendService.MaxPendingIncomingFriendRequests, _plugin.Configuration.IncomingFriendRequests.Count);
+        Assert.DoesNotContain(_plugin.Configuration.IncomingFriendRequests, r => r.Id == "req-new");
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_DuplicateRequestIdAtCap_DoesNotConsumeSlot()
+    {
+        FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests);
+        _plugin.Configuration.IncomingFriendRequests[0].Id = "req-dup";
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var result = await _service.ReceiveFriendRequestAsync(
+            new FriendRequestPayload
+            {
+                RequestId = "req-dup",
+                FromServerUrl = "http://sender-0.example",
+                FromServerName = "Sender 0",
+                ApiKeyForYou = "key-0",
+                SupportsFederationToken = true
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(FederationFriendService.MaxPendingIncomingFriendRequests, _plugin.Configuration.IncomingFriendRequests.Count);
+        Assert.Single(_plugin.Configuration.IncomingFriendRequests, r => r.Id == "req-dup");
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_StaleIncoming_SweptToMakeRoomForNewRequest()
+    {
+        FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests);
+        _plugin.Configuration.IncomingFriendRequests[0].CreatedUtc = DateTime.UtcNow.AddDays(-15);
+        var staleId = _plugin.Configuration.IncomingFriendRequests[0].Id;
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var result = await _service.ReceiveFriendRequestAsync(
+            new FriendRequestPayload
+            {
+                RequestId = "req-new",
+                FromServerUrl = "http://new-sender.example",
+                FromServerName = "New Sender",
+                ApiKeyForYou = "key-new",
+                SupportsFederationToken = true
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(FederationFriendService.MaxPendingIncomingFriendRequests, _plugin.Configuration.IncomingFriendRequests.Count);
+        Assert.DoesNotContain(_plugin.Configuration.IncomingFriendRequests, r => r.Id == staleId);
+        Assert.Contains(_plugin.Configuration.IncomingFriendRequests, r => r.Id == "req-new");
     }
 
     [Fact]

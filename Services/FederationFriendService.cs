@@ -88,6 +88,16 @@ namespace Jellyfin.Plugin.Federation.Services
         // once-per-process orphan sweep, and uninstall-time revocation.
         internal const string InternalRelayKeyName = "Federation internal relay";
 
+        // Same order of magnitude as pending Plex offers. Anonymous inbound
+        // friend requests would otherwise grow IncomingFriendRequests without bound.
+        internal const int MaxPendingIncomingFriendRequests = 25;
+
+        private static readonly TimeSpan IncomingFriendRequestMaxAge = TimeSpan.FromDays(14);
+
+        // Local SetPoolIconAsync already rejects icons over this length; inbound
+        // peer notices must use the same bound.
+        internal const int MaxPoolIconBase64Length = 150_000;
+
         // Guards check-then-create below against a race on first concurrent use
         // (two Direct-mode plays landing on FederationController.DirectStream at
         // almost the same instant, before Configuration.InternalRelayApiKey has been
@@ -512,13 +522,36 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var fromUrl = payload.FromServerUrl.TrimEnd('/');
 
+            var staleCutoff = DateTime.UtcNow - IncomingFriendRequestMaxAge;
+            var swept = config.IncomingFriendRequests.RemoveAll(r => r.CreatedUtc < staleCutoff);
+
             // Idempotent: a retry of the same request (e.g. the sender's original
-            // response was lost) should not create a duplicate pending entry.
+            // response was lost) should not create a duplicate pending entry, and
+            // must not consume a slot against the pending cap.
             var existing = config.IncomingFriendRequests.FirstOrDefault(r => r.Id == payload.RequestId);
             if (existing == null)
             {
+                if (config.IncomingFriendRequests.Count >= MaxPendingIncomingFriendRequests)
+                {
+                    if (swept > 0)
+                    {
+                        Plugin.Instance.SaveConfiguration();
+                    }
+
+                    return new FriendRequestResponse
+                    {
+                        Success = false,
+                        Message = "This server already has too many pending friend requests. Ask the admin to accept or reject the existing ones."
+                    };
+                }
+
                 if (AlreadyKnown(config, fromUrl))
                 {
+                    if (swept > 0)
+                    {
+                        Plugin.Instance.SaveConfiguration();
+                    }
+
                     return new FriendRequestResponse { Success = false, Message = "Already friends (or a pending request already exists) with this server." };
                 }
 
@@ -1344,10 +1377,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
             if (existingPool != null)
             {
-                if (!string.IsNullOrEmpty(payload.IconBase64))
-                {
-                    existingPool.IconBase64 = payload.IconBase64;
-                }
+                ApplyInboundPoolIcon(existingPool, payload.IconBase64);
 
                 return AdoptPoolRosterAndFanOutAsync(
                     payload.PoolId,
@@ -1377,7 +1407,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 RemoteServerName = sender.Name,
                 RemoteServerId = sender.FederationId,
                 Roster = payload.Roster ?? new List<PoolMember>(),
-                IconBase64 = payload.IconBase64
+                IconBase64 = CapInboundPoolIcon(payload.IconBase64)
             });
             Plugin.Instance.SaveConfiguration();
             return Task.CompletedTask;
@@ -1578,7 +1608,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Pool not found.");
             }
 
-            if (!string.IsNullOrEmpty(iconBase64) && iconBase64.Length > 150_000)
+            if (!string.IsNullOrEmpty(iconBase64) && iconBase64.Length > MaxPoolIconBase64Length)
             {
                 return (false, "Icon is too large - please use a smaller image.");
             }
@@ -1828,10 +1858,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Task.CompletedTask;
             }
 
-            if (!string.IsNullOrEmpty(payload.IconBase64))
-            {
-                existingPool.IconBase64 = payload.IconBase64;
-            }
+            ApplyInboundPoolIcon(existingPool, payload.IconBase64);
 
             return AdoptPoolRosterAndFanOutAsync(
                 payload.PoolId,
@@ -2106,6 +2133,26 @@ namespace Jellyfin.Plugin.Federation.Services
             server.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
             Plugin.Instance.SaveConfiguration();
             _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", server.Name, server.FriendUserAccessRules.Count);
+        }
+
+        // Oversized peer icons are dropped; the rest of the notice still applies.
+        private static string? CapInboundPoolIcon(string? iconBase64)
+        {
+            if (string.IsNullOrEmpty(iconBase64) || iconBase64.Length > MaxPoolIconBase64Length)
+            {
+                return null;
+            }
+
+            return iconBase64;
+        }
+
+        private static void ApplyInboundPoolIcon(FederationPool pool, string? iconBase64)
+        {
+            var capped = CapInboundPoolIcon(iconBase64);
+            if (capped != null)
+            {
+                pool.IconBase64 = capped;
+            }
         }
 
         private static bool AlreadyKnown(PluginConfiguration config, string url)
