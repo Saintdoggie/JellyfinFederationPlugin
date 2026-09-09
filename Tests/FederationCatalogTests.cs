@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Model.Dto;
+using Microsoft.AspNetCore.Authorization;
 using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
@@ -63,5 +65,27 @@ public sealed class FederationCatalogTests
             new BaseItemDto { Name = "The Example", ProductionYear = 2024 },
             new[] { local },
             new[] { "tmdb" }));
+    }
+
+    [Fact]
+    public void FederatedIds_RequiresLoggedInUser_NotAnonymousOrElevation()
+    {
+        var method = typeof(FederationController).GetMethod(nameof(FederationController.GetFederatedIds));
+        Assert.NotNull(method);
+        Assert.Null(method.GetCustomAttribute<AllowAnonymousAttribute>());
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.NotNull(authorize);
+        Assert.True(string.IsNullOrEmpty(authorize.Policy));
+    }
+
+    [Fact]
+    public void GloballyDisabledIds_RequiresElevation_NotAnonymous()
+    {
+        var method = typeof(FederationController).GetMethod(nameof(FederationController.GetGloballyDisabledIds));
+        Assert.NotNull(method);
+        Assert.Null(method.GetCustomAttribute<AllowAnonymousAttribute>());
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.NotNull(authorize);
+        Assert.Equal("RequiresElevation", authorize.Policy);
     }
 }

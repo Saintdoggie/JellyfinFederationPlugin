@@ -518,11 +518,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>
         /// Returns the local item ids (format "N") of every currently federated
-        /// item, for <see cref="GetClientScript"/> to badge in the UI. Ids only, no
-        /// other item data, so anonymous is fine here too.
+        /// item, for <see cref="GetClientScript"/> to badge in the UI. Requires a
+        /// logged-in Jellyfin session, not elevation: ordinary viewers need this
+        /// map for badges. Ids plus friend display names only; no secrets.
         /// </summary>
         [HttpGet("FederatedIds")]
-        [AllowAnonymous]
+        [Authorize]
         [Produces("application/json")]
         public ActionResult<object> GetFederatedIds()
         {
@@ -3405,11 +3406,11 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <summary>
         /// Returns the local item ids (format "N") currently excluded from sharing
         /// with everyone, for <see cref="GetClientScript"/> to badge in the UI.
-        /// Ids only, no other item data, so anonymous is fine here too - same
-        /// reasoning as <see cref="GetFederatedIds"/>.
+        /// Admin-only: the injected script fetches this solely for elevated users
+        /// (eye-off on locally owned items). Ids only; no secrets.
         /// </summary>
         [HttpGet("Sharing/DisabledIds")]
-        [AllowAnonymous]
+        [Authorize(Policy = "RequiresElevation")]
         [Produces("application/json")]
         public ActionResult<object> GetGloballyDisabledIds()
         {
