@@ -112,7 +112,9 @@ namespace Jellyfin.Plugin.Federation
 
                 try
                 {
-                    var retired = FederationLibraryTargets.Collapse(config, _federationManager.GetVirtualFolders());
+                    var folders = _federationManager.GetVirtualFolders();
+                    var retired = FederationLibraryTargets.Collapse(config, folders, _federationManager.Cache);
+                    var remapped = FederationLibraryTargets.RemapStaleCacheEntries(config, folders, _federationManager.Cache);
                     if (retired.Count > 0)
                     {
                         Plugin.Instance?.SaveConfiguration();
@@ -128,6 +130,11 @@ namespace Jellyfin.Plugin.Federation
                                 _logger.LogWarning(ex, "[Federation] Could not remove leftover library {Name}", name);
                             }
                         }
+                    }
+
+                    if (retired.Count > 0 || remapped > 0)
+                    {
+                        await _federationManager.Cache.SaveAsync(cancellationToken).ConfigureAwait(false);
                     }
                 }
                 catch (Exception ex)

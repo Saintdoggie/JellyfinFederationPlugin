@@ -339,6 +339,119 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Rewrites <see cref="FederatedCacheEntry.Key"/>, MappingName, ParentKey,
+        /// and the remote index from <paramref name="oldName"/> to
+        /// <paramref name="newName"/>. Colliding provider/raw keys merge sources
+        /// so a later prune/upsert of the new mapping hits the same entries.
+        /// Item ids hash <see cref="FederatedCacheEntry.FederationPath"/> and will
+        /// change with the key; copying UserData across that churn is separate.
+        /// </summary>
+        public int RemapMapping(string oldName, string newName)
+        {
+            if (string.IsNullOrWhiteSpace(oldName)
+                || string.IsNullOrWhiteSpace(newName)
+                || oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            var oldKeys = _entries
+                .Where(kvp => BelongsToMapping(kvp.Key, kvp.Value, oldName))
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            var remapped = 0;
+            foreach (var oldKey in oldKeys)
+            {
+                if (!_entries.TryRemove(oldKey, out var entry) || entry == null)
+                {
+                    continue;
+                }
+
+                var newKey = RewriteMappingPrefix(entry.Key, oldName, newName) ?? newName;
+                var newParent = RewriteMappingPrefix(entry.ParentKey, oldName, newName);
+                entry.Key = newKey;
+                entry.MappingName = newName;
+                entry.ParentKey = newParent;
+
+                var survivor = _entries.AddOrUpdate(
+                    newKey,
+                    entry,
+                    (_, existing) =>
+                    {
+                        if (ReferenceEquals(existing, entry))
+                        {
+                            return entry;
+                        }
+
+                        MergeSources(existing, entry);
+                        if (string.IsNullOrEmpty(existing.ParentKey) && !string.IsNullOrEmpty(newParent))
+                        {
+                            existing.ParentKey = newParent;
+                        }
+
+                        return existing;
+                    });
+
+                IndexSources(survivor);
+                remapped++;
+            }
+
+            foreach (var entry in _entries.Values)
+            {
+                var rewritten = RewriteMappingPrefix(entry.ParentKey, oldName, newName);
+                if (!string.Equals(rewritten, entry.ParentKey, StringComparison.Ordinal))
+                {
+                    entry.ParentKey = rewritten;
+                }
+            }
+
+            RemoveStaleIndexEntries();
+            return remapped;
+        }
+
+        internal static string? RewriteMappingPrefix(string? value, string oldName, string newName)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            if (value.Equals(oldName, StringComparison.OrdinalIgnoreCase))
+            {
+                return newName;
+            }
+
+            if (value.StartsWith(oldName + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                return newName + value.Substring(oldName.Length);
+            }
+
+            return value;
+        }
+
+        private static bool BelongsToMapping(string key, FederatedCacheEntry entry, string mappingName)
+            => entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                || key.StartsWith(mappingName + "/", StringComparison.OrdinalIgnoreCase);
+
+        private static void MergeSources(FederatedCacheEntry target, FederatedCacheEntry source)
+        {
+            foreach (var src in source.GetSourcesSnapshot())
+            {
+                target.AddSource(src.ServerId, src.RemoteItemId, src.Priority);
+            }
+        }
+
+        private void IndexSources(FederatedCacheEntry entry)
+        {
+            foreach (var source in entry.GetSourcesSnapshot())
+            {
+                _remoteIndex[(source.ServerId, source.RemoteItemId)] = entry.Key;
+            }
+        }
+
+        /// <summary>
         /// Clears the entire cache.
         /// </summary>
         public void Clear()

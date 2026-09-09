@@ -425,7 +425,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     return BadRequest(new { error = "Invalid configuration", details = errors });
                 }
 
-                FederationLibraryTargets.Collapse(config, _libraryManager.GetVirtualFolders());
+                var folders = _libraryManager.GetVirtualFolders();
+                var retired = FederationLibraryTargets.Collapse(config, folders, _cache);
 
                 _logger.LogInformation("[Federation] Updating configuration with {ServerCount} servers", config.RemoteServers?.Count ?? 0);
                 Plugin.Instance?.UpdateConfiguration(config);
@@ -440,6 +441,9 @@ namespace Jellyfin.Plugin.Federation.Api
                 // entries, reconcile (which deletes every persisted item whose
                 // cache entry is gone - see FederationItemPersistenceService),
                 // then remove/detach the provisioned library itself.
+                // Collapse remaps cache keys first, so retired split libraries
+                // must not go through ClearMapping or those entries are wiped.
+                var retiredSet = new HashSet<string>(retired, StringComparer.OrdinalIgnoreCase);
                 var removedMappingNames = (existing?.LibraryMappings ?? new List<LibraryMapping>())
                     .Select(m => m.LocalLibraryName)
                     .Except((config.LibraryMappings ?? new List<LibraryMapping>()).Select(m => m.LocalLibraryName), StringComparer.OrdinalIgnoreCase)
@@ -449,6 +453,13 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     try
                     {
+                        if (retiredSet.Contains(removedName))
+                        {
+                            await _provisioning.RemoveLibraryAsync(removedName).ConfigureAwait(false);
+                            _logger.LogInformation("[Federation] Removed leftover split library {Name}; content now merges into Movies/Shows", removedName);
+                            continue;
+                        }
+
                         _cache.ClearMapping(removedName);
                         await _persistence.ReconcileMappingAsync(new LibraryMapping { LocalLibraryName = removedName }, cancellationToken).ConfigureAwait(false);
                         await _provisioning.RemoveLibraryAsync(removedName).ConfigureAwait(false);
@@ -460,7 +471,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     }
                 }
 
-                if (removedMappingNames.Count > 0)
+                var remapped = FederationLibraryTargets.RemapStaleCacheEntries(config, folders, _cache);
+                if (removedMappingNames.Count > 0 || remapped > 0)
                 {
                     await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
                 }

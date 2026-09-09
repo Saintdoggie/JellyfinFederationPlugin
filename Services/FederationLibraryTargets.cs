@@ -67,11 +67,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Rewrites auto-managed and legacy split mappings onto existing
         /// Movies/Shows folders and merges duplicates. Returns retired local
-        /// names so leftover virtual folders can be removed.
+        /// names so leftover virtual folders can be removed. When
+        /// <paramref name="cache"/> is provided, catalog keys and MappingName
+        /// follow the new local library name so prune/upsert keep hitting the
+        /// same entries.
         /// </summary>
-        public static List<string> Collapse(PluginConfiguration config, IEnumerable<VirtualFolderInfo>? localFolders)
+        public static List<string> Collapse(
+            PluginConfiguration config,
+            IEnumerable<VirtualFolderInfo>? localFolders,
+            FederationItemCache? cache = null)
         {
             var retired = new List<string>();
+            var remaps = new List<(string From, string To)>();
             config.LibraryMappings ??= new List<LibraryMapping>();
             foreach (var mapping in config.LibraryMappings)
             {
@@ -87,15 +94,85 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 retired.Add(mapping.LocalLibraryName);
+                remaps.Add((mapping.LocalLibraryName, target));
                 mapping.LocalLibraryName = target;
             }
 
             MergeSameName(config);
+
+            if (cache != null)
+            {
+                foreach (var (from, to) in remaps)
+                {
+                    cache.RemapMapping(from, to);
+                }
+
+                // 0.0.134 already rewrote mappings on some installs but left
+                // Federated Movies/Shows cache keys behind. Collapse is then a
+                // no-op on config; still move those leftovers.
+                foreach (var legacy in new[] { LegacyMoviesName, LegacyShowsName })
+                {
+                    if (config.LibraryMappings.Any(m =>
+                            string.Equals(m.LocalLibraryName, legacy, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    var mediaType = string.Equals(legacy, LegacyShowsName, StringComparison.OrdinalIgnoreCase)
+                        ? "Series"
+                        : "Movie";
+                    cache.RemapMapping(legacy, Resolve(mediaType, localFolders));
+                }
+            }
+
             return retired
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Where(name => config.LibraryMappings.All(m =>
                     !string.Equals(m.LocalLibraryName, name, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
+        }
+
+        /// <summary>
+        /// Moves cache entries whose MappingName is no longer a configured
+        /// mapping (Plex section names left behind after a previous collapse)
+        /// onto the current Movies/Shows target for their item type.
+        /// </summary>
+        public static int RemapStaleCacheEntries(
+            PluginConfiguration config,
+            IEnumerable<VirtualFolderInfo>? localFolders,
+            FederationItemCache cache)
+        {
+            var current = new HashSet<string>(
+                (config.LibraryMappings ?? new List<LibraryMapping>())
+                    .Select(m => m.LocalLibraryName)
+                    .Where(n => !string.IsNullOrWhiteSpace(n)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var staleNames = cache.GetAllEntries()
+                .Select(e => e.MappingName)
+                .Where(n => !string.IsNullOrWhiteSpace(n) && !current.Contains(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var remapped = 0;
+            foreach (var oldName in staleNames)
+            {
+                var sample = cache.GetEntriesForMapping(oldName).FirstOrDefault();
+                if (sample == null)
+                {
+                    continue;
+                }
+
+                var target = Resolve(sample.ItemType, localFolders);
+                if (string.Equals(oldName, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                remapped += cache.RemapMapping(oldName, target);
+            }
+
+            return remapped;
         }
 
         internal static CollectionTypeOptions? CollectionTypeFor(string mediaType) => Normalize(mediaType) switch
