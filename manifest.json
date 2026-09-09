@@ -24,6 +24,14 @@
         "checksum": "00000000000000000000000000000000"
       },
       {
+        "version": "0.0.139",
+        "changelog": "Direct-mode client URLs use item-scoped playback tokens; image tokens cannot fetch video.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:52:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.139/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.138",
         "changelog": "Proxy stream HMAC binds download=true; GetDownloadUrl honors EnableContentDownloading.",
         "targetAbi": "12.0.0.0",
