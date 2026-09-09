@@ -4607,6 +4607,10 @@
                     var catalogTotal = 0;
                     var catalogLoaded = false;
                     var catalogSelected = {};
+                    // Last BlockedItemIds posted per friend+user. GET used to omit
+                    // the field; union with this so a second hide cannot replace
+                    // the deny-list with only the newly selected ids.
+                    var catalogBlockedItemIdsByUser = {};
 
                     function catalogPosterUrl(id) {
                         try {
@@ -4850,6 +4854,18 @@
                         .catch(function (e) { setCatalogStatus('Failed: ' + e.message, 'err'); });
                     }
 
+                    function mergeItemIds(existingIds, addedIds) {
+                        var merged = [];
+                        [existingIds, addedIds].forEach(function (list) {
+                            (list || []).forEach(function (id) {
+                                if (id && merged.indexOf(id) === -1) {
+                                    merged.push(id);
+                                }
+                            });
+                        });
+                        return merged;
+                    }
+
                     function applyCatalogHideUser() {
                         var ids = catalogSelectedIds();
                         var friendSel = q('#fedCatalogFriendPick');
@@ -4864,13 +4880,15 @@
                         var cached = remoteUsersCache[server.Id];
                         var remoteUser = cached ? cached.users.filter(function (u) { return u.id === remoteUserId; })[0] : null;
                         var existing = existingUserRule(server, remoteUserId);
-                        var blocked = (existing ? existing.BlockedItemIds : null) || [];
-                        blocked = blocked.slice();
-                        ids.forEach(function (id) {
-                            if (blocked.indexOf(id) === -1) {
-                                blocked.push(id);
-                            }
-                        });
+                        var cacheKey = server.Id + '::' + remoteUserId;
+                        var fromGet = existing ? existing.BlockedItemIds : undefined;
+                        // Prefer GET when it actually returned the list. If the
+                        // field is still omitted, fall back to the last POST.
+                        var blocked = mergeItemIds(Array.isArray(fromGet) ? fromGet : catalogBlockedItemIdsByUser[cacheKey], ids);
+                        catalogBlockedItemIdsByUser[cacheKey] = blocked;
+                        if (existing) {
+                            existing.BlockedItemIds = blocked;
+                        }
 
                         setCatalogStatus('Hiding from ' + (remoteUser ? remoteUser.name : 'that user') + '…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(server.Id) + '/RemoteUserRule', {

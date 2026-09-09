@@ -4445,7 +4445,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     r.LibraryFolderIds,
                     r.ItemIds,
                     r.MaxAllowedRating,
-                    r.AllowDownload
+                    r.AllowDownload,
+                    r.BlockedItemIds
                 }).ToList(),
                 FriendUserAccessRules = (s.FriendUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
                 {
@@ -4455,7 +4456,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     r.LibraryFolderIds,
                     r.ItemIds,
                     r.MaxAllowedRating,
-                    r.AllowDownload
+                    r.AllowDownload,
+                    r.BlockedItemIds
                 }).ToList()
             };
         }
