@@ -6,11 +6,29 @@ using FederationCompanion;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
+var launch = CompanionLaunchOptions.Parse(args);
+
+// One owner process per machine. A second launch (double-clicking the
+// shortcut while the tray app is running) asks the first process to open its
+// dashboard and exits instead of starting a second listener and mount.
+using var singleInstance = new SingleInstance();
+if (!singleInstance.TryAcquire())
+{
+    if (launch.OpenBrowser)
+    {
+        SingleInstance.TrySignalExistingInstance(TimeSpan.FromSeconds(3), singleInstance.InstancePipeName);
+    }
+
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
-    Args = args,
+    Args = CompanionLaunchOptions.KestrelArgs(args),
     ContentRootPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "wwwroot")) ? AppContext.BaseDirectory : null
 });
+
+builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
 
 // A single shared HttpClient for both Plex.tv (account/sign-in) and the
 // user's own Plex Media Server - this app makes a handful of requests per
@@ -27,6 +45,15 @@ builder.Services.AddSingleton(sp => new JellyfinImportService(
 var state = await CompanionState.LoadAsync();
 await state.SaveAsync();
 builder.Services.AddSingleton(state);
+var runtime = new CompanionRuntime { BackgroundLaunch = launch.Background };
+builder.Services.AddSingleton(runtime);
+builder.Services.AddSingleton<IAutostartRegistration>(_ =>
+#if WINDOWS
+    new WindowsAutostartRegistration()
+#else
+    OperatingSystem.IsLinux() ? new LinuxAutostartRegistration() : new UnsupportedAutostartRegistration()
+#endif
+);
 builder.Services.AddSingleton(sp => new PlexFederationRelay(
     state,
     new HttpClient { Timeout = Timeout.InfiniteTimeSpan }));
@@ -87,6 +114,9 @@ app.Lifetime.ApplicationStarted.Register(() =>
     {
     }
 
+    // Console output is for the Linux/macOS/source builds. The Windows desktop
+    // build has no console; it opens the dashboard itself and the tray offers
+    // "Copy owner key" for the manual case. Never write the key to the log.
     Console.WriteLine();
     Console.WriteLine("Federation Companion owner access:");
     Console.WriteLine($"  Add this to the end of the Companion URL: #access={state.AdminAccessKey}");
@@ -120,6 +150,57 @@ app.MapGet("/api/status", (CompanionState s) => Results.Ok(new
     federationPluginVersion = CompanionVersion.FederationPluginVersion(),
     poolInviteCount = s.IncomingPoolInvites.Count
 }));
+
+// Owner-facing app facts: which build/port is running, how long and how much
+// memory it uses, where the log is, and whether the Windows sign-in entry is
+// set. Never returns credentials.
+app.MapGet("/api/app/info", (CompanionRuntime runtime, IAutostartRegistration autostart) => Results.Ok(new
+{
+    version = CompanionVersion.FederationPluginVersion(),
+    revision = CompanionVersion.LocalRevision(),
+    pid = Environment.ProcessId,
+    port = runtime.Port,
+    uptimeSeconds = (long)runtime.Uptime.TotalSeconds,
+    workingSetMb = runtime.WorkingSetBytes / (1024 * 1024),
+    installDirectory = runtime.InstallDirectory,
+    logPath = runtime.LogPath,
+    backgroundLaunch = runtime.BackgroundLaunch,
+    windows = OperatingSystem.IsWindows(),
+    autostartSupported = autostart.IsSupported,
+    autostartEnabled = autostart.IsEnabled()
+}));
+
+app.MapPost("/api/app/autostart", (AutostartRequest body, IAutostartRegistration autostart) =>
+{
+    if (!autostart.IsSupported)
+    {
+        return Results.BadRequest(new { error = "Starting with the system is only available in the Windows desktop build." });
+    }
+
+    if (!autostart.Set(body.Enabled))
+    {
+        return Results.BadRequest(new { error = "Windows did not accept the sign-in setting." });
+    }
+
+    return Results.Ok(new { enabled = autostart.IsEnabled() });
+});
+
+app.MapPost("/api/app/open-dashboard", (CompanionState s, CompanionRuntime runtime) =>
+    CompanionShell.OpenDashboard(runtime, s.AdminAccessKey)
+        ? Results.Ok(new { opened = true })
+        : Results.BadRequest(new { error = "Could not open a browser on the Companion machine." }));
+
+app.MapPost("/api/app/exit", (IHostApplicationLifetime lifetime) =>
+{
+    // Reply before shutting down so the browser gets a clean response.
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(300).ConfigureAwait(false);
+        AppLog.Info("Exit requested from the dashboard.");
+        lifetime.StopApplication();
+    });
+    return Results.Ok(new { stopping = true });
+});
 
 app.MapGet("/api/federation/info", () => Results.Ok(new
 {
@@ -952,6 +1033,12 @@ app.MapGet("/api/media-mount/status", (CompanionState s, LocalMediaMountService 
 app.MapPost("/api/media-mount/start", async (LocalMediaMountService mount, CancellationToken ct) =>
     Results.Ok(new { ready = await mount.StartMountAsync(ct), message = mount.Message }));
 
+app.MapPost("/api/media-mount/stop", async (LocalMediaMountService mount, CancellationToken ct) =>
+{
+    var stopped = await mount.StopMountAsync(ct).ConfigureAwait(false);
+    return Results.Ok(new { running = mount.HasOwnedProcess, stopped, message = mount.Message });
+});
+
 app.MapGet("/api/media-mount/config", (HttpRequest request, HttpResponse response, CompanionState s) =>
 {
     response.Headers.CacheControl = "no-store";
@@ -1053,7 +1140,31 @@ app.MapMethods("/stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (
     }
 });
 
-app.Run();
+await app.StartAsync().ConfigureAwait(false);
+
+runtime.Port = CompanionListen.Port ?? runtime.Port;
+AppLog.Info($"Companion {CompanionVersion.FederationPluginVersion()} started on port {runtime.Port} (pid {Environment.ProcessId}, background: {runtime.BackgroundLaunch}).");
+
+// A second launch asks this process to open the dashboard through the pipe.
+singleInstance.StartListener(() =>
+{
+    AppLog.Info("Opening the dashboard for a second launch.");
+    CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
+});
+
+if (launch.OpenBrowser)
+{
+    CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
+}
+
+#if WINDOWS
+var mountService = app.Services.GetRequiredService<LocalMediaMountService>();
+var autostartRegistration = app.Services.GetRequiredService<IAutostartRegistration>();
+WindowsCompanionTray.Start(state, mountService, autostartRegistration, runtime, app.Lifetime);
+#endif
+
+await app.WaitForShutdownAsync().ConfigureAwait(false);
+AppLog.Info("Companion stopped.");
 
 static async Task<string?> CompanionFunnelIfReachableAsync(HttpClient http, CompanionState s, CancellationToken cancellationToken)
     => await CompanionSelfCheck.PublicUrlIsThisCompanionAsync(http, s.PublicUrl, cancellationToken).ConfigureAwait(false)
@@ -1287,6 +1398,8 @@ internal sealed record SetPlexSectionRequest(string? SectionKey);
 internal sealed record SelectPlexServerRequest(string Id);
 
 internal sealed record SetPeerDownloadAccessRequest(bool AllowDownloads, bool AllowBulkDownloads);
+
+internal sealed record AutostartRequest(bool Enabled);
 
 internal sealed class CompanionPoolInviteRequest
 {

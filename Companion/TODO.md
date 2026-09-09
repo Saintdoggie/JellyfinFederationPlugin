@@ -2,6 +2,11 @@
 
 Updated 2026-09-06. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`. The Plex ownership/playback repair is published in plugin 0.0.133. Read root `AGENTS.md` and `TODO.md` before continuing.
 
+> Desktop app work (Windows tray/WinExe, Linux XDG autostart, single-instance,
+> RAM tuning, platform validation) moved to
+> [`DESKTOP-APP-TODO.md`](DESKTOP-APP-TODO.md). Keep this file focused on the
+> Plex federation repair.
+
 ## User clarification and root causes
 
 Friend runs Windows. The Helluva Boss titles were third-party media federated to the user, and should never have reached the friend's Plex. Downloads also showed items from the wrong selected server. Prior screenshots showed posters but Video/Audio None and playback errors.
