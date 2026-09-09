@@ -319,14 +319,17 @@
 
   <div class="card hidden" id="shareCard">
     <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. If your public Funnel opens Plex, Companion uses Plex Remote Access instead so they can still Accept. They do not need a code, and they do not need to join your Tailscale.</p>
+    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. Funnel must point at this app. If Funnel is Plex or HTTPS is down, Companion will not put your Plex token in the request; fix Funnel or explicitly choose Plex Remote Access. They do not need a code, and they do not need to join your Tailscale.</p>
     <div class="inline-form">
       <input type="text" id="inviteUrlInput" placeholder="https://their-jellyfin.example:8096" autocomplete="off" autocapitalize="off" spellcheck="false">
       <button id="inviteFriendBtn">Send share request</button>
     </div>
     <div class="status-line" id="inviteStatus"></div>
     <p class="status-line" style="margin-top:18px">Optional: generate a code only if they cannot Accept from their dashboard and need to paste one.</p>
-    <button class="secondary" id="generateCodeBtn">Generate connect code</button>
+    <div class="inline-form">
+      <button class="secondary" id="generateCodeBtn">Generate connect code</button>
+      <button class="secondary" id="generateDirectCodeBtn">Generate Plex Remote Access code</button>
+    </div>
     <code class="cmd hidden" id="connectCode"></code>
     <div class="code-actions hidden" id="connectCodeActions"><button class="secondary" id="copyCodeBtn">Copy code</button></div>
     <div class="status-line" id="codeStatus"></div>
@@ -417,6 +420,7 @@ const librariesCard = document.getElementById('librariesCard');
 const libraryList = document.getElementById('libraryList');
 const shareCard = document.getElementById('shareCard');
 const generateCodeBtn = document.getElementById('generateCodeBtn');
+const generateDirectCodeBtn = document.getElementById('generateDirectCodeBtn');
 const connectCode = document.getElementById('connectCode');
 const connectCodeActions = document.getElementById('connectCodeActions');
 const copyCodeBtn = document.getElementById('copyCodeBtn');
@@ -936,23 +940,32 @@ updateNowBtn.addEventListener('click', async () => {
   }
 });
 
-generateCodeBtn.addEventListener('click', async () => {
+async function generateConnectCode(usePlexRemoteAccess) {
   generateCodeBtn.disabled = true;
+  generateDirectCodeBtn.disabled = true;
   codeStatus.textContent = '';
-  const res = await apiFetch('/api/connect/generate', { method: 'POST' });
-  const data = await res.json();
-  if (res.ok) {
-    connectCode.textContent = data.code;
-    connectCode.classList.remove('hidden');
-    connectCodeActions.classList.remove('hidden');
-    codeStatus.textContent = data.mode === 'direct'
-      ? `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay.`
-      : `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Funnel so they can reach you outside your home. Prefer sending a share request with their Jellyfin address instead.`;
-  } else {
-    codeStatus.textContent = data.error || 'Could not generate a code.';
+  try {
+    const qs = usePlexRemoteAccess ? '?usePlexRemoteAccess=true' : '';
+    const res = await apiFetch('/api/connect/generate' + qs, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      connectCode.textContent = data.code;
+      connectCode.classList.remove('hidden');
+      connectCodeActions.classList.remove('hidden');
+      codeStatus.textContent = data.mode === 'direct'
+        ? `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay. Revoking a Companion friend does not revoke this Plex token.`
+        : `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Funnel so they can reach you outside your home. Prefer sending a share request with their Jellyfin address instead.`;
+    } else {
+      codeStatus.textContent = data.error || 'Could not generate a code.';
+    }
+  } catch (e) {
+    codeStatus.textContent = 'Could not generate a code.';
   }
   generateCodeBtn.disabled = false;
-});
+  generateDirectCodeBtn.disabled = false;
+}
+generateCodeBtn.addEventListener('click', () => generateConnectCode(false));
+generateDirectCodeBtn.addEventListener('click', () => generateConnectCode(true));
 
 copyCodeBtn.addEventListener('click', async () => {
   try {

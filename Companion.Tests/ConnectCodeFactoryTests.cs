@@ -92,6 +92,71 @@ public class ConnectCodeFactoryTests
     }
 
     [Fact]
+    public void TryGenerate_Errors_WhenFunnelWasExpectedButIsNotCompanion_WithoutMintingPlexToken()
+    {
+        var ok = ConnectCodeFactory.TryGenerate(
+            publicUrl: null,
+            remotePlexUrl: "https://relay.plex.direct:443",
+            serverAccessToken: "plex-token",
+            serverName: "Home Plex",
+            Array.Empty<CompanionLibrary>(),
+            createClaimToken: () => throw new InvalidOperationException("no claim"),
+            funnelExpected: true,
+            usePlexRemoteAccess: false,
+            out var code,
+            out var error);
+
+        Assert.False(ok);
+        Assert.Null(code);
+        Assert.Equal(ConnectCodeFactory.FunnelMissRequiresExplicitChoice, error);
+        Assert.DoesNotContain("plex-token", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryGenerate_UsesDirectPlex_WhenFunnelMissedAndOwnerChoosesPlexRemoteAccess()
+    {
+        var ok = ConnectCodeFactory.TryGenerate(
+            publicUrl: null,
+            remotePlexUrl: "https://relay.plex.direct:443",
+            serverAccessToken: "plex-token",
+            serverName: "Home Plex",
+            Array.Empty<CompanionLibrary>(),
+            createClaimToken: () => throw new InvalidOperationException("no claim"),
+            funnelExpected: true,
+            usePlexRemoteAccess: true,
+            out var code,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal("direct", code!.Mode);
+        Assert.False(code.Claim);
+        Assert.Equal("https://relay.plex.direct:443", code.Url);
+        Assert.Equal("plex-token", code.Token);
+    }
+
+    [Fact]
+    public void TryGenerate_UsesFunnelClaim_WhenCompanionFunnelWorksEvenIfPlexRemoteAccessWasChosen()
+    {
+        var ok = ConnectCodeFactory.TryGenerate(
+            publicUrl: "https://name.tail12345.ts.net",
+            remotePlexUrl: "https://relay.plex.direct:443",
+            serverAccessToken: "plex-token",
+            serverName: "Home Plex",
+            Array.Empty<CompanionLibrary>(),
+            createClaimToken: () => "claim-token",
+            funnelExpected: true,
+            usePlexRemoteAccess: true,
+            out var code,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal("claim", code!.Mode);
+        Assert.True(code.Claim);
+        Assert.Equal("claim-token", code.Token);
+        Assert.Null(code.FallbackToken);
+    }
+
+    [Fact]
     public void FriendFacingShare_UsesFunnelRelay_WhenFunnelIsThePublicPath()
     {
         var share = ConnectCodeFactory.FriendFacingShare(

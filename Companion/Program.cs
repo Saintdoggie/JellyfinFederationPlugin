@@ -484,7 +484,7 @@ app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s
     return Results.Ok(new { publicUrl = s.PublicUrl });
 });
 
-app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, HttpClient http, CancellationToken ct) =>
+app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, HttpClient http, CancellationToken ct, bool usePlexRemoteAccess = false) =>
 {
     if (s.ServerBaseUrl == null || s.ServerAccessToken == null)
     {
@@ -500,6 +500,8 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Htt
             s.ServerName,
             s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)),
             () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
+            funnelExpected: PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl),
+            usePlexRemoteAccess,
             out var generated,
             out var generateError)
         || generated == null)
@@ -507,10 +509,10 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Htt
         return Results.BadRequest(new { error = generateError });
     }
 
-    // A saved Funnel URL used to win over Plex Remote Access/Relay. That
-    // minted claim codes against Funnel even when Funnel TLS was dead (DNS
-    // and HTTP redirect still work) and the friend was on Starlink. Direct
-    // Plex codes skip Companion entirely for the handshake.
+    // Funnel must be this Companion. A miss used to fall through to a direct
+    // code that embeds the standing PMS token; revoking the Companion peer
+    // does not revoke that token. Direct Plex is only when Funnel is unset or
+    // the owner explicitly chooses Plex Remote Access.
     object payload;
     if (generated.Claim)
     {
@@ -563,6 +565,8 @@ app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionSta
             s.ServerName,
             s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)),
             () => Convert.ToHexString(RandomNumberGenerator.GetBytes(24)),
+            funnelExpected: PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl),
+            body.UsePlexRemoteAccess,
             out var generated,
             out var generateError)
         || generated == null)
@@ -1272,7 +1276,7 @@ internal sealed record ConnectLocalPlexRequest(string? Url, string? Token);
 
 internal sealed record LinkCompleteRequest(string Token, string? RequesterName);
 
-internal sealed record InviteFriendRequest(string? Url);
+internal sealed record InviteFriendRequest(string? Url, bool UsePlexRemoteAccess = false);
 
 internal sealed record ImportConnectRequest(string? Code, List<string>? LibraryIds = null);
 internal sealed record SelectImportLibrariesRequest(List<string>? LibraryIds);
