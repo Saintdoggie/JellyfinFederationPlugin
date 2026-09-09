@@ -145,6 +145,30 @@ public sealed class RcloneBootstrapperTests
     }
 
     [Fact]
+    public void OwnedPidFile_WritesReadsAndClearsCompanionRclonePid()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "fed-pid-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Assert.Equal("media-mount.pid", LocalMediaMountService.OwnedPidFileName);
+            Assert.False(LocalMediaMountService.TryReadOwnedPid(dir, out _));
+            LocalMediaMountService.WriteOwnedPid(dir, 4242);
+            Assert.Equal("4242", File.ReadAllText(LocalMediaMountService.OwnedPidPath(dir)).Trim());
+            Assert.True(LocalMediaMountService.TryReadOwnedPid(dir, out var pid));
+            Assert.Equal(4242, pid);
+            File.WriteAllText(LocalMediaMountService.OwnedPidPath(dir), "not-a-pid");
+            Assert.False(LocalMediaMountService.TryReadOwnedPid(dir, out _));
+            LocalMediaMountService.ClearOwnedPid(dir);
+            Assert.False(File.Exists(LocalMediaMountService.OwnedPidPath(dir)));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public void WinFspInstaller_UsesPinnedChecksummedMsi()
     {
         Assert.Equal("2ecb5c89405488a95bbd8a01875e02c48534fd37bbdfd84488f7590464d65944", WinFspInstaller.Sha256);
