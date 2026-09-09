@@ -237,6 +237,16 @@ public class FederationPluginDetectionTests
                 return Respond(_aliveProbeSucceeds ? HttpStatusCode.OK : HttpStatusCode.BadGateway);
             }
 
+            var query = request.RequestUri?.Query ?? string.Empty;
+            if (query.Contains("startIndex=", StringComparison.OrdinalIgnoreCase)
+                && !query.Contains("startIndex=0", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"Items\":[],\"TotalRecordCount\":0}", Encoding.UTF8, "application/json")
+                });
+            }
+
             var body = $"{{\"Items\":[{{\"Id\":\"{Guid.NewGuid()}\",\"Name\":\"New Movie\",\"Type\":\"Movie\"}}],\"TotalRecordCount\":1}}";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {

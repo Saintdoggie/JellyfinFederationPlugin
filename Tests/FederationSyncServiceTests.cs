@@ -7,9 +7,12 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -370,6 +373,206 @@ public class FederationSyncServiceTests
         Assert.Contains(entries, e => e.Sources.Any(s => s.ServerId == "still-here"));
     }
 
+    [Fact]
+    public async Task RefreshMapping_TruncatedPageWithRemainingTotal_DoesNotPruneUnseenItems()
+    {
+        var keepId = Guid.NewGuid();
+        var staleId = Guid.NewGuid();
+        var handler = new CatalogPageHandler(
+            new (Guid Id, string Name)[] { (keepId, "Keep"), (Guid.NewGuid(), "Later") },
+            totalRecordCount: 500,
+            truncateFirstPageTo: 1);
+        var (sync, cache, mapping, config, server) = CreateMovieSync(handler);
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, keepId, "Keep");
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, keepId));
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
+    }
+
+    [Fact]
+    public async Task RefreshMapping_ShortPageWhenNextFetchHasMore_DoesNotPruneUnseenItems()
+    {
+        var keepId = Guid.NewGuid();
+        var laterId = Guid.NewGuid();
+        var staleId = Guid.NewGuid();
+        var handler = new CatalogPageHandler(
+            new (Guid Id, string Name)[] { (keepId, "Keep"), (laterId, "Later") },
+            totalRecordCount: 1,
+            truncateFirstPageTo: 1);
+        var (sync, cache, mapping, config, server) = CreateMovieSync(handler);
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, keepId, "Keep");
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, keepId));
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
+    }
+
+    [Fact]
+    public async Task RefreshMapping_GenuinelyEmptyLastPage_PrunesUnseenItems()
+    {
+        var keepId = Guid.NewGuid();
+        var staleId = Guid.NewGuid();
+        var handler = new CatalogPageHandler(
+            new (Guid Id, string Name)[] { (keepId, "Keep") },
+            totalRecordCount: 1);
+        var (sync, cache, mapping, config, server) = CreateMovieSync(handler);
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, keepId, "Keep");
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, keepId));
+        Assert.False(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
+    }
+
+    [Fact]
+    public async Task RefreshMapping_EmptyRemoteLibrary_PrunesCachedItems()
+    {
+        var staleId = Guid.NewGuid();
+        var handler = new CatalogPageHandler(Array.Empty<(Guid Id, string Name)>(), totalRecordCount: 0);
+        var (sync, cache, mapping, config, server) = CreateMovieSync(handler);
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.Empty(cache.GetEntriesForMapping(mapping.LocalLibraryName));
+    }
+
+    [Fact]
+    public async Task RefreshMapping_PageCap_DoesNotPruneUnseenItems()
+    {
+        var remote = Enumerable.Range(0, 4).Select(i => (Guid.NewGuid(), "Movie " + i)).ToArray();
+        var staleId = Guid.NewGuid();
+        var handler = new CatalogPageHandler(remote);
+        var (sync, cache, mapping, config, server) = CreateMovieSync(handler);
+        sync.CatalogPageSize = 1;
+        sync.MaxCatalogPages = 2;
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, remote[0].Item1));
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, remote[1].Item1));
+    }
+
+    [Fact]
+    public async Task RefreshMapping_FailedUpsert_DoesNotPruneUnseenItems()
+    {
+        var staleId = Guid.NewGuid();
+        var provider = new Mock<IExternalCatalogProvider>();
+        provider.SetupGet(p => p.Kind).Returns(ServerKind.Plex);
+        provider.Setup(p => p.GetItemsAsync(It.IsAny<RemoteServer>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ExternalItem>
+            {
+                new(
+                    new BaseItemDto
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = "Broken",
+                        Type = BaseItemKind.Movie,
+                        People = new BaseItemPerson[] { null! }
+                    },
+                    "broken")
+            });
+
+        var (sync, cache, mapping, config, server) = CreateMovieSync(
+            new CatalogPageHandler(Array.Empty<(Guid Id, string Name)>()),
+            ServerKind.Plex,
+            new ExternalCatalogRegistry(new[] { provider.Object }));
+        SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
+    }
+
+    private static (FederationSyncService Sync, FederationItemCache Cache, LibraryMapping Mapping, PluginConfiguration Config, RemoteServer Server) CreateMovieSync(
+        HttpMessageHandler handler,
+        ServerKind kind = ServerKind.Jellyfin,
+        ExternalCatalogRegistry? catalogs = null)
+    {
+        var server = new RemoteServer
+        {
+            Id = "server-" + Guid.NewGuid().ToString("N"),
+            Name = "Remote",
+            Url = "http://fake.local",
+            ApiKey = "key",
+            UserId = "user1",
+            Enabled = true,
+            WanCapMode = WanCapMode.Off,
+            Kind = kind
+        };
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(server.Url) };
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var lm = new Mock<ILibraryManager>();
+        lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
+        var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager, Mock.Of<MediaBrowser.Controller.Persistence.IItemPersistenceService>());
+        var syncService = new FederationSyncService(
+            NullLogger<FederationSyncService>.Instance,
+            libraryManager,
+            clientFactory.Object,
+            cache,
+            persistence,
+            bandwidthMonitor,
+            new Mock<IServiceProvider>().Object,
+            catalogs ?? new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+        var mapping = new LibraryMapping
+        {
+            LocalLibraryName = "Movies",
+            MediaType = "Movie",
+            Enabled = true,
+            RemoteLibrarySources = new List<RemoteLibrarySource>
+            {
+                new RemoteLibrarySource { ServerId = server.Id, RemoteLibraryId = "lib1", RemoteLibraryName = "Movies" }
+            }
+        };
+        var config = new PluginConfiguration
+        {
+            EnableDedup = false,
+            RemoteServers = new List<RemoteServer> { server }
+        };
+        return (syncService, cache, mapping, config, server);
+    }
+
+    private static async Task InvokeRefreshMappingAsync(FederationSyncService sync, LibraryMapping mapping, PluginConfiguration config)
+    {
+        var method = typeof(FederationSyncService).GetMethod("RefreshMappingAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(sync, new object?[] { mapping, config, CancellationToken.None, null })!;
+    }
+
+    private static void SeedRaw(FederationItemCache cache, string mappingName, string serverId, Guid remoteId, string name)
+        => cache.UpsertRaw(mappingName, serverId, remoteId, new BaseItemDto { Id = remoteId, Name = name }, 0, "Movie");
+
+    private static bool CacheHasRemoteId(FederationItemCache cache, string mappingName, Guid remoteId)
+        => cache.GetEntriesForMapping(mappingName).Any(e => e.GetSourcesSnapshot().Any(s => s.RemoteItemId == remoteId));
+
+    private static int? ParseQueryInt(string query, string name)
+    {
+        var prefix = name + "=";
+        foreach (var part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(part.AsSpan(prefix.Length), out var value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
     private sealed class FakeHttpMessageHandler : HttpMessageHandler
     {
         private readonly string _seriesJson;
@@ -389,6 +592,10 @@ public class FederationSyncServiceTests
                 : query.Contains("mediaType=Episode", StringComparison.OrdinalIgnoreCase)
                     ? _episodeJson
                     : "{\"Items\":[],\"TotalRecordCount\":0}";
+            if ((ParseQueryInt(query, "startIndex") ?? 0) > 0)
+            {
+                body = "{\"Items\":[],\"TotalRecordCount\":0}";
+            }
 
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -427,11 +634,62 @@ public class FederationSyncServiceTests
                 }
             }
 
+            if ((ParseQueryInt(query, "startIndex") ?? 0) > 0)
+            {
+                body = "{\"Items\":[],\"TotalRecordCount\":0}";
+            }
+
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class CatalogPageHandler : HttpMessageHandler
+    {
+        private readonly IReadOnlyList<(Guid Id, string Name)> _items;
+        private readonly int? _totalRecordCount;
+        private readonly int? _truncateFirstPageTo;
+
+        public CatalogPageHandler(
+            IReadOnlyList<(Guid Id, string Name)> items,
+            int? totalRecordCount = null,
+            int? truncateFirstPageTo = null)
+        {
+            _items = items;
+            _totalRecordCount = totalRecordCount;
+            _truncateFirstPageTo = truncateFirstPageTo;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (path.Contains("/Plugins/Federation/Config", StringComparison.OrdinalIgnoreCase))
+            {
+                return Ok("{}");
+            }
+
+            var query = request.RequestUri?.Query ?? string.Empty;
+            var startIndex = ParseQueryInt(query, "startIndex") ?? 0;
+            var limit = ParseQueryInt(query, "limit") ?? 200;
+            var slice = _items.Skip(startIndex).Take(limit).ToList();
+            if (startIndex == 0 && _truncateFirstPageTo is int n)
+            {
+                slice = slice.Take(n).ToList();
+            }
+
+            var total = _totalRecordCount ?? _items.Count;
+            var itemsJson = string.Join(",", slice.Select(i =>
+                $"{{\"Id\":\"{i.Id}\",\"Name\":\"{i.Name}\",\"Type\":\"Movie\"}}"));
+            return Ok($"{{\"Items\":[{itemsJson}],\"TotalRecordCount\":{total}}}");
+        }
+
+        private static Task<HttpResponseMessage> Ok(string body)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
     }
 }

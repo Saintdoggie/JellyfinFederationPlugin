@@ -189,8 +189,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
+                int? totalRecordCount = null;
                 if (root.TryGetProperty("TotalRecordCount", out var totalProp) && totalProp.TryGetInt32(out var totalCount))
                 {
+                    totalRecordCount = totalCount;
                     _logger.LogDebug("[Federation] TotalRecordCount from API: {Count}", totalCount);
                 }
 
@@ -214,7 +216,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogDebug("[Federation] Retrieved {Count} items from remote server {ServerName}", items.Count, _server.Name);
-                return items;
+                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

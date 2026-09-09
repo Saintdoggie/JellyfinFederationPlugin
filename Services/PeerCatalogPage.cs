@@ -12,6 +12,26 @@ internal static class PeerCatalogPage
 {
     internal sealed record Result(List<BaseItemDto> Items, int NextStartIndex);
 
+    /// <summary>
+    /// One page from a peer catalog, including the remote's reported total when present.
+    /// </summary>
+    internal sealed class RemoteItemPage : List<BaseItemDto>
+    {
+        public RemoteItemPage(IEnumerable<BaseItemDto> items, int? totalRecordCount)
+            : base(items)
+        {
+            TotalRecordCount = totalRecordCount;
+        }
+
+        public int? TotalRecordCount { get; }
+
+        /// <summary>
+        /// True when the remote's total says items remain after this page.
+        /// </summary>
+        public static bool HasMoreRecords(int startIndex, int pageCount, int? totalRecordCount)
+            => totalRecordCount is int total && startIndex + pageCount < total;
+    }
+
     public static bool IsOwned(BaseItemDto item)
         => !FederationLibraryManager.IsIneligibleForOutgoingShare(item.ProviderIds);
 
