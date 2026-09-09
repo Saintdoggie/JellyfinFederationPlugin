@@ -923,6 +923,11 @@
                     var customMappings = [];
                     var pickerLibs = [];
                     var pickerLoaded = false;
+                    // Server ids whose remote libraries could not be fetched
+                    // (connect error, timeout, or omitted from GetRemoteLibraries).
+                    // Save must keep their existing AutoManaged sources instead of
+                    // treating a failed fetch as "uncheck all of this friend's libraries".
+                    var pickerUnavailableServerIds = [];
                     var pageEl = null;
                     var loadWatchdog = null;
 
@@ -4304,6 +4309,7 @@
                         if (!currentConfig.RemoteServers || currentConfig.RemoteServers.length === 0) {
                             pickerLoaded = false;
                             pickerLibs = [];
+                            pickerUnavailableServerIds = [];
                             hint.textContent = 'Add a friend above and their libraries will appear here.';
                             hint.style.display = 'block';
                             list.innerHTML = '';
@@ -4319,6 +4325,7 @@
                         .then(function (res) {
                             if (!res.success || !res.servers || res.servers.length === 0) {
                                 pickerLoaded = false;
+                                pickerUnavailableServerIds = [];
                                 // "No servers available yet" is misleading when servers
                                 // are configured but switched off - it reads as "you
                                 // haven't added one", sending people to re-add a friend
@@ -4332,11 +4339,22 @@
                             }
 
                             pickerLibs = [];
+                            pickerUnavailableServerIds = [];
                             var errors = [];
+                            var loadedServerIds = {};
                             res.servers.forEach(function (srv) {
                                 if (srv.error) {
                                     errors.push(srv.serverName + ': ' + srv.error);
+                                    if (srv.serverId) {
+                                        pickerUnavailableServerIds.push(srv.serverId);
+                                    }
+                                    // Empty libraries here are a fetch failure, not
+                                    // a real empty catalog. Do not push rows that
+                                    // would uncheck this friend on the next save.
+                                    return;
                                 }
+
+                                loadedServerIds[srv.serverId] = true;
 
                                 (srv.libraries || []).forEach(function (lib) {
                                     var selected = false;
@@ -4376,14 +4394,32 @@
                                     });
                                 });
                             });
+
+                            (currentConfig.RemoteServers || []).forEach(function (s) {
+                                if (!s || !s.Id || s.Enabled === false) {
+                                    return;
+                                }
+
+                                if (!loadedServerIds[s.Id] && pickerUnavailableServerIds.indexOf(s.Id) === -1) {
+                                    pickerUnavailableServerIds.push(s.Id);
+                                }
+                            });
+
                             pickerLoaded = true;
                             renderPicker(errors);
+                            // Auto-save after accept only when the new friend
+                            // actually loaded. Failed peers are merged back in
+                            // buildAutoMappings, so this save is not a wipe.
                             if (autoAdoptServerIds && autoAdoptServerIds.length > 0) {
-                                saveConfiguration();
+                                var adopted = autoAdoptServerIds.some(function (id) { return loadedServerIds[id]; });
+                                if (adopted) {
+                                    saveConfiguration();
+                                }
                             }
                         })
                         .catch(function (e) {
                             pickerLoaded = false;
+                            pickerUnavailableServerIds = [];
                             hint.textContent = 'Could not load remote libraries: ' + e.message;
                         });
                     }
@@ -4396,9 +4432,13 @@
                         }
 
                         if (pickerLibs.length === 0) {
-                            hint.textContent = 'No libraries found on the connected servers.';
+                            hint.textContent = (errors && errors.length)
+                                ? 'Could not reach every friend. Existing library selections were kept.'
+                                : 'No libraries found on the connected servers.';
                             hint.style.display = 'block';
-                            list.innerHTML = '';
+                            list.innerHTML = (errors && errors.length)
+                                ? '<div class="fed-error" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>'
+                                : '';
                             return;
                         }
 
@@ -4454,6 +4494,57 @@
                         list.innerHTML = html;
                     }
 
+                    function addAutoMappingSource(groups, order, dest, mediaType, source) {
+                        var key = String(dest || '').toLowerCase() + '|' + String(mediaType || '').toLowerCase();
+                        if (!groups[key]) {
+                            groups[key] = { name: dest, mediaType: mediaType, sources: [] };
+                            order.push(key);
+                        }
+
+                        var i;
+                        for (i = 0; i < groups[key].sources.length; i++) {
+                            if (groups[key].sources[i].ServerId === source.ServerId
+                                && groups[key].sources[i].RemoteLibraryId === source.RemoteLibraryId) {
+                                return;
+                            }
+                        }
+
+                        groups[key].sources.push(source);
+                    }
+
+                    function retainUnavailableAutoSources(groups, order) {
+                        if (!pickerUnavailableServerIds.length) {
+                            return;
+                        }
+
+                        var wanted = {};
+                        pickerUnavailableServerIds.forEach(function (id) { wanted[id] = true; });
+                        (currentConfig.LibraryMappings || []).forEach(function (m) {
+                            if (!m.AutoManaged) {
+                                return;
+                            }
+
+                            (m.RemoteLibrarySources || []).forEach(function (src) {
+                                if (!src || !wanted[src.ServerId]) {
+                                    return;
+                                }
+
+                                addAutoMappingSource(
+                                    groups,
+                                    order,
+                                    m.LocalLibraryName || localDestinationName(m.MediaType),
+                                    m.MediaType,
+                                    {
+                                        ServerId: src.ServerId,
+                                        ServerName: src.ServerName,
+                                        RemoteLibraryId: src.RemoteLibraryId,
+                                        RemoteLibraryName: src.RemoteLibraryName
+                                    }
+                                );
+                            });
+                        });
+                    }
+
                     function buildAutoMappings() {
                         var groups = {};
                         var order = [];
@@ -4462,20 +4553,15 @@
                                 return;
                             }
 
-                            var dest = localDestinationName(lib.mediaType);
-                            var key = dest.toLowerCase() + '|' + String(lib.mediaType || '').toLowerCase();
-                            if (!groups[key]) {
-                                groups[key] = { name: dest, mediaType: lib.mediaType, sources: [] };
-                                order.push(key);
-                            }
-
-                            groups[key].sources.push({
+                            addAutoMappingSource(groups, order, localDestinationName(lib.mediaType), lib.mediaType, {
                                 ServerId: lib.serverId,
                                 ServerName: lib.serverName,
                                 RemoteLibraryId: lib.libraryId,
                                 RemoteLibraryName: lib.libraryName
                             });
                         });
+
+                        retainUnavailableAutoSources(groups, order);
 
                         return order.map(function (key) {
                             var g = groups[key];

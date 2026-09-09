@@ -446,6 +446,215 @@ test('refresh now reads camelCase success and message so failures are visible', 
   assert.match(refresh[0], /setSaveMsg\([^,]+,\s*success === false\)/);
 });
 
+function pickerHarness() {
+  const start = configPage.indexOf('                    function friendlyType(');
+  const endStart = configPage.indexOf('                    function buildAutoMappings(');
+  assert.notEqual(start, -1, 'friendlyType not found');
+  assert.notEqual(endStart, -1, 'buildAutoMappings not found');
+  const end = configPage.indexOf('\n                    }', endStart) + '\n                    }'.length;
+  const source = configPage.slice(start, end);
+  assert.match(source, /retainUnavailableAutoSources/);
+
+  const pending = [];
+  const nodes = new Map();
+  const q = (id) => {
+    if (!nodes.has(id)) {
+      nodes.set(id, { value: '', style: {}, innerHTML: '', textContent: '' });
+    }
+    return nodes.get(id);
+  };
+  const api = new Function('fedFetch', 'q', `
+    var COLLECTION_TYPE_MAP = {
+      movies: { mediaType: 'Movie', label: 'Movies' },
+      tvshows: { mediaType: 'Series', label: 'TV Shows' }
+    };
+    var PICKER_TYPES = ['Movie', 'Series'];
+    var pickerLibs = [];
+    var pickerLoaded = false;
+    var pickerUnavailableServerIds = [];
+    var currentConfig = { RemoteServers: [], LibraryMappings: [] };
+    var localLibrariesCache = [];
+    var savedAuto = null;
+    var saveCalls = 0;
+    function loadLocalLibraries() { return Promise.resolve(localLibrariesCache); }
+    function escapeHtml(x) { return String(x); }
+    function readJson(r) { return r.json(); }
+    function saveConfiguration() { saveCalls += 1; savedAuto = buildAutoMappings(); }
+    ${source}
+    return {
+      get pickerLoaded() { return pickerLoaded; },
+      get pickerLibs() { return pickerLibs; },
+      get unavailable() { return pickerUnavailableServerIds.slice(); },
+      get savedAuto() { return savedAuto; },
+      get saveCalls() { return saveCalls; },
+      setConfig: function (c) { currentConfig = c; },
+      load: loadLibraryPicker,
+      mappings: buildAutoMappings
+    };
+  `)((url) => new Promise((resolve) => pending.push({ url, resolve })), q);
+
+  return {
+    api,
+    pending,
+    q,
+    respond(index, body) {
+      pending[index].resolve({ ok: true, json: async () => body });
+    }
+  };
+}
+
+function movieMapping(sources) {
+  return {
+    LocalLibraryName: 'Movies',
+    MediaType: 'Movie',
+    RemoteServerIds: sources.map((s) => s.ServerId),
+    RemoteLibrarySources: sources,
+    Enabled: true,
+    AutoProvision: true,
+    AutoManaged: true
+  };
+}
+
+test('save keeps auto mappings for a friend whose libraries failed to load', async () => {
+  const h = pickerHarness();
+  h.api.setConfig({
+    RemoteServers: [
+      { Id: 'online', Name: 'Online', Enabled: true },
+      { Id: 'offline', Name: 'Offline', Enabled: true }
+    ],
+    LibraryMappings: [movieMapping([
+      { ServerId: 'online', ServerName: 'Online', RemoteLibraryId: 'lib-a', RemoteLibraryName: 'Films' },
+      { ServerId: 'offline', ServerName: 'Offline', RemoteLibraryId: 'lib-b', RemoteLibraryName: 'Cinema' }
+    ])]
+  });
+
+  h.api.load();
+  assert.equal(h.pending[0].url, '/Plugins/Federation/GetRemoteLibraries');
+  h.respond(0, {
+    success: true,
+    servers: [
+      {
+        serverId: 'online',
+        serverName: 'Online',
+        libraries: [{ id: 'lib-a', name: 'Films', collectionType: 'movies', itemCount: 3 }]
+      },
+      {
+        serverId: 'offline',
+        serverName: 'Offline',
+        error: 'Failed to connect: timeout',
+        libraries: []
+      }
+    ]
+  });
+  await settle();
+
+  assert.equal(h.api.pickerLoaded, true);
+  assert.deepEqual(h.api.unavailable, ['offline']);
+  assert.equal(h.api.pickerLibs.length, 1);
+  assert.equal(h.api.pickerLibs[0].serverId, 'online');
+  assert.equal(h.api.pickerLibs[0].selected, true);
+
+  const sources = h.api.mappings().flatMap((m) => m.RemoteLibrarySources);
+  assert.ok(sources.some((s) => s.ServerId === 'online' && s.RemoteLibraryId === 'lib-a'));
+  assert.ok(sources.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
+
+  h.api.pickerLibs[0].selected = false;
+  const afterClear = h.api.mappings().flatMap((m) => m.RemoteLibrarySources);
+  assert.equal(afterClear.some((s) => s.ServerId === 'online'), false);
+  assert.ok(afterClear.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
+});
+
+test('accepting a friend does not wipe offline auto mappings on the follow-up save', async () => {
+  const h = pickerHarness();
+  h.api.setConfig({
+    RemoteServers: [
+      { Id: 'new', Name: 'New', Enabled: true },
+      { Id: 'offline', Name: 'Offline', Enabled: true }
+    ],
+    LibraryMappings: [movieMapping([
+      { ServerId: 'offline', ServerName: 'Offline', RemoteLibraryId: 'lib-b', RemoteLibraryName: 'Cinema' }
+    ])]
+  });
+
+  h.api.load(['new']);
+  h.respond(0, {
+    success: true,
+    servers: [
+      {
+        serverId: 'new',
+        serverName: 'New',
+        libraries: [{ id: 'lib-c', name: 'New Films', collectionType: 'movies', itemCount: 1 }]
+      },
+      {
+        serverId: 'offline',
+        serverName: 'Offline',
+        error: 'Failed to connect: timeout',
+        libraries: []
+      }
+    ]
+  });
+  await settle();
+
+  assert.equal(h.api.saveCalls, 1);
+  const sources = h.api.savedAuto.flatMap((m) => m.RemoteLibrarySources);
+  assert.ok(sources.some((s) => s.ServerId === 'new' && s.RemoteLibraryId === 'lib-c'));
+  assert.ok(sources.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
+});
+
+test('accepting a friend does not auto-save when the new friend failed to load', async () => {
+  const h = pickerHarness();
+  h.api.setConfig({
+    RemoteServers: [
+      { Id: 'new', Name: 'New', Enabled: true },
+      { Id: 'online', Name: 'Online', Enabled: true }
+    ],
+    LibraryMappings: [movieMapping([
+      { ServerId: 'online', ServerName: 'Online', RemoteLibraryId: 'lib-a', RemoteLibraryName: 'Films' }
+    ])]
+  });
+
+  h.api.load(['new']);
+  h.respond(0, {
+    success: true,
+    servers: [
+      { serverId: 'new', serverName: 'New', error: 'Failed to connect: timeout', libraries: [] },
+      {
+        serverId: 'online',
+        serverName: 'Online',
+        libraries: [{ id: 'lib-a', name: 'Films', collectionType: 'movies', itemCount: 3 }]
+      }
+    ]
+  });
+  await settle();
+
+  assert.equal(h.api.saveCalls, 0);
+  assert.deepEqual(h.api.unavailable, ['new']);
+  const sources = h.api.mappings().flatMap((m) => m.RemoteLibrarySources);
+  assert.ok(sources.some((s) => s.ServerId === 'online' && s.RemoteLibraryId === 'lib-a'));
+  assert.equal(sources.some((s) => s.ServerId === 'new'), false);
+});
+
+test('a reachable friend with zero libraries is not treated as a failed fetch', async () => {
+  const h = pickerHarness();
+  h.api.setConfig({
+    RemoteServers: [{ Id: 'empty', Name: 'Empty', Enabled: true }],
+    LibraryMappings: [movieMapping([
+      { ServerId: 'empty', ServerName: 'Empty', RemoteLibraryId: 'lib-old', RemoteLibraryName: 'Gone' }
+    ])]
+  });
+
+  h.api.load();
+  h.respond(0, {
+    success: true,
+    servers: [{ serverId: 'empty', serverName: 'Empty', libraries: [] }]
+  });
+  await settle();
+
+  assert.deepEqual(h.api.unavailable, []);
+  assert.equal(h.api.pickerLibs.length, 0);
+  assert.equal(h.api.mappings().length, 0);
+});
+
 test('badge requests authenticate with the supported Jellyfin 12 header', async () => {
   const { dom, requests } = makeWindow(true);
   await settle();
