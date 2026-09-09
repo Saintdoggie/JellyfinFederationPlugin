@@ -3,16 +3,19 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Security;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -93,6 +96,31 @@ public class FederationPoolTests : IDisposable
 
     private static HttpResponseMessage Json(HttpStatusCode status, object body)
         => new HttpResponseMessage(status) { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
+
+    [Fact]
+    public void GetPools_ReturnsIconBase64()
+    {
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IsOwner = true,
+            OwnerFederationId = "self",
+            OwnerName = "This Server",
+            IconBase64 = "aWNvbg==",
+            Members =
+            {
+                new PoolMember { FederationId = "self", Name = "This Server", Url = "http://local.test:8096" }
+            }
+        });
+
+        var controller = (FederationController)RuntimeHelpers.GetUninitializedObject(typeof(FederationController));
+        var result = Assert.IsType<OkObjectResult>(controller.GetPools());
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
+        var pool = Assert.Single(doc.RootElement.EnumerateArray());
+        Assert.Equal("pool-1", pool.GetProperty("Id").GetString());
+        Assert.Equal("aWNvbg==", pool.GetProperty("IconBase64").GetString());
+    }
 
     [Fact]
     public void CreatePool_AddsPoolOwnedByThisServer_WithSelfAsSoleMember()
