@@ -5786,7 +5786,9 @@
                                     fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
                                     .then(function (r) { return readJson(r); })
                                     .then(function (res) {
-                                        setSaveMsg(res.Message || 'Refresh complete', res.Success === false);
+                                        var success = res.success !== undefined ? res.success : res.Success;
+                                        var message = res.message !== undefined ? res.message : res.Message;
+                                        setSaveMsg(message || (success === false ? 'Refresh failed' : 'Refresh complete'), success === false);
                                         loadStatus();
                                         loadDiagnostics();
                                     })
