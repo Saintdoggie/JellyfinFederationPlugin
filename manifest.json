@@ -29,7 +29,7 @@
         "targetAbi": "12.0.0.0",
         "timestamp": "2026-09-09T01:50:00Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.138/Jellyfin.Federation.zip",
-        "checksum": "00000000000000000000000000000000"
+        "checksum": "d21689beb3b3153a1aaa47636cafe8a3"
       },
       {
         "version": "0.0.136",
