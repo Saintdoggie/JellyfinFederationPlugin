@@ -371,7 +371,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
     [Fact]
     public void ReceiveRemoteUserAccessRules_MatchesByFederationId_AndReplacesStoredRules()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        var bob = new RemoteServer
         {
             Id = "friend-1",
             FederationId = "bob-fed-id",
@@ -379,10 +379,11 @@ public class FederationRemoteUserAccessPushTests : IDisposable
             {
                 new RemoteUserAccessRule { RemoteUserId = "stale-user", Mode = RemoteUserAccessMode.Blocked }
             }
-        });
+        };
+        _plugin.Configuration.RemoteServers.Add(bob);
 
         var newRule = new RemoteUserAccessRule { RemoteUserId = "fresh-user", Mode = RemoteUserAccessMode.CertainItems, ItemIds = new List<string> { "item-1" } };
-        _service.ReceiveRemoteUserAccessRules(new RemoteUserAccessRulesPayload
+        _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
         {
             FromFederationId = "bob-fed-id",
             Rules = new List<RemoteUserAccessRule> { newRule }
@@ -396,15 +397,60 @@ public class FederationRemoteUserAccessPushTests : IDisposable
     [Fact]
     public void ReceiveRemoteUserAccessRules_UnknownFederationId_DoesNothing()
     {
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "friend-1", FederationId = "bob-fed-id" });
+        var bob = new RemoteServer { Id = "friend-1", FederationId = "bob-fed-id" };
+        _plugin.Configuration.RemoteServers.Add(bob);
 
-        _service.ReceiveRemoteUserAccessRules(new RemoteUserAccessRulesPayload
+        _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
         {
             FromFederationId = "someone-else",
             Rules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule { RemoteUserId = "x" } }
         });
 
         Assert.Empty(_plugin.Configuration.RemoteServers[0].FriendUserAccessRules);
+    }
+
+    [Fact]
+    public void ReceiveRemoteUserAccessRules_TokenForA_ClaimingB_DoesNotMutateB()
+    {
+        var alice = new RemoteServer
+        {
+            Id = "friend-a",
+            Name = "Alice",
+            FederationId = "alice-fed-id",
+            IssuedApiKey = "token-alice"
+        };
+        var bob = new RemoteServer
+        {
+            Id = "friend-b",
+            Name = "Bob",
+            FederationId = "bob-fed-id",
+            IssuedApiKey = "token-bob",
+            FriendUserAccessRules = new List<RemoteUserAccessRule>
+            {
+                new RemoteUserAccessRule { RemoteUserId = "bobs-user", Mode = RemoteUserAccessMode.Blocked }
+            }
+        };
+        _plugin.Configuration.RemoteServers.Add(alice);
+        _plugin.Configuration.RemoteServers.Add(bob);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Headers[FederationTokenAuth.Header] = "token-alice";
+        var caller = FederationTokenAuth.ResolveCaller(httpContext.Request);
+        Assert.Same(alice, caller);
+
+        _service.ReceiveRemoteUserAccessRules(caller!, new RemoteUserAccessRulesPayload
+        {
+            FromFederationId = "bob-fed-id",
+            Rules = new List<RemoteUserAccessRule>
+            {
+                new RemoteUserAccessRule { RemoteUserId = "hijacked", Mode = RemoteUserAccessMode.AllLibraries }
+            }
+        });
+
+        Assert.Empty(alice.FriendUserAccessRules);
+        var bobsRules = Assert.Single(bob.FriendUserAccessRules);
+        Assert.Equal("bobs-user", bobsRules.RemoteUserId);
+        Assert.Equal(RemoteUserAccessMode.Blocked, bobsRules.Mode);
     }
 
     private sealed class FakeHandler : HttpMessageHandler

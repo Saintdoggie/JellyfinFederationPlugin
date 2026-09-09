@@ -1358,21 +1358,23 @@ namespace Jellyfin.Plugin.Federation.Services
         /// sync - no new consent needed, same trust boundary as
         /// <see cref="ReceivePoolNotice"/>. Only a pool genuinely new to us is
         /// staged as a <see cref="PoolInvite"/> for the admin to accept or reject.
+        /// Sender identity is <paramref name="caller"/> (the token), not
+        /// <c>payload.FromFederationId</c>.
         /// </summary>
-        public Task ReceivePoolInviteNotice(PoolInviteNoticePayload payload, CancellationToken cancellationToken)
+        public Task ReceivePoolInviteNotice(RemoteServer caller, PoolInviteNoticePayload payload, CancellationToken cancellationToken)
         {
-            if (payload == null || string.IsNullOrEmpty(payload.InviteId) || string.IsNullOrEmpty(payload.PoolId) || string.IsNullOrEmpty(payload.FromFederationId))
+            if (caller == null || payload == null || string.IsNullOrEmpty(payload.InviteId) || string.IsNullOrEmpty(payload.PoolId))
+            {
+                return Task.CompletedTask;
+            }
+
+            if (!ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "pool invite"))
             {
                 return Task.CompletedTask;
             }
 
             var config = Plugin.Instance!.Configuration;
-            var sender = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
-            if (sender == null)
-            {
-                _logger.LogWarning("[Federation] Received a pool invite from an unrecognized federation id {FederationId}", payload.FromFederationId);
-                return Task.CompletedTask;
-            }
+            var sender = caller;
 
             var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
             if (existingPool != null)
@@ -1834,22 +1836,23 @@ namespace Jellyfin.Plugin.Federation.Services
         /// informational, same trust boundary as the rest of the friend system.
         /// A pool we don't already belong to is ignored here: introducing a
         /// genuinely new pool goes through <see cref="ReceivePoolInviteNotice"/>
-        /// instead, which does require the admin to accept.
+        /// instead, which does require the admin to accept. Sender identity is
+        /// <paramref name="caller"/> (the token), not <c>payload.FromFederationId</c>.
         /// </summary>
-        public Task ReceivePoolNotice(PoolNoticePayload payload, CancellationToken cancellationToken)
+        public Task ReceivePoolNotice(RemoteServer caller, PoolNoticePayload payload, CancellationToken cancellationToken)
         {
-            if (payload == null || string.IsNullOrEmpty(payload.PoolId) || string.IsNullOrEmpty(payload.FromFederationId))
+            if (caller == null || payload == null || string.IsNullOrEmpty(payload.PoolId))
+            {
+                return Task.CompletedTask;
+            }
+
+            if (!ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "pool notice"))
             {
                 return Task.CompletedTask;
             }
 
             var config = Plugin.Instance!.Configuration;
-            var sender = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
-            if (sender == null)
-            {
-                _logger.LogWarning("[Federation] Received a pool notice from an unrecognized federation id {FederationId}", payload.FromFederationId);
-                return Task.CompletedTask;
-            }
+            var sender = caller;
 
             var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
             if (existingPool == null)
@@ -2113,26 +2116,45 @@ namespace Jellyfin.Plugin.Federation.Services
         /// configured for our own local users - the counterpart to
         /// <see cref="SetRemoteUserAccessRuleAsync"/> on their side. Replaces (not
         /// merges) our stored copy, since the sender always pushes its full list.
-        /// Matched by federation id, same as <see cref="ReceivePoolNotice"/>.
+        /// Applied to <paramref name="caller"/> (the token), not whoever
+        /// <c>payload.FromFederationId</c> names.
         /// </summary>
-        public void ReceiveRemoteUserAccessRules(RemoteUserAccessRulesPayload payload)
+        public void ReceiveRemoteUserAccessRules(RemoteServer caller, RemoteUserAccessRulesPayload payload)
         {
-            if (payload == null || string.IsNullOrEmpty(payload.FromFederationId))
+            if (caller == null || payload == null)
             {
                 return;
             }
 
-            var config = Plugin.Instance!.Configuration;
-            var server = config.RemoteServers.FirstOrDefault(s => s.FederationId == payload.FromFederationId);
-            if (server == null)
+            if (!ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "remote-user access rules"))
             {
-                _logger.LogWarning("[Federation] Received remote-user access rules from an unrecognized federation id {FederationId}", payload.FromFederationId);
                 return;
             }
 
-            server.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
-            Plugin.Instance.SaveConfiguration();
-            _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", server.Name, server.FriendUserAccessRules.Count);
+            caller.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
+            Plugin.Instance!.SaveConfiguration();
+            _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", caller.Name, caller.FriendUserAccessRules.Count);
+        }
+
+        /// <summary>
+        /// True when the body federation id is absent or matches the authenticated
+        /// caller's stored id. A mismatch is ignored: a valid token for one friend
+        /// must not act as another friend.
+        /// </summary>
+        private bool ClaimedFederationIdMatchesCaller(RemoteServer caller, string? claimedFederationId, string action)
+        {
+            if (string.IsNullOrEmpty(claimedFederationId) || string.IsNullOrEmpty(caller.FederationId))
+            {
+                return true;
+            }
+
+            if (string.Equals(claimedFederationId, caller.FederationId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            _logger.LogWarning("[Federation] Ignored {Action} whose FromFederationId {ClaimedId} did not match authenticated caller {CallerId}", action, claimedFederationId, caller.FederationId);
+            return false;
         }
 
         // Oversized peer icons are dropped; the rest of the notice still applies.
