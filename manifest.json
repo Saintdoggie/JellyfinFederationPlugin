@@ -56,6 +56,14 @@
         "checksum": "00000000000000000000000000000000"
       },
       {
+        "version": "0.0.145",
+        "changelog": "Do not prune federated catalogs when a catalog page is truncated, the page cap is hit, or an item upsert fails.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:53:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.145/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.144",
         "changelog": "Remap federation cache keys when libraries collapse into Movies/Shows so prune and upsert keep the same entries.",
         "targetAbi": "12.0.0.0",
