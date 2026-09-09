@@ -11,9 +11,9 @@
         "version": "0.0.155",
         "changelog": "Do not mint a raw Plex token when Funnel is set but is not Companion. Fix Funnel or explicitly choose Plex Remote Access.",
         "targetAbi": "12.0.0.0",
-        "timestamp": "2026-09-09T02:07:32Z",
+        "timestamp": "2026-09-09T02:11:05Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.155/Jellyfin.Federation.zip",
-        "checksum": "00000000000000000000000000000000"
+        "checksum": "3e32395d9f68f8876e90c6d2cae3233f"
       },
       {
         "version": "0.0.152",
