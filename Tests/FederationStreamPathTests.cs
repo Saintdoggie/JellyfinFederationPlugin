@@ -280,6 +280,77 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void ProxySignature_ValidV2_SucceedsWithinLifetime()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString("N");
+        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, userId, mintedAt);
+        var expUnixHour = (mintedAt.ToUnixTimeSeconds() / 3600) + FederationLibraryManager.ProxySignatureLifetimeHours;
+        var payload = $"v2\nserverA\n{itemId:N}\n0\n{userId}\n{expUnixHour}";
+        var mac = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+
+        Assert.Equal($"{mac}.{expUnixHour}", signature);
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, mintedAt));
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, mintedAt.AddHours(23)));
+    }
+
+    [Fact]
+    public void ProxySignature_ExpiredV2_Fails()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
+
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, signature, mintedAt.AddHours(24)));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, signature, mintedAt.AddHours(48)));
+    }
+
+    [Fact]
+    public void ProxySignature_TamperedExpiry_Fails()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
+        var separator = signature.LastIndexOf('.');
+        var mac = signature.Substring(0, separator);
+        var expUnixHour = long.Parse(signature.Substring(separator + 1), System.Globalization.CultureInfo.InvariantCulture);
+        var tampered = $"{mac}.{expUnixHour + 48}";
+
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, tampered, mintedAt));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, tampered, mintedAt.AddHours(23)));
+    }
+
+    [Fact]
+    public void ProxySignature_ItemMismatch_StillFails()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var otherItemId = Guid.NewGuid();
+        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
+        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
+
+        Assert.False(_manager.ValidateProxySignature("serverA", otherItemId, false, null, signature, mintedAt));
+    }
+
+    [Fact]
+    public void ProxySignature_LegacyV1_IsRejected()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var payload = $"v1\nserverA\n{itemId:N}\n0\n";
+        var v1 = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
+
+        Assert.Equal(64, v1.Length);
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1, mintedAt));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1));
+    }
+
+    [Fact]
     public void Audio_UsesTheAudioStreamEndpoint_NotTheVideoOne()
     {
         AddServer();

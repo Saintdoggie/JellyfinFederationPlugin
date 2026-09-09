@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -44,6 +45,12 @@ namespace Jellyfin.Plugin.Federation.Services
             MetadataField.Cast,
             MetadataField.ProductionLocations
         };
+
+        /// <summary>
+        /// HMAC capability lifetime in hours, matching playback tokens. Expiry is
+        /// a UTC unix hour so ffmpeg can reuse one URL for a viewing session.
+        /// </summary>
+        internal const int ProxySignatureLifetimeHours = 24;
 
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<FederationLibraryManager> _logger;
@@ -506,8 +513,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Creates an item/user-scoped signature for the capability media URL. The
         /// configured remote credential is only HMAC key material and never appears
         /// in the URL; changing or removing the server immediately invalidates it.
+        /// v2 binds a UTC unix-hour expiry 24 hours ahead so a leaked Path dies
+        /// without waiting for API-key rotation.
         /// </summary>
         public string CreateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId)
+            => CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, DateTimeOffset.UtcNow);
+
+        /// <summary>
+        /// Test seam for minting a signature at a chosen UTC time.
+        /// </summary>
+        internal string CreateProxySignature(
+            string serverId,
+            Guid remoteItemId,
+            bool isAudio,
+            string? requestingUserId,
+            DateTimeOffset utcNow)
         {
             var server = GetServer(serverId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -516,27 +536,88 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
-            var payload = $"v1\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}";
-            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(server.ApiKey));
-            return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+            var expUnixHour = GetUtcUnixHour(utcNow) + ProxySignatureLifetimeHours;
+            var payload = BuildProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour);
+            return $"{ComputeProxySignatureMac(server.ApiKey, payload)}.{expUnixHour}";
         }
 
-        /// <summary>Validates a proxy URL signature in constant time.</summary>
+        /// <summary>
+        /// Validates a proxy URL signature in constant time. v1 (no expiry) is
+        /// rejected; persisted Paths are restamped on the next sync.
+        /// </summary>
         public bool ValidateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, string? signature)
+            => ValidateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, signature, DateTimeOffset.UtcNow);
+
+        /// <summary>
+        /// Test seam for validating a signature against a chosen UTC time.
+        /// </summary>
+        internal bool ValidateProxySignature(
+            string serverId,
+            Guid remoteItemId,
+            bool isAudio,
+            string? requestingUserId,
+            string? signature,
+            DateTimeOffset utcNow)
         {
             if (string.IsNullOrEmpty(signature)
-                || signature.Length != 64
-                || signature.Any(c => !Uri.IsHexDigit(c))
                 || (!string.IsNullOrEmpty(requestingUserId) && !Guid.TryParse(requestingUserId, out _)))
             {
                 return false;
             }
 
-            var expected = CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId);
-            var expectedBytes = Encoding.UTF8.GetBytes(expected);
-            var suppliedBytes = Encoding.UTF8.GetBytes(signature);
-            return expectedBytes.Length == suppliedBytes.Length
+            // v1 was 64 hex digits and never expired. Reject that shape (and any
+            // other obviously malformed token) before touching the HMAC.
+            var separator = signature.IndexOf('.');
+            if (separator != 64 || signature.Length < 66)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < 64; i++)
+            {
+                if (!Uri.IsHexDigit(signature[i]))
+                {
+                    return false;
+                }
+            }
+
+            if (!long.TryParse(signature.AsSpan(65), NumberStyles.None, CultureInfo.InvariantCulture, out var expUnixHour))
+            {
+                return false;
+            }
+
+            var server = GetServer(serverId);
+            if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
+            {
+                return false;
+            }
+
+            var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
+            var payload = BuildProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour);
+            var expectedMac = ComputeProxySignatureMac(server.ApiKey, payload);
+            var expectedBytes = Encoding.UTF8.GetBytes(expectedMac);
+            var suppliedBytes = Encoding.UTF8.GetBytes(signature.Substring(0, 64));
+            var macOk = expectedBytes.Length == suppliedBytes.Length
                 && CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
+            var notExpired = GetUtcUnixHour(utcNow) < expUnixHour;
+            return macOk & notExpired;
+        }
+
+        private static long GetUtcUnixHour(DateTimeOffset utcNow)
+            => utcNow.ToUnixTimeSeconds() / 3600;
+
+        private static string BuildProxySignaturePayload(
+            string serverId,
+            Guid remoteItemId,
+            bool isAudio,
+            string normalizedUser,
+            long expUnixHour)
+            => $"v2\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}\n{expUnixHour}";
+
+        private static string ComputeProxySignatureMac(string apiKey, string payload)
+        {
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(apiKey));
+            return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
         }
 
         /// <summary>
