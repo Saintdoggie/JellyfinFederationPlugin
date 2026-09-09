@@ -8,6 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.142",
+        "changelog": "Per-user BlockedItemIds round-trip through configuration GET; catalog hide-from-user merges instead of wiping.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:49:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.142/Jellyfin.Federation.zip",
+        "checksum": "d34568a067046ff789d14b8ca12899f0"
+      },
+      {
+        "version": "0.0.138",
+        "changelog": "Proxy stream HMAC binds download=true; GetDownloadUrl honors EnableContentDownloading.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:50:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.138/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.136",
         "changelog": "Jellyfin 12 support: rebuilt for .NET 10 and Jellyfin 12 APIs. Settings, badges, peer catalog, artwork and streaming use supported native authentication with legacy auth disabled. Older Jellyfin 10.11 servers should keep 0.0.135.",
         "targetAbi": "12.0.0.0",
