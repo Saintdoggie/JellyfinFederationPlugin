@@ -40,6 +40,14 @@
         "checksum": "d21689beb3b3153a1aaa47636cafe8a3"
       },
       {
+        "version": "0.0.137",
+        "changelog": "Peer notices and per-user rule pushes now bind to the authenticated federation token, not a body FromFederationId.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T01:51:06Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.137/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.136",
         "changelog": "Jellyfin 12 support: rebuilt for .NET 10 and Jellyfin 12 APIs. Settings, badges, peer catalog, artwork and streaming use supported native authentication with legacy auth disabled. Older Jellyfin 10.11 servers should keep 0.0.135.",
         "targetAbi": "12.0.0.0",
