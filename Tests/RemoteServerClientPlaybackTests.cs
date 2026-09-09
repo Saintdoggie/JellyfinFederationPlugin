@@ -135,6 +135,52 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetImageTokenAsync_RequestsImagePurpose_AndForwardsActingUser()
+    {
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"img-tok\",\"purpose\":\"Image\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "image-purpose-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var userId = Guid.NewGuid().ToString("N");
+        var (token, _) = await client.GetImageTokenAsync("item-1", CancellationToken.None, localActingUserId: userId);
+
+        Assert.Equal("img-tok", token);
+        Assert.Contains("\"Purpose\":\"Image\"", handler.LastRequestBody);
+        Assert.Equal(userId, handler.LastRemoteUserIdHeader);
+        Assert.Equal("/Plugins/Federation/PlaybackToken", handler.LastRequestedPath);
+    }
+
+    [Fact]
+    public async Task GetImageTokenAsync_OldPeerWithoutPurposeEcho_FailsClosed()
+    {
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"legacy-playback-token\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "legacy-image-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var (token, _) = await client.GetImageTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Null(token);
+    }
+
+    [Fact]
+    public async Task GetImageTokenAsync_DoesNotReuseCachedPlaybackToken()
+    {
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "image-cache-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var playback = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        var image = await client.GetImageTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Equal("tok-123", playback.Token);
+        Assert.Null(image.Token);
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
     public async Task GetDownloadTokenAsync_OldPeerWithoutPurposeEcho_FailsClosed()
     {
         var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"legacy-playback-token\"}");

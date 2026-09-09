@@ -10,7 +10,8 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         Playback = 0,
         Download = 1,
-        BulkDownload = 2
+        BulkDownload = 2,
+        Image = 3
     }
 
     /// <summary>
@@ -124,7 +125,32 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         public static TimeSpan GetLifetime(FederationTokenPurpose purpose)
-            => purpose == FederationTokenPurpose.Playback ? PlaybackTokenLifetime : DownloadTokenLifetime;
+            => purpose is FederationTokenPurpose.Download or FederationTokenPurpose.BulkDownload
+                ? DownloadTokenLifetime
+                : PlaybackTokenLifetime;
+
+        /// <summary>
+        /// DirectStream video/audio (and <c>download=true</c> file transfers).
+        /// Image tokens are deliberately excluded so a poster URL cannot fetch
+        /// the full media file.
+        /// </summary>
+        internal static bool AllowsDirectStream(FederationTokenPurpose purpose, bool download)
+        {
+            if (download)
+            {
+                return purpose == FederationTokenPurpose.Download || purpose == FederationTokenPurpose.BulkDownload;
+            }
+
+            return purpose == FederationTokenPurpose.Playback;
+        }
+
+        /// <summary>
+        /// DirectImage / Peer/Images. Playback tokens are rejected so an
+        /// <c>&lt;img&gt;</c> URL never reuses a capability that DirectStream
+        /// would honor for the whole file.
+        /// </summary>
+        internal static bool AllowsDirectImage(FederationTokenPurpose purpose)
+            => purpose == FederationTokenPurpose.Image;
 
         /// <summary>
         /// Validates a token against the remote item id it is being used for. True

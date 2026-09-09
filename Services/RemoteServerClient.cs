@@ -561,7 +561,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string remoteItemId,
             CancellationToken cancellationToken = default,
             string? localActingUserId = null,
-            string? localActingUserName = null)
+            string? localActingUserName = null,
+            FederationTokenPurpose purpose = FederationTokenPurpose.Playback)
         {
             try
             {
@@ -569,16 +570,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 // why this is the single biggest playback-start/throughput win for
                 // proxied federated streams (one mint per item per ~half hour
                 // instead of one per relay request, i.e. per player seek).
-                var cacheKey = $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}";
+                var cacheKey = purpose == FederationTokenPurpose.Playback
+                    ? $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}"
+                    : $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}:{purpose}";
                 if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
                 {
                     return (cached.Token, null);
                 }
 
+                object payload = purpose == FederationTokenPurpose.Playback
+                    ? new { ItemId = remoteItemId }
+                    : new { ItemId = remoteItemId, Purpose = purpose.ToString() };
+
                 using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
                 {
                     Content = new StringContent(
-                        JsonSerializer.Serialize(new { ItemId = remoteItemId }),
+                        JsonSerializer.Serialize(payload),
                         System.Text.Encoding.UTF8,
                         "application/json")
                 };
@@ -596,7 +603,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning(
-                        "[Federation] Could not obtain a playback token for item {ItemId} from {ServerName}: HTTP {StatusCode}",
+                        "[Federation] Could not obtain a {Purpose} token for item {ItemId} from {ServerName}: HTTP {StatusCode}",
+                        purpose,
                         remoteItemId,
                         _server.Name,
                         (int)response.StatusCode);
@@ -607,6 +615,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
                 if (string.IsNullOrEmpty(result?.Token))
                 {
+                    return (null, null);
+                }
+
+                if (purpose != FederationTokenPurpose.Playback
+                    && !string.Equals(result.Purpose, purpose.ToString(), StringComparison.Ordinal))
+                {
+                    _logger.LogWarning(
+                        "[Federation] {ServerName} did not confirm a {Purpose} token for item {ItemId}; refusing to reuse a playback-capable token",
+                        _server.Name,
+                        purpose,
+                        remoteItemId);
                     return (null, null);
                 }
 
@@ -629,10 +648,28 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting playback token for item {ItemId} from remote server {ServerName}", remoteItemId, _server.Name);
+                _logger.LogError(ex, "Error getting {Purpose} token for item {ItemId} from remote server {ServerName}", purpose, remoteItemId, _server.Name);
                 return (null, null);
             }
         }
+
+        /// <summary>
+        /// Mints an item-scoped image token. Distinct from
+        /// <see cref="GetPlaybackTokenAsync"/> so a poster URL cannot be reused
+        /// against DirectStream for the full media file. Fails closed when the
+        /// remote is too old to echo <see cref="FederationTokenPurpose.Image"/>.
+        /// </summary>
+        public Task<(string? Token, DateTime? ExpiresUtc)> GetImageTokenAsync(
+            string remoteItemId,
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
+            => GetPlaybackTokenAsync(
+                remoteItemId,
+                cancellationToken,
+                localActingUserId,
+                localActingUserName,
+                FederationTokenPurpose.Image);
 
         /// <summary>
         /// Requests an uncached, item-scoped token for a server-side file transfer.

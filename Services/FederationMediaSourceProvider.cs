@@ -486,25 +486,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            // Prefer a per-user streaming session token (registered once when this
-            // user starts playing, reused for the rest of their session - see
-            // RemoteServerClient.GetOrRegisterUserSessionTokenAsync) over the
-            // item-scoped fallback: it is tied to this specific, named local user
-            // at registration time and re-checked per item at stream time, rather
-            // than the item token's more generic "this friend relationship, self-
-            // reported user header" scope. Falls back to the item-scoped token
-            // (which still forwards the same header for its own weaker check) for
-            // an old-version friend without the session endpoint, a rejected/
-            // blocked user, or any transient failure - never leaves the source
-            // unplayable just because the newer mechanism didn't work.
-            var token = localUserId.HasValue
-                ? await client.GetOrRegisterUserSessionTokenAsync(localUserId.Value.ToString("N"), null, cancellationToken).ConfigureAwait(false)
-                : null;
-
-            if (token == null)
-            {
-                (token, _) = await client.GetPlaybackTokenAsync(src.RemoteItemId.ToString("N"), cancellationToken: cancellationToken, localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
-            }
+            // Client-visible Direct-mode Path is handed to browsers/players, so
+            // it must be an item-scoped playback token. A 6-hour session token
+            // authorizes any currently visible item: putting one on this URL
+            // lets anyone who can read Path swap itemId and fetch a different
+            // title. Session tokens remain available for server-side relays
+            // (see FederationStreamHandler.BuildDirectStreamUrlAsync) that never
+            // reach a client.
+            var (token, _) = await client.GetPlaybackTokenAsync(
+                src.RemoteItemId.ToString("N"),
+                cancellationToken: cancellationToken,
+                localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
 
             if (token == null)
             {

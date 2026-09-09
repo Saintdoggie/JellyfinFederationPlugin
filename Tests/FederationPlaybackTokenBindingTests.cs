@@ -98,5 +98,51 @@ public class FederationPlaybackTokenBindingTests
         Assert.Equal(
             FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Download),
             FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.BulkDownload));
+        Assert.Equal(
+            FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Playback),
+            FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Image));
+    }
+
+    [Fact]
+    public void ImageToken_DoesNotAuthorizeDirectStream()
+    {
+        var service = new FederationPlaybackTokenService();
+        var token = service.Issue("item-1", "friend-a", FederationTokenPurpose.Image);
+
+        Assert.True(service.TryValidate(token, "item-1", out _, out var purpose));
+        Assert.Equal(FederationTokenPurpose.Image, purpose);
+        Assert.False(FederationPlaybackTokenService.AllowsDirectStream(purpose, download: false));
+        Assert.False(FederationPlaybackTokenService.AllowsDirectStream(purpose, download: true));
+        Assert.True(FederationPlaybackTokenService.AllowsDirectImage(purpose));
+    }
+
+    [Fact]
+    public void PlaybackToken_DoesNotAuthorizeImages()
+    {
+        var service = new FederationPlaybackTokenService();
+        var token = service.Issue("item-1", "friend-a");
+
+        Assert.True(service.TryValidate(token, "item-1", out _, out var purpose));
+        Assert.True(FederationPlaybackTokenService.AllowsDirectStream(purpose, download: false));
+        Assert.False(FederationPlaybackTokenService.AllowsDirectImage(purpose));
+    }
+
+    [Fact]
+    public void SessionToken_IsNotItemScoped_SoClientDirectPathsMustNotUseIt()
+    {
+        // A session token validates for any item the user can currently see.
+        // Direct-mode client Path therefore must mint an item-scoped playback
+        // token instead; swapping itemId on that Path is rejected below.
+        var sessions = new FederationUserSessionTokenService();
+        var playback = new FederationPlaybackTokenService();
+        var sessionToken = sessions.Issue("friend-a", "viewer-7");
+        var playbackToken = playback.Issue("item-1", "friend-a");
+
+        Assert.True(sessions.TryValidate(sessionToken, out _, out _));
+        Assert.False(playback.TryValidate(sessionToken, "item-1", out _));
+        Assert.False(playback.TryValidate(sessionToken, "item-2", out _));
+        Assert.False(playback.TryValidate(playbackToken, "item-2", out _));
+        Assert.True(playback.TryValidate(playbackToken, "item-1", out _, out var purpose));
+        Assert.True(FederationPlaybackTokenService.AllowsDirectStream(purpose, download: false));
     }
 }

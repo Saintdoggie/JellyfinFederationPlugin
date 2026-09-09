@@ -6,9 +6,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Providers;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Providers
@@ -25,6 +27,8 @@ namespace Jellyfin.Plugin.Federation.Providers
         private readonly ILogger<FederationImageProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;
         private readonly Services.ExternalCatalogRegistry _externalCatalogs;
+        private readonly IHttpContextAccessor? _httpContextAccessor;
+        private readonly IAuthorizationContext? _authorizationContext;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationImageProvider"/> class.
@@ -32,11 +36,42 @@ namespace Jellyfin.Plugin.Federation.Providers
         public FederationImageProvider(
             ILogger<FederationImageProvider> logger,
             Services.FederationLibraryManager federationManager,
-            Services.ExternalCatalogRegistry externalCatalogs)
+            Services.ExternalCatalogRegistry externalCatalogs,
+            IHttpContextAccessor? httpContextAccessor = null,
+            IAuthorizationContext? authorizationContext = null)
         {
             _logger = logger;
             _federationManager = federationManager;
             _externalCatalogs = externalCatalogs;
+            _httpContextAccessor = httpContextAccessor;
+            _authorizationContext = authorizationContext;
+        }
+
+        /// <summary>
+        /// Resolves the local user whose request triggered this image lookup, when
+        /// one is available. Same source as
+        /// <see cref="Services.FederationMediaSourceProvider"/> so per-remote-user
+        /// rules are applied at image-token mint time instead of minting a
+        /// userless token that skips those rules.
+        /// </summary>
+        private async Task<Guid?> ResolveLocalUserId()
+        {
+            try
+            {
+                var context = _httpContextAccessor?.HttpContext;
+                if (context == null || _authorizationContext == null)
+                {
+                    return null;
+                }
+
+                var info = await _authorizationContext.GetAuthorizationInfo(context).ConfigureAwait(false);
+                return info != null && info.UserId != Guid.Empty ? info.UserId : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not resolve the local acting user for an image-token mint");
+                return null;
+            }
         }
 
         /// <inheritdoc />
@@ -125,7 +160,12 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return Enumerable.Empty<RemoteImageInfo>();
                 }
 
-                var remoteItem = await client.GetItemAsync(primary.RemoteItemId.ToString(), cancellationToken: cancellationToken).ConfigureAwait(false);
+                var actingUserId = await ResolveLocalUserId().ConfigureAwait(false);
+                var actingUser = actingUserId?.ToString("N");
+                var remoteItem = await client.GetItemAsync(
+                    primary.RemoteItemId.ToString(),
+                    cancellationToken: cancellationToken,
+                    localActingUserId: actingUser).ConfigureAwait(false);
                 if (remoteItem == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
@@ -138,14 +178,14 @@ namespace Jellyfin.Plugin.Federation.Providers
                 // Jellyfin credential - it would just 401 for anyone with that
                 // option on, and was an unauthenticated hotlink to the friend's
                 // own native API for anyone without it. Every image now goes
-                // through the same token-gated Peer/Images gateway DirectStream
-                // already uses for video/audio: mint one short-lived,
-                // single-item-scoped token (reusing FederationPlaybackTokenService,
-                // which doesn't care what kind of media a token is used for) and
-                // reuse it across every image URL for this item, rather than
-                // minting one per image.
+                // through the token-gated Peer/Images gateway with an
+                // Image-purpose token DirectStream will not honor for video/audio:
+                // mint one short-lived, single-item-scoped token and reuse it
+                // across every image URL for this item, rather than minting one
+                // per image. The acting user is forwarded so per-remote-user
+                // visibility rules apply at mint time.
                 var itemId = primary.RemoteItemId.ToString();
-                var (imageToken, _) = await client.GetPlaybackTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
+                var (imageToken, _) = await client.GetImageTokenAsync(itemId, cancellationToken, localActingUserId: actingUser).ConfigureAwait(false);
                 if (imageToken == null)
                 {
                     _logger.LogWarning("[Federation] Could not obtain an image token from {ServerName} for {Name}; no images will be shown", server.Name, item.Name);

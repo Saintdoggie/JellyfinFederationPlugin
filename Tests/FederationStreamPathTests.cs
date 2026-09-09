@@ -1,14 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -262,6 +267,7 @@ public class FederationStreamPathTests : IDisposable
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, "not-a-user-id", signature));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, new string('z', 64)));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature + "00"));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, download: true));
     }
 
     [Fact]
@@ -280,74 +286,32 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void ProxySignature_ValidV2_SucceedsWithinLifetime()
+    public void ProxySignature_PlayDoesNotAuthorizeDownload_AndDownloadDoesNotAuthorizePlay()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var play = _manager.CreateProxySignature("serverA", itemId, false, null);
+        var download = _manager.CreateProxySignature("serverA", itemId, false, null, download: true);
+
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, null, play));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, play, download: true));
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, null, download, download: true));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, download));
+        Assert.NotEqual(play, download);
+    }
+
+    [Fact]
+    public void ProxySignature_LegacyV1_IsPlayOnly()
     {
         AddServer(StreamingMode.Proxy);
         var itemId = Guid.NewGuid();
         var userId = Guid.NewGuid().ToString("N");
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
-        var signature = _manager.CreateProxySignature("serverA", itemId, false, userId, mintedAt);
-        var expUnixHour = (mintedAt.ToUnixTimeSeconds() / 3600) + FederationLibraryManager.ProxySignatureLifetimeHours;
-        var payload = $"v2\nserverA\n{itemId:N}\n0\n{userId}\n{expUnixHour}";
-        var mac = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
-
-        Assert.Equal($"{mac}.{expUnixHour}", signature);
-        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, mintedAt));
-        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, mintedAt.AddHours(23)));
-    }
-
-    [Fact]
-    public void ProxySignature_ExpiredV2_Fails()
-    {
-        AddServer(StreamingMode.Proxy);
-        var itemId = Guid.NewGuid();
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
-        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
-
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, signature, mintedAt.AddHours(24)));
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, signature, mintedAt.AddHours(48)));
-    }
-
-    [Fact]
-    public void ProxySignature_TamperedExpiry_Fails()
-    {
-        AddServer(StreamingMode.Proxy);
-        var itemId = Guid.NewGuid();
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
-        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
-        var separator = signature.LastIndexOf('.');
-        var mac = signature.Substring(0, separator);
-        var expUnixHour = long.Parse(signature.Substring(separator + 1), System.Globalization.CultureInfo.InvariantCulture);
-        var tampered = $"{mac}.{expUnixHour + 48}";
-
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, tampered, mintedAt));
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, tampered, mintedAt.AddHours(23)));
-    }
-
-    [Fact]
-    public void ProxySignature_ItemMismatch_StillFails()
-    {
-        AddServer(StreamingMode.Proxy);
-        var itemId = Guid.NewGuid();
-        var otherItemId = Guid.NewGuid();
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
-        var signature = _manager.CreateProxySignature("serverA", itemId, false, null, mintedAt);
-
-        Assert.False(_manager.ValidateProxySignature("serverA", otherItemId, false, null, signature, mintedAt));
-    }
-
-    [Fact]
-    public void ProxySignature_LegacyV1_IsRejected()
-    {
-        AddServer(StreamingMode.Proxy);
-        var itemId = Guid.NewGuid();
-        var payload = $"v1\nserverA\n{itemId:N}\n0\n";
+        var payload = $"v1\nserverA\n{itemId:N}\n0\n{userId}";
         var v1 = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
-        var mintedAt = new DateTimeOffset(2026, 9, 8, 15, 30, 0, TimeSpan.Zero);
 
         Assert.Equal(64, v1.Length);
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1, mintedAt));
-        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, v1));
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1, download: true));
     }
 
     [Fact]
@@ -701,5 +665,127 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal(
             FederationLibraryManager.LockedMetadataFields.OrderBy(f => f),
             item.LockedFields.OrderBy(f => f));
+    }
+
+    [Fact]
+    public async Task GetMediaSources_DirectMode_UsesItemScopedPlaybackToken_NotSessionToken()
+    {
+        // Direct-mode Path is client-visible. A session token authorizes any
+        // currently visible item, so swapping itemId on that URL would fetch a
+        // different title. This pins that a known local user still gets an
+        // item-scoped playback token, not RegisterUserSession.
+        var serverId = "direct-client-path-" + Guid.NewGuid().ToString("N");
+        var remoteId = Guid.NewGuid();
+        var localUserId = Guid.NewGuid();
+        var server = new RemoteServer
+        {
+            Id = serverId,
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "secret-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Direct
+        };
+        _plugin.Configuration.RemoteServers.Add(server);
+
+        _cache.UpsertRaw(
+            "Movies",
+            serverId,
+            remoteId,
+            new BaseItemDto { Id = remoteId, Name = "Gran Turismo", Type = Jellyfin.Data.Enums.BaseItemKind.Movie, Container = "mkv" },
+            0,
+            "Movie");
+        var entry = _cache.GetEntriesForMapping("Movies").First(e => e.GetPrimarySource()?.ServerId == serverId);
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-so-provider-emits-direct-path";
+
+        var handler = new DirectPathTokenHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://friend.example:8096") };
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+        clientFactory.Setup(f => f.GetClient(It.IsAny<string>())).Returns(remoteClient);
+
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            clientFactory.Object,
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
+
+        var httpContextAccessor = new Mock<IHttpContextAccessor>();
+        httpContextAccessor.SetupGet(a => a.HttpContext).Returns(new DefaultHttpContext());
+        var authorization = new Mock<IAuthorizationContext>();
+        var authInfo = new AuthorizationInfo();
+        var userType = typeof(AuthorizationInfo).GetProperty("User")!.PropertyType;
+        var user = Activator.CreateInstance(userType, "alice", "auth", "reset")!;
+        userType.GetProperty("Id")!.SetValue(user, localUserId);
+        typeof(AuthorizationInfo).GetProperty("User")!.SetValue(authInfo, user);
+        authorization.Setup(a => a.GetAuthorizationInfo(It.IsAny<HttpContext>())).ReturnsAsync(authInfo);
+
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            httpContextAccessor.Object,
+            authorization.Object,
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(0, handler.RegisterUserSessionCalls);
+        Assert.True(handler.PlaybackTokenCalls >= 1);
+        Assert.DoesNotContain("\"Purpose\":\"Image\"", handler.LastPlaybackTokenBody);
+        var path = Assert.Single(sources).Path;
+        Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", path);
+        Assert.DoesNotContain("session-tok-123", path);
+        Assert.Equal(localUserId.ToString("N"), handler.LastRemoteUserId);
+    }
+
+    private sealed class DirectPathTokenHandler : HttpMessageHandler
+    {
+        public int PlaybackTokenCalls { get; private set; }
+
+        public int RegisterUserSessionCalls { get; private set; }
+
+        public string LastPlaybackTokenBody { get; private set; } = string.Empty;
+
+        public string? LastRemoteUserId { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            LastRemoteUserId = request.Headers.TryGetValues(RemoteServerClient.RemoteUserIdHeader, out var values)
+                ? values.FirstOrDefault()
+                : LastRemoteUserId;
+
+            if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
+            {
+                PlaybackTokenCalls++;
+                LastPlaybackTokenBody = request.Content == null
+                    ? string.Empty
+                    : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return Json("{\"token\":\"item-tok-123\",\"purpose\":\"Playback\"}");
+            }
+
+            if (path.Equals("/Plugins/Federation/RegisterUserSession", StringComparison.OrdinalIgnoreCase))
+            {
+                RegisterUserSessionCalls++;
+                return Json("{\"token\":\"session-tok-123\"}");
+            }
+
+            if (path.Contains("/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                return Json("{\"MediaSources\":[{\"Id\":\"src1\",\"Container\":\"mkv\",\"Size\":1}]}");
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static HttpResponseMessage Json(string body)
+            => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
     }
 }
