@@ -362,6 +362,7 @@ test('Plex share requests can be accepted from the Companion tab without pasting
   assert.match(configPage, /accept-plex-offer/);
   assert.match(configPage, /this<\/em> server's public address/);
   assert.match(configPage, /Funnel opens Plex/);
+  assert.match(configPage, /explicitly choose Plex Remote Access/);
 });
 
 test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {

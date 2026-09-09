@@ -88,6 +88,36 @@ test('Companion local Plex connect and media-folder path send the owner access h
   } finally { dom.window.close(); }
 });
 
+test('Companion generate code does not mint a Plex token unless Plex Remote Access is chosen', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    const path = String(url);
+    if (path.includes('/api/connect/generate')) return json({ code: 'abc', expiresInMinutes: 15, mode: 'claim' });
+    if (path.includes('/peers') || path.includes('/invites') || path.includes('/api/plex/servers')) return json([]);
+    return json({ serverConnected: false, libraries: [] });
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    const d = dom.window.document;
+    d.getElementById('generateCodeBtn').click();
+    await tick();
+    const claim = requests.find(([url]) => String(url).includes('/api/connect/generate'));
+    assert.ok(claim, 'generate request was sent');
+    assert.equal(header(claim[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.equal(String(claim[0]).includes('usePlexRemoteAccess=true'), false);
+
+    requests.length = 0;
+    d.getElementById('generateDirectCodeBtn').click();
+    await tick();
+    const direct = requests.find(([url]) => String(url).includes('/api/connect/generate'));
+    assert.ok(direct, 'Plex Remote Access generate request was sent');
+    assert.match(String(direct[0]), /usePlexRemoteAccess=true/);
+    assert.equal(header(direct[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.match(html, /explicitly choose Plex Remote Access/);
+    assert.doesNotMatch(html, /Companion uses Plex Remote Access instead so they can still Accept/);
+  } finally { dom.window.close(); }
+});
+
 test('Companion recovers mount button after a network failure', async () => {
   const dom = page(async () => { throw new Error('offline'); });
   try {

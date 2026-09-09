@@ -4,11 +4,16 @@ namespace FederationCompanion;
 /// Picks how a Plex → Jellyfin connect code is built.
 /// When Companion has a Funnel/public HTTPS URL, that is the intended path
 /// for friends outside the home (Starlink, no port-forward). Plex Remote
-/// Access/Relay remains the legacy direct mode only when no Funnel is configured.
-/// Scoped Funnel codes never carry a raw Plex-token fallback.
+/// Access/Relay remains the legacy direct mode only when no Funnel is configured,
+/// or when the owner explicitly chooses it after a Funnel miss.
+/// Scoped Funnel codes never carry a raw Plex-token fallback. A Funnel miss
+/// (URL is Plex, or TLS is dead) must not mint the standing PMS token either.
 /// </summary>
 public static class ConnectCodeFactory
 {
+    public const string FunnelMissRequiresExplicitChoice =
+        "Funnel is set but it is not this Companion (it may be Plex, or HTTPS is down). Fix Funnel so it points at Companion, or explicitly choose Plex Remote Access. Companion will not put your Plex token in a connect code while Funnel is expected.";
+
     public sealed record SharedLibraryView(string SectionKey, string Title, string Type);
 
     public sealed record GeneratedCode(
@@ -28,6 +33,29 @@ public static class ConnectCodeFactory
         string? serverName,
         IEnumerable<CompanionLibrary> libraries,
         Func<string> createClaimToken,
+        out GeneratedCode? code,
+        out string? error)
+        => TryGenerate(
+            publicUrl,
+            remotePlexUrl,
+            serverAccessToken,
+            serverName,
+            libraries,
+            createClaimToken,
+            funnelExpected: false,
+            usePlexRemoteAccess: false,
+            out code,
+            out error);
+
+    public static bool TryGenerate(
+        string? publicUrl,
+        string? remotePlexUrl,
+        string? serverAccessToken,
+        string? serverName,
+        IEnumerable<CompanionLibrary> libraries,
+        Func<string> createClaimToken,
+        bool funnelExpected,
+        bool usePlexRemoteAccess,
         out GeneratedCode? code,
         out string? error)
     {
@@ -50,6 +78,13 @@ public static class ConnectCodeFactory
                 shared);
             error = null;
             return true;
+        }
+
+        if (funnelExpected && !usePlexRemoteAccess)
+        {
+            code = null;
+            error = FunnelMissRequiresExplicitChoice;
+            return false;
         }
 
         if (hasPlex)
