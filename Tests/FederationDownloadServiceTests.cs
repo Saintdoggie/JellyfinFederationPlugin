@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Configuration;
@@ -441,6 +442,64 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.Contains("X-Plex-Token=relay&", marked, StringComparison.Ordinal);
         Assert.Contains("federationDownload=true", marked, StringComparison.Ordinal);
         Assert.Contains("federationBulk=true", marked, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedDownload_StampsScannedCopy_SoPeerCannotSeeIt()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "federation-secret",
+            Enabled = true
+        });
+
+        var virtualItemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var virtualItem = new Movie
+        {
+            Id = virtualItemId,
+            ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key }
+        };
+        _libraryManager.Setup(l => l.GetItemById(virtualItemId)).Returns(virtualItem);
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Friend Movie", Container = "mkv" }, 0, "Movie");
+
+        var scanned = new Movie { Id = Guid.NewGuid(), Name = "Friend Movie" };
+        _libraryManager.Setup(l => l.FindByPath(It.IsAny<string>(), It.IsAny<bool?>()))
+            .Returns((string path, bool? _) =>
+            {
+                scanned.Path = path;
+                return scanned;
+            });
+        _libraryManager.Setup(l => l.GetItemById(scanned.Id)).Returns(scanned);
+        _libraryManager.Setup(l => l.UpdateItemsAsync(
+                It.IsAny<IReadOnlyList<BaseItem>>(),
+                It.IsAny<BaseItem>(),
+                It.IsAny<ItemUpdateType>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var service = CreateQualityService(
+            (path, token) => File.WriteAllBytesAsync(path, ValidMediaBytes(), token),
+            () => true);
+
+        var (started, message, operationId) = service.StartDownload(virtualItemId.ToString());
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.True(completed.Success, completed.Status);
+        Assert.Null(FederationLibraryManager.GetFederationKey(scanned));
+        Assert.Equal("server-1", FederationLibraryManager.GetFederationDownloadedFrom(scanned));
+
+        var access = new FederationPeerAccessService(_libraryManager.Object);
+        Assert.False(access.IsItemVisible(new RemoteServer { ShareAllLibraries = true }, null, scanned.Id, "local-library"));
     }
 
     [Fact]

@@ -24,6 +24,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly LibraryProvisioningService _provisioning;
         private readonly FederationSyncService _syncService;
         private readonly FederationItemPersistenceService _persistence;
+        private readonly FederationDownloadService _downloads;
         private readonly WebClientInjector _webClientInjector;
         private readonly IHostApplicationLifetime _appLifetime;
 
@@ -36,6 +37,7 @@ namespace Jellyfin.Plugin.Federation
             LibraryProvisioningService provisioning,
             FederationSyncService syncService,
             FederationItemPersistenceService persistence,
+            FederationDownloadService downloads,
             WebClientInjector webClientInjector,
             IHostApplicationLifetime appLifetime)
         {
@@ -44,6 +46,7 @@ namespace Jellyfin.Plugin.Federation
             _provisioning = provisioning;
             _syncService = syncService;
             _persistence = persistence;
+            _downloads = downloads;
             _webClientInjector = webClientInjector;
             _appLifetime = appLifetime;
         }
@@ -144,6 +147,15 @@ namespace Jellyfin.Plugin.Federation
                 // same folder and hit the same crash outside this plugin's control.
                 // See the comment on PurgeUndeserializableItemsAtStartup.
                 _persistence.PurgeUndeserializableItemsAtStartup(config.LibraryMappings ?? new List<LibraryMapping>());
+
+                try
+                {
+                    await _downloads.StampExistingDownloadedItemsAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not stamp previously downloaded federated files");
+                }
 
                 _webClientInjector.EnsureBadgeScriptInjected();
 

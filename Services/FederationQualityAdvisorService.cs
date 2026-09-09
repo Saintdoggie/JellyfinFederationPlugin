@@ -301,7 +301,7 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         internal static bool IsOwnedRemoteCopy(IReadOnlyDictionary<string, string>? providerIds)
-            => !FederationLibraryManager.TryGetProviderId(providerIds, "FederationKey", out _);
+            => !FederationLibraryManager.IsIneligibleForOutgoingShare(providerIds);
 
         internal static bool IsExactRemovableLocalFile(BaseItem? item, QualityUpgradeCandidate candidate)
         {

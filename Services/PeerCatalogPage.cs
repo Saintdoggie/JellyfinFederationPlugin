@@ -13,7 +13,7 @@ internal static class PeerCatalogPage
     internal sealed record Result(List<BaseItemDto> Items, int NextStartIndex);
 
     public static bool IsOwned(BaseItemDto item)
-        => item.ProviderIds?.Keys.Any(k => string.Equals(k, "FederationKey", StringComparison.OrdinalIgnoreCase)) != true;
+        => !FederationLibraryManager.IsIneligibleForOutgoingShare(item.ProviderIds);
 
     public static async Task<Result?> ReadAsync(
         Func<int, int, Task<List<BaseItemDto>?>> fetch,

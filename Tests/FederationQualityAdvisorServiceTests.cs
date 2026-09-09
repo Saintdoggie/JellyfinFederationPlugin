@@ -150,6 +150,9 @@ public class FederationQualityAdvisorServiceTests
 
         Assert.True(FederationQualityAdvisorService.IsOwnedRemoteCopy(
             new Dictionary<string, string> { ["Tmdb"] = "1234" }));
+
+        Assert.False(FederationQualityAdvisorService.IsOwnedRemoteCopy(
+            new Dictionary<string, string> { ["FederationDownloadedFrom"] = "friend-a" }));
     }
 
     [Fact]

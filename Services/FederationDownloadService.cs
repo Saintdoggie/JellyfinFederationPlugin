@@ -6,7 +6,9 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
@@ -39,8 +41,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly ILogger<FederationDownloadService> _logger;
         private readonly Func<RemoteServer, string, string, IProgress<(long BytesRead, long? TotalBytes)>, CancellationToken, Task>? _qualityDownloadOverride;
-        private readonly Func<MediaBrowser.Controller.Entities.BaseItem, RemoteServer, string, bool>? _qualityUpgradeValidatorOverride;
+        private readonly Func<BaseItem, RemoteServer, string, bool>? _qualityUpgradeValidatorOverride;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationSources = new();
+        private readonly ConcurrentDictionary<string, string> _pendingDownloadOrigins = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationDownloadService"/> class.
@@ -69,7 +72,7 @@ namespace Jellyfin.Plugin.Federation.Services
             ExternalCatalogRegistry externalCatalogs,
             ILogger<FederationDownloadService> logger,
             Func<RemoteServer, string, string, IProgress<(long BytesRead, long? TotalBytes)>, CancellationToken, Task>? qualityDownloadOverride,
-            Func<MediaBrowser.Controller.Entities.BaseItem, RemoteServer, string, bool>? qualityUpgradeValidatorOverride)
+            Func<BaseItem, RemoteServer, string, bool>? qualityUpgradeValidatorOverride)
         {
             _libraryManager = libraryManager;
             _federationManager = federationManager;
@@ -78,6 +81,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _logger = logger;
             _qualityDownloadOverride = qualityDownloadOverride;
             _qualityUpgradeValidatorOverride = qualityUpgradeValidatorOverride;
+            _libraryManager.ItemAdded += OnLibraryItemAdded;
         }
 
         /// <summary>
@@ -88,6 +92,65 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var dataPath = Plugin.Instance?.DataFolderPath;
             return string.IsNullOrEmpty(dataPath) ? string.Empty : Path.Combine(dataPath, DownloadsSubFolder);
+        }
+
+        /// <summary>
+        /// True when <paramref name="path"/> is a file inside the plugin's
+        /// federation-downloads folder (not the folder itself). Used as a
+        /// share-eligibility gate before the post-scan provider-id stamp lands.
+        /// </summary>
+        internal static bool IsDownloadedFilePath(string? path)
+        {
+            return IsPathInsideRoot(path, GetDownloadsRoot());
+        }
+
+        /// <summary>
+        /// Stamps any already-scanned files under the downloads folder. Covers
+        /// copies downloaded before this provider id existed, and items whose
+        /// scan finished after process restart.
+        /// </summary>
+        internal async Task StampExistingDownloadedItemsAsync(CancellationToken cancellationToken)
+        {
+            var root = GetDownloadsRoot();
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+            {
+                return;
+            }
+
+            IReadOnlyList<BaseItem> items;
+            try
+            {
+                items = _libraryManager.GetItemList(new InternalItemsQuery
+                {
+                    Recursive = true,
+                    IncludeItemTypes = new[]
+                    {
+                        BaseItemKind.Movie,
+                        BaseItemKind.Episode,
+                        BaseItemKind.Video,
+                        BaseItemKind.Audio,
+                        BaseItemKind.MusicVideo,
+                        BaseItemKind.Series,
+                        BaseItemKind.Season
+                    }
+                }) ?? Array.Empty<BaseItem>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not enumerate downloaded federated files to stamp");
+                return;
+            }
+
+            foreach (var item in items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsPathInsideRoot(item.Path, root))
+                {
+                    continue;
+                }
+
+                await PersistDownloadedStampAsync(item, "downloaded", cancellationToken).ConfigureAwait(false);
+            }
         }
 
         /// <summary>
@@ -401,7 +464,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 var progress = new Progress<(long BytesRead, long? TotalBytes)>(
                     p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
 
-                if (srcServer.Kind == ServerKind.Jellyfin)
+                if (_qualityDownloadOverride != null)
+                {
+                    await _qualityDownloadOverride(srcServer, source.RemoteItemId.ToString(), partialPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else if (srcServer.Kind == ServerKind.Jellyfin)
                 {
                     var client = _federationManager.GetClient(source.ServerId);
                     if (client == null)
@@ -450,6 +517,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 File.Move(partialPath, destinationPath);
                 partialPath = null;
 
+                await StampDownloadedCopyAsync(destinationPath, source.ServerId).ConfigureAwait(false);
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
 
@@ -549,7 +617,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 var progress = new Progress<(long BytesRead, long? TotalBytes)>(
                     p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
 
-                if (server.Kind == ServerKind.Jellyfin)
+                if (_qualityDownloadOverride != null)
+                {
+                    await _qualityDownloadOverride(server, nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
+                }
+                else if (server.Kind == ServerKind.Jellyfin)
                 {
                     var client = _clientFactory.GetClient(server);
                     await client.DownloadToFileAsync(nativeItemId, partialPath, progress, cancellationToken, bulk).ConfigureAwait(false);
@@ -577,6 +649,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 File.Move(partialPath, destinationPath);
                 partialPath = null;
 
+                await StampDownloadedCopyAsync(destinationPath, server.Id).ConfigureAwait(false);
                 await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
 
@@ -666,6 +739,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 // managed library never observes a partially-written movie.
                 File.Move(partialPath, committedPath);
                 partialPath = null;
+
+                await StampDownloadedCopyAsync(committedPath, server.Id).ConfigureAwait(false);
 
                 // Make the destination library ready before touching the old item.
                 // A failure here leaves both the committed new file and old copy.
@@ -781,6 +856,127 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Could not remove partially-downloaded file {Path}", path);
+            }
+        }
+
+        private void OnLibraryItemAdded(object? sender, ItemChangeEventArgs e)
+        {
+            var item = e.Item;
+            if (item == null || string.IsNullOrWhiteSpace(item.Path))
+            {
+                return;
+            }
+
+            if (!TryGetPendingOrigin(item.Path, out var origin) && !IsDownloadedFilePath(item.Path))
+            {
+                return;
+            }
+
+            PersistDownloadedStampAsync(item, origin ?? "downloaded", CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        private async Task StampDownloadedCopyAsync(string destinationPath, string origin)
+        {
+            RememberPendingDownload(destinationPath, origin);
+
+            BaseItem? item;
+            try
+            {
+                item = _libraryManager.FindByPath(destinationPath, false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] FindByPath failed while stamping downloaded copy {Path}", destinationPath);
+                return;
+            }
+
+            if (item != null)
+            {
+                await PersistDownloadedStampAsync(item, origin, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        private async Task PersistDownloadedStampAsync(BaseItem item, string origin, CancellationToken cancellationToken)
+        {
+            if (!FederationLibraryManager.TryStampDownloadedCopy(item, origin))
+            {
+                return;
+            }
+
+            try
+            {
+                var parent = item.ParentId != Guid.Empty
+                    ? _libraryManager.GetItemById(item.ParentId)
+                    : null;
+                await _libraryManager.UpdateItemsAsync(
+                    new[] { item },
+                    parent ?? item,
+                    ItemUpdateType.MetadataEdit,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not persist download origin on {Name}", item.Name);
+            }
+
+            ForgetPendingDownload(item.Path);
+        }
+
+        private void RememberPendingDownload(string path, string origin)
+        {
+            _pendingDownloadOrigins[NormalizePathKey(path)] = origin;
+        }
+
+        private bool TryGetPendingOrigin(string path, out string? origin)
+        {
+            return _pendingDownloadOrigins.TryGetValue(NormalizePathKey(path), out origin);
+        }
+
+        private void ForgetPendingDownload(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            _pendingDownloadOrigins.TryRemove(NormalizePathKey(path), out _);
+        }
+
+        private static string NormalizePathKey(string path)
+        {
+            try
+            {
+                return Path.GetFullPath(path);
+            }
+            catch (Exception)
+            {
+                return path;
+            }
+        }
+
+        private static bool IsPathInsideRoot(string? path, string? root)
+        {
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+            {
+                return false;
+            }
+
+            try
+            {
+                var fullPath = Path.GetFullPath(path);
+                var fullRoot = Path.GetFullPath(root);
+                if (fullRoot.Length > 0
+                    && fullRoot[^1] != Path.DirectorySeparatorChar
+                    && fullRoot[^1] != Path.AltDirectorySeparatorChar)
+                {
+                    fullRoot += Path.DirectorySeparatorChar;
+                }
+
+                return fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 
