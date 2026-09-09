@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -36,6 +37,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private const string MoviesFolderName = "Movies";
         private const string ShowsFolderName = "Shows";
         private const string DefaultBasePath = "/media/federated";
+        private const string ManifestFileName = ".federation-strm-files.json";
+        private const string PluginStreamPath = "/Plugins/Federation/Stream";
 
         private readonly ILogger<PlexStrmExportService> _logger;
         private readonly FederationLibraryManager _federationManager;
@@ -51,10 +54,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Writes/refreshes <c>.strm</c> files for every currently-cached movie and
-        /// episode, then removes any previously-written file that no longer
-        /// corresponds to a current entry. No-op (does not even touch the export
-        /// directory) when <see cref="PluginConfiguration.EnablePlexStrmExport"/> is
-        /// off.
+        /// episode, then removes previously-written files that no longer correspond
+        /// to a current entry. Only files this plugin wrote (ownership manifest, or
+        /// first-run URL adopt of its own proxy stream) are deleted; foreign
+        /// <c>.strm</c> files under the export root are left alone. No-op (does not
+        /// even touch the export directory) when
+        /// <see cref="PluginConfiguration.EnablePlexStrmExport"/> is off.
         /// </summary>
         public Task ExportAsync(CancellationToken cancellationToken)
         {
@@ -78,6 +83,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Task.CompletedTask;
             }
 
+            basePath = Path.GetFullPath(basePath);
+            var ownedPaths = ResolveOwnedPaths(basePath);
             var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var exported = 0;
             var skipped = 0;
@@ -117,9 +124,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                var fullPath = Path.Combine(basePath, relativePath);
+                var fullPath = Path.GetFullPath(Path.Combine(basePath, relativePath));
                 try
                 {
+                    if (File.Exists(fullPath) && !ownedPaths.Contains(fullPath))
+                    {
+                        _logger.LogWarning("[Federation] Skipping .strm export for {Name}; unmanaged file already exists at {Path}", entry.Metadata.Name, fullPath);
+                        continue;
+                    }
+
                     var dir = Path.GetDirectoryName(fullPath);
                     if (!string.IsNullOrEmpty(dir))
                     {
@@ -128,6 +141,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     WriteIfChanged(fullPath, url);
                     written.Add(fullPath);
+                    ownedPaths.Add(fullPath);
                     exported++;
                 }
                 catch (Exception ex)
@@ -136,7 +150,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            RemoveStale(basePath, written);
+            RemoveStale(basePath, written, ownedPaths);
+            SaveManifest(basePath, written);
 
             _logger.LogInformation(
                 "[Federation] Plex .strm export: {Exported} file(s) written, {Skipped} source(s) skipped (per-remote-user access rules)",
@@ -196,26 +211,13 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Deletes any <c>.strm</c> file under <paramref name="basePath"/> that
-        /// this run didn't (re)write - a federated item removed on this pass, a
-        /// rename that changed its target path, or a source that started being
-        /// skipped - then prunes any directory left empty by that cleanup.
+        /// Deletes owned <c>.strm</c> files this run did not rewrite, then prunes
+        /// directories left empty by that cleanup. Foreign files are never deleted.
         /// </summary>
-        private void RemoveStale(string basePath, HashSet<string> written)
+        private void RemoveStale(string basePath, HashSet<string> written, HashSet<string> owned)
         {
-            IEnumerable<string> existing;
-            try
-            {
-                existing = Directory.EnumerateFiles(basePath, "*.strm", SearchOption.AllDirectories).ToList();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Could not enumerate Plex .strm export directory {Path} for cleanup", basePath);
-                return;
-            }
-
             var removedDirs = new HashSet<string>();
-            foreach (var path in existing)
+            foreach (var path in owned)
             {
                 if (written.Contains(path))
                 {
@@ -224,6 +226,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 try
                 {
+                    if (!File.Exists(path))
+                    {
+                        continue;
+                    }
+
                     File.Delete(path);
                     var dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir))
@@ -241,6 +248,113 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 RemoveIfEmpty(dir, basePath);
             }
+        }
+
+        private HashSet<string> ResolveOwnedPaths(string basePath)
+        {
+            var owned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var relative in LoadOwned(basePath))
+            {
+                try
+                {
+                    owned.Add(SafePath(basePath, relative));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Ignoring invalid .strm ownership entry {Path}", relative);
+                }
+            }
+
+            return owned;
+        }
+
+        private List<string> LoadOwned(string basePath)
+        {
+            var manifestPath = Path.Combine(basePath, ManifestFileName);
+            if (File.Exists(manifestPath))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(manifestPath));
+                    if (parsed != null)
+                    {
+                        return parsed;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not read Plex .strm ownership manifest {Path}; adopting by URL", manifestPath);
+                }
+            }
+
+            // First run (or unreadable manifest): claim only files whose URL is
+            // this plugin's proxy stream. Never sweep arbitrary .strm files.
+            var owned = new List<string>();
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(
+                    basePath,
+                    "*.strm",
+                    new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint }))
+                {
+                    try
+                    {
+                        if (IsPluginStreamUrl(File.ReadAllText(path)))
+                        {
+                            owned.Add(Path.GetRelativePath(basePath, path));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Could not inspect .strm file {Path} for ownership", path);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not enumerate Plex .strm export directory {Path} for ownership", basePath);
+            }
+
+            return owned;
+        }
+
+        private void SaveManifest(string basePath, HashSet<string> written)
+        {
+            var manifestPath = Path.Combine(basePath, ManifestFileName);
+            try
+            {
+                var relative = written.Select(p => Path.GetRelativePath(basePath, p)).ToList();
+                File.WriteAllText(manifestPath, JsonSerializer.Serialize(relative));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not write Plex .strm ownership manifest {Path}", manifestPath);
+            }
+        }
+
+        internal static bool IsPluginStreamUrl(string content)
+        {
+            var line = content.Trim();
+            return Uri.TryCreate(line, UriKind.Absolute, out var uri)
+                && uri.AbsolutePath.Contains(PluginStreamPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string SafePath(string root, string relative)
+        {
+            if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
+            {
+                throw new IOException("Export path is outside its managed folder.");
+            }
+
+            var fullRoot = Path.GetFullPath(root);
+            var full = Path.GetFullPath(Path.Combine(fullRoot, relative));
+            var prefix = fullRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!full.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                throw new IOException("Export path is outside its managed folder.");
+            }
+
+            return full;
         }
 
         private static void RemoveIfEmpty(string? dir, string basePath)
