@@ -63,6 +63,9 @@ class PushGateTests(unittest.TestCase):
         self.assertIn('FederationCompanion', script)
         self.assertIn('taskkill.exe', script)
         self.assertIn('rclone.exe', script)
+        self.assertIn('media-mount.pid', script)
+        self.assertNotIn('/IM rclone.exe', script)
+        self.assertNotIn('/IM "rclone.exe"', script)
 
 
 if __name__ == '__main__':

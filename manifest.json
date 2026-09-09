@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.152",
+        "changelog": "Windows Companion update and install stop only this install's rclone, not every rclone.exe on the machine.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T02:16:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.152/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.148",
         "changelog": "Plugin .strm export only deletes files it wrote; foreign .strm files under the export root are left alone.",
         "targetAbi": "12.0.0.0",

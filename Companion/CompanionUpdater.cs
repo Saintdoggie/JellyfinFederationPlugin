@@ -126,13 +126,25 @@ public sealed class CompanionUpdater
         :wait
         timeout /t 1 /nobreak >nul
         tasklist /FI "PID eq {pid}" | find "{pid}" >nul && goto wait
-        taskkill /F /IM rclone.exe >nul 2>nul
+        {WindowsStopOwnedRcloneCommands(installDir)}
         timeout /t 2 /nobreak >nul
         xcopy /E /Y /Q "{stagingDir}\*" "{installDir}\"
         rmdir /S /Q "{stagingDir}"
         cd /d "{installDir}"
         start "" "{exe}"
         """;
+
+    internal static string WindowsStopOwnedRcloneCommands(string installDir)
+    {
+        var marker = installDir.TrimEnd('\\', '/') + @"\" + LocalMediaMountService.OwnedPidFileName;
+        return $"""
+            if exist "{marker}" (
+              for /f "usebackq delims=" %%p in ("{marker}") do (
+                tasklist /FI "PID eq %%p" /FI "IMAGENAME eq rclone.exe" | find /I "rclone.exe" >nul && taskkill /F /T /PID %%p >nul 2>nul
+              )
+            )
+            """;
+    }
 
     private static void LaunchRestarter(string script)
     {

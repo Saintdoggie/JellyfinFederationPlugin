@@ -7,9 +7,9 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <RootNamespace>FederationCompanion</RootNamespace>
     <AssemblyName>FederationCompanion</AssemblyName>
-    <Version>0.0.146</Version>
-    <AssemblyVersion>0.0.146.0</AssemblyVersion>
-    <FileVersion>0.0.146.0</FileVersion>
+    <Version>0.0.152</Version>
+    <AssemblyVersion>0.0.152.0</AssemblyVersion>
+    <FileVersion>0.0.152.0</FileVersion>
     <UserSecretsId>federation-companion</UserSecretsId>
   </PropertyGroup>
 

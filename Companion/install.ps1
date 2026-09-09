@@ -28,12 +28,33 @@ function Test-WinFsp {
     return $false
 }
 
+function Stop-OwnedRclone {
+    $pidFile = Join-Path $installDir "media-mount.pid"
+    if (Test-Path -LiteralPath $pidFile) {
+        $ownedPid = (Get-Content -LiteralPath $pidFile -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($ownedPid) { $ownedPid = $ownedPid.ToString().Trim() }
+        if ($ownedPid -match '^[0-9]+$') {
+            $proc = Get-Process -Id ([int]$ownedPid) -ErrorAction SilentlyContinue
+            if ($proc -and $proc.Name -eq 'rclone') {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                & taskkill.exe /F /T /PID $proc.Id 2>$null | Out-Null
+            }
+        }
+    }
+    Get-Process -Name rclone -ErrorAction SilentlyContinue | ForEach-Object {
+        $path = $null
+        try { $path = $_.Path } catch { }
+        if ($path -and $path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Stop-RunningCompanion {
     Write-Host "Stopping Companion and its media helper so files can be replaced..."
-    foreach ($name in @("FederationCompanion", "rclone")) {
-        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        & taskkill.exe /F /IM "$name.exe" 2>$null | Out-Null
-    }
+    Get-Process -Name FederationCompanion -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    & taskkill.exe /F /IM FederationCompanion.exe 2>$null | Out-Null
+    Stop-OwnedRclone
     Start-Sleep -Seconds 2
     $rclone = Join-Path $installDir "rclone.exe"
     if (Test-Path $rclone) {

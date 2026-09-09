@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using Microsoft.Extensions.Hosting;
 
 namespace FederationCompanion;
@@ -7,6 +8,7 @@ namespace FederationCompanion;
 /// <summary>Owns only the rclone process started by Companion, never an existing user mount.</summary>
 public sealed class LocalMediaMountService(CompanionState state, IHostApplicationLifetime lifetime, RcloneBootstrapper rclone, WinFspInstaller winfsp) : BackgroundService
 {
+    internal const string OwnedPidFileName = "media-mount.pid";
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
     public string Message { get; private set; } = "Companion starts the media folder by itself after install.";
@@ -14,6 +16,34 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
 
     internal static bool ShouldManageMount(CompanionState current)
         => current.AutoStartMediaMount || string.IsNullOrEmpty(current.MediaMountRoot);
+
+    internal static string OwnedPidPath(string directory) => Path.Combine(directory, OwnedPidFileName);
+
+    internal static void WriteOwnedPid(string directory, int pid)
+    {
+        try { File.WriteAllText(OwnedPidPath(directory), pid.ToString(CultureInfo.InvariantCulture)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    internal static void ClearOwnedPid(string directory)
+    {
+        try { File.Delete(OwnedPidPath(directory)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    internal static bool TryReadOwnedPid(string directory, out int pid)
+    {
+        pid = 0;
+        try
+        {
+            var text = File.ReadAllText(OwnedPidPath(directory)).Trim();
+            return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out pid) && pid > 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     public async Task<bool> StartMountAsync(CancellationToken ct)
     {
@@ -70,6 +100,7 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(config, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             var start = CreateStartInfo(executable, config, root);
             _process = Process.Start(start) ?? throw new InvalidOperationException("Mount process did not start.");
+            WriteOwnedPid(AppContext.BaseDirectory, _process.Id);
             // Drain without logging: rclone errors can contain item URLs. The
             // owner receives a stable repair message instead of raw process text.
             var errors = new System.Text.StringBuilder();
@@ -144,19 +175,23 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
     private void StopOwnedProcess()
     {
         if (_process == null) return;
+        var exited = false;
         try
         {
             if (!_process.HasExited && !OperatingSystem.IsWindows())
             {
                 var signal = new ProcessStartInfo("/bin/kill") { UseShellExecute = false, CreateNoWindow = true };
-                signal.ArgumentList.Add("-TERM"); signal.ArgumentList.Add(_process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                signal.ArgumentList.Add("-TERM"); signal.ArgumentList.Add(_process.Id.ToString(CultureInfo.InvariantCulture));
                 using var sender = Process.Start(signal);
                 _process.WaitForExit(3000);
             }
             if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+            _process.WaitForExit(3000);
+            exited = _process.HasExited;
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
         _process.Dispose();
         _process = null;
+        if (exited) ClearOwnedPid(AppContext.BaseDirectory);
     }
 }
