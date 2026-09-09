@@ -194,6 +194,36 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void Episode_DirectMode_WithSeriesBlockedForAUser_GetsNoStaticPath()
+    {
+        var server = AddServer();
+        var seriesId = Guid.NewGuid();
+        var seasonId = Guid.NewGuid();
+        var episodeId = Guid.NewGuid();
+        var otherSeriesId = Guid.NewGuid();
+        var otherEpisodeId = Guid.NewGuid();
+
+        var series = _cache.UpsertRaw("TV", "serverA", seriesId, new BaseItemDto { Id = seriesId, Name = "Show" }, 0, "Series");
+        var season = _cache.UpsertRaw("TV", "serverA", seasonId, new BaseItemDto { Id = seasonId, Name = "Season 1" }, 0, "Season", parentKey: series.Key);
+        var episode = _cache.UpsertRaw("TV", "serverA", episodeId, new BaseItemDto { Id = episodeId, Name = "Pilot" }, 0, "Episode", parentKey: season.Key);
+        var otherSeries = _cache.UpsertRaw("TV", "serverA", otherSeriesId, new BaseItemDto { Id = otherSeriesId, Name = "Other Show" }, 0, "Series");
+        var otherEpisode = _cache.UpsertRaw("TV", "serverA", otherEpisodeId, new BaseItemDto { Id = otherEpisodeId, Name = "Other Pilot" }, 0, "Episode", parentKey: otherSeries.Key);
+
+        server.FriendUserAccessRules = new List<Configuration.RemoteUserAccessRule>
+        {
+            new()
+            {
+                RemoteUserId = Guid.NewGuid().ToString("N"),
+                Mode = Configuration.RemoteUserAccessMode.AllLibraries,
+                BlockedItemIds = new List<string> { seriesId.ToString("N") }
+            }
+        };
+
+        Assert.True(string.IsNullOrEmpty(_manager.MaterializeItem(episode).Path));
+        Assert.False(string.IsNullOrEmpty(_manager.MaterializeItem(otherEpisode).Path));
+    }
+
+    [Fact]
     public void Movie_ProxyMode_WithPath_ResolvesLocationTypeRemote()
     {
         AddServer(StreamingMode.Proxy);
