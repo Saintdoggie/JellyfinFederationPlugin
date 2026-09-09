@@ -101,7 +101,8 @@ namespace Jellyfin.Plugin.Federation.Services
             // token issuance share this gate; a friend may only receive our
             // own media, even when remote items live inside a local library.
             var sourceItem = _libraryManager.GetItemById(itemId);
-            if (sourceItem == null || FederationLibraryManager.GetFederationKey(sourceItem) != null)
+            if (FederationLibraryManager.IsIneligibleForOutgoingShare(sourceItem)
+                || FederationDownloadService.IsDownloadedFilePath(sourceItem?.Path))
             {
                 return false;
             }

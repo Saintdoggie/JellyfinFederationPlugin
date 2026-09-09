@@ -871,6 +871,14 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Provider id stamped on a local file that was downloaded from a friend.
+        /// Distinct from <c>FederationKey</c>: that id marks a live federated
+        /// placeholder (remote playback). This one must not take over local
+        /// playback, but it is equally ineligible for outgoing sharing.
+        /// </summary>
+        public const string FederationDownloadedFromProviderId = "FederationDownloadedFrom";
+
+        /// <summary>
         /// Checks if an item is federated.
         /// </summary>
         public bool IsFederatedItem(BaseItem? item) => GetFederationKey(item) != null;
@@ -887,6 +895,58 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Gets the <see cref="FederationDownloadedFromProviderId"/> origin stamped on a
+        /// downloaded copy, or null if the item was not downloaded from a friend.
+        /// </summary>
+        public static string? GetFederationDownloadedFrom(BaseItem? item)
+        {
+            if (item?.ProviderIds != null
+                && TryGetProviderId(item.ProviderIds, FederationDownloadedFromProviderId, out var origin)
+                && !string.IsNullOrEmpty(origin))
+            {
+                return origin;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// True when the item (or catalog row) is someone else's media and must not
+        /// be re-exported. Live federated placeholders carry <c>FederationKey</c>;
+        /// downloaded copies carry <see cref="FederationDownloadedFromProviderId"/>.
+        /// </summary>
+        public static bool IsIneligibleForOutgoingShare(BaseItem? item)
+            => item == null || IsIneligibleForOutgoingShare(item.ProviderIds);
+
+        /// <inheritdoc cref="IsIneligibleForOutgoingShare(BaseItem?)"/>
+        public static bool IsIneligibleForOutgoingShare(IReadOnlyDictionary<string, string>? providerIds)
+            => TryGetProviderId(providerIds, "FederationKey", out _)
+                || TryGetProviderId(providerIds, FederationDownloadedFromProviderId, out _);
+
+        /// <summary>
+        /// Marks a local file as a downloaded federated copy. No-ops when the item
+        /// is still a live federated placeholder or already stamped. Returns whether
+        /// a new provider id was written.
+        /// </summary>
+        public static bool TryStampDownloadedCopy(BaseItem item, string? origin)
+        {
+            if (GetFederationKey(item) != null)
+            {
+                return false;
+            }
+
+            item.ProviderIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (TryGetProviderId(item.ProviderIds, FederationDownloadedFromProviderId, out _))
+            {
+                return false;
+            }
+
+            item.ProviderIds[FederationDownloadedFromProviderId] =
+                string.IsNullOrWhiteSpace(origin) ? "downloaded" : origin.Trim();
+            return true;
         }
 
         /// <summary>

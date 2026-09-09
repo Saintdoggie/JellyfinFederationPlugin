@@ -33,6 +33,14 @@ public sealed class PeerCatalogPageTests
     }
 
     [Fact]
+    public void DownloadedCopies_AreNotOwnedForReExport()
+    {
+        Assert.False(PeerCatalogPage.IsOwned(new BaseItemDto { ProviderIds = new() { ["FederationDownloadedFrom"] = "friend-a" } }));
+        Assert.False(PeerCatalogPage.IsOwned(new BaseItemDto { ProviderIds = new() { ["federationdownloadedfrom"] = "friend-a" } }));
+        Assert.True(PeerCatalogPage.IsOwned(new BaseItemDto { ProviderIds = new() { ["Tmdb"] = "1" } }));
+    }
+
+    [Fact]
     public async Task FailureAfterFilteredRows_IsNotAnEmptyLibrary()
     {
         var calls = 0;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Entities;
@@ -90,6 +91,8 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
     [InlineData(true, "FederationKey")]
     [InlineData(false, "FederationKey")]
     [InlineData(true, "federationkey")]
+    [InlineData(true, "FederationDownloadedFrom")]
+    [InlineData(false, "federationdownloadedfrom")]
     public void FederatedItem_IsNeverVisibleThroughPeerAuthorization(bool shareAll, string providerKey)
     {
         var item = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid(), ProviderIds = new() { [providerKey] = "another-friend/item" } };
@@ -100,6 +103,22 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
         Assert.False(service.IsItemVisible(friend, null, Guid.NewGuid(), "local-library"));
         item.ProviderIds.Clear();
         Assert.True(service.IsItemVisible(friend, null, item.Id, "local-library"));
+    }
+
+    [Fact]
+    public void DownloadedFileInDownloadsFolder_IsNotVisibleEvenBeforeProviderStamp()
+    {
+        var root = FederationDownloadService.GetDownloadsRoot();
+        Assert.False(string.IsNullOrEmpty(root));
+        var item = new MediaBrowser.Controller.Entities.Movies.Movie
+        {
+            Id = Guid.NewGuid(),
+            Path = Path.Combine(root, "Friend Movie.mkv")
+        };
+        SetItems(item);
+        var friend = new RemoteServer { ShareAllLibraries = true };
+        var service = new FederationPeerAccessService(_library.Object);
+        Assert.False(service.IsItemVisible(friend, null, item.Id, "local-library"));
     }
 
     [Fact]
