@@ -276,6 +276,29 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SendFriendRequestAsync_LanUrl_StillContactsRemote()
+    {
+        var calls = 0;
+        UseFakeHttp(req =>
+        {
+            calls++;
+            Assert.Equal("http://192.168.1.20:8096/Plugins/Federation/Friends/Request", req.RequestUri!.ToString());
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "Lan Friend" });
+        });
+
+        var (success, message) = await _service.SendFriendRequestAsync("http://192.168.1.20:8096", CancellationToken.None);
+
+        Assert.True(success, message);
+        Assert.Equal(1, calls);
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.Equal("http://192.168.1.20:8096", outgoing.RemoteServerUrl);
+    }
+
+    [Fact]
+    public void VerifyHttpClient_DoesNotFollowRedirects()
+        => Assert.False(FederationFriendService.DefaultVerifyHandler.AllowAutoRedirect);
+
+    [Fact]
     public async Task ReceiveFriendRequestAsync_Valid_StoresIncomingRequest_AndMarksVerifiedWhenSenderConfirms()
     {
         UseFakeHttp(req =>
@@ -349,6 +372,75 @@ public class FederationFriendServiceTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Empty(_plugin.Configuration.IncomingFriendRequests);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8096")]
+    [InlineData("http://192.168.1.10:8096")]
+    [InlineData("http://10.0.0.5:8096")]
+    [InlineData("http://172.16.0.2:8096")]
+    [InlineData("http://169.254.169.254")]
+    [InlineData("http://100.64.1.20:8096")]
+    [InlineData("http://localhost:8096")]
+    [InlineData("http://metadata.google.internal")]
+    [InlineData("http://[::1]:8096")]
+    [InlineData("http://[fc00::1]:8096")]
+    [InlineData("http://[fe80::1]:8096")]
+    [InlineData("http://[::ffff:169.254.169.254]")]
+    public async Task ReceiveFriendRequestAsync_PrivateFromServerUrl_StoresUnverifiedWithoutFetching(string fromUrl)
+    {
+        var calls = 0;
+        UseFakeHttp(_ =>
+        {
+            calls++;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var payload = new FriendRequestPayload
+        {
+            RequestId = "req-private",
+            FromServerUrl = fromUrl,
+            FromServerName = "Sender",
+            ApiKeyForYou = "key-from-sender",
+            SupportsFederationToken = true
+        };
+
+        var result = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(0, calls);
+        var incoming = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+        Assert.Equal(fromUrl, incoming.RemoteServerUrl);
+        Assert.False(incoming.Verified);
+    }
+
+    [Fact]
+    public async Task ReceiveFriendRequestAsync_VerifyRedirect_LeavesUnverified()
+    {
+        UseFakeHttp(req =>
+        {
+            Assert.Equal(HttpMethod.Get, req.Method);
+            Assert.DoesNotContain("169.254.169.254", req.RequestUri!.ToString(), StringComparison.Ordinal);
+            return new HttpResponseMessage(HttpStatusCode.Found)
+            {
+                Headers = { Location = new Uri("http://169.254.169.254/latest/meta-data/") }
+            };
+        });
+
+        var payload = new FriendRequestPayload
+        {
+            RequestId = "req-redirect",
+            FromServerUrl = "http://sender.example",
+            FromServerName = "Sender",
+            ApiKeyForYou = "key-from-sender",
+            SupportsFederationToken = true
+        };
+
+        var result = await _service.ReceiveFriendRequestAsync(payload, CancellationToken.None);
+
+        Assert.True(result.Success);
+        var incoming = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+        Assert.False(incoming.Verified);
     }
 
     [Fact]

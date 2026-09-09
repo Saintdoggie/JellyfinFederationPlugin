@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 
 namespace Jellyfin.Plugin.Federation.Configuration
 {
@@ -45,16 +47,28 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 && string.IsNullOrEmpty(uri.Fragment);
         }
 
+        private static readonly HashSet<string> WellKnownLoopbackOrMetadataHosts = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "localhost",
+            "localhost.localdomain",
+            "metadata",
+            "metadata.google.internal",
+            "metadata.google.com",
+            "instance-data"
+        };
+
         /// <summary>
         /// True when a URL's host is a loopback, RFC 1918, link-local, CGNAT/
-        /// Tailscale (100.64.0.0/10), or IPv6 unique-local/link-local address.
+        /// Tailscale (100.64.0.0/10), IPv6 unique-local/link-local, IPv4-mapped
+        /// form of any of those, or a well-known loopback/cloud-metadata hostname.
         /// Used to catch a server's own public URL being auto-detected from a
         /// private-network request - e.g. an admin managing Jellyfin over their LAN
         /// when accepting a friend request - which silently hands a friend an
-        /// address only reachable on that LAN or tailnet. A hostname (not a literal
-        /// IP) is never flagged: DNS resolution isn't attempted here, and a hostname
-        /// pointing at a private IP is normally deliberate (split-horizon DNS,
-        /// Funnel <c>*.ts.net</c> names) rather than an accident.
+        /// address only reachable on that LAN or tailnet. Also used to skip
+        /// unauthenticated callback/verify fetches that would otherwise SSRF into
+        /// those ranges. Ordinary hostnames are not resolved here: DNS pointing at
+        /// a private IP is normally deliberate (split-horizon DNS, Funnel
+        /// <c>*.ts.net</c> names) rather than an accident.
         /// </summary>
         public static bool IsPrivateOrLoopbackHost(string? url)
         {
@@ -63,17 +77,33 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return false;
             }
 
-            if (!System.Net.IPAddress.TryParse(uri.Host, out var ip))
+            var host = uri.IdnHost;
+            if (string.IsNullOrEmpty(host))
             {
-                return false;
+                host = uri.Host;
             }
 
-            if (System.Net.IPAddress.IsLoopback(ip))
+            if (IsWellKnownLoopbackOrMetadataHostname(host))
             {
                 return true;
             }
 
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            if (!IPAddress.TryParse(host, out var ip))
+            {
+                return false;
+            }
+
+            if (ip.IsIPv4MappedToIPv6)
+            {
+                ip = ip.MapToIPv4();
+            }
+
+            if (IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
             {
                 var b = ip.GetAddressBytes();
                 return b[0] == 10
@@ -83,7 +113,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     || (b[0] == 100 && b[1] >= 64 && b[1] <= 127);
             }
 
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6)
             {
                 // fc00::/7 (unique local) and fe80::/10 (link-local).
                 var b = ip.GetAddressBytes();
@@ -91,6 +121,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
             }
 
             return false;
+        }
+
+        private static bool IsWellKnownLoopbackOrMetadataHostname(string host)
+        {
+            if (string.IsNullOrEmpty(host))
+            {
+                return false;
+            }
+
+            if (WellKnownLoopbackOrMetadataHosts.Contains(host))
+            {
+                return true;
+            }
+
+            // RFC 6761: *.localhost is loopback even without a literal 127.0.0.1.
+            return host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
