@@ -655,6 +655,108 @@ test('a reachable friend with zero libraries is not treated as a failed fetch', 
   assert.equal(h.api.mappings().length, 0);
 });
 
+function extractConfigFunction(name) {
+  const start = configPage.indexOf('                    function ' + name + '(');
+  assert.notEqual(start, -1, name + ' not found');
+  const end = configPage.indexOf('\n                    }', start) + '\n                    }'.length;
+  return configPage.slice(start, end);
+}
+
+function catalogHideUserHarness(options) {
+  const source = ['existingUserRule', 'catalogSelectedIds', 'mergeItemIds', 'applyCatalogHideUser']
+    .map((name) => extractConfigFunction(name))
+    .join('\n');
+  const posts = [];
+  const nodes = new Map();
+  const q = (id) => {
+    if (!nodes.has(id)) {
+      nodes.set(id, { value: '', style: {}, innerHTML: '', disabled: false, textContent: '' });
+    }
+    return nodes.get(id);
+  };
+  q('#fedCatalogFriendPick').value = 'friend-1';
+  q('#fedCatalogUserPick').value = 'kid';
+  const selected = {};
+  (options.selectedIds || ['new-id']).forEach((id) => { selected[id] = true; });
+  const api = new Function('fedFetch', 'q', `
+    var catalogSelected = ${JSON.stringify(selected)};
+    var currentConfig = ${JSON.stringify(options.currentConfig)};
+    var remoteUsersCache = { 'friend-1': { users: [{ id: 'kid', name: 'Kiddo' }] } };
+    var catalogBlockedItemIdsByUser = ${JSON.stringify(options.cache || {})};
+    function setCatalogStatus() {}
+    function clearCatalogSelection() { catalogSelected = {}; }
+    function loadCatalog() {}
+    function loadConfiguration() { return Promise.resolve(); }
+    function readJson(r) { return r.json(); }
+    ${source}
+    return {
+      hide: applyCatalogHideUser,
+      merge: mergeItemIds,
+      cache: function () { return catalogBlockedItemIdsByUser; },
+      select: function (ids) {
+        catalogSelected = {};
+        ids.forEach(function (id) { catalogSelected[id] = true; });
+      }
+    };
+  `)((url, request) => {
+    posts.push({ url, body: JSON.parse(request.body) });
+    return Promise.resolve({ ok: true, json: async () => ({ success: true, message: 'Saved.' }) });
+  }, q);
+  return { api, posts };
+}
+
+test('catalog hide-from-user unions new ids with GET BlockedItemIds', async () => {
+  const h = catalogHideUserHarness({
+    selectedIds: ['item-new'],
+    currentConfig: {
+      RemoteServers: [{
+        Id: 'friend-1',
+        RemoteUserAccessRules: [{
+          RemoteUserId: 'kid',
+          Mode: 0,
+          LibraryFolderIds: [],
+          ItemIds: [],
+          MaxAllowedRating: '',
+          AllowDownload: true,
+          BlockedItemIds: ['item-old']
+        }]
+      }]
+    }
+  });
+  h.api.hide();
+  await settle();
+  assert.equal(h.posts.length, 1);
+  assert.deepEqual(h.posts[0].body.BlockedItemIds, ['item-old', 'item-new']);
+  assert.match(h.posts[0].url, /Friends\/friend-1\/RemoteUserRule/);
+});
+
+test('catalog hide-from-user keeps prior ids when GET omits BlockedItemIds', async () => {
+  const h = catalogHideUserHarness({
+    selectedIds: ['item-new'],
+    cache: { 'friend-1::kid': ['item-old'] },
+    currentConfig: {
+      RemoteServers: [{
+        Id: 'friend-1',
+        RemoteUserAccessRules: [{
+          RemoteUserId: 'kid',
+          Mode: 0,
+          LibraryFolderIds: [],
+          ItemIds: [],
+          AllowDownload: true
+        }]
+      }]
+    }
+  });
+  h.api.hide();
+  await settle();
+  assert.deepEqual(h.posts[0].body.BlockedItemIds, ['item-old', 'item-new']);
+
+  h.api.select(['item-newer']);
+  h.api.hide();
+  await settle();
+  assert.deepEqual(h.posts[1].body.BlockedItemIds, ['item-old', 'item-new', 'item-newer']);
+});
+
 test('badge requests authenticate with the supported Jellyfin 12 header', async () => {
   const { dom, requests } = makeWindow(true);
   await settle();

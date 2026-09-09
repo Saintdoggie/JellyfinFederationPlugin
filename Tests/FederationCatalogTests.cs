@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities.Movies;
@@ -88,4 +90,50 @@ public sealed class FederationCatalogTests
         Assert.NotNull(authorize);
         Assert.Equal("RequiresElevation", authorize.Policy);
     }
+
+    [Fact]
+    public void SanitizeServer_IncludesBlockedItemIdsOnOutgoingAndIncomingUserRules()
+    {
+        var server = new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Bob",
+            Url = "http://bob.example",
+            RemoteUserAccessRules =
+            {
+                new RemoteUserAccessRule
+                {
+                    RemoteUserId = "kid",
+                    RemoteUserName = "Kiddo",
+                    Mode = RemoteUserAccessMode.AllLibraries,
+                    BlockedItemIds = new List<string> { "item-a", "item-b" }
+                }
+            },
+            FriendUserAccessRules =
+            {
+                new RemoteUserAccessRule
+                {
+                    RemoteUserId = "local-user",
+                    RemoteUserName = "Me",
+                    Mode = RemoteUserAccessMode.AllLibraries,
+                    BlockedItemIds = new List<string> { "item-c" }
+                }
+            }
+        };
+
+        var method = typeof(FederationController).GetMethod("SanitizeServer", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var sanitized = method!.Invoke(null, new object[] { server });
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(sanitized));
+        var root = doc.RootElement;
+
+        var outgoing = Assert.Single(root.GetProperty("RemoteUserAccessRules").EnumerateArray());
+        Assert.Equal(new[] { "item-a", "item-b" }, Strings(outgoing.GetProperty("BlockedItemIds")));
+
+        var incoming = Assert.Single(root.GetProperty("FriendUserAccessRules").EnumerateArray());
+        Assert.Equal(new[] { "item-c" }, Strings(incoming.GetProperty("BlockedItemIds")));
+    }
+
+    private static string[] Strings(JsonElement array)
+        => array.EnumerateArray().Select(value => value.GetString() ?? string.Empty).ToArray();
 }
