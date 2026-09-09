@@ -129,8 +129,23 @@ public class ConfigValidatorTests
     [InlineData("http://192.168.1.10:8096")]
     [InlineData("http://172.16.0.2:8096")]
     [InlineData("http://169.254.1.1:8096")]
+    [InlineData("http://169.254.169.254/")]
     [InlineData("http://100.64.1.20:8096")]
     [InlineData("http://100.127.0.1:8096")]
+    [InlineData("http://localhost:8096")]
+    [InlineData("http://foo.localhost:8096")]
+    [InlineData("http://metadata.google.internal/")]
+    [InlineData("http://metadata.google.com/")]
+    [InlineData("http://instance-data/latest/meta-data")]
+    [InlineData("http://[::1]:8096")]
+    [InlineData("http://[fc00::1]:8096")]
+    [InlineData("http://[fd12:3456:789a::1]:8096")]
+    [InlineData("http://[fe80::1]:8096")]
+    [InlineData("http://[::ffff:127.0.0.1]:8096")]
+    [InlineData("http://[::ffff:169.254.169.254]/")]
+    [InlineData("http://[::ffff:192.168.1.10]:8096")]
+    [InlineData("http://[::ffff:10.0.0.1]:8096")]
+    [InlineData("http://[::ffff:100.64.1.20]:8096")]
     public void PrivateOrLoopbackAndCgnatHosts_AreFlagged(string url)
         => Assert.True(ConfigValidator.IsPrivateOrLoopbackHost(url));
 
@@ -139,6 +154,7 @@ public class ConfigValidatorTests
     [InlineData("https://name.tail12345.ts.net")]
     [InlineData("https://1-2-3-4.hash.plex.direct:32400")]
     [InlineData("http://8.8.8.8:8096")]
+    [InlineData("http://203.0.113.10:8096")]
     public void PublicHosts_AreNotFlaggedAsPrivate(string url)
         => Assert.False(ConfigValidator.IsPrivateOrLoopbackHost(url));
 

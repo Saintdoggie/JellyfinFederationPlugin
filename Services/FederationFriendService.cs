@@ -28,6 +28,16 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private static readonly HttpClient DefaultHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
+        // Inbound origin-verify only: a 3xx from a public FromServerUrl must not be
+        // followed onto loopback/RFC1918/metadata. Admin-initiated Send/Accept/Reject
+        // keep DefaultHttpClient's normal redirect policy so LAN friends still work.
+        internal static readonly HttpClientHandler DefaultVerifyHandler = new() { AllowAutoRedirect = false };
+
+        private static readonly HttpClient DefaultVerifyHttpClient = new HttpClient(DefaultVerifyHandler, disposeHandler: false)
+        {
+            Timeout = TimeSpan.FromSeconds(20)
+        };
+
         /// <summary>
         /// Test-only seam: when set, used instead of <see cref="DefaultHttpClient"/> for
         /// every request. Kept static (rather than a constructor parameter) so the
@@ -39,6 +49,8 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static HttpClient? HttpClientOverride { get; set; }
 
         private static HttpClient SharedHttpClient => HttpClientOverride ?? DefaultHttpClient;
+
+        private static HttpClient VerifyHttpClient => HttpClientOverride ?? DefaultVerifyHttpClient;
 
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
@@ -531,6 +543,8 @@ namespace Jellyfin.Plugin.Federation.Services
             // matching outgoing request, so a third party can't plant a fake request
             // that merely *claims* to be from some other admin's server. Never blocks
             // the request from being stored - it only informs the admin's decision.
+            // Private/loopback/metadata callback URLs stay pending and unverified
+            // without a GET (this endpoint is anonymous; fetching them is SSRF).
             existing.Verified = await VerifyOutgoingRequestExistsAsync(fromUrl, payload.RequestId, cancellationToken).ConfigureAwait(false);
 
             Plugin.Instance.SaveConfiguration();
@@ -2104,9 +2118,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task<bool> VerifyOutgoingRequestExistsAsync(string remoteUrl, string requestId, CancellationToken cancellationToken)
         {
+            // Unauthenticated inbound path only. Admin SendFriendRequestAsync still
+            // POSTs to LAN/Tailscale friends via SharedHttpClient.
+            if (ConfigValidator.IsPrivateOrLoopbackHost(remoteUrl))
+            {
+                _logger.LogDebug("[Federation] Skipping friend-request origin verify for private/loopback/metadata host {Url}", remoteUrl);
+                return false;
+            }
+
             try
             {
-                using var response = await SharedHttpClient.GetAsync(
+                using var response = await VerifyHttpClient.GetAsync(
                     $"{remoteUrl}/Plugins/Federation/Friends/Outgoing/{Uri.EscapeDataString(requestId)}",
                     cancellationToken).ConfigureAwait(false);
                 return response.IsSuccessStatusCode;
