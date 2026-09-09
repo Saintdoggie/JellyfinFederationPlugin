@@ -707,6 +707,83 @@ public class FederationDownloadServiceTests : IDisposable
         _libraryManager.Verify(l => l.DeleteItem(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<DeleteOptions>()), Times.Never);
     }
 
+    [Fact]
+    public async Task EnsureDownloadsLibraryAsync_CreatesLibrary_WhenMissing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-downloads-create");
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>());
+        _libraryManager.Setup(l => l.AddVirtualFolder(
+                It.IsAny<string>(),
+                It.IsAny<CollectionTypeOptions?>(),
+                It.IsAny<LibraryOptions>(),
+                It.IsAny<bool>()))
+            .Returns(Task.CompletedTask);
+
+        await InvokeEnsureDownloadsLibraryAsync(root);
+
+        _libraryManager.Verify(
+            l => l.AddVirtualFolder(
+                "Federation Downloads",
+                CollectionTypeOptions.mixed,
+                It.Is<LibraryOptions>(o => o.PathInfos != null && o.PathInfos.Length == 1 && o.PathInfos[0].Path == root),
+                false),
+            Times.Once);
+        _libraryManager.Verify(l => l.AddMediaPath(It.IsAny<string>(), It.IsAny<MediaPathInfo>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task EnsureDownloadsLibraryAsync_AttachesPath_WhenLibraryExistsWithoutLocations()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-downloads-attach");
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+
+        await InvokeEnsureDownloadsLibraryAsync(root);
+
+        _libraryManager.Verify(l => l.AddVirtualFolder(It.IsAny<string>(), It.IsAny<CollectionTypeOptions?>(), It.IsAny<LibraryOptions>(), It.IsAny<bool>()), Times.Never);
+        _libraryManager.Verify(
+            l => l.AddMediaPath(
+                "Federation Downloads",
+                It.Is<MediaPathInfo>(p => p.Path == root)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task EnsureDownloadsLibraryAsync_AttachesPath_WhenLibraryExistsWithOtherLocation()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-downloads-merge");
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads", Locations = new[] { "/old/downloads" } }
+        });
+
+        await InvokeEnsureDownloadsLibraryAsync(root);
+
+        _libraryManager.Verify(l => l.AddVirtualFolder(It.IsAny<string>(), It.IsAny<CollectionTypeOptions?>(), It.IsAny<LibraryOptions>(), It.IsAny<bool>()), Times.Never);
+        _libraryManager.Verify(
+            l => l.AddMediaPath(
+                "Federation Downloads",
+                It.Is<MediaPathInfo>(p => p.Path == root)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task EnsureDownloadsLibraryAsync_IsIdempotent_WhenPathAlreadyAttached()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-downloads-ready");
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads", Locations = new[] { root } }
+        });
+
+        await InvokeEnsureDownloadsLibraryAsync(root);
+
+        _libraryManager.Verify(l => l.AddVirtualFolder(It.IsAny<string>(), It.IsAny<CollectionTypeOptions?>(), It.IsAny<LibraryOptions>(), It.IsAny<bool>()), Times.Never);
+        _libraryManager.Verify(l => l.AddMediaPath(It.IsAny<string>(), It.IsAny<MediaPathInfo>()), Times.Never);
+    }
+
     private Movie ConfigureQualityReplacement()
     {
         var item = new Movie
@@ -754,6 +831,13 @@ public class FederationDownloadServiceTests : IDisposable
         bytes[2] = 0xDF;
         bytes[3] = 0xA3;
         return bytes;
+    }
+
+    private async Task InvokeEnsureDownloadsLibraryAsync(string downloadsRoot)
+    {
+        var method = typeof(FederationDownloadService).GetMethod("EnsureDownloadsLibraryAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(_service, new object[] { downloadsRoot })!;
     }
 
     private static async Task<DownloadProgress> WaitForCompletion(string operationId)
