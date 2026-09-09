@@ -144,3 +144,65 @@ test('Companion displays source numbering and issue text safely and recovers Add
     assert.equal(button.disabled, false); assert.match(d.getElementById('importConnectStatus').textContent, /retry/i);
   } finally { dom.window.close(); }
 });
+
+test('Companion page explains the tray and background running', () => {
+  assert.match(html, /keeps running in the background/);
+  assert.match(html, /notification area \(tray\)/);
+  assert.match(html, /id="autostartToggle"/);
+  assert.match(html, /Start Companion when I sign in/);
+});
+
+test('Companion app card shows live app facts and manages the sign-in setting', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    const path = String(url);
+    if (path.includes('/api/app/info')) return json({ version: '0.0.158', port: 8123, uptimeSeconds: 3720, workingSetMb: 42, installDirectory: 'C:\\Fed', logPath: 'C:\\Fed\\companion.log', backgroundLaunch: true, windows: true, autostartSupported: true, autostartEnabled: false });
+    if (path.includes('/api/app/autostart')) return json({ enabled: JSON.parse(opts.body).enabled });
+    if (path.includes('/api/media-mount/stop')) return json({ running: false, stopped: true, message: 'Media folder stopped.' });
+    if (path.includes('/api/media-mount/status')) return json({ ready: false, message: 'stopped', driverReady: true });
+    if (path.includes('/api/status')) return json({ serverConnected: false, libraries: [] });
+    return json([]);
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    const d = dom.window.document;
+    await tick();
+    const info = d.getElementById('appInfo');
+    assert.match(info.textContent, /0\.0\.158/);
+    assert.match(info.textContent, /42 MB/);
+    assert.match(info.textContent, /1h 2m/);
+    assert.equal(d.getElementById('autostartRow').classList.contains('hidden'), false);
+    assert.equal(d.getElementById('autostartToggle').checked, false);
+
+    const toggle = d.getElementById('autostartToggle');
+    toggle.checked = true;
+    toggle.dispatchEvent(new dom.window.Event('change'));
+    await tick();
+    const post = requests.find(([url, opts]) => String(url).includes('/api/app/autostart') && opts && opts.method === 'POST');
+    assert.ok(post, 'autostart POST was sent');
+    assert.equal(header(post[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.deepEqual(JSON.parse(post[1].body), { enabled: true });
+    assert.equal(toggle.checked, true);
+
+    d.getElementById('stopMountBtn').click();
+    await tick();
+    const stop = requests.find(([url]) => String(url).includes('/api/media-mount/stop'));
+    assert.ok(stop, 'stop media folder request was sent');
+    assert.match(d.getElementById('appStatus').textContent, /stopped/i);
+  } finally { dom.window.close(); }
+});
+
+test('Companion hides the sign-in setting on platforms that do not support it', async () => {
+  const dom = page(async url => {
+    const path = String(url);
+    if (path.includes('/api/app/info')) return json({ version: '0.0.158', port: 8123, uptimeSeconds: 60, workingSetMb: 30, windows: false, autostartSupported: false, autostartEnabled: false });
+    if (path.includes('/api/status')) return json({ serverConnected: false, libraries: [] });
+    return json([]);
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    const d = dom.window.document;
+    await tick();
+    assert.equal(d.getElementById('autostartRow').classList.contains('hidden'), true);
+    assert.equal(d.getElementById('autostartToggle').disabled, true);
+  } finally { dom.window.close(); }
+});

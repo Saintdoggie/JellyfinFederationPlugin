@@ -104,7 +104,35 @@ if (-not (Test-WinFsp)) {
     }
 }
 
+function New-CompanionShortcut {
+    param([string]$Path, [string]$Arguments)
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($Path)
+        $shortcut.TargetPath = $exe
+        $shortcut.Arguments = $Arguments
+        $shortcut.WorkingDirectory = $installDir
+        $shortcut.Description = "Federation Companion - Plex and Jellyfin federation"
+        $shortcut.IconLocation = "$exe,0"
+        $shortcut.Save()
+    } catch {
+        Write-Warning "Could not create the shortcut at $Path"
+    }
+}
+
+$exe = Join-Path $installDir "FederationCompanion.exe"
+if (-not (Test-Path -LiteralPath $exe)) { throw "FederationCompanion.exe was not extracted to $installDir." }
+
+$startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Federation Companion.lnk"
+New-CompanionShortcut -Path $startMenu -Arguments "--open"
+New-CompanionShortcut -Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Federation Companion.lnk") -Arguments "--open"
+
 Write-Host "Installed to $installDir"
-Write-Host "Starting Federation Companion - open the URL it prints. The media folder starts by itself."
-Set-Location $installDir
-& .\FederationCompanion.exe
+Write-Host ""
+Write-Host "About permissions: Companion is not code-signed, so Windows SmartScreen may say 'Windows protected your PC' - choose More info, then Run anyway."
+Write-Host "It runs as your normal user, listens only on localhost, and only asks for a one-time UAC prompt to install the WinFsp media driver."
+Write-Host "It writes companion-state.json (credentials) and companion.log in this folder. Keep the folder private."
+Write-Host ""
+Write-Host "Starting Federation Companion. It stays in the notification area (tray) and opens the dashboard in your browser."
+Write-Host "Right-click the tray icon to open the dashboard, copy the owner key, manage the media folder, or exit."
+Start-Process -FilePath $exe -ArgumentList "--open" -WorkingDirectory $installDir

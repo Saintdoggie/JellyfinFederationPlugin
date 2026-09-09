@@ -21,7 +21,17 @@ jobs:
   build:
     strategy:
       matrix:
-        rid: [win-x64, linux-x64, osx-x64, osx-arm64]
+        include:
+          # Windows ships the desktop/tray build (WinForms); the other
+          # platforms keep the console/server build.
+          - rid: win-x64
+            tfm: net9.0-windows
+          - rid: linux-x64
+            tfm: net9.0
+          - rid: osx-x64
+            tfm: net9.0
+          - rid: osx-arm64
+            tfm: net9.0
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +43,7 @@ jobs:
       - name: Publish ${{ matrix.rid }}
         run: |
           dotnet publish Companion/FederationCompanion.csproj \
-            -c Release -r ${{ matrix.rid }} --self-contained true \
+            -c Release -f ${{ matrix.tfm }} -r ${{ matrix.rid }} --self-contained true \
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
             -o dist/${{ matrix.rid }}
           rm -f dist/${{ matrix.rid }}/*.pdb

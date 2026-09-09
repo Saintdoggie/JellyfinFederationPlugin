@@ -25,7 +25,43 @@ Plex may match the title and poster of an imported `.strm` file while showing **
 3. Click **Add to Plex** for the friend. The new Movies/Shows libraries have `(Streaming)` in their names. Let Plex scan them, then verify video/audio details and playback.
 4. Once the new libraries work, remove the old `.strm` library entries in Plex. Companion does not delete those Plex entries automatically.
 
-See [rclone's Windows mount requirements and account-visibility notes](https://rclone.org/commands/rclone_mount/#installing-on-windows). Windows-specific runtime validation remains in TODO; local Linux tests do not replace testing on the actual friend's Windows host.
+See [rclone's Windows mount requirements and account-visibility notes](https://rclone.org/commands/rclone_mount/#installing-on-windows). Windows-specific runtime validation remains in TODO; local tests do not replace testing on the actual friend's Windows host.
+
+## Windows app, tray, and permissions
+
+The Windows download is a desktop app (`WinExe`), not a console program. It starts in the
+notification area (tray) and keeps running in the background so Plex and friends can reach
+it at any time. Double-click the tray icon (or the Start Menu/Desktop shortcut) to open the
+dashboard in your browser.
+
+**It is not code-signed.** Windows SmartScreen may show "Windows protected your PC" the
+first time. Choose **More info → Run anyway**. Some antivirus products also flag unsigned
+self-contained .NET apps or the bundled `rclone.exe` as suspicious; those are false
+positives for this build. If your antivirus blocks a file, verify you downloaded it from
+the project's GitHub releases and add an exclusion for the install folder if you accept
+the risk.
+
+What the app does on your machine, so you can decide whether to allow it:
+
+- Listens on `http://localhost:5000` (or the next free Kestrel port). Only the owner
+  dashboard uses it unless you deliberately expose it through Tailscale Funnel.
+- Runs `rclone.exe` as a **read-only** WebDAV mount of media your friends shared with you,
+  so Plex can analyze and play real files instead of text `.strm` links.
+- Writes `companion-state.json` (Plex/Jellyfin credentials and sharing choices),
+  `companion.log` (diagnostics, no secrets), and the mount configuration in its install
+  folder. Keep that folder private. Windows ACLs on those files are not tightened yet
+  (tracked as D3 in `bug.txt`); use a personal user profile, not a shared one.
+- Registers an autostart entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  **only if you tick "Start Companion when I sign in"**. It never touches machine-wide
+  settings and can be removed from the same checkbox.
+- Asks for a UAC prompt **once** to install the WinFsp kernel driver (pinned, checksummed
+  MSI). Everything else runs as your normal user.
+- Talks to `plex.tv` for sign-in, your Plex server, your Jellyfin friends, and GitHub for
+  updates. It does not upload your library metadata anywhere else.
+
+If Windows Firewall prompts about `FederationCompanion.exe`, allowing private networks is
+enough for LAN use. Funnel/off-site friends use the outbound Tailscale connection; you do
+not need to open an inbound port.
 
 ## Manual mounts, Linux/macOS, and Docker
 

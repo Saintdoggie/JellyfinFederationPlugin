@@ -111,6 +111,9 @@ Tests and project history:
 - `.github/workflows/companion-release.yml` — rolling Companion builds; it is
   separate from plugin version releases.
 - `TODO.md` — active reliability/security/polish release checklist.
+- `Companion/DESKTOP-APP-TODO.md` — Companion desktop-app handoff: Windows
+  tray/WinExe, Linux XDG autostart, single-instance, RAM tuning, remaining
+  platform validation. Read before changing Companion startup or packaging.
 
 ## Non-negotiable engineering invariants
 

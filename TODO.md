@@ -2,6 +2,15 @@
 
 Completed work is removed from this file. Git history and GitHub releases keep the validation record.
 
+## Companion desktop app — Windows + Linux
+
+Companion now ships as a real background app: WinExe + tray on Windows, XDG
+autostart on Linux, single-instance, rotating log, low-memory GC settings, and
+an owner "Companion app" card. Implementation details, remaining platform
+validation, and the exact test commands live in
+[`Companion/DESKTOP-APP-TODO.md`](Companion/DESKTOP-APP-TODO.md). Read that file
+before changing Companion startup, tray, autostart, or packaging.
+
 ## Active Plex repair — shipped as 0.0.133
 
 The Plex ownership/playback repair from `fix/plex-federation-reliability` is

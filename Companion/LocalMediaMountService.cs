@@ -14,6 +14,9 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
     public string Message { get; private set; } = "Companion starts the media folder by itself after install.";
     public bool HelperReady => rclone.FindExisting() != null;
 
+    /// <summary>True while this process owns the mount or a previous run left its rclone behind.</summary>
+    public bool HasOwnedProcess => _process is { HasExited: false } || TryReadOwnedPid(AppContext.BaseDirectory, out _);
+
     internal static bool ShouldManageMount(CompanionState current)
         => current.AutoStartMediaMount || string.IsNullOrEmpty(current.MediaMountRoot);
 
@@ -143,6 +146,32 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Stops only the rclone Companion started, including one left behind by a
+    /// previous run. The PID marker is the ownership proof; an unrelated
+    /// rclone process is never touched.
+    /// </summary>
+    public async Task<bool> StopMountAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!HasOwnedProcess)
+            {
+                Message = "Companion is not running the media folder.";
+                return false;
+            }
+
+            StopOwnedProcess();
+            Message = "Media folder stopped. Start it again before Plex plays imported titles.";
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     internal static ProcessStartInfo CreateStartInfo(string executable, string config, string root)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
@@ -174,24 +203,67 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
 
     private void StopOwnedProcess()
     {
-        if (_process == null) return;
+        if (_process == null)
+        {
+            // The mount outlived a previous Companion process: the PID marker
+            // still names the rclone it started. Stop exactly that process.
+            if (TryReadOwnedPid(AppContext.BaseDirectory, out var orphanPid) && TryKillOwnedRclone(orphanPid))
+            {
+                ClearOwnedPid(AppContext.BaseDirectory);
+            }
+
+            return;
+        }
+
         var exited = false;
         try
         {
-            if (!_process.HasExited && !OperatingSystem.IsWindows())
-            {
-                var signal = new ProcessStartInfo("/bin/kill") { UseShellExecute = false, CreateNoWindow = true };
-                signal.ArgumentList.Add("-TERM"); signal.ArgumentList.Add(_process.Id.ToString(CultureInfo.InvariantCulture));
-                using var sender = Process.Start(signal);
-                _process.WaitForExit(3000);
-            }
-            if (!_process.HasExited) _process.Kill(entireProcessTree: true);
-            _process.WaitForExit(3000);
-            exited = _process.HasExited;
+            exited = TerminateProcess(_process);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+        }
+
         _process.Dispose();
         _process = null;
         if (exited) ClearOwnedPid(AppContext.BaseDirectory);
+    }
+
+    private static bool TryKillOwnedRclone(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (!string.Equals(process.ProcessName, "rclone", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return TerminateProcess(process);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool TerminateProcess(Process process)
+    {
+        if (!process.HasExited && !OperatingSystem.IsWindows())
+        {
+            var signal = new ProcessStartInfo("/bin/kill") { UseShellExecute = false, CreateNoWindow = true };
+            signal.ArgumentList.Add("-TERM");
+            signal.ArgumentList.Add(process.Id.ToString(CultureInfo.InvariantCulture));
+            using var sender = Process.Start(signal);
+            process.WaitForExit(3000);
+        }
+
+        if (!process.HasExited)
+        {
+            process.Kill(entireProcessTree: true);
+        }
+
+        process.WaitForExit(3000);
+        return process.HasExited;
     }
 }

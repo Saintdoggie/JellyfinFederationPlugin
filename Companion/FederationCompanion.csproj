@@ -1,20 +1,41 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net9.0;net9.0-windows</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RootNamespace>FederationCompanion</RootNamespace>
     <AssemblyName>FederationCompanion</AssemblyName>
-    <Version>0.0.155</Version>
-    <AssemblyVersion>0.0.155.0</AssemblyVersion>
-    <FileVersion>0.0.155.0</FileVersion>
+    <Version>0.0.158</Version>
+    <AssemblyVersion>0.0.158.0</AssemblyVersion>
+    <FileVersion>0.0.158.0</FileVersion>
     <UserSecretsId>federation-companion</UserSecretsId>
+
+    <!-- This helper sits idle in the tray most of the day. Keep the small
+         workstation heap instead of reserving server-GC heaps, and let the
+         runtime release memory aggressively between bursts. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
+    <GCConserveMemory>5</GCConserveMemory>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- CI builds the Windows desktop target from Linux. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <ApplicationIcon>companion.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="FederationCompanion.Tests" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">
+    <EmbeddedResource Include="companion.ico" LogicalName="FederationCompanion.companion.ico" />
   </ItemGroup>
 
 </Project>

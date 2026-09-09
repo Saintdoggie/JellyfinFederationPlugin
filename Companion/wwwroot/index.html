@@ -383,6 +383,19 @@
     <details><summary>Legacy link export path mapping</summary><input type="text" id="plexVisibleRootInput" placeholder="Legacy import path"><button id="savePlexRootBtn">Save path</button><div id="plexRootStatus" class="status-line"></div></details>
     <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
   </div>
+
+  <div class="card" id="appCard">
+    <h2><span class="step-num">⚙</span> Companion app</h2>
+    <p class="status-line">Companion keeps running in the background so Plex can reach the media folder and friends can connect at any time. On Windows it lives in the notification area (tray): right-click the icon to open this page, start or stop the media folder, copy the owner key, or exit.</p>
+    <div id="appInfo" class="status-line">Checking…</div>
+    <label class="checkbox-line" id="autostartRow"><input type="checkbox" id="autostartToggle"> Start Companion when I sign in</label>
+    <div class="inline-form">
+      <button class="secondary" id="openDashboardBtn">Open dashboard in browser</button>
+      <button class="secondary" id="stopMountBtn">Stop media folder</button>
+      <button class="danger" id="exitCompanionBtn">Exit Companion</button>
+    </div>
+    <div class="status-line" id="appStatus" role="status" aria-live="polite"></div>
+  </div>
 </main>
 <script>
 let ownerKey = sessionStorage.getItem('federationCompanionOwnerKey') || '';
@@ -443,7 +456,36 @@ const localPlexToken = document.getElementById('localPlexToken');
 const plexVisibleRootInput = document.getElementById('plexVisibleRootInput');
 const savePlexRootBtn = document.getElementById('savePlexRootBtn');
 const plexRootStatus = document.getElementById('plexRootStatus');
+const autostartToggle = document.getElementById('autostartToggle');
+const autostartRow = document.getElementById('autostartRow');
+const appStatus = document.getElementById('appStatus');
 let knownPlexLibraries = [];
+
+function formatUptime(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+async function loadAppInfo() {
+  try {
+    const res = await apiFetch('/api/app/info');
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    document.getElementById('appInfo').textContent =
+      `Version ${data.version} · ${data.workingSetMb} MB memory · running ${formatUptime(data.uptimeSeconds)} · port ${data.port}`
+      + (data.windows ? ` · log: ${data.logPath}` : '');
+    autostartRow.classList.toggle('hidden', !data.autostartSupported);
+    autostartToggle.disabled = !data.autostartSupported;
+    autostartToggle.checked = !!data.autostartEnabled;
+  } catch {
+    document.getElementById('appInfo').textContent = 'Could not read Companion status.';
+  }
+}
 
 async function loadTailscale() {
   try {
@@ -1043,6 +1085,58 @@ document.getElementById('startLocalMountBtn').addEventListener('click', async ev
   finally { event.target.disabled = false; }
 });
 
+autostartToggle.addEventListener('change', async () => {
+  const wanted = autostartToggle.checked;
+  autostartToggle.disabled = true;
+  appStatus.textContent = wanted ? 'Saving the sign-in setting…' : 'Removing the sign-in setting…';
+  try {
+    const res = await apiFetch('/api/app/autostart', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: wanted })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save the sign-in setting.');
+    autostartToggle.checked = !!data.enabled;
+    appStatus.textContent = data.enabled
+      ? 'Companion will start in the tray when you sign in to Windows.'
+      : 'Companion will not start automatically.';
+  } catch (e) {
+    autostartToggle.checked = !wanted;
+    appStatus.textContent = e.message || 'Could not save the sign-in setting.';
+  } finally {
+    autostartToggle.disabled = !autostartRow.classList.contains('hidden') ? false : true;
+  }
+});
+
+document.getElementById('openDashboardBtn').addEventListener('click', async () => {
+  appStatus.textContent = 'Opening the dashboard…';
+  try {
+    const res = await apiFetch('/api/app/open-dashboard', { method: 'POST' });
+    const data = await res.json();
+    appStatus.textContent = res.ok ? 'Opened in your default browser.' : (data.error || 'Could not open a browser.');
+  } catch { appStatus.textContent = 'Could not open a browser.'; }
+});
+
+document.getElementById('stopMountBtn').addEventListener('click', async event => {
+  event.target.disabled = true;
+  appStatus.textContent = 'Stopping the media folder…';
+  try {
+    const res = await apiFetch('/api/media-mount/stop', { method: 'POST' });
+    const data = await res.json();
+    appStatus.textContent = data.message || 'Media folder stopped.';
+    await loadMountStatus();
+  } catch { appStatus.textContent = 'Could not stop the media folder.'; }
+  finally { event.target.disabled = false; }
+});
+
+document.getElementById('exitCompanionBtn').addEventListener('click', async () => {
+  if (!window.confirm('Exit Companion? Plex cannot play imported titles until you start it again.')) return;
+  appStatus.textContent = 'Stopping Companion…';
+  try {
+    await apiFetch('/api/app/exit', { method: 'POST' });
+    appStatus.textContent = 'Companion has stopped. You can close this tab.';
+  } catch { appStatus.textContent = 'Companion did not answer. Close it from the tray icon instead.'; }
+});
+
 document.getElementById('diagnoseBtn').addEventListener('click', async event => {
   const output = document.getElementById('diagnoseStatus');
   event.target.disabled = true; output.textContent = 'Testing source video bytes and the Funnel media path…';
@@ -1091,8 +1185,9 @@ async function unlockOwner() {
     document.body.classList.remove('owner-locked');
     accessCard.classList.add('hidden');
     unlockStatus.textContent = '';
-    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus()]);
+    await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus(), loadAppInfo()]);
     if (!window._federationMountPoll) window._federationMountPoll = setInterval(loadMountStatus, 4000);
+    if (!window._federationAppPoll) window._federationAppPoll = setInterval(loadAppInfo, 15000);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {
