@@ -404,7 +404,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Could not find this item's source server.", null, null);
             }
 
-            var url = _federationManager.BuildStaticPath(entry.ItemType, source, download: true);
+            // Entry-aware builder: other titles may have per-user rules, but a
+            // universally allowed item still gets a userless static URL. Items
+            // that differ by user keep failing closed. download:true keeps the
+            // purpose bound into the HMAC (play URLs cannot be flipped).
+            var url = _federationManager.BuildStaticPath(entry, source, download: true);
             if (url == null)
             {
                 return (false, "This source is not currently available for download.", null, null);
