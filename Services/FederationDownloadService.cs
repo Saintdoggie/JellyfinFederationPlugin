@@ -998,6 +998,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 .FirstOrDefault(vf => string.Equals(vf.Name, DownloadsLibraryName, StringComparison.OrdinalIgnoreCase));
             if (existing != null)
             {
+                // Name match is not enough: older builds created this folder
+                // without the downloads path, so files never appeared.
+                if (!HasLocation(existing, downloadsRoot))
+                {
+                    try
+                    {
+                        _libraryManager.AddMediaPath(existing.Name, new MediaPathInfo { Path = downloadsRoot });
+                        _logger.LogInformation("[Federation] Attached downloads path to existing library {Name}", existing.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Could not attach downloads path to {Name}", existing.Name);
+                    }
+                }
+
                 return;
             }
 
@@ -1008,6 +1023,28 @@ namespace Jellyfin.Plugin.Federation.Services
 
             await _libraryManager.AddVirtualFolder(DownloadsLibraryName, CollectionTypeOptions.mixed, libraryOptions, refreshLibrary: false)
                 .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Returns true when the virtual folder already has <paramref name="path"/> as one
+        /// of its media locations (ordinal, case-insensitive).
+        /// </summary>
+        private static bool HasLocation(VirtualFolderInfo vf, string path)
+        {
+            if (vf.Locations == null || string.IsNullOrEmpty(path))
+            {
+                return false;
+            }
+
+            foreach (var location in vf.Locations)
+            {
+                if (string.Equals(location, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string SafeFileName(string name)

@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.151",
-  "changelog": "GET Pools returns IconBase64 so pool icons survive a settings-page reload.",
+  "version": "0.0.154",
+  "changelog": "Attach the Federation Downloads media path when the library already exists.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-09T02:10:00Z",
+  "timestamp": "2026-09-09T02:12:00Z",
   "imageUrl": "thumb.png"
 }
