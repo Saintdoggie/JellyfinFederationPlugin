@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.151",
+        "changelog": "GET Pools returns IconBase64 so pool icons survive a settings-page reload.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T02:10:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.151/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.146",
         "changelog": "Companion local Plex connect and media-folder path send the owner access header.",
         "targetAbi": "12.0.0.0",

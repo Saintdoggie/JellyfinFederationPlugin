@@ -1614,6 +1614,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 p.IsOwner,
                 p.OwnerFederationId,
                 p.OwnerName,
+                p.IconBase64,
                 Members = p.Members.Select(m => new { m.FederationId, m.Name, m.Url })
             });
             return Ok(pools);
