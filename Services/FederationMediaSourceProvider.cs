@@ -508,7 +508,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var directAudioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
-            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}";
+            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, itemType == "Audio");
+            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}{capQuery}";
         }
 
         /// <summary>

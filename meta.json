@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.155",
-  "changelog": "Do not mint a raw Plex token when Funnel is set but is not Companion. Fix Funnel or explicitly choose Plex Remote Access.",
+  "version": "0.0.158",
+  "changelog": "Consolidated 0.0.136-0.0.158: security and access fixes (confused-deputy peer POSTs, signed download flag, item-scoped playback/image capabilities, no re-sharing of downloaded federated files, anonymous inventory hardening, HMAC expiry, bounded friend requests/icons), correctness fixes (mapping/cache-key stability, catalog pruning, pool icons, Downloads path, strm export safety, WAN cap on direct streams, live Kestrel port for stamped paths), Companion/Plex fixes, and settings-page fixes including Friends copy, pool refresh, and per-user BlockedItemIds round-trip.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-09T02:07:32Z",
+  "timestamp": "2026-09-09T16:30:00Z",
   "imageUrl": "thumb.png"
 }

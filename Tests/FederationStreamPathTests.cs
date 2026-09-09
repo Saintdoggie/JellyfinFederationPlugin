@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
@@ -654,6 +655,86 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void BuildDirectStreamCapQuery_LanOrUncapped_IsEmpty()
+    {
+        var server = AddServer();
+        Assert.Equal(string.Empty, _manager.BuildDirectStreamCapQuery(server, isAudio: false));
+    }
+
+    [Fact]
+    public void BuildDirectStreamCapQuery_ConfirmedLocalNetwork_IsEmpty()
+    {
+        var server = AddServer();
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: true, measuredMbps: null);
+
+        Assert.Equal(string.Empty, _manager.BuildDirectStreamCapQuery(server, isAudio: false));
+    }
+
+    [Fact]
+    public void BuildDirectStreamCapQuery_ManualWan_RequestsCapAndHeight()
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 12;
+        server.WanMaxHeight = 1080;
+
+        Assert.Equal("&capMbps=12&maxHeight=1080", _manager.BuildDirectStreamCapQuery(server, isAudio: false));
+        Assert.Equal(string.Empty, _manager.BuildDirectStreamCapQuery(server, isAudio: true));
+    }
+
+    [Fact]
+    public void BuildDirectStreamCapQuery_AutoConfirmedWan_UsesEffectiveCap()
+    {
+        var server = AddServer();
+        server.WanMaxHeight = 0;
+        _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0);
+
+        Assert.Equal("&capMbps=17", _manager.BuildDirectStreamCapQuery(server, isAudio: false));
+    }
+
+    [Fact]
+    public void BuildDirectGatewayLoopbackUrl_Lan_UsesStaticTrue()
+    {
+        var itemId = Guid.NewGuid();
+        var url = FederationLibraryManager.BuildDirectGatewayLoopbackUrl("http://127.0.0.1:8096", itemId, audio: false, capMbps: null);
+
+        Assert.Equal($"http://127.0.0.1:8096/Videos/{itemId:N}/stream?Static=true", url);
+        Assert.DoesNotContain("VideoBitrate", url);
+    }
+
+    [Fact]
+    public void BuildDirectGatewayLoopbackUrl_WanCap_RequestsLowerBitrateTranscode()
+    {
+        var itemId = Guid.NewGuid();
+        var url = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(
+            "http://127.0.0.1:8096",
+            itemId,
+            audio: false,
+            capMbps: 12,
+            maxHeight: 1080);
+
+        Assert.Equal(
+            $"http://127.0.0.1:8096/Videos/{itemId:N}/stream.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080",
+            url);
+        Assert.DoesNotContain("Static=true", url);
+    }
+
+    [Fact]
+    public void BuildDirectGatewayLoopbackUrl_Audio_StaysStaticEvenWhenCapped()
+    {
+        var itemId = Guid.NewGuid();
+        var url = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(
+            "http://127.0.0.1:8096",
+            itemId,
+            audio: true,
+            capMbps: 12,
+            maxHeight: 1080);
+
+        Assert.Equal($"http://127.0.0.1:8096/Audio/{itemId:N}/stream?Static=true", url);
+        Assert.DoesNotContain("VideoBitrate", url);
+    }
+
+    [Fact]
     public void MaterializeItem_DoesNotSaveMediaStreamsItself_BecauseTheItemDoesNotExistInTheDbYet()
     {
         // MediaStreamInfos has a foreign key on the item's own BaseItems row, which for
@@ -827,6 +908,125 @@ public class FederationStreamPathTests : IDisposable
         Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", path);
         Assert.DoesNotContain("session-tok-123", path);
         Assert.Equal(localUserId.ToString("N"), handler.LastRemoteUserId);
+    }
+
+    [Fact]
+    public void GetInternalPlaybackBaseUrl_PrefersInternalServerUrl_OverLivePort()
+    {
+        _plugin.Configuration.InternalServerUrl = "http://10.0.0.5:8097/";
+        var context = new DefaultHttpContext();
+        context.Connection.LocalPort = 18096;
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(context);
+        var host = new Mock<IServerApplicationHost>();
+        host.SetupGet(h => h.HttpPort).Returns(12345);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Mock.Of<IRemoteServerClientFactory>(),
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object,
+            accessor.Object,
+            host.Object);
+
+        Assert.Equal("http://10.0.0.5:8097", manager.GetInternalPlaybackBaseUrl());
+    }
+
+    [Fact]
+    public void GetInternalPlaybackBaseUrl_UsesLiveKestrelPort_WhenInternalServerUrlIsBlank()
+    {
+        var context = new DefaultHttpContext();
+        context.Connection.LocalPort = 18096;
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(context);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Mock.Of<IRemoteServerClientFactory>(),
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object,
+            accessor.Object);
+
+        Assert.Equal("http://127.0.0.1:18096", manager.GetInternalPlaybackBaseUrl());
+    }
+
+    [Fact]
+    public void GetInternalPlaybackBaseUrl_UsesConfiguredHttpPort_WhenNoLiveRequest()
+    {
+        var host = new Mock<IServerApplicationHost>();
+        host.SetupGet(h => h.HttpPort).Returns(12345);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Mock.Of<IRemoteServerClientFactory>(),
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object,
+            applicationHost: host.Object);
+
+        Assert.Equal("http://127.0.0.1:12345", manager.GetInternalPlaybackBaseUrl());
+    }
+
+    [Fact]
+    public void Movie_StampsInternalServerUrl_NotDefault8096()
+    {
+        AddServer(StreamingMode.Proxy);
+        _plugin.Configuration.InternalServerUrl = "http://127.0.0.1:18096";
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+
+        Assert.StartsWith($"http://127.0.0.1:18096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}", item.Path);
+        Assert.DoesNotContain("127.0.0.1:8096", item.Path);
+    }
+
+    [Fact]
+    public async Task GetMediaSources_StampedDefault8096_OnLiveNonDefaultPort_EmitsLiveUrl()
+    {
+        AddServer(StreamingMode.Proxy);
+        var remoteId = Guid.NewGuid();
+        var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
+        Assert.Contains("http://127.0.0.1:8096/Plugins/Federation/Stream", item.Path);
+
+        var context = new DefaultHttpContext();
+        context.Connection.LocalPort = 18096;
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(context);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Mock.Of<IRemoteServerClientFactory>(),
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object,
+            accessor.Object);
+        var authorization = new Mock<IAuthorizationContext>();
+        authorization.Setup(a => a.GetAuthorizationInfo(It.IsAny<HttpContext>()))
+            .ReturnsAsync((AuthorizationInfo?)null);
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            accessor.Object,
+            authorization.Object,
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        var path = Assert.Single(sources).Path;
+        Assert.Contains("http://127.0.0.1:18096/Plugins/Federation/Stream", path);
+        Assert.DoesNotContain("http://127.0.0.1:8096/", path);
+        Assert.True(FederationLibraryManager.IsDeadDefaultLoopbackUrl(item.Path, "http://127.0.0.1:18096"));
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8096/Plugins/Federation/Stream", "http://127.0.0.1:18096", true)]
+    [InlineData("http://localhost:8096/Plugins/Federation/Stream", "http://127.0.0.1:12345", true)]
+    [InlineData("http://127.0.0.1:8096/Plugins/Federation/Stream", "http://127.0.0.1:8096", false)]
+    [InlineData("http://127.0.0.1:18096/Plugins/Federation/Stream", "http://127.0.0.1:18096", false)]
+    public void IsDeadDefaultLoopbackUrl_OnlyWhenStamped8096DisagreesWithLivePort(string stamped, string live, bool expected)
+    {
+        Assert.Equal(expected, FederationLibraryManager.IsDeadDefaultLoopbackUrl(stamped, live));
     }
 
     private sealed class DirectPathTokenHandler : HttpMessageHandler

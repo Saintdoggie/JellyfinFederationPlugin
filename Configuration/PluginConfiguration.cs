@@ -27,8 +27,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// through the public route just to reach itself. Only needs setting when
         /// loopback genuinely isn't reachable from where ffmpeg runs - e.g. Jellyfin
         /// running in a container without a shared network namespace with itself
-        /// (rare), or a non-default Kestrel port that can't be auto-detected during a
-        /// background sync (no live request to read the port from at that point).
+        /// (rare). A non-default Kestrel port is taken from the live request or
+        /// the configured HttpPort; this override is only needed when those are wrong.
         /// </summary>
         public string InternalServerUrl { get; set; } = string.Empty;
 

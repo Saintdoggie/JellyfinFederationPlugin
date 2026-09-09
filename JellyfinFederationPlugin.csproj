@@ -7,9 +7,9 @@
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Nullable>enable</Nullable>
-    <Version>0.0.155</Version>
-    <AssemblyVersion>0.0.155.0</AssemblyVersion>
-    <FileVersion>0.0.155.0</FileVersion>
+    <Version>0.0.158</Version>
+    <AssemblyVersion>0.0.158.0</AssemblyVersion>
+    <FileVersion>0.0.158.0</FileVersion>
     <!-- Keep the catalog DLL reproducible when its archive/checksum are committed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
