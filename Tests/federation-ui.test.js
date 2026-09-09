@@ -420,6 +420,15 @@ test('Downloads library picker cannot be replaced by a slow previous server', as
 });
 
 // Jellyfin 12 disables X-Emby-Token by default. Exercise actual browser requests.
+test('refresh now reads camelCase success and message so failures are visible', () => {
+  const refresh = configPage.match(/case 'refresh-cache':[\s\S]*?break;/);
+  assert.ok(refresh, 'refresh-cache handler not found');
+  assert.match(refresh[0], /res\.success/);
+  assert.match(refresh[0], /res\.message/);
+  assert.match(refresh[0], /success === false/);
+  assert.match(refresh[0], /setSaveMsg\([^,]+,\s*success === false\)/);
+});
+
 test('badge requests authenticate with the supported Jellyfin 12 header', async () => {
   const { dom, requests } = makeWindow(true);
   await settle();
