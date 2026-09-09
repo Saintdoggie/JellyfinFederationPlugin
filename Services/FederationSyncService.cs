@@ -35,6 +35,11 @@ namespace Jellyfin.Plugin.Federation.Services
         // destructive when a sync deletes items before recreating them.
         private readonly SemaphoreSlim _syncLock = new(1, 1);
 
+        // Tests lower these to exercise the 1000-page safety cap without 200k upserts.
+        internal int CatalogPageSize { get; set; } = 200;
+
+        internal int MaxCatalogPages { get; set; } = 1000;
+
         /// <summary>
         /// Gets the outcome of the most recent sync, or null if none has finished
         /// since startup. Exists so the config page can show whether federation is
@@ -518,6 +523,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         result = await RefreshSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
                     }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
@@ -742,9 +751,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     seen.Add(item.Dto.Id);
                     total++;
                 }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "[Federation] Failed to upsert {Kind} item {Name}", server.Kind, item.Dto.Name);
+                    return SourceSyncResult.Failure();
                 }
             }
 
@@ -768,7 +782,7 @@ namespace Jellyfin.Plugin.Federation.Services
             CancellationToken cancellationToken)
         {
             int total = 0;
-            int pageSize = 200;
+            int pageSize = CatalogPageSize;
             int startIndex = 0;
             int pageNumber = 1;
 
@@ -788,13 +802,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                if (page.Count == 0)
-                {
-                    break;
-                }
+                var totalRecordCount = (page as PeerCatalogPage.RemoteItemPage)?.TotalRecordCount;
 
                 foreach (var remoteItem in page)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
                         // A remote server running this same plugin stamps a
@@ -831,23 +843,75 @@ namespace Jellyfin.Plugin.Federation.Services
                         // already persisted from an earlier, successful sync as
                         // vanished and delete it.
                     }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         _logger.LogWarning(ex, "[Federation] Failed to upsert item {Name}", remoteItem.Name);
+                        return null;
                     }
                 }
 
                 if (page.Count < pageSize)
                 {
+                    if (PeerCatalogPage.RemoteItemPage.HasMoreRecords(startIndex, page.Count, totalRecordCount))
+                    {
+                        _logger.LogWarning(
+                            "[Federation] Catalog page for {Source} was truncated ({Count} of {PageSize} at {Start}; total {Total}); keeping cached items",
+                            source.RemoteLibraryName,
+                            page.Count,
+                            pageSize,
+                            startIndex,
+                            totalRecordCount);
+                        return null;
+                    }
+
+                    // Empty last page: the remote is exhausted. A short non-empty
+                    // page is only EOF when TotalRecordCount is a real catalog total
+                    // (larger than this page). Peer/Items reports the page length as
+                    // TotalRecordCount, so that case needs a follow-up fetch.
+                    if (page.Count > 0
+                        && (totalRecordCount is not int knownTotal || knownTotal == page.Count))
+                    {
+                        var next = await client.GetItemsAsync(
+                            userId: server.UserId,
+                            mediaType: mediaType,
+                            parentId: source.RemoteLibraryId,
+                            startIndex: startIndex + page.Count,
+                            limit: 1,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                        if (next == null)
+                        {
+                            return null;
+                        }
+
+                        var nextTotal = (next as PeerCatalogPage.RemoteItemPage)?.TotalRecordCount;
+                        if (next.Count > 0 || PeerCatalogPage.RemoteItemPage.HasMoreRecords(startIndex + page.Count, next.Count, nextTotal))
+                        {
+                            _logger.LogWarning(
+                                "[Federation] Catalog page for {Source} was truncated ({Count} of {PageSize} at {Start}); keeping cached items",
+                                source.RemoteLibraryName,
+                                page.Count,
+                                pageSize,
+                                startIndex);
+                            return null;
+                        }
+                    }
+
                     break;
                 }
 
                 startIndex += pageSize;
                 pageNumber++;
-                if (pageNumber > 1000)
+                if (pageNumber > MaxCatalogPages)
                 {
-                    _logger.LogWarning("[Federation] Safety cap reached at 1000 pages for {Source}", source.RemoteLibraryName);
-                    break;
+                    _logger.LogWarning(
+                        "[Federation] Safety cap reached at {MaxPages} pages for {Source}; keeping cached items",
+                        MaxCatalogPages,
+                        source.RemoteLibraryName);
+                    return null;
                 }
             }
 

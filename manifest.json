@@ -24,6 +24,14 @@
         "checksum": "00000000000000000000000000000000"
       },
       {
+        "version": "0.0.153",
+        "changelog": "Honor series-level per-user blocks on the receiving side so nested seasons and episodes stay hidden.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-09T02:15:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.153/Jellyfin.Federation.zip",
+        "checksum": "00000000000000000000000000000000"
+      },
+      {
         "version": "0.0.151",
         "changelog": "GET Pools returns IconBase64 so pool icons survive a settings-page reload.",
         "targetAbi": "12.0.0.0",
@@ -40,11 +48,11 @@
         "checksum": "00000000000000000000000000000000"
       },
       {
-        "version": "0.0.145",
-        "changelog": "Do not prune federated catalogs when a catalog page is truncated, the page cap is hit, or an item upsert fails.",
+        "version": "0.0.144",
+        "changelog": "Remap federation cache keys when libraries collapse into Movies/Shows so prune and upsert keep the same entries.",
         "targetAbi": "12.0.0.0",
-        "timestamp": "2026-09-09T01:53:00Z",
-        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.145/Jellyfin.Federation.zip",
+        "timestamp": "2026-09-09T02:14:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.144/Jellyfin.Federation.zip",
         "checksum": "00000000000000000000000000000000"
       },
       {

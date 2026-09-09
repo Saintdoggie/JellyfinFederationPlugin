@@ -115,4 +115,22 @@ public class FederationCachePruneTests
         Assert.Single(remaining);
         Assert.Equal("Shows", remaining[0].MappingName);
     }
+
+    [Fact]
+    public void Prune_SeenSetFromATruncatedPage_DeletesTheRestOfTheLibrary()
+    {
+        var cache = CreateCache();
+        var first = Guid.NewGuid();
+        var rest = Guid.NewGuid();
+        cache.UpsertRaw("Movies", "serverA", first, MakeItem("First"), 0, "Movie");
+        cache.UpsertRaw("Movies", "serverA", rest, MakeItem("Rest"), 0, "Movie");
+
+        var removed = cache.PruneServerSources("Movies", "serverA", new HashSet<Guid> { first });
+
+        Assert.Equal(1, removed);
+        var remaining = cache.GetEntriesForMapping("Movies").ToList();
+        Assert.Single(remaining);
+        Assert.Contains(remaining[0].GetSourcesSnapshot(), s => s.RemoteItemId == first);
+        Assert.DoesNotContain(remaining, e => e.GetSourcesSnapshot().Any(s => s.RemoteItemId == rest));
+    }
 }
