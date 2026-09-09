@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
 const html = fs.readFileSync(require('node:path').join(__dirname, '../Companion/wwwroot/index.html'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-function page(fetch) {
-  return new JSDOM(html, { url: 'http://localhost:7890/', runScripts: 'dangerously', beforeParse(w) {
+function page(fetch, url = 'http://localhost:7890/') {
+  return new JSDOM(html, { url, runScripts: 'dangerously', beforeParse(w) {
     w.Headers = Headers; w.fetch = fetch; w.confirm = () => true;
   } });
 }
@@ -47,6 +47,45 @@ test('Companion local mount starts itself and does not ask Plex owners to instal
   assert.doesNotMatch(main, /click Start media mount/);
   assert.match(html, /Preparing the media mount\. Companion may download a helper once/);
   assert.match(html, /id="driverHint"/);
+});
+
+function header(opts, name) {
+  const headers = opts && opts.headers;
+  if (!headers) return undefined;
+  return typeof headers.get === 'function' ? headers.get(name) : headers[name];
+}
+
+test('Companion local Plex connect and media-folder path send the owner access header', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    const path = String(url);
+    if (path.includes('/api/plex/connect-local')) return json({ serverName: 'Home Plex' });
+    if (path.includes('/api/plex-visible-root')) return json({ plexVisibleImportRoot: '/mnt/media' });
+    if (path.includes('/peers') || path.includes('/invites') || path.includes('/api/plex/servers')) return json([]);
+    return json({ serverConnected: false, libraries: [] });
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    const d = dom.window.document;
+    d.getElementById('localPlexUrl').value = 'http://127.0.0.1:32400';
+    d.getElementById('localPlexToken').value = 'plex-token';
+    d.getElementById('connectLocalBtn').click();
+    await tick();
+    const connect = requests.find(([url]) => String(url).includes('/api/plex/connect-local'));
+    assert.ok(connect, 'connect-local request was sent');
+    assert.equal(header(connect[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.equal(header(connect[1], 'Content-Type'), 'application/json');
+    assert.deepEqual(JSON.parse(connect[1].body), { url: 'http://127.0.0.1:32400', token: 'plex-token' });
+
+    d.getElementById('plexVisibleRootInput').value = '/mnt/media';
+    d.getElementById('savePlexRootBtn').click();
+    await tick();
+    const root = requests.find(([url]) => String(url).includes('/api/plex-visible-root'));
+    assert.ok(root, 'plex-visible-root request was sent');
+    assert.equal(header(root[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.equal(header(root[1], 'Content-Type'), 'application/json');
+    assert.deepEqual(JSON.parse(root[1].body), { url: '/mnt/media' });
+  } finally { dom.window.close(); }
 });
 
 test('Companion recovers mount button after a network failure', async () => {
