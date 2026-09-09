@@ -115,12 +115,29 @@ test('repeated SPA mutations keep exactly one badge and one source label', async
 });
 
 test('ordinary viewers never poll admin-only download or sharing state', async () => {
-  const { dom, calls } = makeWindow(false);
+  const { dom, calls, requests } = makeWindow(false);
   await settle();
   await settle();
   assert.equal(calls.some((url) => url.endsWith('/Downloads')), false);
   assert.equal(calls.some((url) => url.includes('Sharing/DisabledIds')), false);
+  const federated = requests.find((r) => String(r.url).includes('/FederatedIds'));
+  assert.ok(federated);
+  assert.equal(federated.options.headers.Authorization, 'MediaBrowser Token="test-token"');
   dom.window.close();
+});
+
+test('inventory map endpoints require a Jellyfin login', () => {
+  const controller = fs.readFileSync(path.join(root, 'Configuration/FederationPluginController.cs'), 'utf8');
+  const federated = controller.match(/\[HttpGet\("FederatedIds"\)\][\s\S]*?public ActionResult<object> GetFederatedIds\(/);
+  assert.ok(federated, 'GetFederatedIds not found');
+  assert.match(federated[0], /\[Authorize\]/);
+  assert.doesNotMatch(federated[0], /AllowAnonymous/);
+  assert.doesNotMatch(federated[0], /RequiresElevation/);
+
+  const disabled = controller.match(/\[HttpGet\("Sharing\/DisabledIds"\)\][\s\S]*?public ActionResult<object> GetGloballyDisabledIds\(/);
+  assert.ok(disabled, 'GetGloballyDisabledIds not found');
+  assert.match(disabled[0], /\[Authorize\(Policy = "RequiresElevation"\)\]/);
+  assert.doesNotMatch(disabled[0], /AllowAnonymous/);
 });
 
 test('a separately hosted client sends federation requests to its configured server and base path', async () => {
