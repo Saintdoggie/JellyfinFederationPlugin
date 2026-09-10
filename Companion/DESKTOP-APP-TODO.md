@@ -4,7 +4,7 @@ Status as of 2026-09-10. Source: `/var/home/cranky/Documents/JellyfinFederationP
 Read root `AGENTS.md`, `TODO.md`, and `Companion/TODO.md` first. This file tracks the
 "real app" work: tray/background behavior, RAM tuning, autostart, and platform support.
 
-## Review update — local, not released
+## Review update — published as 0.0.159
 
 See [DESKTOP-REVIEW.md](DESKTOP-REVIEW.md) for the review, security findings,
 resource measurements and platform limits. The update supersedes older details
