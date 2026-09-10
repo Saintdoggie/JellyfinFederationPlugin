@@ -16,7 +16,7 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
   native Plex playback).
 - Main plugin target: .NET 10, Jellyfin 12.0.0. Companion remains .NET 9.
 - Source branch: `master`; GitHub remote: `Saintdoggie/JellyfinFederationPlugin`.
-- Jellyfin 12 release is version 0.0.136; 0.0.135 remains the Jellyfin 10.11
+- Jellyfin 12 release is version 0.0.159; 0.0.135 remains the Jellyfin 10.11
   build. GitHub releases and `manifest.json` are the catalog of record; `TODO.md` tracks remaining work.
 
 ## Read these files by task

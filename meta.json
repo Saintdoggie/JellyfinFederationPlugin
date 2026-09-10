@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.158",
-  "changelog": "Consolidated 0.0.136-0.0.158: security and access fixes (confused-deputy peer POSTs, signed download flag, item-scoped playback/image capabilities, no re-sharing of downloaded federated files, anonymous inventory hardening, HMAC expiry, bounded friend requests/icons), correctness fixes (mapping/cache-key stability, catalog pruning, pool icons, Downloads path, strm export safety, WAN cap on direct streams, live Kestrel port for stamped paths), Companion/Plex fixes, and settings-page fixes including Friends copy, pool refresh, and per-user BlockedItemIds round-trip.",
+  "version": "0.0.159",
+  "changelog": "Companion desktop app (Windows tray/WinExe, Linux autostart and launcher, single-instance, SHA256SUMS installers), lifecycle hardening (no automatic media helper on fresh install, persisted Stop, credential ACLs, safer updater), Storage tab review, and friend-callback SSRF hardening that connects only to public resolved addresses.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-09T16:30:00Z",
+  "timestamp": "2026-09-10T14:30:00Z",
   "imageUrl": "thumb.png"
 }

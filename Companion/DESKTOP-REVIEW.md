@@ -1,6 +1,6 @@
 # Companion desktop and recent security review — 2026-09-10
 
-Local review of release `666f61c` and the existing uncommitted desktop changes. These changes are not a published release. The watch-progress migration requested by the owner remains planning-only in the root TODO.
+Local review of release `666f61c` and the follow-up desktop/security changes, published as plugin 0.0.159. The watch-progress migration requested by the owner remains planning-only in the root TODO.
 
 ## Changes from the review
 
