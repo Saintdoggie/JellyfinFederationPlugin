@@ -12,14 +12,17 @@
     <FileVersion>0.0.158.0</FileVersion>
     <UserSecretsId>federation-companion</UserSecretsId>
 
-    <!-- This helper sits idle in the tray most of the day. Keep the small
-         workstation heap instead of reserving server-GC heaps, and let the
-         runtime release memory aggressively between bursts. -->
+    <!-- Idle tray app: workstation GC (no per-core server heaps), return
+         unused segments to the OS, and prefer a smaller heap over throughput. -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
     <GCConserveMemory>5</GCConserveMemory>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <EventSourceSupport>false</EventSourceSupport>
+    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+    <EnableUnsafeUTF7Encoding>false</EnableUnsafeUTF7Encoding>
     <!-- CI builds the Windows desktop target from Linux. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
@@ -32,6 +35,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="FederationCompanion.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">

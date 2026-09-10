@@ -39,6 +39,9 @@ public sealed class CompanionState
 
     public bool AutoStartMediaMount { get; set; }
 
+    /// <summary>Explicit owner choice; fresh installs do not download/run mount helpers.</summary>
+    public bool MediaMountSetupAccepted { get; set; }
+
     /// <summary>
     /// The signed-in Plex account's auth token, or null when not yet signed in.
     /// This is an account-level token (from the OAuth PIN flow), not a
@@ -189,7 +192,7 @@ public sealed class CompanionState
             // behind - this file is the only record of the user's sign-in
             // and sharing choices.
             var tempPath = PathOnDisk + ".tmp";
-            await using (var stream = File.Create(tempPath))
+            await using (var stream = PrivateFile.Create(tempPath))
             {
                 await JsonSerializer.SerializeAsync(stream, this, JsonOpts).ConfigureAwait(false);
             }
@@ -204,22 +207,8 @@ public sealed class CompanionState
         }
     }
 
-    private static void RestrictStateFilePermissions(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+    private static void RestrictStateFilePermissions(string path) => PrivateFile.Restrict(path);
 
-        try
-        {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
-        catch (PlatformNotSupportedException)
-        {
-            // Some non-Windows filesystems do not implement Unix mode bits.
-        }
-    }
 }
 
 public sealed class CompanionLibrary

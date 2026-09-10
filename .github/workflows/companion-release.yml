@@ -72,9 +72,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          (cd artifacts && sha256sum *.zip > SHA256SUMS)
           gh release delete companion-latest --repo "$GITHUB_REPOSITORY" --yes || true
-          gh release create companion-latest artifacts/*.zip \
+          gh release create companion-latest artifacts/*.zip artifacts/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
             --title "Federation Companion (latest)" \
-            --notes "Automated build from ${GITHUB_SHA::7}. Installed via Companion/install.sh or install.ps1 - see Companion/README.md." \
+            --notes "Automated build from ${GITHUB_SHA::7}. Unsigned Windows build: SmartScreen may warn. Do not disable antivirus protection. Runs a local dashboard, stores private credentials, and offers an optional read-only rclone media mount (WinFsp needs UAC on Windows; Linux needs FUSE). Startup and remote sharing are opt-in. Verify SHA256SUMS; see Companion/README.md for permissions, installation and removal." \
             --latest=false

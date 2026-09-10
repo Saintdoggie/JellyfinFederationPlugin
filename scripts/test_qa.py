@@ -52,20 +52,13 @@ class PushGateTests(unittest.TestCase):
         # rclone 1.75.1 windows-amd64 rclone.exe is 85,192,704 bytes uncompressed.
         self.assertGreater(MAX_BINARY_BYTES, 85_192_704)
 
-    def test_winfsp_pin_matches_installer_script(self):
-        csharp = (ROOT / 'Companion/WinFspInstaller.cs').read_text()
+    def test_windows_installer_defers_driver_consent_and_checks_release_hash(self):
         script = (ROOT / 'Companion/install.ps1').read_text()
-        sha = re.search(r'public const string Sha256 = "([0-9a-f]{64})"', csharp).group(1)
-        self.assertIn(sha.upper(), script)
-        self.assertIn('winfsp-2.2.26215.msi', script)
-        self.assertIn('The media folder starts by itself', script)
-        self.assertIn('Stop-Process', script)
-        self.assertIn('FederationCompanion', script)
-        self.assertIn('taskkill.exe', script)
-        self.assertIn('rclone.exe', script)
-        self.assertIn('media-mount.pid', script)
-        self.assertNotIn('/IM rclone.exe', script)
-        self.assertNotIn('/IM "rclone.exe"', script)
+        self.assertNotIn('msiexec', script)
+        self.assertIn('SHA256SUMS', script)
+        self.assertIn('Get-FileHash', script)
+        self.assertIn('StartTimeUtcTicks', script)
+        self.assertNotIn('taskkill.exe', script)
 
 
 if __name__ == '__main__':

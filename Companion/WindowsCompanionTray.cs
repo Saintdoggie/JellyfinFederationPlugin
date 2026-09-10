@@ -110,6 +110,11 @@ internal static class WindowsCompanionTray
 
             start.Click += async (_, _) =>
             {
+                if (!state.MediaMountSetupAccepted && !state.AutoStartMediaMount)
+                {
+                    OpenDashboard();
+                    return;
+                }
                 start.Enabled = false;
                 try
                 {
@@ -191,17 +196,11 @@ internal static class WindowsCompanionTray
                 }
             }
 
-            using var timer = new System.Windows.Forms.Timer { Interval = 3000 };
+            using var timer = new System.Windows.Forms.Timer { Interval = 30000 };
             timer.Tick += (_, _) => Refresh();
             timer.Start();
+            menu.Opening += (_, _) => Refresh();
             Refresh();
-
-            if (runtime.BackgroundLaunch)
-            {
-                notify.ShowBalloonTip(3000, "Federation Companion is running",
-                    "Right-click the tray icon to open the dashboard or manage the media folder.",
-                    ToolTipIcon.Info);
-            }
 
             Application.Run(new ApplicationContext());
             notify.Visible = false;

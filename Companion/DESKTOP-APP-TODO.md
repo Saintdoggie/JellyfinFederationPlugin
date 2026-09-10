@@ -1,8 +1,25 @@
 # Companion desktop app — handoff TODO
 
-Status as of 2026-09-09. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`.
+Status as of 2026-09-10. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`.
 Read root `AGENTS.md`, `TODO.md`, and `Companion/TODO.md` first. This file tracks the
 "real app" work: tray/background behavior, RAM tuning, autostart, and platform support.
+
+## Review update — local, not released
+
+See [DESKTOP-REVIEW.md](DESKTOP-REVIEW.md) for the review, security findings,
+resource measurements and platform limits. The update supersedes older details
+below: concurrent workstation GC is enabled (no forced collections); status
+polling is 30 seconds and skips hidden pages; new installs require explicit
+media-helper setup; Stop persists; credential ACLs and process-identity checks
+are implemented; Linux installs have an application launcher. Native Windows
+runtime and long soak checks remain open. Installers require a coordinated
+release with SHA256SUMS.
+
+Validation: clean automated gate passed (556 plugin + 106 Companion + 46 UI
+tests, each suite twice; eight Python installer/QA checks). Windows GUI
+cross-publish, Linux lifecycle smoke, responsive browser fixtures, and the
+disposable Jellyfin/rclone/Plex media and authorization gate passed. See the
+review for scope and remaining native-platform checks.
 
 ## Goal
 
@@ -79,8 +96,8 @@ The Companion download should behave like a normal desktop app on Windows and Li
 - [ ] SmartScreen/Defender first-run experience: record the exact prompts for
   README accuracy. Consider code signing if the project owner wants to remove
   the "Windows protected your PC" step (cost/identity decision, not a code fix).
-- [ ] Tighten Windows ACLs on `companion-state.json` and `media-mount.conf`
-  (bug D3 in `bug.md`); today only Unix file modes are restricted.
+- [x] Implement Windows current-user ACLs on state/config before writing secrets.
+  Actual Windows runtime verification remains required.
 - [ ] Measure idle working set on Windows after 24 h with the mount running and
   record it in the validation log. Target: materially below the previous
   console build; `GCConserveMemory=5` should release memory between syncs.
@@ -105,8 +122,8 @@ The Companion download should behave like a normal desktop app on Windows and Li
   Linux is a console/server app with the browser dashboard. If a tray is wanted,
   it needs a StatusNotifier/AppIndicator implementation (extra dependency) —
   do not fake it with WinForms.
-- [ ] Package/install path for Linux (tarball + `install.sh`) should create a
-  desktop launcher and mention `--tray`/`systemctl --user` options.
+- [x] Linux ZIP installer creates a desktop launcher; README covers desktop
+  autostart and headless systemd operation. Native desktop login remains unverified.
 - [ ] Validate single-instance behavior across login sessions (the lock file is
   in `$TMPDIR`, so a systemd user service and an SSH shell must not both run).
 - [ ] macOS: `IAutostartRegistration` reports unsupported. Add a launchd agent

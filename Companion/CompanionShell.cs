@@ -25,16 +25,42 @@ public static class CompanionShell
         return OpenUrl(path);
     }
 
+    private static async Task DrainAndDisposeAsync(Process process)
+    {
+        using (process)
+        {
+            if (!process.StartInfo.RedirectStandardOutput) return;
+            try
+            {
+                await Task.WhenAll(process.StandardOutput.BaseStream.CopyToAsync(Stream.Null),
+                    process.StandardError.BaseStream.CopyToAsync(Stream.Null));
+            }
+            catch (IOException) { }
+        }
+    }
+
+    internal static bool HasDesktopSession()
+        => OperatingSystem.IsWindows()
+            || OperatingSystem.IsMacOS()
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"))
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY"));
+
     internal static bool OpenUrl(string target)
     {
+        if (!HasDesktopSession())
+        {
+            return false;
+        }
+
         try
         {
             var start = OperatingSystem.IsWindows()
                 ? new ProcessStartInfo(target) { UseShellExecute = true }
-                : OperatingSystem.IsMacOS()
-                    ? new ProcessStartInfo("open", $"\"{target}\"") { UseShellExecute = false, CreateNoWindow = true }
-                    : new ProcessStartInfo("xdg-open", $"\"{target}\"") { UseShellExecute = false, CreateNoWindow = true };
-            using var process = Process.Start(start);
+                : new ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+            if (!OperatingSystem.IsWindows()) start.ArgumentList.Add(target);
+            var process = Process.Start(start);
+            if (process != null) _ = DrainAndDisposeAsync(process);
             return process != null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or PlatformNotSupportedException)

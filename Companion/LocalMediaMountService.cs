@@ -11,14 +11,14 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
     internal const string OwnedPidFileName = "media-mount.pid";
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
-    public string Message { get; private set; } = "Companion starts the media folder by itself after install.";
+    public string Message { get; private set; } = "Set up the optional media folder in the dashboard when you are ready to import into Plex.";
     public bool HelperReady => rclone.FindExisting() != null;
 
     /// <summary>True while this process owns the mount or a previous run left its rclone behind.</summary>
     public bool HasOwnedProcess => _process is { HasExited: false } || TryReadOwnedPid(AppContext.BaseDirectory, out _);
 
     internal static bool ShouldManageMount(CompanionState current)
-        => current.AutoStartMediaMount || string.IsNullOrEmpty(current.MediaMountRoot);
+        => current.AutoStartMediaMount;
 
     internal static string OwnedPidPath(string directory) => Path.Combine(directory, OwnedPidFileName);
 
@@ -28,9 +28,24 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
+    internal static void WriteOwnedIdentity(string directory, Process process)
+    {
+        var identity = new OwnedMountIdentity(process.Id, process.StartTime.ToUniversalTime().Ticks, process.MainModule?.FileName ?? "");
+        using var file = PrivateFile.Create(OwnedPidPath(directory) + ".identity");
+        System.Text.Json.JsonSerializer.Serialize(file, identity);
+    }
+
+    internal static bool MatchesOwnedIdentity(Process process, OwnedMountIdentity identity)
+        => process.Id == identity.Pid && process.StartTime.ToUniversalTime().Ticks == identity.StartTimeUtcTicks
+            && !string.IsNullOrEmpty(identity.Executable)
+            && string.Equals(process.MainModule?.FileName, identity.Executable,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    internal sealed record OwnedMountIdentity(int Pid, long StartTimeUtcTicks, string Executable);
+
     internal static void ClearOwnedPid(string directory)
     {
-        try { File.Delete(OwnedPidPath(directory)); }
+        try { File.Delete(OwnedPidPath(directory)); File.Delete(OwnedPidPath(directory) + ".identity"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
@@ -53,6 +68,11 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
         await _gate.WaitAsync(ct);
         try
         {
+            if (!state.MediaMountSetupAccepted && !state.AutoStartMediaMount)
+            {
+                Message = "Choose Set up media folder in the dashboard to review and enable the media helper.";
+                return false;
+            }
             if (MediaMount.IsMounted(state.MediaMountRoot, state.ClientIdentifier))
             {
                 Message = "Media mount is readable. You can add your friend to Plex.";
@@ -98,11 +118,11 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
             else Directory.CreateDirectory(root);
 
             var config = Path.Combine(AppContext.BaseDirectory, "media-mount.conf");
-            await File.WriteAllTextAsync(config,
+            await PrivateFile.WriteTextAsync(config,
                 $"[companion]\ntype = webdav\nurl = http://127.0.0.1:{port}/media/\nvendor = other\nbearer_token = {state.MediaAccessKey}\n", ct);
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(config, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             var start = CreateStartInfo(executable, config, root);
             _process = Process.Start(start) ?? throw new InvalidOperationException("Mount process did not start.");
+            WriteOwnedIdentity(AppContext.BaseDirectory, _process);
             WriteOwnedPid(AppContext.BaseDirectory, _process.Id);
             // Drain without logging: rclone errors can contain item URLs. The
             // owner receives a stable repair message instead of raw process text.
@@ -148,7 +168,7 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
 
     /// <summary>
     /// Stops only the rclone Companion started, including one left behind by a
-    /// previous run. The PID marker is the ownership proof; an unrelated
+    /// previous run. The PID, start time and executable identity are checked together; an unrelated
     /// rclone process is never touched.
     /// </summary>
     public async Task<bool> StopMountAsync(CancellationToken ct)
@@ -156,6 +176,8 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            state.AutoStartMediaMount = false;
+            await state.SaveAsync().ConfigureAwait(false);
             if (!HasOwnedProcess)
             {
                 Message = "Companion is not running the media folder.";
@@ -175,7 +197,7 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
     internal static ProcessStartInfo CreateStartInfo(string executable, string config, string root)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
-        foreach (var arg in new[] { "mount", "companion:", root, "--config", config, "--read-only", "--cache-dir", Path.Combine(Path.GetDirectoryName(config)!, "media-cache"), "--vfs-cache-mode", "full", "--vfs-cache-max-size", "2G", "--dir-cache-time", "30s", "--file-perms", "0444", "--dir-perms", "0555" })
+        foreach (var arg in new[] { "mount", "companion:", root, "--config", config, "--read-only", "--cache-dir", Path.Combine(Path.GetDirectoryName(config)!, "media-cache"), "--buffer-size", "4M", "--vfs-cache-max-age", "1h", "--vfs-cache-mode", "full", "--vfs-cache-max-size", "2G", "--dir-cache-time", "30s", "--file-perms", "0444", "--dir-perms", "0555" })
             start.ArgumentList.Add(arg);
         return start;
     }
@@ -239,9 +261,12 @@ public sealed class LocalMediaMountService(CompanionState state, IHostApplicatio
                 return false;
             }
 
-            return TerminateProcess(process);
+            var identity = System.Text.Json.JsonSerializer.Deserialize<OwnedMountIdentity>(
+                File.ReadAllText(OwnedPidPath(AppContext.BaseDirectory) + ".identity"));
+            return identity != null && MatchesOwnedIdentity(process, identity) && TerminateProcess(process);
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception
+            or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             return false;
         }

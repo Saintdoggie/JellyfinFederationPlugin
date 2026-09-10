@@ -18,3 +18,7 @@ The goal of this plugin is to sync Jellyfin servers together, merging connected 
 
 ## Plex
 Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports.
+
+### Companion app permissions and unsigned Windows downloads
+
+Before installing the Plex Companion, read its [permissions, Windows security notices, Linux setup and removal guide](Companion/README.md#windows-app-tray-and-permissions). It runs a local background dashboard and saves private access tokens. The read-only media helper, sign-in startup and remote sharing are optional. Windows builds are unsigned: investigate Defender detections; do not disable protection or add blanket antivirus exclusions. Release installers verify published SHA-256 checksums.

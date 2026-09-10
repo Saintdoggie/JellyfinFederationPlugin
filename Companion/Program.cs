@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,10 +8,11 @@ using System.Collections.Concurrent;
 using FederationCompanion;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Logging;
 
 var launch = CompanionLaunchOptions.Parse(args);
 
-// One owner process per machine. A second launch (double-clicking the
+// One owner process per user. A second launch (double-clicking the
 // shortcut while the tray app is running) asks the first process to open its
 // dashboard and exits instead of starting a second listener and mount.
 using var singleInstance = new SingleInstance();
@@ -22,22 +26,55 @@ if (!singleInstance.TryAcquire())
     return;
 }
 
-var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+var kestrelArgs = CompanionLaunchOptions.KestrelArgs(args);
+if (!CompanionLaunchOptions.HasListenUrl(kestrelArgs))
 {
-    Args = CompanionLaunchOptions.KestrelArgs(args),
+    kestrelArgs = CompanionLaunchOptions.WithListenUrl(kestrelArgs, CompanionListen.DefaultLoopbackUrl());
+}
+
+// Use the slim host and only the logging providers this background app needs.
+var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+{
+    Args = kestrelArgs,
     ContentRootPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "wwwroot")) ? AppContext.BaseDirectory : null
 });
 
+builder.WebHost.UseStaticWebAssets();
 builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
+builder.Logging.ClearProviders();
+builder.Logging.SetMinimumLevel(LogLevel.Warning);
+#if !WINDOWS
+builder.Logging.AddSimpleConsole(options => options.TimestampFormat = "HH:mm:ss ");
+#endif
 
-// A single shared HttpClient for both Plex.tv (account/sign-in) and the
-// user's own Plex Media Server - this app makes a handful of requests per
-// user action, never a sustained media stream, so one client is plenty.
-builder.Services.AddSingleton(new HttpClient());
+// One socket pool for the handful of outbound calls this process makes.
+// Streaming keeps an infinite timeout; everything else shares a 5-minute cap
+// so a rclone/WinFsp download still finishes on a slow link.
+using var sockets = new SocketsHttpHandler
+{
+    PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+    MaxConnectionsPerServer = 8,
+    ConnectTimeout = TimeSpan.FromSeconds(15)
+};
+using var apiHttp = new HttpClient(sockets, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
+// Media requests get their own pool so long-running streams cannot starve
+// authorization and catalog calls to the same friend.
+using var streamSockets = new SocketsHttpHandler
+{
+    PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+    ConnectTimeout = TimeSpan.FromSeconds(15)
+};
+using var streamHttp = new HttpClient(streamSockets, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
+apiHttp.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FederationCompanion", CompanionVersion.FederationPluginVersion()));
+streamHttp.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FederationCompanion", CompanionVersion.FederationPluginVersion()));
+
+builder.Services.AddSingleton(apiHttp);
 builder.Services.AddSingleton<PlexClient>();
 builder.Services.AddSingleton(sp => new JellyfinImportService(
     sp.GetRequiredService<HttpClient>(),
-    new HttpClient { Timeout = Timeout.InfiniteTimeSpan }));
+    streamHttp));
 
 // Loaded once at startup rather than per-request: every request in this app
 // either reads or mutates the same single-user state, and concurrent writes
@@ -54,13 +91,11 @@ builder.Services.AddSingleton<IAutostartRegistration>(_ =>
     OperatingSystem.IsLinux() ? new LinuxAutostartRegistration() : new UnsupportedAutostartRegistration()
 #endif
 );
-builder.Services.AddSingleton(sp => new PlexFederationRelay(
-    state,
-    new HttpClient { Timeout = Timeout.InfiniteTimeSpan }));
+builder.Services.AddSingleton(sp => new PlexFederationRelay(state, streamHttp));
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
 builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
-builder.Services.AddSingleton(sp => new RcloneBootstrapper(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }));
-builder.Services.AddSingleton(sp => new WinFspInstaller(new HttpClient { Timeout = TimeSpan.FromMinutes(2) }));
+builder.Services.AddSingleton(sp => new RcloneBootstrapper(sp.GetRequiredService<HttpClient>()));
+builder.Services.AddSingleton(sp => new WinFspInstaller(sp.GetRequiredService<HttpClient>()));
 
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
 builder.Services.AddSingleton<LocalMediaMountService>();
@@ -117,6 +152,7 @@ app.Lifetime.ApplicationStarted.Register(() =>
     // Console output is for the Linux/macOS/source builds. The Windows desktop
     // build has no console; it opens the dashboard itself and the tray offers
     // "Copy owner key" for the manual case. Never write the key to the log.
+    if (launch.Background || Console.IsOutputRedirected) return;
     Console.WriteLine();
     Console.WriteLine("Federation Companion owner access:");
     Console.WriteLine($"  Add this to the end of the Companion URL: #access={state.AdminAccessKey}");
@@ -174,12 +210,12 @@ app.MapPost("/api/app/autostart", (AutostartRequest body, IAutostartRegistration
 {
     if (!autostart.IsSupported)
     {
-        return Results.BadRequest(new { error = "Starting with the system is only available in the Windows desktop build." });
+        return Results.BadRequest(new { error = "Starting with the system is only available in the installed Companion app." });
     }
 
     if (!autostart.Set(body.Enabled))
     {
-        return Results.BadRequest(new { error = "Windows did not accept the sign-in setting." });
+        return Results.BadRequest(new { error = "Could not save the sign-in setting. Install Companion to your user folder and try again." });
     }
 
     return Results.Ok(new { enabled = autostart.IsEnabled() });
@@ -1030,8 +1066,12 @@ app.MapGet("/api/media-mount/status", (CompanionState s, LocalMediaMountService 
     helperReady = mount.HelperReady
 }));
 
-app.MapPost("/api/media-mount/start", async (LocalMediaMountService mount, CancellationToken ct) =>
-    Results.Ok(new { ready = await mount.StartMountAsync(ct), message = mount.Message }));
+app.MapPost("/api/media-mount/start", async (CompanionState s, LocalMediaMountService mount, CancellationToken ct) =>
+{
+    s.MediaMountSetupAccepted = true;
+    await s.SaveAsync();
+    return Results.Ok(new { ready = await mount.StartMountAsync(ct), message = mount.Message });
+});
 
 app.MapPost("/api/media-mount/stop", async (LocalMediaMountService mount, CancellationToken ct) =>
 {
@@ -1140,7 +1180,16 @@ app.MapMethods("/stream/{peerId}/{itemId}", new[] { "GET", "HEAD" }, async (
     }
 });
 
-await app.StartAsync().ConfigureAwait(false);
+try
+{
+    await app.StartAsync().ConfigureAwait(false);
+}
+catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException)
+{
+    AppLog.Error("Companion could not start its local listener. Another copy may already be running.", ex);
+    Console.Error.WriteLine("Federation Companion could not start: " + ex.Message);
+    return;
+}
 
 runtime.Port = CompanionListen.Port ?? runtime.Port;
 AppLog.Info($"Companion {CompanionVersion.FederationPluginVersion()} started on port {runtime.Port} (pid {Environment.ProcessId}, background: {runtime.BackgroundLaunch}).");
@@ -1371,7 +1420,53 @@ static bool FixedTimeEquals(string supplied, string expected)
 
 internal static class CompanionListen
 {
+    public const int PreferredPort = 5000;
+
     public static int? Port { get; set; }
+
+    public static string DefaultLoopbackUrl() => $"http://127.0.0.1:{FirstFreePort(PreferredPort)}";
+
+    internal static int FirstFreePort(int preferred)
+    {
+        if (CanBind(preferred))
+        {
+            return preferred;
+        }
+
+        for (var candidate = preferred + 1; candidate <= preferred + 20; candidate++)
+        {
+            if (CanBind(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    private static bool CanBind(int port)
+    {
+        try
+        {
+            var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
 }
 
 internal sealed class PendingPin

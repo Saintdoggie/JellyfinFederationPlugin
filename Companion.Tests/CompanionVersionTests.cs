@@ -37,13 +37,12 @@ public class CompanionVersionTests
         => Assert.Equal("freakbob.tail4e0b6f.ts.net", TailscaleHelper.ReadDnsName("{\"Self\":{\"DNSName\":\"freakbob.tail4e0b6f.ts.net.\"}}"));
 
     [Fact]
-    public void RestartScript_StopsOwnedRclonePidNotEveryRclone()
+    public void RestartScript_LeavesProcessCleanupToHostAndStopsOnCopyFailure()
     {
         var text = CompanionUpdater.WindowsRestartCommands(@"C:\Users\bob\FederationCompanion", @"C:\Temp\stage", "FederationCompanion.exe", 4321);
         Assert.DoesNotContain("taskkill /F /IM rclone.exe", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(@"C:\Users\bob\FederationCompanion\media-mount.pid", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("IMAGENAME eq rclone.exe", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("taskkill /F /T /PID", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("taskkill", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("if errorlevel 1 exit /b 1", text);
         Assert.Contains("xcopy", text, StringComparison.OrdinalIgnoreCase);
     }
 }

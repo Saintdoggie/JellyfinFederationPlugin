@@ -55,6 +55,44 @@ public class CompanionAppShellTests
     }
 
     [Fact]
+    public void WithListenUrl_KeepsAnExplicitUrlsFlag()
+    {
+        var args = new[] { "--urls", "http://127.0.0.1:8123" };
+        Assert.Same(args, CompanionLaunchOptions.WithListenUrl(args, "http://127.0.0.1:5000"));
+    }
+
+    [Fact]
+    public void WithListenUrl_AddsLoopbackWhenMissing()
+    {
+        var previous = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+        try
+        {
+            Environment.SetEnvironmentVariable("ASPNETCORE_URLS", null);
+            var args = CompanionLaunchOptions.WithListenUrl(Array.Empty<string>(), "http://127.0.0.1:5000");
+            Assert.Equal(new[] { "--urls", "http://127.0.0.1:5000" }, args);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ASPNETCORE_URLS", previous);
+        }
+    }
+
+    [Fact]
+    public void Listen_PrefersRequestedPortWhenItIsFree()
+    {
+        var port = CompanionListen.FirstFreePort(18750);
+        Assert.InRange(port, 18750, 18770);
+        Assert.StartsWith("http://127.0.0.1:", CompanionListen.DefaultLoopbackUrl());
+    }
+
+    [Fact]
+    public void SingleInstance_DefaultPipeNameIncludesUser()
+    {
+        Assert.StartsWith(SingleInstance.PipeName + ".", SingleInstance.DefaultPipeName());
+        Assert.DoesNotContain(" ", SingleInstance.DefaultPipeName());
+    }
+
+    [Fact]
     public void RuntimeDashboardUrl_BindsToLoopbackAndCarriesTheOwnerKey()
     {
         var runtime = new CompanionRuntime { Port = 8123 };
@@ -106,6 +144,15 @@ public class CompanionAppShellTests
     }
 
     [Fact]
+    public void LinuxAutostart_Set_NoOpsUnlessThisIsTheInstalledApp()
+    {
+        var autostart = new LinuxAutostartRegistration();
+        Assert.False(autostart.IsSupported);
+        Assert.False(autostart.Set(true));
+        Assert.False(autostart.Set(false));
+    }
+
+    [Fact]
     public async Task SingleInstance_SecondAcquireFailsAndPipeRoundTrips()
     {
         var suffix = "-test-" + Guid.NewGuid().ToString("N");
@@ -122,8 +169,47 @@ public class CompanionAppShellTests
     }
 
     [Fact]
+    public void SingleInstance_FailedAcquireDisposeMustNotDropTheLiveLock()
+    {
+        var suffix = "-test-" + Guid.NewGuid().ToString("N");
+        using var first = new SingleInstance(suffix);
+        Assert.True(first.TryAcquire());
+
+        using (var second = new SingleInstance(suffix))
+        {
+            Assert.False(second.TryAcquire());
+        }
+
+        using var third = new SingleInstance(suffix);
+        Assert.False(third.TryAcquire());
+    }
+
+    [Fact]
     public void Shell_RefusesMissingFolder()
     {
         Assert.False(CompanionShell.OpenFolder(Path.Combine(Path.GetTempPath(), "federation-companion-missing-" + Guid.NewGuid().ToString("N"))));
+    }
+
+    [Fact]
+    public void Shell_HasDesktopSession_IsFalseWithoutDisplayOnLinux()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var display = Environment.GetEnvironmentVariable("DISPLAY");
+        var wayland = Environment.GetEnvironmentVariable("WAYLAND_DISPLAY");
+        try
+        {
+            Environment.SetEnvironmentVariable("DISPLAY", null);
+            Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", null);
+            Assert.False(CompanionShell.HasDesktopSession());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DISPLAY", display);
+            Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", wayland);
+        }
     }
 }

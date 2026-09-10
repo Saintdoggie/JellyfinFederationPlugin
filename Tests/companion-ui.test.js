@@ -38,10 +38,10 @@ test('Companion previews libraries unchecked and imports only explicit selection
   } finally { dom.window.close(); }
 });
 
-test('Companion local mount starts itself and does not ask Plex owners to install rclone', () => {
+test('Companion explains and requires owner setup for optional media helper', () => {
   const main = html.split('Manual mount')[0];
-  assert.match(main, /starts the playable media folder by itself/);
-  assert.match(html, /Retry media mount/);
+  assert.match(main, /Set up the media folder once/);
+  assert.match(html, /Set up \/ start media folder/);
   assert.doesNotMatch(main, /Put rclone\.exe beside Companion/);
   assert.doesNotMatch(main, /rclone\.org\/downloads/);
   assert.doesNotMatch(main, /click Start media mount/);
@@ -145,11 +145,26 @@ test('Companion displays source numbering and issue text safely and recovers Add
   } finally { dom.window.close(); }
 });
 
+test('Companion uptime format shows seconds until the first minute', () => {
+  const dom = page(async () => json({ serverConnected: false, libraries: [] }));
+  try {
+    assert.equal(dom.window.formatUptime(12), '12s');
+    assert.equal(dom.window.formatUptime(60), '1m');
+    assert.equal(dom.window.formatUptime(3720), '1h 2m');
+  } finally { dom.window.close(); }
+});
+
 test('Companion page explains the tray and background running', () => {
   assert.match(html, /keeps running in the background/);
   assert.match(html, /notification area \(tray\)/);
   assert.match(html, /id="autostartToggle"/);
   assert.match(html, /Start Companion when I sign in/);
+  assert.match(html, /right-click the tray icon/);
+  assert.match(html, /Copy owner key/);
+  assert.match(html, /\.checkbox-line/);
+  assert.match(html, /class="app-actions"/);
+  assert.match(html, /#appCard \{ grid-column: 1 \/ -1/);
+  assert.doesNotMatch(html, /printed in the Companion terminal/);
 });
 
 test('Companion app card shows live app facts and manages the sign-in setting', async () => {
@@ -169,7 +184,7 @@ test('Companion app card shows live app facts and manages the sign-in setting', 
     await tick();
     const info = d.getElementById('appInfo');
     assert.match(info.textContent, /0\.0\.158/);
-    assert.match(info.textContent, /42 MB/);
+    assert.match(info.textContent, /42 MB RAM/);
     assert.match(info.textContent, /1h 2m/);
     assert.equal(d.getElementById('autostartRow').classList.contains('hidden'), false);
     assert.equal(d.getElementById('autostartToggle').checked, false);
