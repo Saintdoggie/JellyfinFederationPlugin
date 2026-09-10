@@ -45,6 +45,7 @@ remaining live Windows/Funnel/client checks.
 
 ## Playback and reliability
 
+- [ ] Preserve each user's watch progress when deleting a local movie or series in favor of a higher-quality copy on another federated server. Carry resume positions and watched/unwatched status over to the matching remote movie or episodes so switching copies does not reset progress. Requested for planning only; do not implement yet.
 - [ ] Add a playback preflight diagnostic showing the chosen source, friend reachability, version compatibility, authorization result, metadata result, and final media-source viability.
 - [ ] Test physical Xbox hardware and record the Jellyfin client version, media format, direct-play/transcode decision, and failure stage.
 - [ ] Expand the playback matrix for subtitles, audio switching, resume/seek, fallback sources, Plex, Companion imports, and mixed plugin versions.

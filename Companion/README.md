@@ -20,7 +20,7 @@ Switching Plex servers resets library sharing choices because different servers 
 
 Plex may match the title and poster of an imported `.strm` file while showing **Video: None / Audio: None**. That file contains a text URL, not video bytes Plex can analyze. The repair uses a read-only media mount so Plex reads the real media, including video/audio tracks and byte ranges.
 
-1. On the Plex computer, install Companion with `install.ps1` (or the in-app Update). The installer installs the Windows media driver if needed; Companion downloads rclone itself and starts the media folder. Use the same Windows account for Plex and Companion.
+1. On the Plex computer, install Companion with `install.ps1` (or the in-app Update). Open the dashboard and review **Set up / start media folder**. Accepting enables rclone and, if needed, requests the Windows media driver installation. Use the same Windows account for Plex and Companion.
 2. Sign in, then paste a code from the friend's Jellyfin Federation Companion tab. Click **Choose libraries**, select the libraries to import, and confirm. Keep Companion running while Plex scans or plays.
 3. Click **Add to Plex** for the friend. The new Movies/Shows libraries have `(Streaming)` in their names. Let Plex scan them, then verify video/audio details and playback.
 4. Once the new libraries work, remove the old `.strm` library entries in Plex. Companion does not delete those Plex entries automatically.
@@ -34,34 +34,61 @@ notification area (tray) and keeps running in the background so Plex and friends
 it at any time. Double-click the tray icon (or the Start Menu/Desktop shortcut) to open the
 dashboard in your browser.
 
-**It is not code-signed.** Windows SmartScreen may show "Windows protected your PC" the
-first time. Choose **More info → Run anyway**. Some antivirus products also flag unsigned
-self-contained .NET apps or the bundled `rclone.exe` as suspicious; those are false
-positives for this build. If your antivirus blocks a file, verify you downloaded it from
-the project's GitHub releases and add an exclusion for the install folder if you accept
-the risk.
+**Windows builds are currently unsigned.** SmartScreen can show an unrecognized-app warning because a new or unsigned build lacks reputation. This is different from Defender reporting a specific malware detection. We cannot promise that a detection is a false positive. Do not disable Defender or add an exclusion for the whole install folder.
 
-What the app does on your machine, so you can decide whether to allow it:
+Download only from this repository's [Companion release](https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/tag/companion-latest). New releases include `SHA256SUMS`; the installers check it before extraction. You can compare a manual download with `Get-FileHash .\FederationCompanion-win-x64.zip -Algorithm SHA256`. A checksum checks consistency with that release, not publisher identity or absence of malware. If a file is flagged, stop and report the release revision, hash and detection name privately to the maintainer; submit suspected false detections to [Microsoft Security Intelligence](https://www.microsoft.com/en-us/wdsi/filesubmission). Never attach your state file or tokens.
 
-- Listens on `http://localhost:5000` (or the next free Kestrel port). Only the owner
-  dashboard uses it unless you deliberately expose it through Tailscale Funnel.
-- Runs `rclone.exe` as a **read-only** WebDAV mount of media your friends shared with you,
-  so Plex can analyze and play real files instead of text `.strm` links.
-- Writes `companion-state.json` (Plex/Jellyfin credentials and sharing choices),
-  `companion.log` (diagnostics, no secrets), and the mount configuration in its install
-  folder. Keep that folder private. Windows ACLs on those files are not tightened yet
-  (tracked as D3 in `bug.txt`); use a personal user profile, not a shared one.
-- Registers an autostart entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-  **only if you tick "Start Companion when I sign in"**. It never touches machine-wide
-  settings and can be removed from the same checkbox.
-- Asks for a UAC prompt **once** to install the WinFsp kernel driver (pinned, checksummed
-  MSI). Everything else runs as your normal user.
-- Talks to `plex.tv` for sign-in, your Plex server, your Jellyfin friends, and GitHub for
-  updates. It does not upload your library metadata anywhere else.
+[Microsoft's SmartScreen developer guidance](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation) explains reputation and signing. Publisher signing is still a release task; this project does not claim signing eliminates every warning.
 
-If Windows Firewall prompts about `FederationCompanion.exe`, allowing private networks is
-enough for LAN use. Funnel/off-site friends use the outbound Tailscale connection; you do
-not need to open an inbound port.
+| Capability | When used | What changes |
+| --- | --- | --- |
+| Local dashboard | While Companion runs | Listens on IPv4 loopback, normally port 5000. Explicit `--urls` or `ASPNETCORE_URLS` can change the address. |
+| Plex account and friends | When you connect them | Contacts plex.tv, the selected Plex server and the friends you connect. Saves access tokens and selected libraries. |
+| Read-only media folder | After **Set up / start media folder** | Runs rclone; downloads the pinned, checksummed helper from downloads.rclone.org if missing. Windows may ask for UAC to install the pinned WinFsp driver from GitHub. Linux needs FUSE. |
+| Playback cache | While scanning or playing imported media | Writes `media-cache/`. Cleanup targets 2 GB and removes old closed files after one hour; open files can exceed the target. Memory buffering is 4 MB per open file, in addition to process/catalog overhead. |
+| Start at sign-in | Only after you enable the toggle | Windows: current user's HKCU Run entry. Linux desktop: XDG autostart entry. Disable using the same toggle. |
+| Remote access | Only after you configure it | Tailscale Funnel exposes the Companion relay. Owner APIs still require the owner key; friends use their own revocable credentials. |
+| Updates | Dashboard checks; owner requests installation | Contacts GitHub; replaces app binaries and restarts. Installers create shortcuts. No antivirus exclusions or firewall exceptions are added. |
+
+`companion-state.json` and `media-mount.conf` contain credentials **in plaintext**. Companion restricts them to the current Windows user with file ACLs or the Unix owner with mode 0600, before writing secret content. Administrators and software running as your account remain able to read them. Install in a private user folder on a filesystem that supports permissions. Never upload these files, `imported/`, or the media cache to GitHub.
+
+`companion.log` rotates at 2 MB with one previous file. Startup and lifecycle entries omit keys; exception entries record the exception type instead of upstream URLs. Interactive Linux/macOS launches show the owner key in the terminal; background/redirected launches omit it. Copy owner key in the Windows tray is an explicit clipboard action.
+
+Companion runs as your normal user. The optional Windows WinFsp driver needs administrator approval; denying it leaves the dashboard available. **Stop media folder** persists until you start it again, including across Companion restarts. Exiting Companion stops its owned helper. Closing the browser leaves it running.
+
+### Linux desktop and Plex server
+
+The Linux x64 build already runs the same Plex bridge. The installer now adds **Federation Companion** to your application menu and opens its browser dashboard without keeping a terminal open. Enable **Start Companion when I sign in** for XDG autostart. There is currently no Linux tray icon; use the application launcher to reopen the running dashboard. GNOME/KDE login and desktop integration still need native validation.
+
+Linux ARM builds are not published yet; the installer rejects unsupported architectures rather than downloading x64. A future ARM release also needs an ARM rclone bundle and playback validation.
+
+For a headless server, run `./FederationCompanion --no-browser` interactively for setup. Keep loopback listening and use an SSH tunnel (`ssh -L 5000:127.0.0.1:5000 your-server`) to reach the dashboard at `http://127.0.0.1:5000`; substitute the actual listening port. Copy the owner key from your private terminal. Do not expose the owner dashboard on a public HTTP listener.
+
+For persistent server operation, create `~/.config/systemd/user/federation-companion.service` (adjust the executable path if you chose another install directory):
+
+```ini
+[Unit]
+Description=Federation Companion for Plex and Jellyfin
+
+[Service]
+Type=simple
+ExecStart=%h/FederationCompanion/FederationCompanion --background
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target
+```
+
+Then run `systemctl --user daemon-reload` and `systemctl --user enable --now federation-companion`. Choose the systemd service or desktop autostart, not both. For an in-app binary update, stop the user service, launch Companion interactively and update, then exit that copy and start the service again. Running across logout requires your administrator's user-lingering policy. A user service does not grant Plex access to the mount.
+
+Plex commonly runs as a separate `plex` service account on Linux. Follow [rclone's FUSE mount requirements](https://rclone.org/commands/rclone_mount/#mounting-on-linux) and the manual-mount instructions below. `--allow-other` exposes the mount to other local users and must be an explicit administrator decision; Companion does not edit `/etc/fuse.conf`, change Plex's account or weaken your home-directory permissions. Verify actual playback using Plex's account before relying on a scan.
+
+### Removing Companion
+
+Disable **Start Companion when I sign in**, then choose **Exit Companion**. If you configured systemd, disable and stop that user service first and remove its unit. Remove the install folder and Start Menu/Desktop shortcut (Windows) or `~/.local/share/applications/federation-companion.desktop` (Linux; use your XDG data directory if customized). Removing the install folder also removes saved credentials and cache. Keep a private backup if you intend to reconnect later. WinFsp and Tailscale are shared system components: remove them with the OS's normal uninstall tools only if other applications do not need them. Remove imported library entries separately in Plex.
 
 ## Manual mounts, Linux/macOS, and Docker
 
@@ -105,9 +132,9 @@ irm https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/maste
 To run a source build:
 
 ```sh
-dotnet run --project Companion/FederationCompanion.csproj
+dotnet run --project Companion/FederationCompanion.csproj -f net9.0
 ```
 
-Open the listener URL with the `#access=...` owner key printed at startup. Browser owner APIs require `X-Companion-Admin`. State is in `companion-state.json` beside the executable; it contains credentials and is restricted to the Unix owner where supported. Keep state/private mount configuration when updating, and never publish them.
+Open the listener URL with the `#access=...` owner key printed at startup. Browser owner APIs require `X-Companion-Admin`. State is in `companion-state.json` beside the executable; it contains credentials and is restricted to the current Windows user or Unix owner. Keep state/private mount configuration when updating, and never publish them.
 
 The WebDAV mount uses a separate read-only credential. Item streams request fresh authorization from the actual content owner. New Funnel claims do not include the real Plex token as an automatic fallback. The legacy unsigned `/import-stream` endpoint is retired.

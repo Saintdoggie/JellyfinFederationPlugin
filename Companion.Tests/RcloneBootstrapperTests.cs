@@ -137,9 +137,9 @@ public sealed class RcloneBootstrapperTests
     }
 
     [Fact]
-    public void ShouldManageMount_StartsItselfUnlessAManualPathWasSaved()
+    public void ShouldManageMount_RequiresSavedOwnerOptIn()
     {
-        Assert.True(LocalMediaMountService.ShouldManageMount(new CompanionState()));
+        Assert.False(LocalMediaMountService.ShouldManageMount(new CompanionState()));
         Assert.True(LocalMediaMountService.ShouldManageMount(new CompanionState { AutoStartMediaMount = true, MediaMountRoot = "/mnt" }));
         Assert.False(LocalMediaMountService.ShouldManageMount(new CompanionState { AutoStartMediaMount = false, MediaMountRoot = "/mnt" }));
     }

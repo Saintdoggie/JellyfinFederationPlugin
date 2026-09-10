@@ -45,13 +45,28 @@ public static class LinuxAutostart
             "autostart",
             FileName);
 
+    public static string BuildExec(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath) || executablePath.Any(char.IsControl))
+            throw new ArgumentException("A valid executable path is required.", nameof(executablePath));
+        var escaped = new System.Text.StringBuilder();
+        foreach (var ch in executablePath)
+        {
+            if (ch == '%') { escaped.Append("%%"); continue; }
+            if (ch is '\\' or '"' or '`' or '$') escaped.Append('\\');
+            escaped.Append(ch);
+        }
+        // Desktop Entry string escaping is processed before Exec quoting.
+        return "\"" + escaped.ToString().Replace("\\", "\\\\", StringComparison.Ordinal) + "\" --tray";
+    }
+
     public static string BuildDesktopEntry(string executablePath)
         => $"""
             [Desktop Entry]
             Type=Application
             Name=Federation Companion
             Comment=Start the Plex and Jellyfin federation bridge in the background
-            Exec={AutostartCommand.Build(executablePath)}
+            Exec={BuildExec(executablePath)}
             Terminal=false
             X-GNOME-Autostart-enabled=true
             """;
@@ -90,7 +105,7 @@ public sealed class LinuxAutostartRegistration : IAutostartRegistration
     public bool Set(bool enabled)
     {
         var executable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable))
+        if (!IsSupported || string.IsNullOrWhiteSpace(executable))
         {
             return false;
         }

@@ -94,21 +94,23 @@ public sealed class CompanionUpdater
     {
         if (OperatingSystem.IsWindows())
         {
-            var cmd = Path.Combine(Path.GetTempPath(), "federation-companion-restart.cmd");
+            var cmd = Path.Combine(installDir, "companion-restart-" + Guid.NewGuid().ToString("N") + ".cmd");
             File.WriteAllText(cmd, WindowsRestartCommands(installDir, stagingDir, Path.GetFileName(processPath), pid));
             return cmd;
         }
 
-        var sh = Path.Combine(Path.GetTempPath(), "federation-companion-restart.sh");
+        var sh = Path.Combine(installDir, "companion-restart-" + Guid.NewGuid().ToString("N") + ".sh");
         var unixExe = Path.GetFileName(processPath);
         File.WriteAllText(sh, $"""
             #!/bin/sh
             while kill -0 {pid} 2>/dev/null; do sleep 0.2; done
-            cp -R "{stagingDir}/." "{installDir}/"
-            rm -rf "{stagingDir}"
-            chmod +x "{installDir}/{unixExe}"
-            cd "{installDir}"
-            exec "./{unixExe}"
+            set -e
+            cp -R {ShellQuote(stagingDir + "/.")} {ShellQuote(installDir + "/")}
+            rm -rf -- {ShellQuote(stagingDir)}
+            chmod +x {ShellQuote(installDir + "/" + unixExe)}
+            cd {ShellQuote(installDir)}
+            rm -- "$0"
+            exec {ShellQuote("./" + unixExe)} --background
             """);
         try
         {
@@ -121,29 +123,34 @@ public sealed class CompanionUpdater
         return sh;
     }
 
-    internal static string WindowsRestartCommands(string installDir, string stagingDir, string exe, int pid) => $"""
+    internal static string ShellQuote(string value) => "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+
+    internal static string WindowsRestartCommands(string installDir, string stagingDir, string exe, int pid)
+    {
+        // Percent expansion occurs inside batch quotes; reject ambiguous paths
+        // instead of constructing commands from them.
+        if (new[] { installDir, stagingDir, exe }.Any(p => p.Any(c => c is '%' or '"' or '\r' or '\n')))
+            throw new InvalidDataException("Move Companion to a folder without percent signs, quotes or line breaks before updating.");
+        return $"""
         @echo off
+        setlocal DisableDelayedExpansion
         :wait
         timeout /t 1 /nobreak >nul
         tasklist /FI "PID eq {pid}" | find "{pid}" >nul && goto wait
         {WindowsStopOwnedRcloneCommands(installDir)}
         timeout /t 2 /nobreak >nul
         xcopy /E /Y /Q "{stagingDir}\*" "{installDir}\"
+        if errorlevel 1 exit /b 1
         rmdir /S /Q "{stagingDir}"
         cd /d "{installDir}"
-        start "" "{exe}"
+        start "" "{exe}" --background
+        del "%~f0"
         """;
+    }
 
     internal static string WindowsStopOwnedRcloneCommands(string installDir)
     {
-        var marker = installDir.TrimEnd('\\', '/') + @"\" + LocalMediaMountService.OwnedPidFileName;
-        return $"""
-            if exist "{marker}" (
-              for /f "usebackq delims=" %%p in ("{marker}") do (
-                tasklist /FI "PID eq %%p" /FI "IMAGENAME eq rclone.exe" | find /I "rclone.exe" >nul && taskkill /F /T /PID %%p >nul 2>nul
-              )
-            )
-            """;
+        return "rem The host stops its verified media helper before exiting. Never kill a process from a bare PID marker.";
     }
 
     private static void LaunchRestarter(string script)

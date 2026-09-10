@@ -31,7 +31,12 @@ namespace Jellyfin.Plugin.Federation.Services
         // Inbound origin-verify only: a 3xx from a public FromServerUrl must not be
         // followed onto loopback/RFC1918/metadata. Admin-initiated Send/Accept/Reject
         // keep DefaultHttpClient's normal redirect policy so LAN friends still work.
-        internal static readonly HttpClientHandler DefaultVerifyHandler = new() { AllowAutoRedirect = false };
+        internal static readonly SocketsHttpHandler DefaultVerifyHandler = new()
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            ConnectCallback = PublicCallbackConnection.ConnectAsync
+        };
 
         private static readonly HttpClient DefaultVerifyHttpClient = new HttpClient(DefaultVerifyHandler, disposeHandler: false)
         {
@@ -2199,7 +2204,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 using var response = await VerifyHttpClient.GetAsync(
                     $"{remoteUrl}/Plugins/Federation/Friends/Outgoing/{Uri.EscapeDataString(requestId)}",
-                    cancellationToken).ConfigureAwait(false);
+                    HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)

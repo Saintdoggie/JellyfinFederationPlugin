@@ -30,7 +30,7 @@ public static class AppLog
     public static void Warn(string message) => Write("WARN", message);
 
     public static void Error(string message, Exception? exception = null)
-        => Write("ERROR", exception == null ? message : $"{message} {exception.GetType().Name}: {exception.Message}");
+        => Write("ERROR", exception == null ? message : $"{message} {exception.GetType().Name}");
 
     internal static string FormatLine(DateTimeOffset timestamp, string level, string message)
         => $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)} [{level}] {message}{Environment.NewLine}";

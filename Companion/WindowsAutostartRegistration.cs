@@ -43,7 +43,7 @@ public sealed class WindowsAutostartRegistration : IAutostartRegistration
     public bool Set(bool enabled)
     {
         var executable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable))
+        if (!IsSupported || string.IsNullOrWhiteSpace(executable))
         {
             return false;
         }

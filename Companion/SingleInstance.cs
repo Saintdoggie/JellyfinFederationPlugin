@@ -10,7 +10,7 @@ namespace FederationCompanion;
 /// the first process over a named pipe and exits, instead of starting a second
 /// Kestrel listener and a second rclone mount.
 ///
-/// Ownership is a file lock in the per-user temp directory rather than a named
+/// Ownership is a file lock in the per-user application data directory rather than a named
 /// mutex: .NET scopes named mutexes per login session on Unix, so a launch from
 /// a different session (an SSH shell beside the desktop, a scheduled task)
 /// could start a duplicate. The lock is released by the OS when the process
@@ -30,13 +30,28 @@ public sealed class SingleInstance : IDisposable
 
     public SingleInstance(string? testSuffix = null)
     {
-        _lockPath = Path.Combine(Path.GetTempPath(), "federation-companion" + (testSuffix ?? string.Empty) + ".lock");
+        _lockPath = Path.Combine(LockDirectory(), "federation-companion" + (testSuffix ?? string.Empty) + ".lock");
         _pipeName = PipeName + "." + Sanitize(Environment.UserName) + (testSuffix ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Use persistent per-user application data so terminal TMPDIR and desktop
+    /// runtime-directory differences cannot create a second instance.
+    /// </summary>
+    internal static string LockDirectory()
+    {
+        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FederationCompanion");
+        Directory.CreateDirectory(directory);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return directory;
     }
 
     public bool IsFirstInstance { get; private set; }
 
     internal string InstancePipeName => _pipeName;
+
+    public static string DefaultPipeName() => PipeName + "." + Sanitize(Environment.UserName);
 
     /// <summary>True when this process owns the lock file and may run the app.</summary>
     public bool TryAcquire()
@@ -78,7 +93,7 @@ public sealed class SingleInstance : IDisposable
     {
         try
         {
-            using var client = new NamedPipeClientStream(".", pipeName ?? PipeName, PipeDirection.Out, PipeOptions.None);
+            using var client = new NamedPipeClientStream(".", pipeName ?? DefaultPipeName(), PipeDirection.Out, PipeOptions.None);
             client.Connect((int)timeout.TotalMilliseconds);
             var bytes = Encoding.UTF8.GetBytes(OpenMessage);
             client.Write(bytes, 0, bytes.Length);
@@ -102,18 +117,20 @@ public sealed class SingleInstance : IDisposable
                     PipeDirection.In,
                     maxNumberOfServerInstances: 1,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
                 var buffer = new byte[OpenMessage.Length];
-                var read = await server.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
-                if (read == buffer.Length && Encoding.UTF8.GetString(buffer) == OpenMessage)
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                readTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+                await server.ReadExactlyAsync(buffer.AsMemory(), readTimeout.Token).ConfigureAwait(false);
+                if (buffer.Length == OpenMessage.Length && Encoding.UTF8.GetString(buffer) == OpenMessage)
                 {
                     onOpenRequested();
                 }
             }
             catch (OperationCanceledException)
             {
-                return;
+                if (ct.IsCancellationRequested) return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -147,12 +164,8 @@ public sealed class SingleInstance : IDisposable
         _cts = null;
         _lock?.Dispose();
         _lock = null;
-        try
-        {
-            File.Delete(_lockPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
+        // Do not delete the lock file. Unlinking it while this process (or a
+        // failed second launch) is racing lets the next OpenOrCreate create a
+        // new inode and run two Companions on the same port.
     }
 }

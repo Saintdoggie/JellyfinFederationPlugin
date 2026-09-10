@@ -301,8 +301,8 @@ test('storage cleanup is delete-only, grouped by show and season, with exact bul
 });
 
 test('storage size calculator totals eligible, selected, show, season, and episode bytes', () => {
-  assert.match(configPage, /potential cleanup/);
-  assert.match(configPage, /selected cleanup/);
+  assert.match(configPage, /available to reclaim/);
+  assert.match(configPage, /selected to reclaim/);
   assert.match(configPage, /Remove selected · /);
   assert.match(configPage, /formatBytes\(qualityBytes\(show\.episodes\)\)/);
   assert.match(configPage, /formatBytes\(qualityBytes\(episodes\)\)/);

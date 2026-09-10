@@ -269,6 +269,31 @@
                 #federationConfigPage .fed-storage-stat strong { display:block; font-size:1.15em; }
                 #federationConfigPage .fed-episode-row input.fed-check { margin-top:0; }
 
+                /* Storage review: compact artwork, readable source comparisons, clear selection. */
+                #federationConfigPage .fed-storage-intro { padding:1.3em; border:1px solid var(--fed-border-soft); border-radius:1em; background:linear-gradient(120deg,rgba(0,164,220,.09),transparent); }
+                #federationConfigPage .fed-storage-intro .sectionTitle { margin-top:0; }
+                #federationConfigPage .fed-storage-note { border-left:3px solid var(--fed-warn-text); padding:.65em 1em; margin:1em 0; line-height:1.6; }
+                #fedPanelStorage .fed-quality-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,22em),1fr)); gap:.85em; }
+                #fedPanelStorage .fed-quality-cardwrap { padding:1em; border:1px solid var(--fed-border-soft); border-radius:.85em; background:var(--fed-surface); min-width:0; }
+                #fedPanelStorage .fed-quality-cardwrap:has(input:checked) { border-color:var(--fed-accent); background:rgba(0,164,220,.08); }
+                #fedPanelStorage .fed-quality-cardwrap:focus-within { outline:2px solid var(--fed-accent); outline-offset:2px; }
+                #fedPanelStorage .fed-quality-pick { display:grid; grid-template-columns:1.3em 3.6em 1fr; align-items:center; gap:.8em; }
+                #fedPanelStorage .fed-poster-check { position:static; }
+                #fedPanelStorage .fed-catalog-poster { width:3.6em; height:5.3em; padding:0; border-radius:.4em; }
+                #fedPanelStorage .fed-catalog-name { white-space:normal; overflow-wrap:anywhere; font-size:1em; line-height:1.4; margin:0; }
+                #fedPanelStorage .fed-quality-cardwrap > .fed-hint { margin:1em 0 .5em; opacity:1; }
+                #fedPanelStorage .fed-quality-compare { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:.4em 1em; padding:.5em 0; border-top:1px solid var(--fed-border-soft); }
+                #fedPanelStorage .fed-quality-compare span { opacity:.75; overflow-wrap:anywhere; }
+                #fedPanelStorage .fed-quality-exclude { font:inherit; font-size:.85em; background:transparent; border:0; padding:.5em 0; text-align:left; }
+                #fedPanelStorage .fed-storage-stat { padding:1.1em; border-radius:.8em; }
+                #fedPanelStorage .fed-storage-stat strong { font-size:1.65em; font-variant-numeric:tabular-nums; margin-bottom:.2em; }
+                #fedPanelStorage .fed-storage-stat span { opacity:.72; font-size:.9em; }
+                #fedPanelStorage .fed-quality-bulkbar { padding:.85em 1em; border:1px solid var(--fed-border-soft); border-radius:.7em; }
+                #fedPanelStorage .fed-storage-action { color:var(--fed-accent); background:transparent; border:0; font:inherit; cursor:pointer; padding:.45em; }
+                #fedPanelStorage .fed-storage-empty { padding:2em 1em; text-align:center; border:1px dashed var(--fed-border-soft); border-radius:.8em; line-height:1.6; }
+                #fedPanelStorage .fed-episode-row { flex-wrap:wrap; }
+                #fedPanelStorage .fed-episode-row .fed-download-info { min-width:min(100%,12em); }
+
                 /* Downloads */
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
                 #federationConfigPage .fed-download-row:first-child { border-top: none; }
@@ -778,18 +803,15 @@
 
                 <div id="fedPanelStorage" aria-labelledby="fedTabStorage" class="fed-tabpanel" data-tab-panel="storage" role="tabpanel">
                     <div class="verticalSection">
-                        <h3 class="sectionTitle">Storage cleanup</h3>
-                        <p class="fieldDescription">
-                            Find local movies and episodes where an exact provider-ID match exists on a connected server in clearly better quality.
-                            This workspace only removes local files you explicitly select; it never downloads a replacement or runs automatically.
-                        </p>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Find reclaimable local copies</label>
-                        <p class="fieldDescription">
-                            Removing a local file means future playback depends on that friend's server. Size totals are estimates from the files currently on disk,
-                            and every selected ID is checked again immediately before Jellyfin removes it.
-                        </p>
+                        <div class="fed-storage-intro">
+                            <h3 class="sectionTitle">Make room for something new</h3>
+                            <p class="fieldDescription">Review local movies and episodes with a higher-quality copy on a friend's server. Choose what to remove and what to keep.</p>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkPreferQuality" class="emby-checkbox fed-check" /> Find reclaimable local copies</label>
+                            <p class="fieldDescription">Save this preference to update suggestions. Cleanup runs only when you select files and confirm removal.</p>
+                        </div>
+                        <p class="fed-storage-note">After removal, playback depends on your friend's server being available. Watch-progress transfer between copies is not implemented yet.</p>
                         <div id="fedQualityUpgradePanel"></div>
-                        <a data-fed-action="quality-exclusions-toggle" style="cursor:pointer;">Manage exceptions (titles never suggested)</a>
+                        <button type="button" class="fed-storage-action" data-fed-action="quality-exclusions-toggle">Manage kept titles</button>
                         <div id="fedQualityExclusionsPanel" style="display:none;margin-top:0.4em;"></div>
                         <div class="fed-savebar" style="margin-top:1.2em;">
                             <button is="emby-button" type="submit" class="raised button-submit emby-button">Save storage preference</button>
@@ -3846,7 +3868,7 @@
                         html += '</label>';
                         html += '<div class="fed-hint">' + opts.subtitle + '</div>';
                         if (opts.excludeId) {
-                            html += '<a class="fed-quality-exclude" data-fed-action="quality-exclude" data-id="' + escapeHtml(opts.excludeId) + '">Keep local copy; do not ask again</a>';
+                            html += '<button type="button" class="fed-quality-exclude" data-fed-action="quality-exclude" data-id="' + escapeHtml(opts.excludeId) + '">Keep this copy</button>';
                         }
                         html += '</div>';
                         return html;
@@ -3940,7 +3962,7 @@
                         }
 
                         if (qualityUpgradeCandidates.length === 0) {
-                            el.innerHTML = '<p class="fed-srvstatus fed-srvstatus-ok">No clearly better federated copies need review right now.</p>';
+                            el.innerHTML = '<div class="fed-storage-empty" role="status"><strong>You are all caught up</strong><br>No higher-quality matches need review right now. Your local files stay where they are.</div>';
                             return;
                         }
 
@@ -3964,16 +3986,16 @@
 
                         var html = '<div class="fed-qualitypanel">';
                         html += '<h3 class="fed-subhead">Local copies eligible for cleanup</h3>';
-                        html += '<p class="fieldDescription">Every entry has an exact provider-ID match in better quality on a connected server. Removing one does not download anything; it frees local storage and leaves federated playback as the remaining copy.</p>';
+                        html += '<p class="fieldDescription">Matching titles are grouped below. Space estimates are checked again before each file is removed.</p>';
                         html += '<div class="fed-storage-summary">';
                         html += '<div class="fed-storage-stat"><strong>' + count + '</strong><span>eligible files</span></div>';
-                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(totalBytes)) + '</strong><span>potential cleanup</span></div>';
-                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(selectedBytes)) + '</strong><span>selected cleanup</span></div>';
+                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(totalBytes)) + '</strong><span>available to reclaim</span></div>';
+                        html += '<div class="fed-storage-stat"><strong>' + escapeHtml(formatBytes(selectedBytes)) + '</strong><span>selected to reclaim</span></div>';
                         html += '</div>';
                         html += '<div class="fed-quality-bulkbar">';
                         html += '<strong>' + selectedCount + ' selected · ' + escapeHtml(formatBytes(selectedBytes)) + '</strong>';
-                        html += '<a data-fed-action="quality-select-all">Select all</a>';
-                        html += '<a data-fed-action="quality-clear-selection">Clear</a>';
+                        html += '<button type="button" class="fed-storage-action" data-fed-action="quality-select-all">Select all</button>';
+                        html += '<button type="button" class="fed-storage-action" data-fed-action="quality-clear-selection">Clear selection</button>';
                         html += '<span class="fed-spacer"></span>';
                         html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="quality-apply-selected"' + (selectedCount === 0 || qualityUpgradeBusy ? ' disabled' : '') + '>Remove selected · ' + escapeHtml(formatBytes(selectedBytes)) + '</button>';
                         html += '</div>';
@@ -3984,7 +4006,7 @@
                                 selectId: c.localItemId,
                                 posterId: c.localItemId,
                                 title: c.name + (c.year ? ' (' + c.year + ')' : ''),
-                                subtitle: 'Local: ' + escapeHtml(formatQuality(c.localHeight, c.localBitrate)) + ' · ' + escapeHtml(formatBytes(c.localSizeBytes || 0)) + '<br>' + escapeHtml(c.remoteServerName) + ': ' + escapeHtml(formatQuality(c.remoteHeight, c.remoteBitrate)),
+                                subtitle: '<div class="fed-quality-compare"><span>On this server</span><strong>' + escapeHtml(formatQuality(c.localHeight, c.localBitrate)) + '</strong></div><div class="fed-quality-compare"><span>' + escapeHtml(c.remoteServerName) + '</span><strong>' + escapeHtml(formatQuality(c.remoteHeight, c.remoteBitrate)) + '</strong></div><div class="fed-quality-compare"><span>Space to reclaim</span><strong>' + escapeHtml(formatBytes(c.localSizeBytes || 0)) + '</strong></div>',
                                 selected: !!qualityUpgradeSelected[c.localItemId],
                                 excludeId: c.localItemId
                             });

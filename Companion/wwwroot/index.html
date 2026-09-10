@@ -89,9 +89,9 @@
   }
   .direction-heading h2 { margin: 7px 0 5px; font-size: 24px; letter-spacing: -.02em; }
   .direction-heading p { margin: 0; color: var(--muted); line-height: 1.5; max-width: 760px; }
-  #shareCard, #importCard { grid-column: 1 / -1; }
+  #shareCard, #importCard, #connectCard { grid-column: 1 / -1; }
   #accessCard { grid-column: 1 / -1; border-color: var(--border-strong); }
-  body.owner-locked main > :not(#accessCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
+  body.owner-locked main > :not(#accessCard):not(#permissionsCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
   #importCard { border-color: rgba(102, 217, 154, .28); }
   .flow-note {
     display: flex; gap: 10px; align-items: flex-start;
@@ -236,12 +236,34 @@
   .code-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
   .inline-form input { margin: 0; }
+  .checkbox-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 14px 0 6px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.4;
+    cursor: pointer;
+    user-select: none;
+  }
+  .checkbox-line input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--blue-strong);
+    flex-shrink: 0;
+  }
+  .app-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  #appCard { grid-column: 1 / -1; }
+  #appInfo { overflow-wrap: anywhere; }
   @media (max-width: 760px) {
     header { padding: 30px 20px; }
     main { grid-template-columns: 1fr; padding: 24px 16px 60px; }
-    .direction-heading, #shareCard, #importCard { grid-column: 1; }
+    .direction-heading, #shareCard, #importCard, #connectCard, #appCard { grid-column: 1; }
     .card { padding: 20px; border-radius: 14px; }
     .inline-form { grid-template-columns: 1fr; }
+    .app-actions { flex-direction: column; }
+    .app-actions button { width: 100%; }
     .peer-header { align-items: flex-start; flex-direction: column; }
     .peer-row.share-peer, .peer-download-controls { align-items: stretch; flex-direction: column; }
   }
@@ -264,9 +286,25 @@
   </div>
 </header>
 <main>
+  <div class="card" id="permissionsCard">
+    <h2>What Companion does on this computer</h2>
+    <p class="status-line">Runs in the background as your user and opens a local dashboard. You choose libraries and friends before sharing. Closing this browser leaves Companion running; use Exit Companion to stop it.</p>
+    <details>
+      <summary>Permissions, downloads and saved data</summary>
+      <ul>
+        <li><strong>Plex sign-in:</strong> contacts plex.tv and your selected Plex server; saves access tokens and sharing choices privately beside the app. Tokens are sensitive and are not encrypted by Companion.</li>
+        <li><strong>Media folder (optional):</strong> Set up media folder enables rclone, downloaded from rclone.org if missing, and a read-only mount. On Windows it can download the pinned WinFsp driver from GitHub and ask for administrator permission. Linux needs FUSE; system permissions are yours to configure.</li>
+        <li><strong>Disk and network:</strong> playback uses your connection and a local media-cache folder with a 2 GB cleanup target. Open files can exceed that target. Idle catalog sync runs every 30 minutes.</li>
+        <li><strong>Remote access (optional):</strong> Tailscale Funnel exposes Companion's relay publicly. Owner actions still require the owner key; friends get separate revocable access. Configure Funnel only when you want remote sharing.</li>
+        <li><strong>Start at sign-in (optional):</strong> writes a startup entry for your user only. You can switch it off below.</li>
+        <li><strong>Updates:</strong> checks GitHub when you open the dashboard; installs an update only when you request it. Diagnostics stay in a rotating local log.</li>
+      </ul>
+      <p class="status-line">Windows builds are unsigned. SmartScreen may report an unrecognized app. A Defender malware detection needs investigation; do not disable protection or add blanket exclusions. See the <a href="https://github.com/Saintdoggie/JellyfinFederationPlugin/blob/master/Companion/README.md#windows-app-tray-and-permissions" target="_blank" rel="noopener">permissions and verification guide</a>.</p>
+    </details>
+  </div>
   <div class="card" id="accessCard">
     <h2><span class="step-num">✓</span> Owner access</h2>
-    <p class="status-line">Companion's public listener is locked so strangers cannot change your sharing choices. Paste the owner key printed in the Companion terminal, or open the URL with <code>#access=…</code> attached.</p>
+    <p class="status-line">Companion's public listener is locked so strangers cannot change your sharing choices. Paste the owner key (Windows: right-click the tray icon → Copy owner key; Linux: printed at startup), or open the dashboard URL with <code>#access=…</code> attached.</p>
     <div class="inline-form"><input type="text" id="ownerKeyInput" placeholder="Companion owner access key" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="unlockBtn">Unlock</button></div>
     <div class="status-line" id="unlockStatus"></div>
   </div>
@@ -355,10 +393,10 @@
     <div class="flow-note"><span aria-hidden="true">🔒</span><span>The long-lived Jellyfin credential stays inside Companion. Plex receives only a stable link cryptographically bound to one exact movie or episode.</span></div>
     <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Choose libraries</button></div>
     <div id="importLibraryPicker"></div><div class="status-line" id="importConnectStatus" role="status" aria-live="polite"></div>
-    <p class="status-line">Companion starts the playable media folder by itself after install. Keep Companion running while Plex scans or plays, then choose Add to Plex below.</p>
+    <p class="status-line">Set up the media folder once to enable the read-only helper. After that, Companion restores it when you launch the app. Keep Companion running while Plex scans or plays, then choose Add to Plex below.</p>
     <div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
     <p id="driverHint" class="status-line hidden">Windows needs to approve a one-time media driver install. Companion does the rest.</p>
-    <button id="startLocalMountBtn" class="secondary">Retry media mount</button>
+    <button id="startLocalMountBtn" class="secondary">Set up / start media folder</button>
     <details id="mountSetup">
       <summary>Advanced: manual mount, separate machines, or Docker</summary>
       <p class="status-line">Only needed when Companion and Plex are not on the same computer. For Docker, share the mounted folder with both containers.</p>
@@ -389,7 +427,7 @@
     <p class="status-line">Companion keeps running in the background so Plex can reach the media folder and friends can connect at any time. On Windows it lives in the notification area (tray): right-click the icon to open this page, start or stop the media folder, copy the owner key, or exit.</p>
     <div id="appInfo" class="status-line">Checking…</div>
     <label class="checkbox-line" id="autostartRow"><input type="checkbox" id="autostartToggle"> Start Companion when I sign in</label>
-    <div class="inline-form">
+    <div class="app-actions">
       <button class="secondary" id="openDashboardBtn">Open dashboard in browser</button>
       <button class="secondary" id="stopMountBtn">Stop media folder</button>
       <button class="danger" id="exitCompanionBtn">Exit Companion</button>
@@ -468,23 +506,26 @@ function formatUptime(totalSeconds) {
   const minutes = Math.floor((seconds % 3600) / 60);
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
 }
 
+let loadAppInfoBusy = false;
 async function loadAppInfo() {
+  if (loadAppInfoBusy) return;
+  loadAppInfoBusy = true;
   try {
     const res = await apiFetch('/api/app/info');
     if (!res.ok) throw new Error();
     const data = await res.json();
     document.getElementById('appInfo').textContent =
-      `Version ${data.version} · ${data.workingSetMb} MB memory · running ${formatUptime(data.uptimeSeconds)} · port ${data.port}`
-      + (data.windows ? ` · log: ${data.logPath}` : '');
+      `Version ${data.version} · ${data.workingSetMb} MB RAM · running ${formatUptime(data.uptimeSeconds)} · port ${data.port}`;
     autostartRow.classList.toggle('hidden', !data.autostartSupported);
     autostartToggle.disabled = !data.autostartSupported;
     autostartToggle.checked = !!data.autostartEnabled;
   } catch {
     document.getElementById('appInfo').textContent = 'Could not read Companion status.';
-  }
+  } finally { loadAppInfoBusy = false; }
 }
 
 async function loadTailscale() {
@@ -1055,7 +1096,10 @@ importConnectBtn.addEventListener('click', async () => {
   finally { importConnectBtn.disabled = false; }
 });
 
+let loadMountStatusBusy = false;
 async function loadMountStatus() {
+  if (loadMountStatusBusy) return;
+  loadMountStatusBusy = true;
   try {
     const res = await apiFetch('/api/media-mount/status');
     if (!res.ok) throw new Error();
@@ -1071,10 +1115,11 @@ async function loadMountStatus() {
       const link = hint.querySelector('a');
       if (link && data.driverHelpUrl) link.href = data.driverHelpUrl;
     }
-  } catch { document.getElementById('localMountStatus').textContent = 'Could not check mount status. Retry when Companion is reachable.'; }
+  } catch { document.getElementById('localMountStatus').textContent = 'Could not check mount status. Retry when Companion is reachable.'; } finally { loadMountStatusBusy = false; }
 }
 
 document.getElementById('startLocalMountBtn').addEventListener('click', async event => {
+  if (!window.confirm('Enable the read-only media folder? Companion may download rclone and, on Windows, request administrator permission to install WinFsp. Playback uses a local cache with a 2 GB cleanup target. You can stop it in Companion app.')) return;
   const output = document.getElementById('localMountStatus'); event.target.disabled = true;
   output.textContent = 'Preparing the media mount. Companion may download a helper once…';
   try {
@@ -1097,7 +1142,7 @@ autostartToggle.addEventListener('change', async () => {
     if (!res.ok) throw new Error(data.error || 'Could not save the sign-in setting.');
     autostartToggle.checked = !!data.enabled;
     appStatus.textContent = data.enabled
-      ? 'Companion will start in the tray when you sign in to Windows.'
+      ? 'Companion will start in the background when you sign in.'
       : 'Companion will not start automatically.';
   } catch (e) {
     autostartToggle.checked = !wanted;
@@ -1172,7 +1217,7 @@ document.getElementById('savePlaybackBtn').addEventListener('click', async () =>
 
 async function unlockOwner() {
   if (!ownerKey) {
-    unlockStatus.textContent = 'Paste the owner key printed in the Companion terminal.';
+    unlockStatus.textContent = 'Paste the owner key (Windows: tray icon → Copy owner key).';
     return;
   }
 
@@ -1186,8 +1231,8 @@ async function unlockOwner() {
     accessCard.classList.add('hidden');
     unlockStatus.textContent = '';
     await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus(), loadAppInfo()]);
-    if (!window._federationMountPoll) window._federationMountPoll = setInterval(loadMountStatus, 4000);
-    if (!window._federationAppPoll) window._federationAppPoll = setInterval(loadAppInfo, 15000);
+    if (!window._federationMountPoll) window._federationMountPoll = setInterval(() => { if (!document.hidden) loadMountStatus(); }, 30000);
+    if (!window._federationAppPoll) window._federationAppPoll = setInterval(() => { if (!document.hidden) loadAppInfo(); }, 30000);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {
