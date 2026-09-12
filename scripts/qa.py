@@ -109,7 +109,7 @@ def validate(*, full=False, reuse=False):
     # Do not retain runtime state or obsolete assets from a previous publish.
     if app.exists():
         shutil.rmtree(app)
-    run([dotnet, 'publish', 'Companion', '-c', 'Release', '-f', 'net9.0', '-o', app, '--nologo', '-v', 'quiet'])
+    run([dotnet, 'publish', 'Companion', '-c', 'Release', '-f', 'net9.0', '-p:CompanionReleaseChannel=preview', '-o', app, '--nologo', '-v', 'quiet'])
     for number in [1, 2]:
         print(f'Automated suite {number}/2', flush=True)
         run([dotnet, 'test', 'Tests', '--nologo', '-v', 'quiet'])
@@ -120,7 +120,7 @@ def validate(*, full=False, reuse=False):
         if windows.exists():
             shutil.rmtree(windows)
         run([dotnet, 'publish', 'Companion', '-c', 'Release', '-f', 'net9.0-windows', '-r', 'win-x64', '--self-contained', 'true',
-             '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+             '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:CompanionReleaseChannel=preview',
              '-o', ROOT / 'artifacts/qa/windows', '--nologo', '-v', 'quiet'])
         from plex_smoke import smoke
         smoke(ROOT, dotnet, app, tools)

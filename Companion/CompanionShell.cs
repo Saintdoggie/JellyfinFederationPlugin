@@ -5,6 +5,8 @@ namespace FederationCompanion;
 /// <summary>Opens the owner dashboard in the default browser, cross-platform.</summary>
 public static class CompanionShell
 {
+    internal static Func<bool>? DesktopOpener { get; set; }
+
     public static bool OpenDashboard(CompanionRuntime runtime, string adminAccessKey)
     {
         if (runtime.Port <= 0 || string.IsNullOrWhiteSpace(adminAccessKey))
@@ -12,7 +14,11 @@ public static class CompanionShell
             return false;
         }
 
+#if WINDOWS
+        return DesktopOpener?.Invoke() ?? false;
+#else
         return OpenUrl(runtime.DashboardUrl(adminAccessKey));
+#endif
     }
 
     public static bool OpenFolder(string path)

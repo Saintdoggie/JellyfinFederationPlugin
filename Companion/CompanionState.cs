@@ -276,6 +276,13 @@ public sealed class CompanionPoolRosterMember
 
 public sealed class JellyfinImportPeer
 {
+    public string? CompanionPeerId { get; set; }
+
+    public string? SourceFederationId { get; set; }
+
+    /// <summary>Wait for the owner to preview and select libraries.</summary>
+    public bool ReturnSharePending { get; set; }
+
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     public string Name { get; set; } = string.Empty;

@@ -199,16 +199,18 @@ namespace Jellyfin.Plugin.Federation.Services
                         throw new InvalidOperationException("Plex returned an invalid catalog. Cached items have been kept.");
                     }
 
-                    foreach (var m in metadata.EnumerateArray())
-                    {
-                        pageCount++;
-                        var ratingKey = GetString(m, "ratingKey");
-                        var dto = await ToDtoAsync(m, cancellationToken).ConfigureAwait(false);
-                        if (dto != null && ratingKey != null)
+                    var page = metadata.EnumerateArray().ToArray();
+                    pageCount = page.Length;
+                    var converted = new ExternalItem?[page.Length];
+                    await Parallel.ForEachAsync(Enumerable.Range(0, page.Length),
+                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken },
+                        async (index, ct) =>
                         {
-                            items.Add(new ExternalItem(dto, ratingKey));
-                        }
-                    }
+                            var ratingKey = GetString(page[index], "ratingKey");
+                            var dto = await ToDtoAsync(page[index], ct).ConfigureAwait(false);
+                            if (dto != null && ratingKey != null) converted[index] = new ExternalItem(dto, ratingKey);
+                        }).ConfigureAwait(false);
+                    items.AddRange(converted.OfType<ExternalItem>());
                 }
 
                 if (pageCount < PageSize)
@@ -388,6 +390,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 Genres = ReadTagArray(m, "Genre"),
                 People = ReadPeople(m)
             };
+
+            // Source paths include Plex's artwork revision, including custom uploads.
+            // Hash them so cache state and Jellyfin DTOs never contain an upstream URL.
+            var thumb = GetString(m, "thumb") ?? GetString(m, "parentThumb") ?? GetString(m, "grandparentThumb");
+            var art = GetString(m, "art") ?? GetString(m, "parentArt") ?? GetString(m, "grandparentArt");
+            if (thumb != null) dto.ImageTags = new() { [ImageType.Primary] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(thumb))) };
+            if (art != null) dto.BackdropImageTags = new[] { Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(art))) };
 
             var studio = GetString(m, "studio");
             if (!string.IsNullOrWhiteSpace(studio))

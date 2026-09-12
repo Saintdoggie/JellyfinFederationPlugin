@@ -4,6 +4,23 @@ Status as of 2026-09-10. Source: `/var/home/cranky/Documents/JellyfinFederationP
 Read root `AGENTS.md`, `TODO.md`, and `Companion/TODO.md` first. This file tracks the
 "real app" work: tray/background behavior, RAM tuning, autostart, and platform support.
 
+## Local preview — 2026-09-12
+
+The owner's new implementation request supersedes the earlier planning-only
+scope for two-way Companion connections. See [DESKTOP-PREVIEW.md](DESKTOP-PREVIEW.md).
+Windows now has a WebView2 window with an embedded dashboard; closing it keeps
+only the tray/backend running. The accepted Plex relay connection can receive
+an authenticated return offer, with explicit Jellyfin outgoing consent and
+Companion import selection. Existing friends have a repair action.
+
+- [ ] Validate opening/closing/reopening the window, Plex sign-in in the default
+  browser, WebView2 missing-runtime recovery, private mount-config save dialog,
+  tray/autostart/second launch and updater restart on a real Windows machine.
+- [ ] Verify both directions with the friend's actual WinFsp/Plex/Funnel setup,
+  Jellyfin ordinary-user/admin access, custom posters and quality details.
+- [ ] Re-run the release gate after resolving any native-platform findings
+  before promoting this separate preview to stable.
+
 ## Review update — published as 0.0.159
 
 See [DESKTOP-REVIEW.md](DESKTOP-REVIEW.md) for the review, security findings,

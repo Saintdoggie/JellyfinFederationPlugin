@@ -8,6 +8,56 @@ namespace FederationCompanion.Tests;
 
 public sealed class ImportReliabilityTests
 {
+    [Fact]
+    public void ReturnOffer_RequiresExistingFriend_AndPreservesConsentOnRetry()
+    {
+        var state = new CompanionState { PublicUrl = "https://companion.example" };
+        var friend = new CompanionPeer { Name = "Friend" };
+        var offer = new ReturnShareOffer("https://jellyfin.example", "scoped-test-token", Guid.NewGuid().ToString(), "Home");
+        Assert.Throws<InvalidOperationException>(() => ReturnShareLink.Offer(state, friend, offer));
+        state.Peers.Add(friend);
+        var peer = ReturnShareLink.Offer(state, friend, offer);
+        Assert.True(peer.ReturnSharePending);
+        Assert.Empty(peer.SelectedLibraryIds!);
+        peer.SelectedLibraryIds!.Add("chosen-library"); peer.ReturnSharePending = false;
+        peer.PlexMovieSectionKey = "existing-plex-library";
+        var retry = ReturnShareLink.Offer(state, friend, offer with { Token = "rotated-test-token" });
+        Assert.Same(peer, retry);
+        Assert.Single(state.ImportPeers);
+        Assert.Equal(new[] { "chosen-library" }, retry.SelectedLibraryIds);
+        Assert.False(retry.ReturnSharePending);
+        Assert.Equal("existing-plex-library", retry.PlexMovieSectionKey);
+        Assert.Throws<InvalidOperationException>(() => ReturnShareLink.Offer(state, friend, offer with { Url = "https://different.example" }));
+        Assert.Equal("rotated-test-token", peer.Token);
+    }
+
+    [Fact]
+    public void ReturnOffer_AdoptsMatchingLegacyImport_WithoutDuplicateLibraries()
+    {
+        var friend = new CompanionPeer();
+        var existing = new JellyfinImportPeer { Url = "https://friend.example", Token = "test", SelectedLibraryIds = new() { "movies" } };
+        var state = new CompanionState { Peers = new() { friend }, ImportPeers = new() { existing } };
+        var result = ReturnShareLink.Offer(state, friend, new("https://friend.example", "test", Guid.NewGuid().ToString(), "Friend"));
+        Assert.Same(existing, result);
+        Assert.Equal(friend.Id, result.CompanionPeerId);
+        Assert.Equal(new[] { "movies" }, result.SelectedLibraryIds);
+        Assert.Single(state.ImportPeers);
+    }
+
+    [Theory]
+    [InlineData("http://friend.example")]
+    [InlineData("https://user:password@friend.example")]
+    [InlineData("https://127.0.0.1")]
+    [InlineData("https://friend.example/?secret=token")]
+    [InlineData("https://friend.example/#secret")]
+    public void ReturnOffer_RejectsUnsafeAddresses(string url)
+    {
+        var friend = new CompanionPeer();
+        var state = new CompanionState { Peers = new() { friend } };
+        Assert.Throws<ArgumentException>(() => ReturnShareLink.Offer(state, friend, new(url, "test", Guid.NewGuid().ToString(), "Friend")));
+        Assert.Empty(state.ImportPeers);
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"Items\":null}")]

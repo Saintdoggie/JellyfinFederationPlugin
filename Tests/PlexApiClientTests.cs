@@ -19,6 +19,45 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// </summary>
 public class PlexApiClientTests
 {
+    [Fact]
+    public async Task CatalogDetails_AreBoundedConcurrent_AndPreserveOrderAndCustomArtworkRevision()
+    {
+        var handler = new ParallelDetailsHandler();
+        var client = BuildClient(handler);
+        var items = await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None);
+        Assert.Equal(Enumerable.Range(1, 8).Select(i => i.ToString()), items.Select(i => i.NativeId));
+        Assert.InRange(handler.Peak, 2, 4);
+        Assert.All(items, i => Assert.NotEmpty(i.Dto.ImageTags!));
+        var tag = items[0].Dto.ImageTags![MediaBrowser.Model.Entities.ImageType.Primary];
+        handler.PosterRevision = "custom-upload-two";
+        var updated = await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None);
+        Assert.NotEqual(tag, updated[0].Dto.ImageTags![MediaBrowser.Model.Entities.ImageType.Primary]);
+        Assert.DoesNotContain("/library/", tag);
+    }
+
+    private sealed class ParallelDetailsHandler : HttpMessageHandler
+    {
+        public int Peak;
+        private int _active;
+        public string PosterRevision = "custom-upload-one";
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath.Contains("/sections/"))
+            {
+                var rows = Enumerable.Range(1, 8).Select(i => new { ratingKey = i.ToString(), title = "Movie " + i, type = "movie", thumb = "/library/metadata/" + i + "/thumb/" + PosterRevision, Media = new[] { new { videoCodec = "h264", width = 1920, height = 1080 } } });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { MediaContainer = new { Metadata = rows } })) };
+            }
+            var active = Interlocked.Increment(ref _active);
+            lock (this) Peak = Math.Max(Peak, active);
+            try
+            {
+                await Task.Delay(15, cancellationToken);
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"MediaContainer\":{\"Metadata\":[]}}") };
+            }
+            finally { Interlocked.Decrement(ref _active); }
+        }
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"MediaContainer\":{}}")]

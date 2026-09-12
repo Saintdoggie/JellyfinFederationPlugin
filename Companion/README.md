@@ -1,3 +1,9 @@
+> Desktop preview (2026-09-12): Windows now opens its own WebView2 window with
+> guided setup and two-way sharing. Download the desktop prerelease from
+> [GitHub Releases](https://github.com/Saintdoggie/JellyfinFederationPlugin/releases).
+> Native Windows validation is still needed before stable release. The installers
+> below fetch the stable build. See [DESKTOP-PREVIEW.md](DESKTOP-PREVIEW.md).
+
 # Federation Companion
 
 Companion connects a Plex owner with private Jellyfin Federation friends. Each owner chooses what to share. **A friend's federated imports must never be shared onward as if they were local media.**

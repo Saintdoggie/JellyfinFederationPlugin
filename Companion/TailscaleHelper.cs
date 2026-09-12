@@ -30,29 +30,15 @@ public static class TailscaleHelper
 
         try
         {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo(binaryPath, "status --json")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                }
-            };
-
-            process.Start();
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
-            // Exit code 0 with actual JSON back means signed in and running;
-            // anything else (including "not logged in" and "not running")
-            // exits non-zero, which is all this needs to distinguish -
-            // parsing the JSON further would only matter for showing which
-            // tailnet, and this app doesn't need that.
-            var signedIn = process.ExitCode == 0 && !string.IsNullOrWhiteSpace(stdout);
-            var dnsName = signedIn ? ReadDnsName(stdout) : null;
+            var result = await RunAsync(binaryPath, "status --json", TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+            using var status = JsonDocument.Parse(result.Output);
+            var signedIn = result.Ok
+                && status.RootElement.TryGetProperty("BackendState", out var backend)
+                && backend.GetString() == "Running";
+            var dnsName = signedIn ? ReadDnsName(result.Output) : null;
             return new TailscaleStatus(Installed: true, SignedIn: signedIn, InstallCommand: null, DnsName: dnsName);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception)
         {
             // Binary found on disk but couldn't actually run it (permissions,
@@ -78,10 +64,31 @@ public static class TailscaleHelper
             }
         }
 
-        // Fall back to PATH lookup - covers the common case where it's
-        // installed somewhere not in the fixed list above but still callable
-        // by name.
-        return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "tailscale.exe" : "tailscale";
+        var filename = OperatingSystem.IsWindows() ? "tailscale.exe" : "tailscale";
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator))
+        {
+            if (!Path.IsPathFullyQualified(directory)) continue;
+            var path = Path.Combine(directory, filename);
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    public static bool OpenWindowsApp()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        foreach (var root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86) })
+        {
+            var path = Path.Combine(root, "Tailscale", "tailscale-ipn.exe");
+            if (!File.Exists(path)) continue;
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                return process != null;
+            }
+            catch (System.ComponentModel.Win32Exception) { return false; }
+        }
+        return false;
     }
 
     private static string GetInstallCommand()
@@ -174,7 +181,8 @@ public static class TailscaleHelper
                 {
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    UseShellExecute = false
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 }
             };
             process.Start();
@@ -186,9 +194,10 @@ public static class TailscaleHelper
             {
                 await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                cancellationToken.ThrowIfCancellationRequested();
                 return (false, string.Empty, "Timed out talking to Tailscale.");
             }
 
