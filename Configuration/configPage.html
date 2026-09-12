@@ -1923,6 +1923,7 @@
                             html += '<strong>' + escapeHtml(title) + '</strong>';
                             if (server.Kind === 1) {
                                 html += '<span class="fed-pill">Plex</span>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="offer-return-share" data-id="' + escapeHtml(server.Id) + '">Set up / repair two-way sharing</button>';
                             }
 
                             if (isOff) {
@@ -5664,6 +5665,15 @@
                                     break;
                                 case 'create-companion':
                                     createCompanionFriend();
+                                    break;
+                                case 'offer-return-share':
+                                    var returnButton = t;
+                                    returnButton.disabled = true;
+                                    fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(returnButton.getAttribute('data-id')) + '/CompanionReturnShare', { method: 'POST' })
+                                        .then(function (r) { return r.json(); })
+                                        .then(function (r) { alert(r.message || r.error || 'Return connection request finished.'); })
+                                        .catch(function () { alert('Could not offer the return connection. Check Companion and retry.'); })
+                                        .finally(function () { returnButton.disabled = false; });
                                     break;
                                 case 'copy-companion-code':
                                     copyCompanionCode(t.getAttribute('data-id'), t);

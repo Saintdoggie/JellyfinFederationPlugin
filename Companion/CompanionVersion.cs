@@ -13,6 +13,9 @@ public static class CompanionVersion
 {
     public const string Repo = "Saintdoggie/JellyfinFederationPlugin";
     public const string ReleaseTag = "companion-latest";
+    public static bool IsPreviewBuild => Assembly.GetExecutingAssembly()
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .Any(a => a.Key == "CompanionReleaseChannel" && a.Value == "preview");
 
     private static readonly Regex NotesRevision = new(
         @"from ([0-9a-f]{7,40})",

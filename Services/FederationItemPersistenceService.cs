@@ -44,6 +44,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IItemPersistenceService _itemPersistence;
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
+        private readonly FederationArtworkService? _artwork;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationItemPersistenceService"/> class.
@@ -52,10 +53,12 @@ namespace Jellyfin.Plugin.Federation.Services
             ILibraryManager libraryManager,
             ILogger<FederationItemPersistenceService> logger,
             FederationLibraryManager federationManager,
-            IItemPersistenceService itemPersistence)
+            IItemPersistenceService itemPersistence,
+            FederationArtworkService? artwork = null)
         {
             _libraryManager = libraryManager;
             _itemPersistence = itemPersistence;
+            _artwork = artwork;
             _logger = logger;
             _federationManager = federationManager;
         }
@@ -431,8 +434,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var entry = _federationManager.Cache.GetEntryByKey(x.Key!);
-                    if (entry == null || !FederationLibraryManager.IsStreamableType(entry.ItemType))
+                    if (entry == null) continue;
+                    var sourceMetadataChanged = FederationSourceMetadata.Apply(x.Item, entry.Metadata);
+                    if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
+                        if (sourceMetadataChanged) restamped.Add(x.Item);
                         continue;
                     }
 
@@ -454,7 +460,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // to provide. The dynamic provider already picks the first enabled
                     // source this way; this keeps the stamped path consistent with it.
                     var playable = FirstEnabledSource(entry, config);
-                    var changed = false;
+                    var changed = sourceMetadataChanged;
 
                     // The duration/container shown on an item (grid badge, detail page,
                     // and - via item.RunTimeTicks as GetMediaSources' last-resort
@@ -526,18 +532,16 @@ namespace Jellyfin.Plugin.Federation.Services
                     // this doesn't re-save on every sync once it's already caught up.
                     var storedStreams = x.Item.GetMediaStreams();
                     var cachedStreams = entry.Metadata.MediaStreams;
-                    var missingBitrate = cachedStreams != null
-                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate == null)
-                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate.HasValue);
-                    var missingColorData = cachedStreams != null
-                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && string.IsNullOrEmpty(s.ColorTransfer))
-                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && !string.IsNullOrEmpty(s.ColorTransfer));
-                    var missingAudioTracks = cachedStreams != null
-                        && storedStreams.Count(s => s.Type == MediaStreamType.Audio) < cachedStreams.Count(s => s.Type == MediaStreamType.Audio);
-
-                    if (storedStreams.Count == 0 || missingBitrate || missingColorData || missingAudioTracks)
+                    if (cachedStreams is { Length: > 0 }
+                        && !System.Text.Json.JsonSerializer.Serialize(storedStreams)
+                            .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
                     {
                         _federationManager.TryPersistMediaStreams(x.Item, entry);
+                    }
+                    if (!string.IsNullOrEmpty(entry.Metadata.Container) && x.Item.Container != entry.Metadata.Container)
+                    {
+                        x.Item.Container = entry.Metadata.Container;
+                        changed = true;
                     }
 
                     // Only when no source has an enabled home does the title genuinely
@@ -642,6 +646,20 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Debug {Name}: after create, federated items now visible via GetRecursiveChildren={FreshCount}",
                         mapping.LocalLibraryName,
                         freshCount);
+                }
+
+                if (_artwork != null)
+                {
+                    var artworkItems = existing.Where(x => !deletedIds.Contains(x.Item.Id)).Select(x => x.Item)
+                        .Concat(toCreate.Select(x => x.Item)).DistinctBy(i => i.Id).ToList();
+                    await Parallel.ForEachAsync(artworkItems,
+                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken },
+                        async (item, ct) =>
+                        {
+                            var key = FederationLibraryManager.GetFederationKey(item);
+                            var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
+                            if (entry != null) await _artwork.RefreshAsync(item, entry, itemParent, ct).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
                 }
 
                 // Runs after creation so the federated seasons above are back in

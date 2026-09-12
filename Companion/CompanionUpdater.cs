@@ -14,10 +14,15 @@ namespace FederationCompanion;
 public sealed class CompanionUpdater
 {
     private readonly HttpClient _http;
+    private readonly bool _preview;
+    private const string PreviewMessage = "Desktop preview: get newer previews from GitHub Releases. Rolling updates are disabled so this app is not replaced with an older stable build.";
 
-    public CompanionUpdater(HttpClient http)
+    public CompanionUpdater(HttpClient http) : this(http, CompanionVersion.IsPreviewBuild) { }
+
+    internal CompanionUpdater(HttpClient http, bool preview)
     {
         _http = http;
+        _preview = preview;
         if (!_http.DefaultRequestHeaders.UserAgent.Any())
         {
             _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FederationCompanion", "1.0"));
@@ -27,6 +32,7 @@ public sealed class CompanionUpdater
     public async Task<UpdateStatus> CheckAsync(CancellationToken cancellationToken)
     {
         var local = CompanionVersion.LocalRevision();
+        if (_preview) return new UpdateStatus(false, false, local, null, PreviewMessage);
         var installed = CompanionVersion.LooksLikeInstalledBuild(Environment.ProcessPath);
         try
         {
@@ -53,6 +59,7 @@ public sealed class CompanionUpdater
 
     public async Task<(bool Success, string Message)> ApplyAsync(CancellationToken cancellationToken)
     {
+        if (_preview) return (false, PreviewMessage);
         var processPath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(processPath) || !CompanionVersion.LooksLikeInstalledBuild(processPath))
         {

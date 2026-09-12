@@ -58,6 +58,16 @@ using var sockets = new SocketsHttpHandler
     ConnectTimeout = TimeSpan.FromSeconds(15)
 };
 using var apiHttp = new HttpClient(sockets, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
+// Scoped peer credentials must never follow an HTTP redirect. Downloads and
+// updates keep their own client because GitHub assets legitimately redirect.
+using var peerSockets = new SocketsHttpHandler
+{
+    AllowAutoRedirect = false,
+    PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+    ConnectTimeout = TimeSpan.FromSeconds(15),
+    MaxConnectionsPerServer = 8
+};
+using var peerHttp = new HttpClient(peerSockets, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
 // Media requests get their own pool so long-running streams cannot starve
 // authorization and catalog calls to the same friend.
 using var streamSockets = new SocketsHttpHandler
@@ -73,7 +83,7 @@ streamHttp.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Feder
 builder.Services.AddSingleton(apiHttp);
 builder.Services.AddSingleton<PlexClient>();
 builder.Services.AddSingleton(sp => new JellyfinImportService(
-    sp.GetRequiredService<HttpClient>(),
+    peerHttp,
     streamHttp));
 
 // Loaded once at startup rather than per-request: every request in this app
@@ -124,8 +134,20 @@ app.Use(async (context, next) =>
     await next().ConfigureAwait(false);
 });
 
+#if WINDOWS
+// The Windows executable contains the whole dashboard; moving the exe alone
+// must not turn its desktop window into a blank page.
+using (var dashboardStream = typeof(CompanionState).Assembly.GetManifestResourceStream("FederationCompanion.dashboard.html")!)
+using (var dashboardReader = new StreamReader(dashboardStream))
+{
+    var dashboard = dashboardReader.ReadToEnd();
+    app.MapGet("/", () => Results.Text(dashboard, "text/html; charset=utf-8"));
+    app.MapGet("/index.html", () => Results.Text(dashboard, "text/html; charset=utf-8"));
+}
+#else
 app.UseDefaultFiles();
 app.UseStaticFiles();
+#endif
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {
@@ -385,6 +407,14 @@ app.MapPost("/api/plex/start-signin", async (HttpRequest req, PlexAuth auth, Can
     var appBaseUrl = $"{req.Scheme}://{req.Host}";
     var (pinId, signInUrl) = await auth.StartSignInAsync(appBaseUrl, ct).ConfigureAwait(false);
     pendingPinId.Id = pinId;
+#if WINDOWS
+    // Native launch avoids the WebView popup blocker. Plex approval continues
+    // in the owner's browser while this window polls the one-time PIN.
+    if (CompanionShell.DesktopOpener != null)
+        return CompanionShell.OpenUrl(signInUrl)
+            ? Results.Ok(new { openedExternally = true })
+            : Results.BadRequest(new { error = "Could not open your browser for Plex sign-in. Check your default browser and retry." });
+#endif
     return Results.Ok(new { signInUrl });
 });
 
@@ -721,7 +751,7 @@ app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionSta
     var code = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
     try
     {
-        using var response = await http.PostAsJsonAsync(
+        using var response = await peerHttp.PostAsJsonAsync(
             jellyfinUrl + "/Plugins/Federation/PlexOffers",
             new { code },
             ct).ConfigureAwait(false);
@@ -774,6 +804,10 @@ app.MapPost("/api/update/apply", async (CompanionUpdater updater, IHostApplicati
     });
     return Results.Ok(new { message });
 });
+
+app.MapPost("/api/tailscale/open", () => TailscaleHelper.OpenWindowsApp()
+    ? Results.Ok(new { message = "Tailscale opened. Sign in there, then return to Companion and check again." })
+    : Results.BadRequest(new { error = "Open Tailscale from your Start menu, or install it using the download link, then sign in." }));
 
 app.MapPost("/api/tailscale/funnel", async (CompanionState s, CancellationToken ct) =>
 {
@@ -836,16 +870,54 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
     });
 });
 
-app.MapGet("/api/peers", (CompanionState s) => Results.Ok(s.Peers.Select(PeerView)));
+// Only the existing friend's scoped relay token can offer a return share.
+app.MapPost("/api/link/return-share", async (ReturnShareOffer body, HttpRequest request, CompanionState s) =>
+{
+    try
+    {
+        lock (s)
+        {
+            var friend = FindPeerByFederationToken(request, s);
+            if (friend == null) return Results.Unauthorized();
+            ReturnShareLink.Offer(s, friend, body);
+        }
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(new { message = "Return connection ready. The Plex owner can choose libraries in Companion." });
+    }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/import/peers/{id}/libraries", async (string id, CompanionState s, JellyfinImportService jellyfin, CancellationToken ct) =>
+{
+    var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
+    if (peer == null) return Results.NotFound();
+    try
+    {
+        var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, ct).ConfigureAwait(false);
+        peer.AvailableLibraries = libraries;
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(ImportPeerView(peer));
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+    {
+        return Results.BadRequest(new { error = "Could not read their libraries. Ask the Jellyfin owner to enable sharing for this friend, then retry." });
+    }
+});
+
+app.MapGet("/api/peers", (CompanionState s) => Results.Ok(s.Peers.Select(p => PeerView(p, s))));
 
 app.MapDelete("/api/peers/{id}", async (string id, CompanionState s, PlexFederationRelay relay) =>
 {
-    var removed = s.Peers.RemoveAll(p => p.Id == id) > 0;
+    bool removed;
+    lock (s) { removed = s.Peers.RemoveAll(p => p.Id == id) > 0; }
     if (!removed)
     {
         return Results.NotFound();
     }
 
+    foreach (var imported in s.ImportPeers.Where(p => p.CompanionPeerId == id).ToList())
+        await ImportSyncCoordinator.RemoveAsync(s, imported, removeFiles: false, CancellationToken.None).ConfigureAwait(false);
     relay.ForgetPeer(id);
     await s.SaveAsync().ConfigureAwait(false);
     return Results.Ok();
@@ -862,7 +934,7 @@ app.MapPost("/api/peers/{id}/download-access", async (string id, SetPeerDownload
     peer.AllowDownloads = body.AllowDownloads;
     peer.AllowBulkDownloads = body.AllowDownloads && body.AllowBulkDownloads;
     await s.SaveAsync().ConfigureAwait(false);
-    return Results.Ok(PeerView(peer));
+    return Results.Ok(PeerView(peer, s));
 });
 
 app.MapGet("/api/import/peers", (CompanionState s) => Results.Ok(s.ImportPeers.Select(ImportPeerView)));
@@ -1048,6 +1120,7 @@ app.MapPost("/api/import/peers/{id}/libraries", async (string id, SelectImportLi
     if (body.LibraryIds == null || body.LibraryIds.Any(id => !libraries.Any(l => l.Id == id)))
         return Results.BadRequest(new { error = "Refresh the library list and choose currently shared libraries." });
     peer.SelectedLibraryIds = body.LibraryIds.Distinct().ToList();
+    peer.ReturnSharePending = false;
     await ImportSyncCoordinator.SyncOneAsync(s, peer, jellyfin, plex, logger, ct).ConfigureAwait(false);
     return Results.Ok(ImportPeerView(peer));
 });
@@ -1201,15 +1274,12 @@ singleInstance.StartListener(() =>
     CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
 });
 
-if (launch.OpenBrowser)
-{
-    CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
-}
-
 #if WINDOWS
 var mountService = app.Services.GetRequiredService<LocalMediaMountService>();
 var autostartRegistration = app.Services.GetRequiredService<IAutostartRegistration>();
-WindowsCompanionTray.Start(state, mountService, autostartRegistration, runtime, app.Lifetime);
+WindowsCompanionTray.Start(state, mountService, autostartRegistration, runtime, app.Lifetime, launch.OpenBrowser);
+#else
+if (launch.OpenBrowser) CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
 #endif
 
 await app.WaitForShutdownAsync().ConfigureAwait(false);
@@ -1308,7 +1378,10 @@ static object ImportPeerView(JellyfinImportPeer peer) => new
     peer.Id,
     peer.Name,
     peer.ExportPath,
+    peer.Url,
     peer.PlaybackBaseUrl,
+    peer.CompanionPeerId,
+    peer.ReturnSharePending,
     peer.PlexSectionKey,
     peer.PlexMovieSectionKey,
     peer.PlexShowSectionKey,
@@ -1321,13 +1394,16 @@ static object ImportPeerView(JellyfinImportPeer peer) => new
     importIssueCount = peer.ImportCatalog.Count(i => i.Issue != null)
 };
 
-static object PeerView(CompanionPeer peer) => new
+static object PeerView(CompanionPeer peer, CompanionState state) => new
 {
     peer.Id,
     peer.Name,
     peer.AddedUtc,
     peer.AllowDownloads,
-    peer.AllowBulkDownloads
+    peer.AllowBulkDownloads,
+    sharedLibraries = state.Libraries.Where(l => CompanionLibraryPolicy.IsShared(state, l)).Select(l => l.Title),
+    returnImportId = state.ImportPeers.FirstOrDefault(p => p.CompanionPeerId == peer.Id)?.Id,
+    returnSharePending = state.ImportPeers.FirstOrDefault(p => p.CompanionPeerId == peer.Id)?.ReturnSharePending
 };
 
 static string? TryReadJsonError(string body)
@@ -1391,6 +1467,7 @@ static bool IsSafePeerUrl(string candidate, out string normalized)
 
 static bool IsPublicCompanionApi(PathString path)
     => path.Equals("/api/link/complete", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/api/link/return-share", StringComparison.OrdinalIgnoreCase)
         || path.Equals("/api/federation/info", StringComparison.OrdinalIgnoreCase)
         || path.Equals("/api/pools/invite", StringComparison.OrdinalIgnoreCase);
 

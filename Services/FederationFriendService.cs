@@ -777,6 +777,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 Id = Guid.NewGuid().ToString(),
                 Kind = ServerKind.Plex,
+                ShareAllLibraries = false,
                 Name = serverName,
                 Url = plexUrl,
                 ApiKey = plexToken,
@@ -814,7 +815,45 @@ namespace Jellyfin.Plugin.Federation.Services
             var sharedNote = shared.Count == 0
                 ? " They have not marked any libraries shared yet, so nothing will sync until they do."
                 : $" {shared.Count} shared library(ies) are mapped and will sync.";
-            return (true, $"Connected to {server.Name}.{sharedNote}", server);
+            var returnShare = await OfferCompanionReturnShareAsync(server, cancellationToken).ConfigureAwait(false);
+            return (true, $"Connected to {server.Name}.{sharedNote} {returnShare.Message}", server);
+        }
+
+        /// <summary>Retryable delivery over the accepted relay connection. Never follows
+        /// redirects with either side's credential, and never changes sharing consent.</summary>
+        public async Task<(bool Success, string Message)> OfferCompanionReturnShareAsync(RemoteServer server, CancellationToken cancellationToken)
+        {
+            var localUrl = ResolveLocalUrl();
+            if (server.Kind != ServerKind.Plex || !server.Enabled
+                || !Uri.TryCreate(server.Url, UriKind.Absolute, out var relay)
+                || relay.Scheme != "https" || !string.IsNullOrEmpty(relay.UserInfo)
+                || !string.IsNullOrEmpty(relay.Query) || !string.IsNullOrEmpty(relay.Fragment)
+                || !relay.AbsolutePath.StartsWith("/plex/", StringComparison.Ordinal)
+                || !Guid.TryParse(relay.AbsolutePath[6..].TrimEnd('/'), out _)
+                || ConfigValidator.IsPrivateOrLoopbackHost(server.Url))
+                return (false, "Return sharing needs a Companion Funnel connection. Direct Plex connections can still use an import code.");
+            if (string.IsNullOrWhiteSpace(localUrl) || !localUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return (false, "Set this Jellyfin server's public HTTPS address, then retry the return connection.");
+            if (string.IsNullOrWhiteSpace(server.IssuedApiKey) || string.IsNullOrWhiteSpace(server.ApiKey))
+                return (false, "Reconnect this friend to restore its scoped credentials.");
+            try
+            {
+                // Derive the destination from the actual authenticated relay,
+                // never an unrelated CompanionUrl supplied in an old code.
+                using var request = new HttpRequestMessage(HttpMethod.Post,
+                    relay.GetLeftPart(UriPartial.Authority) + "/api/link/return-share");
+                request.Headers.TryAddWithoutValidation("X-Federation-Token", server.ApiKey);
+                request.Content = JsonContent(new { url = localUrl, token = server.IssuedApiKey,
+                    federationId = GetOrCreateLocalFederationId(), name = _applicationHost.FriendlyName });
+                using var response = await VerifyHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode
+                    ? (true, "Return connection offered. Choose your outgoing libraries in this friend's Sharing settings; they choose imports in Companion.")
+                    : (false, "Plex connected, but return setup needs attention. Update Companion and retry the return connection.");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return (false, "Plex connected. Companion could not receive the return connection; retry when it is online.");
+            }
         }
 
         /// <summary>

@@ -17,6 +17,39 @@ public class FederatedCacheEntryTests
         => new(NullLogger<FederationItemCache>.Instance);
 
     [Fact]
+    public void ArtworkRevision_ChangesWithSourcePoster_AndSurvivesMissingFields()
+    {
+        var cache = CreateCache(); var id = Guid.NewGuid();
+        var dto = new BaseItemDto { Name = "Custom title", ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "poster-one" } };
+        var entry = cache.UpsertRaw("Movies", "source", id, dto, 0, "Movie");
+        var first = FederationArtworkService.Revision(entry);
+        Assert.NotNull(first);
+        dto.ImageTags[MediaBrowser.Model.Entities.ImageType.Primary] = "poster-two";
+        entry.UpdateFromRemote(dto, "source", id, 0);
+        Assert.NotEqual(first, FederationArtworkService.Revision(entry));
+        var second = FederationArtworkService.Revision(entry);
+        dto.ImageTags = null; entry.UpdateFromRemote(dto, "source", id, 0);
+        Assert.Equal(second, FederationArtworkService.Revision(entry));
+    }
+
+    [Fact]
+    public void SourceMetadata_UpdatesExistingSeriesWithoutChangingIdentity_AndIsIdempotent()
+    {
+        var series = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Old title", Overview = "Old plot", ProductionYear = 1990 };
+        var id = series.Id;
+        var metadata = new FederatedItemMetadata { Name = "Their custom title", Overview = "Their plot", ProductionYear = 2020, Genres = new[] { "Drama" } };
+        Assert.True(FederationSourceMetadata.Apply(series, metadata));
+        Assert.Equal(id, series.Id);
+        Assert.Equal("Their custom title", series.Name);
+        Assert.Equal("Their plot", series.Overview);
+        Assert.Equal(2020, series.ProductionYear);
+        Assert.False(FederationSourceMetadata.Apply(series, metadata));
+        metadata.Overview = null;
+        Assert.False(FederationSourceMetadata.Apply(series, metadata));
+        Assert.Equal("Their plot", series.Overview);
+    }
+
+    [Fact]
     public void UpdateFromRemote_MapsPeopleIntoMetadata()
     {
         var cache = CreateCache();

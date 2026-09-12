@@ -30,6 +30,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<RemoteAccessControlService>();
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
+            serviceCollection.AddSingleton<FederationArtworkService>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
             serviceCollection.AddSingleton<FederationDownloadService>();

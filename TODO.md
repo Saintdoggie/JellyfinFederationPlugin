@@ -11,6 +11,16 @@ validation, and the exact test commands live in
 [`Companion/DESKTOP-APP-TODO.md`](Companion/DESKTOP-APP-TODO.md). Read that file
 before changing Companion startup, tray, autostart, or packaging.
 
+## Desktop and two-way sharing preview — 2026-09-12
+
+New implementation request: Windows Companion ↔ Jellyfin. Local changes and
+validation are recorded in [Companion/DESKTOP-PREVIEW.md](Companion/DESKTOP-PREVIEW.md).
+Includes a desktop window/embedded dashboard, authenticated return offers,
+explicit library consent and repair, and source artwork/metadata updates.
+Native Windows and the friend's complete two-server playback/access matrix
+remain required before stable publication. Preview builds are separate from the
+rolling release and plugin catalog; their rolling updater is disabled.
+
 ## Active Plex repair — shipped as 0.0.133
 
 The Plex ownership/playback repair from `fix/plex-federation-reliability` is

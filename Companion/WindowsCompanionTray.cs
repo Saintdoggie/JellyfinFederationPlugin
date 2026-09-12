@@ -9,8 +9,8 @@ namespace FederationCompanion;
 /// <summary>
 /// The Windows desktop shell: a tray icon that keeps the listener, the Plex
 /// connection and the media mount manageable without a console window. The
-/// browser dashboard remains the place for setup; this is the always-there
-/// control surface plus the exit that a WinExe otherwise lacks.
+/// owner dashboard opens in a WebView2 desktop window; this tray keeps the
+/// server reachable when that window is closed.
 /// </summary>
 internal static class WindowsCompanionTray
 {
@@ -19,9 +19,9 @@ internal static class WindowsCompanionTray
         LocalMediaMountService mount,
         IAutostartRegistration autostart,
         CompanionRuntime runtime,
-        IHostApplicationLifetime lifetime)
+        IHostApplicationLifetime lifetime, bool openWindow)
     {
-        var thread = new Thread(() => Run(state, mount, autostart, runtime, lifetime))
+        var thread = new Thread(() => Run(state, mount, autostart, runtime, lifetime, openWindow))
         {
             IsBackground = true,
             Name = "CompanionTray"
@@ -35,7 +35,7 @@ internal static class WindowsCompanionTray
         LocalMediaMountService mount,
         IAutostartRegistration autostart,
         CompanionRuntime runtime,
-        IHostApplicationLifetime lifetime)
+        IHostApplicationLifetime lifetime, bool openWindow)
     {
         try
         {
@@ -52,7 +52,7 @@ internal static class WindowsCompanionTray
             };
 
             var header = new ToolStripMenuItem("Federation Companion") { Enabled = false };
-            var open = new ToolStripMenuItem("Open dashboard") { Font = new Font(menu.Font, FontStyle.Bold) };
+            var open = new ToolStripMenuItem("Open Companion") { Font = new Font(menu.Font, FontStyle.Bold) };
             var copyKey = new ToolStripMenuItem("Copy owner key");
             var plexStatus = new ToolStripMenuItem("Plex: checking…") { Enabled = false };
             var mountStatus = new ToolStripMenuItem("Media folder: checking…") { Enabled = false };
@@ -84,13 +84,28 @@ internal static class WindowsCompanionTray
                 exit
             });
 
+            using var dispatcher = new Control();
+            _ = dispatcher.Handle;
+            WindowsCompanionWindow? window = null;
             void OpenDashboard()
             {
-                if (!CompanionShell.OpenDashboard(runtime, state.AdminAccessKey))
-                {
-                    notify.ShowBalloonTip(4000, "Federation Companion", "Could not open a browser. Open http://127.0.0.1:" + runtime.Port + " and paste the owner key.", ToolTipIcon.Warning);
-                }
+                if (window == null || window.IsDisposed)
+                    window = new WindowsCompanionWindow(runtime, state.AdminAccessKey, icon);
+                window.Show();
+                if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
+                window.Activate();
             }
+            CompanionShell.DesktopOpener = () =>
+            {
+                try { dispatcher.BeginInvoke((Action)OpenDashboard); return true; }
+                catch (InvalidOperationException) { return false; }
+            };
+            using var shutdown = lifetime.ApplicationStopping.Register(() =>
+            {
+                try { dispatcher.BeginInvoke((Action)(() => { window?.Dispose(); Application.ExitThread(); })); }
+                catch (InvalidOperationException) { }
+            });
+            if (openWindow) OpenDashboard();
 
             open.Click += (_, _) => OpenDashboard();
             notify.DoubleClick += (_, _) => OpenDashboard();
@@ -203,6 +218,8 @@ internal static class WindowsCompanionTray
             Refresh();
 
             Application.Run(new ApplicationContext());
+            CompanionShell.DesktopOpener = null;
+            window?.Dispose();
             notify.Visible = false;
         }
         catch (Exception ex)

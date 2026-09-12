@@ -2165,9 +2165,20 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Re-derives the same connect code <see cref="AddCompanionFriend"/>
-        /// returned, from the token already on file - so an admin who lost the
-        /// copied text can pull it up again without rotating the token.
+        /// Offers a return connection to an already accepted Companion friend.
+        /// </summary>
+        [HttpPost("Servers/{id}/CompanionReturnShare")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> OfferCompanionReturnShare(string id, CancellationToken cancellationToken)
+        {
+            var server = Plugin.Instance?.Configuration.RemoteServers.FirstOrDefault(s => s.Id == id);
+            if (server == null) return NotFound(new { error = "Friend not found." });
+            var result = await _friends.OfferCompanionReturnShareAsync(server, cancellationToken).ConfigureAwait(false);
+            return result.Success ? Ok(new { message = result.Message }) : BadRequest(new { error = result.Message });
+        }
+
+        /// <summary>
+        /// Re-derives the existing connect code without rotating its token.
         /// </summary>
         [HttpGet("Servers/{id}/CompanionConnectCode")]
         [Authorize(Policy = "RequiresElevation")]

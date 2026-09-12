@@ -221,3 +221,104 @@ test('Companion hides the sign-in setting on platforms that do not support it', 
     assert.equal(d.getElementById('autostartToggle').disabled, true);
   } finally { dom.window.close(); }
 });
+
+test('Return connection previews unchecked libraries and saves only the owner selection', async () => {
+  const requests = [];
+  const peer = { id: 'return-one', name: 'Home', returnSharePending: true, lastItemCount: 0, selectedLibraryIds: [], availableLibraries: [] };
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    if (url === '/api/import/peers') return json([peer]);
+    if (url.endsWith('/libraries') && !opts?.method) return json({ ...peer, availableLibraries: [{ id: 'movies', name: '<b>Custom movies</b>' }] });
+    if (url.endsWith('/libraries')) return json(peer);
+    return json([]);
+  });
+  try {
+    await dom.window.loadImportPeers();
+    const d = dom.window.document;
+    assert.equal(d.querySelector('[data-action="sync"]').disabled, true);
+    d.querySelector('[data-action="preview-return"]').click(); await tick();
+    const picker = d.querySelector('[data-libraries]');
+    assert.equal(picker.querySelector('b'), null);
+    assert.equal(picker.querySelectorAll('input:checked').length, 0);
+    picker.querySelector('input').checked = true;
+    d.querySelector('[data-action="libraries"]').click(); await tick();
+    const save = requests.find(([url, opts]) => url.endsWith('/libraries') && opts?.method === 'POST');
+    assert.deepEqual(JSON.parse(save[1].body), { libraryIds: ['movies'] });
+  } finally { dom.window.close(); }
+});
+
+test('Friend card shows both directions without interpreting remote library names as HTML', async () => {
+  const dom = page(async () => json([{ id: 'friend', name: '<b>Friend</b>', sharedLibraries: ['<img src=x>Movies'], returnImportId: 'return-one', returnSharePending: true }]));
+  try {
+    await dom.window.loadPeers();
+    const row = dom.window.document.querySelector('.share-peer');
+    assert.equal(row.querySelector('img'), null);
+    assert.equal(row.querySelector('b'), null);
+    assert.match(row.textContent, /Ready for you to choose libraries/);
+    assert.equal(row.querySelector('a').getAttribute('href'), '#import-return-one');
+  } finally { dom.window.close(); }
+});
+
+test('Desktop navigation follows a return connection and focuses its view heading', async () => {
+  const dom = page(async () => json([{ id: 'friend', name: 'Home', sharedLibraries: [], returnImportId: 'return-one' }]));
+  try {
+    const d = dom.window.document;
+    dom.window.showAppView('home');
+    assert.equal(d.getElementById('importCard').classList.contains('view-hidden'), true);
+    await dom.window.loadPeers();
+    d.querySelector('a[href="#import-return-one"]').click();
+    assert.equal(d.getElementById('importCard').classList.contains('view-hidden'), false);
+    assert.equal(d.querySelector('.app-nav [aria-current="page"]').dataset.view, 'incoming');
+    assert.equal(d.activeElement.id, 'viewTitle');
+  } finally { dom.window.close(); }
+});
+
+test('Background status refresh preserves unsaved import choices', async () => {
+  let calls = 0;
+  const peer = { id: 'return-one', name: 'Home', selectedLibraryIds: [], availableLibraries: [{ id: 'movies', name: 'Movies' }] };
+  const dom = page(async () => { calls++; return json([peer]); });
+  try {
+    await dom.window.loadImportPeers();
+    const checkbox = dom.window.document.querySelector('[data-libraries] input');
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const before = calls;
+    await dom.window.loadImportPeers(true);
+    assert.equal(calls, before);
+    assert.equal(checkbox.isConnected, true);
+    assert.equal(checkbox.checked, true);
+  } finally { dom.window.close(); }
+});
+
+test('Native Plex sign-in waits for approval without opening a blocked WebView popup', async () => {
+  const dom = page(async () => json({ openedExternally: true }));
+  try {
+    let opened = false;
+    dom.window.open = () => { opened = true; return null; };
+    dom.window.document.getElementById('connectBtn').click();
+    await tick();
+    assert.equal(opened, false);
+    assert.match(dom.window.document.getElementById('connectStatus').textContent, /Approve access/);
+    assert.equal(dom.window.document.getElementById('connectBtn').disabled, true);
+  } finally { dom.window.close(); }
+});
+
+test('A pending return connection continues to receive background status', async () => {
+  let calls = 0;
+  const dom = page(async () => { calls++; return json([{ id: 'pending', name: 'Home', returnSharePending: true, selectedLibraryIds: [], availableLibraries: [] }]); });
+  try {
+    await dom.window.loadImportPeers();
+    await dom.window.loadImportPeers(true);
+    assert.equal(calls, 2);
+  } finally { dom.window.close(); }
+});
+
+test('A failed public-address save can be retried', async () => {
+  const dom = page(async () => { throw new Error('Offline'); });
+  try {
+    const d = dom.window.document;
+    d.getElementById('savePublicUrlBtn').click(); await tick();
+    assert.equal(d.getElementById('savePublicUrlBtn').disabled, false);
+    assert.match(d.getElementById('publicUrlStatus').textContent, /try again/);
+  } finally { dom.window.close(); }
+});

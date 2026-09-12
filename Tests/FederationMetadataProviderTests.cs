@@ -67,6 +67,51 @@ public class FederationMetadataProviderTests : IDisposable
 
     public void Dispose() => _plugin.Dispose();
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SourceArtwork_OnlyCommitsRevisionAfterImageDownloadSucceeds(bool success)
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "poster-source", Kind = ServerKind.Plex, Enabled = true });
+        var entry = _cache.UpsertRaw("Movies", "poster-source", Guid.NewGuid(), new BaseItemDto { Name = "Custom poster", ImageTags = new() { [ImageType.Primary] = "new-upload" } }, 0, "Movie");
+        entry.Metadata.RemoteNativeId = "123";
+        var item = new Movie { Id = Guid.NewGuid() };
+        var source = new Mock<IExternalCatalogProvider>();
+        source.SetupGet(s => s.Kind).Returns(ServerKind.Plex);
+        source.Setup(s => s.GetImagesAsync(It.IsAny<RemoteServer>(), "123", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ExternalImageSet("https://source.example/custom-poster?X-Plex-Token=private-test", null));
+        var provider = new Mock<IProviderManager>();
+        var saved = new List<byte>();
+        provider.Setup(p => p.SaveImage(item, It.IsAny<System.IO.Stream>(), "image/png", ImageType.Primary, 0, It.IsAny<CancellationToken>()))
+            .Returns(async (MediaBrowser.Controller.Entities.BaseItem _, System.IO.Stream stream, string mime, ImageType type, int? index, CancellationToken ct) =>
+            { using var buffer = new System.IO.MemoryStream(); await stream.CopyToAsync(buffer, ct); saved.AddRange(buffer.ToArray()); });
+        var persistence = new Mock<MediaBrowser.Controller.Persistence.IItemPersistenceService>();
+        var library = new Mock<ILibraryManager>();
+        var artwork = new FederationArtworkService(_manager, new ExternalCatalogRegistry(new[] { source.Object }), provider.Object, persistence.Object, NullLogger<FederationArtworkService>.Instance, library.Object);
+        using var http = new HttpClient(new PosterHandler(success));
+        FederationArtworkService.HttpClientOverride = http;
+        try
+        {
+            await artwork.RefreshAsync(item, entry, new MediaBrowser.Controller.Entities.Folder(), CancellationToken.None);
+            Assert.Equal(success, item.ProviderIds.ContainsKey(FederationArtworkService.StampKey));
+            Assert.Equal(success ? new byte[] { 1, 2, 3 } : Array.Empty<byte>(), saved);
+            Assert.DoesNotContain("private-test", string.Join(",", item.ProviderIds.Values));
+        }
+        finally { FederationArtworkService.HttpClientOverride = null; }
+    }
+
+    private sealed class PosterHandler(bool success) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal("/custom-poster", request.RequestUri!.AbsolutePath);
+            var response = new HttpResponseMessage(success ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)
+                { Content = new ByteArrayContent(new byte[] { 1, 2, 3 }) };
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+            return Task.FromResult(response);
+        }
+    }
+
     [Fact]
     public async Task GetMetadata_UsesCachedPlexSourceData_SoTmdbDoesNotIdentify()
     {

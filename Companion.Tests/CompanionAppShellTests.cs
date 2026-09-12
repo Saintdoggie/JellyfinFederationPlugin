@@ -4,6 +4,23 @@ namespace FederationCompanion.Tests;
 
 public class CompanionAppShellTests
 {
+    [Theory]
+    [InlineData("http://127.0.0.1:5000/#access=test", true)]
+    [InlineData("http://127.0.0.1:5001/", false)]
+    [InlineData("http://127.0.0.1:5000/api/app/exit", false)]
+    [InlineData("https://evil.example/", false)]
+    [InlineData("file:///etc/passwd", false)]
+    public void DesktopWindow_RestrictsNavigationToItsOwnDashboard(string url, bool allowed)
+        => Assert.Equal(allowed, DesktopNavigation.IsDashboard(url, 5000));
+
+    [Theory]
+    [InlineData("https://app.plex.tv/auth?pin=test", true)]
+    [InlineData("https://app.plex.tv.evil.example/", false)]
+    [InlineData("https://app.plex.tv/#access=owner", false)]
+    [InlineData("javascript:alert(1)", false)]
+    public void DesktopWindow_OnlyOpensApprovedExternalHttpsLinks(string url, bool allowed)
+        => Assert.Equal(allowed, DesktopNavigation.IsExternalLink(url));
+
     [Fact]
     public void AutostartCommand_QuotesPathAndStartsInTray()
     {

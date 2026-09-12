@@ -199,7 +199,18 @@
   }
   input:checked + .slider { background: var(--blue-strong); }
   input:checked + .slider::before { transform: translateX(18px); }
-  .hidden { display: none; }
+  .app-nav { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px max(20px, calc((100vw - 1024px) / 2)); background: rgba(8,11,16,.96); border-bottom: 1px solid var(--border); }
+  .app-nav a { padding: 9px 12px; color: var(--muted); text-decoration: none; border-radius: 8px; font-size: 14px; }
+  .app-nav a:hover, .app-nav a:focus-visible { background: var(--surface-strong); color: var(--text); }
+  [id] { scroll-margin-top: 110px; }
+  a { color: var(--blue); }
+  .share-directions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+  .share-directions > div { background: rgba(8,11,16,.45); padding: 16px; border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; }
+  .share-directions p { margin: 10px 0; font-size: 14px; }
+  .peer-row.share-peer { flex-direction: column; align-items: stretch; padding: 22px 0; }
+  .peer-download-controls { justify-content: flex-start; }
+  @media (max-width: 700px) { .share-directions { grid-template-columns: 1fr; } }
+  .hidden { display: none !important; }
   .empty-state { color: var(--muted); font-size: 13px; line-height: 1.5; }
   code.cmd {
     display: block;
@@ -274,21 +285,119 @@
     .card { padding: 30px; }
     button { min-height: 50px; font-size: 16px; }
   }
+  /* Desktop application layout; each view keeps its own controls and state. */
+  :root { --blue: #7bd9c1; --blue-strong: #267965; --border-strong: rgba(123,217,193,.35); --shadow: 0 8px 28px rgba(0,0,0,.12); }
+  body { background: #0c1016; }
+  header { position: fixed; inset: 0 auto 0 0; width: 220px; padding: 32px 22px; background: #10171f; border-right: 1px solid var(--border); border-bottom: 0; z-index: 20; }
+  header h1 { font-size: 18px; letter-spacing: -.03em; line-height: 1.25; }
+  header > p { font-size: 12px; line-height: 1.7; margin-top: 20px; }
+  .brand-mark { flex-shrink: 0; width: 36px; height: 36px; border-radius: 11px; background: #203f3a; color: #95ead5; box-shadow: none; }
+  .app-nav { position: fixed; top: 186px; left: 16px; width: 188px; z-index: 21; padding: 0; background: none; border: 0; display: grid; gap: 6px; }
+  .app-nav button { display: flex; gap: 12px; align-items: center; text-align: left; background: none; border: 1px solid transparent; color: #94a4b7; font-size: 14px; min-height: 48px; box-shadow: none; }
+  .app-nav button[aria-current="page"] { color: #a4eddb; background: #203730; border-color: #355047; }
+  .app-nav .nav-icon { width: 18px; font-size: 20px; font-weight: 400; text-align: center; }
+  .sidebar-foot { position: absolute; bottom: 28px; left: 22px; right: 22px; color: #92a9a3; font-size: 12px; line-height: 1.8; }
+  .sidebar-foot span { display: block; color: var(--muted); }
+  main { margin: 0 0 0 220px; max-width: none; padding: 42px clamp(24px, 4vw, 64px) 70px; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; align-content: start; }
+  .view-hidden { display: none !important; }
+  .view-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 10px; }
+  .view-heading h2 { font-size: 32px; font-weight: 650; letter-spacing: -.045em; margin: 6px 0 10px; }
+  .view-heading p { color: var(--muted); font-size: 14px; margin: 0; line-height: 1.65; }
+  .eyebrow { color: #89b8aa; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 750; }
+  .card { padding: 24px; border-radius: 14px; background: #131b25; box-shadow: none; }
+  .card h2 { font-size: 17px; letter-spacing: -.02em; font-weight: 600; }
+  .step-num { display: none; }
+  .card.done { border-color: var(--border); }
+  #homeHero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1.3fr) minmax(210px,1fr); gap: 28px; background: radial-gradient(ellipse at 100% 0, #204a40, transparent 70%), #142822; border-color: #315246; padding: 34px; }
+  #homeHero h2 { font-size: clamp(26px,3vw,38px); letter-spacing: -.045em; max-width: 530px; margin: 12px 0; line-height: 1.15; }
+  #homeHero p { color: #b4c7bf; font-size: 14px; line-height: 1.7; max-width: 440px; }
+  .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 22px; }
+  button { background: #2e806a; border-color: rgba(132,212,186,.2); transition: background .15s, border-color .15s; }
+  button:hover:not(:disabled) { transform: none; filter: brightness(1.12); }
+  button.secondary { background: #18222d; border-color: #344352; }
+  button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid #8edec7; outline-offset: 4px; }
+  .connection-art { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 175px; }
+  .connection-node { display: grid; place-items: center; width: 96px; height: 116px; background: rgba(10,24,21,.6); border: 1px solid #40695b; border-radius: 18px; font-size: 13px; color: #c9e8dc; }
+  .connection-node strong { display: block; font-size: 31px; font-weight: 500; color: #a3e5cd; margin-top: 10px; }
+  .connection-line { color: #81b39e; font-size: 27px; }
+  .overview-stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
+  .overview-stat { padding: 20px 22px; background: #131b25; border: 1px solid var(--border); border-radius: 12px; }
+  .overview-stat strong { font-size: 26px; font-weight: 550; letter-spacing: -.035em; display: block; margin-bottom: 7px; }
+  .overview-stat span { font-size: 12px; color: var(--muted); }
+  #setupChecklist { grid-column: 1 / -1; }
+  .checklist-row { display: flex; gap: 14px; align-items: center; padding: 17px 0; border-top: 1px solid var(--border); }
+  .checklist-row > div { flex: 1; }
+  .checklist-row strong { font-size: 14px; font-weight: 550; }
+  .checklist-row p { font-size: 12px; color: var(--muted); margin: 6px 0 0; line-height: 1.5; }
+  .check-circle { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #24313e; color: #a0b2c2; font-size: 12px; }
+  .checklist-row.complete .check-circle { background: #214838; color: #9ae4bc; }
+  .checklist-row button { min-height: 36px; font-size: 12px; padding: 6px 12px; }
+  #connectCard, #librariesCard { grid-column: 1 / -1; }
+  .library-row { padding: 16px 0; gap: 14px; }
+  .library-row [data-share-state] { margin-left: 12px; color: #97c9ba; background: #233a33; }
+  input[type=text], input[type=password], input[type=url], input[type=search], select { width: 100%; min-height: 44px; padding: 11px 13px; background: #0d141c; color: var(--text); border: 1px solid #344351; border-radius: 8px; font-size: 14px; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--blue); outline-offset: 4px; }
+  .badge { font-weight: 550; padding: 5px 9px; }
+  .share-directions { gap: 12px; margin-top: 14px; }
+  .share-directions > div { background: #101820; border-color: #293a42; }
+  .direction-kicker { color: #85bcaa; font-size: 10px; letter-spacing: .09em; }
+  .peer-download-controls { border-top: 1px solid var(--border); padding-top: 15px; }
+  .peer-row.import-peer { background: #111b24; border: 1px solid #2b403e; border-radius: 12px; padding: 20px; margin-top: 18px; }
+  [data-libraries] label { padding: 12px; margin: 8px 0; background: #17232d; border-radius: 8px; cursor: pointer; }
+  [data-libraries] input { accent-color: #6bc5a8; margin-right: 10px; }
+  .import-remove .app-actions { margin-top: 14px; }
+  .import-remove select { width: auto; max-width: 100%; }
+  details { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px; }
+  summary { cursor: pointer; font-size: 13px; color: #aebccc; padding: 4px 0; }
+  details[open] > summary { margin-bottom: 12px; color: var(--text); }
+  .sync-steps { display: flex; flex-wrap: wrap; gap: 8px; }
+  .sync-steps span { font-size: 11px; padding: 7px 10px; background: #1d2a34; border-radius: 6px; color: #a8b7c7; }
+  .sync-steps .complete { color: #9cdec2; background: #203b31; }
+  .save-hint { min-height: 20px; }
+  #globalStatus { grid-column: 1 / -1; padding: 12px 16px; background: #422f21; border: 1px solid #715133; border-radius: 8px; color: #f0cc9e; font-size: 13px; }
+  .update-banner { position: fixed; bottom: 20px; left: 240px; right: 20px; max-width: none; background: #203a30; z-index: 30; box-shadow: 0 8px 30px #0006; }
+  body.owner-locked .app-nav { opacity: .4; pointer-events: none; }
+  @media (prefers-reduced-motion: no-preference) { .view-enter { animation: appear .18s ease-out; } @keyframes appear { from { opacity: .5; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } } }
+  @media (min-width: 1600px) { main { padding-right: max(60px,calc((100vw - 1440px) / 2)); padding-left: max(60px,calc((100vw - 1440px) / 2)); } }
+  @media (max-width: 950px) { header { width: 180px; padding: 26px 17px; } .app-nav { width: 152px; left: 14px; } main { margin-left: 180px; padding: 30px 22px 60px; } .connection-art { display: none; } #homeHero { grid-template-columns: 1fr; } .update-banner { left: 200px; } }
+  @media (max-width: 700px) { header { position: relative; width: auto; padding: 18px 20px; border-right: 0; } header > p, .sidebar-foot { display: none; } header h1 { font-size: 18px; } .app-nav { position: sticky; top: 0; left: 0; width: 100%; padding: 8px 10px; background: #10171ff5; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 3px; } .app-nav button { flex-direction: column; gap: 4px; justify-content: center; padding: 7px 2px; font-size: 10px; } .app-nav .nav-icon { font-size: 17px; } main { margin-left: 0; padding: 24px 16px 50px; gap: 14px; grid-template-columns: 1fr; } .view-heading h2 { font-size: 28px; } .view-heading { gap: 8px; } .view-heading > button { padding: 7px 10px; min-height: 36px; font-size: 12px; } #homeHero { padding: 24px; } .overview-stats { gap: 8px; } .overview-stat { padding: 15px 12px; } .overview-stat strong { font-size: 23px; } .overview-stat span { font-size: 10px; } .checklist-row { gap: 10px; flex-wrap: wrap; } .checklist-row button { margin-left: 40px; } .share-directions { grid-template-columns: 1fr; } .update-banner { left: 12px; right: 12px; } .card { padding: 20px; } .peer-row.import-peer { padding: 16px; } }
 </style>
 </head>
 <body class="owner-locked">
 <header>
-  <div class="brand-line"><div class="brand-mark" aria-hidden="true">F</div><h1>Federation Companion</h1></div>
-  <p>A private bridge between Plex and Jellyfin. You choose each library and each friend; account credentials stay on this machine.</p>
+  <div class="brand-line"><div class="brand-mark" aria-hidden="true">↔</div><h1>Federation<br>Companion</h1></div>
+  <p>Your libraries.<br>Your people. Connected.</p>
+  <div class="sidebar-foot">Private by choice<span>Only your own media is shared.</span></div>
   <div id="updateBanner" class="update-banner hidden">
     <span id="updateBannerText">A newer Companion is available.</span>
     <button id="updateNowBtn">Update now</button>
   </div>
 </header>
+<nav class="app-nav" aria-label="Companion sections">
+  <button type="button" data-view="home" aria-current="page"><span class="nav-icon" aria-hidden="true">⌂</span> Home</button>
+  <button type="button" data-view="friends"><span class="nav-icon" aria-hidden="true">♧</span> Friends &amp; sharing</button>
+  <button type="button" data-view="incoming"><span class="nav-icon" aria-hidden="true">↓</span> Incoming libraries</button>
+  <button type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</button>
+</nav>
 <main>
-  <div class="card" id="permissionsCard">
+  <div class="view-heading"><div><div class="eyebrow">Your private media network</div><h2 id="viewTitle" tabindex="-1">Welcome home.</h2><p id="viewDescription">A little setup. A lot more to watch together.</p></div><button class="secondary" id="refreshAppBtn">Refresh status</button></div>
+  <div id="globalStatus" class="hidden" role="status" aria-live="polite"></div>
+  <section class="card" id="homeHero" data-app-view="home">
+    <div><span class="eyebrow">Plex + Jellyfin, together</span><h2 id="homeTitle">Good libraries are<br>better with friends.</h2><p id="homeDescription">Connect your Plex server, choose what to share, and invite someone you know. You both stay in control.</p><div class="hero-actions"><button id="nextStepBtn" data-go="connectCard">Connect my Plex</button><button class="secondary" data-view="friends">View friends</button></div></div>
+    <div class="connection-art" aria-hidden="true"><div class="connection-node"><strong>P</strong>Your Plex</div><div class="connection-line">↔</div><div class="connection-node"><strong>J</strong>Their Jellyfin</div></div>
+  </section>
+  <div class="overview-stats" data-app-view="home"><div class="overview-stat"><strong id="friendCount">—</strong><span>Connected friends</span></div><div class="overview-stat"><strong id="sharedCount">—</strong><span>Libraries you share</span></div><div class="overview-stat"><strong id="importCount">—</strong><span>Videos imported</span></div></div>
+  <section class="card" id="setupChecklist" data-app-view="home">
+    <h2>A clear path to watching together</h2>
+    <div class="checklist-row" id="stepPlex"><span class="check-circle">1</span><div><strong>Connect your Plex</strong><p id="stepPlexText">Sign in and choose a server you own.</p></div><button class="secondary" data-go="connectCard">Connect</button></div>
+    <div class="checklist-row" id="stepAddress"><span class="check-circle">2</span><div><strong>Make your app reachable</strong><p id="stepAddressText">Set up a public address so your friend can connect.</p></div><button class="secondary" data-go="publicUrlCard">Set up</button></div>
+    <div class="checklist-row" id="stepFriends"><span class="check-circle">3</span><div><strong>Choose your libraries. Add a friend.</strong><p id="stepFriendsText">Send a request to their Jellyfin address. They approve it.</p></div><button class="secondary" data-view="friends">Choose &amp; invite</button></div>
+    <div class="checklist-row" id="stepImport"><span class="check-circle">4</span><div><strong>Bring their library into Plex</strong><p id="stepImportText">Choose what to import. Companion keeps it current.</p></div><button class="secondary" data-view="incoming">Set up imports</button></div>
+  </section>
+  <section class="card hidden" id="friendsSetupHint" data-app-view="friends"><h2>First, connect your Plex.</h2><p class="status-line">Then choose your libraries and invite your first friend.</p><button data-go="connectCard">Connect my Plex</button></section>
+  <div class="card" id="permissionsCard" data-app-view="settings">
     <h2>What Companion does on this computer</h2>
-    <p class="status-line">Runs in the background as your user and opens a local dashboard. You choose libraries and friends before sharing. Closing this browser leaves Companion running; use Exit Companion to stop it.</p>
+    <p class="status-line">Companion keeps sharing and imports available in the background. Closing the window leaves it running; use Exit Companion to stop it.</p>
     <details>
       <summary>Permissions, downloads and saved data</summary>
       <ul>
@@ -308,17 +417,19 @@
     <div class="inline-form"><input type="text" id="ownerKeyInput" placeholder="Companion owner access key" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="unlockBtn">Unlock</button></div>
     <div class="status-line" id="unlockStatus"></div>
   </div>
-  <div class="direction-heading">
+  <div class="direction-heading view-hidden" data-app-view="none">
     <div class="direction-kicker">Plex → Jellyfin</div>
     <h2>Share your Plex library</h2>
     <p>Connect Plex, choose what is visible, then type your Jellyfin friend's server address. A connect code is optional if they would rather paste one themselves.</p>
   </div>
-  <div class="card" id="tailscaleCard">
+  <div class="card" id="tailscaleCard" data-app-view="settings">
     <h2><span class="step-num">1</span> Tailscale</h2>
     <div id="tailscaleContent"><p class="empty-state">Checking…</p></div>
+    <div class="app-actions"><button id="openTailscaleBtn" class="secondary">Open Tailscale</button><button id="checkTailscaleBtn" class="secondary">Check again</button></div>
+    <div id="tailscaleActionStatus" class="status-line" role="status"></div>
   </div>
 
-  <div class="card" id="publicUrlCard">
+  <div class="card" id="publicUrlCard" data-app-view="settings">
     <h2><span class="step-num">2</span> Your public address</h2>
     <p class="status-line">Needed if friends are outside your house (Starlink, no port forwarding). Funnel publishes this app at <code>https://yourname.tailXXXXX.ts.net</code>. Never paste a 100.x tailnet address. Use Test playback below to check that Funnel reaches this app and can relay video.</p>
     <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
@@ -329,16 +440,16 @@
     <div class="status-line" id="publicUrlStatus"></div>
   </div>
 
-  <div class="card" id="connectCard">
+  <div class="card" id="connectCard" data-app-view="settings">
     <h2><span class="step-num">3</span> Plex Connection</h2>
     <div id="notConnected">
       <p class="empty-state">Not connected yet.</p>
       <button id="connectBtn">Sign in with Plex</button>
-      <p class="status-line">Or connect a local Plex server with its address and token - no plex.tv account required, and your Jellyfin friend still does not need Tailscale.</p>
+      <details><summary>Advanced: connect with a Plex token</summary><p class="status-line">Connect a local Plex server with its address and token.</p>
       <input type="text" id="localPlexUrl" placeholder="http://127.0.0.1:32400">
-      <input type="text" id="localPlexToken" placeholder="Plex token" autocomplete="off">
+      <input type="password" id="localPlexToken" placeholder="Plex token" autocomplete="off">
       <button class="secondary" id="connectLocalBtn">Connect local Plex</button>
-      <div class="status-line" id="connectStatus"></div>
+      </details><div class="status-line" id="connectStatus" role="status" aria-live="polite"></div>
     </div>
     <div id="connected" class="hidden">
       <p><span class="badge ok">Connected</span> <strong id="serverName"></strong></p>
@@ -350,49 +461,49 @@
     </div>
   </div>
 
-  <div class="card hidden" id="librariesCard">
+  <div class="card hidden" id="librariesCard" data-app-view="friends">
     <h2><span class="step-num">4</span> Libraries to share</h2>
-    <div id="libraryList"></div>
+    <p class="status-line">Choose what your connected friends can see. Everything else stays private.</p><div id="libraryList"></div>
   </div>
 
-  <div class="card hidden" id="shareCard">
+  <div class="card hidden" id="shareCard" data-app-view="friends">
     <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. Funnel must point at this app. If Funnel is Plex or HTTPS is down, Companion will not put your Plex token in the request; fix Funnel or explicitly choose Plex Remote Access. They do not need a code, and they do not need to join your Tailscale.</p>
+    <p class="status-line">Type their Jellyfin address. They accept under Federation → Companion on Jellyfin and choose their own libraries to share back. The return connection appears here automatically. You choose what to import into Plex. Both apps must be updated and your public Companion address must be working.</p>
     <div class="inline-form">
       <input type="text" id="inviteUrlInput" placeholder="https://their-jellyfin.example:8096" autocomplete="off" autocapitalize="off" spellcheck="false">
       <button id="inviteFriendBtn">Send share request</button>
     </div>
     <div class="status-line" id="inviteStatus"></div>
-    <p class="status-line" style="margin-top:18px">Optional: generate a code only if they cannot Accept from their dashboard and need to paste one.</p>
+    <details style="margin-top:18px"><summary>Advanced: older servers and connect codes</summary><p class="status-line">For older servers or a friend who cannot receive requests. Only explicitly choose Plex Remote Access if you want a direct Plex connection. It requires a separate Jellyfin import code for the return direction.</p>
     <div class="inline-form">
       <button class="secondary" id="generateCodeBtn">Generate connect code</button>
       <button class="secondary" id="generateDirectCodeBtn">Generate Plex Remote Access code</button>
     </div>
     <code class="cmd hidden" id="connectCode"></code>
     <div class="code-actions hidden" id="connectCodeActions"><button class="secondary" id="copyCodeBtn">Copy code</button></div>
-    <div class="status-line" id="codeStatus"></div>
+    <div class="status-line" id="codeStatus"></div></details>
 
-    <h2 style="margin-top:24px">Pool invites</h2>
+    <details style="margin-top:18px"><summary>Pool invites</summary>
     <p class="status-line">Jellyfin friends can invite this Plex Companion into a Federation pool. Companion reports plugin version <span id="companionPluginVersion">…</span> so those invites are not rejected as an unknown plugin.</p>
     <div id="poolInviteList"><p class="empty-state">No pool invites yet.</p></div>
-    <div class="status-line" id="poolInviteStatus"></div>
+    <div class="status-line" id="poolInviteStatus"></div></details>
 
-    <h2 style="margin-top:24px">Connected friends</h2>
+    <h2 style="margin-top:24px" id="friendsHeading">Your friends · sharing in both directions</h2>
     <div id="peerList"><p class="empty-state">No one connected yet.</p></div>
   </div>
 
-  <div class="direction-heading">
+  <div class="direction-heading view-hidden" data-app-view="none">
     <div class="direction-kicker">Jellyfin → Plex</div>
     <h2>Watch a Jellyfin friend's library in Plex</h2>
-    <p>Paste the code from your friend once. Companion keeps Plex's library files current and authorizes each stream only when you press Play.</p>
+    <p>Connected friends appear here when their Jellyfin server offers a return connection. Choose libraries, sync the catalog, then add them to Plex. Each side shares only media it owns.</p>
   </div>
 
-  <div class="card" id="importCard">
+  <div class="card" id="importCard" data-app-view="incoming">
     <h2><span class="step-num">1</span> Import from a Jellyfin friend</h2>
-    <p class="status-line">Paste a connect code from their Jellyfin Federation Companion tab. Choose which of their shared libraries to import. Plex needs the media mount below to analyze video/audio and play these titles; a catalog or a .strm link alone is not playable media.</p>
-    <div class="flow-note"><span aria-hidden="true">🔒</span><span>The long-lived Jellyfin credential stays inside Companion. Plex receives only a stable link cryptographically bound to one exact movie or episode.</span></div>
+    <p class="status-line">Your friends' shared libraries appear below. Choose what you want in Plex; Companion keeps those imports up to date. Set up the media folder once so Plex can read and play the video files.</p>
+    <details><summary>Connect an older Jellyfin server with a code</summary><p class="status-line">Use this only if your friend cannot offer a return connection from Jellyfin.</p>
     <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Choose libraries</button></div>
-    <div id="importLibraryPicker"></div><div class="status-line" id="importConnectStatus" role="status" aria-live="polite"></div>
+    <div id="importLibraryPicker"></div></details><div class="status-line" id="importConnectStatus" role="status" aria-live="polite"></div>
     <p class="status-line">Set up the media folder once to enable the read-only helper. After that, Companion restores it when you launch the app. Keep Companion running while Plex scans or plays, then choose Add to Plex below.</p>
     <div id="localMountStatus" class="status-line" role="status" aria-live="polite"></div>
     <p id="driverHint" class="status-line hidden">Windows needs to approve a one-time media driver install. Companion does the rest.</p>
@@ -422,13 +533,13 @@
     <div id="importPeerList"><p class="empty-state">Not importing from anyone yet.</p></div>
   </div>
 
-  <div class="card" id="appCard">
+  <div class="card" id="appCard" data-app-view="settings">
     <h2><span class="step-num">⚙</span> Companion app</h2>
     <p class="status-line">Companion keeps running in the background so Plex can reach the media folder and friends can connect at any time. On Windows it lives in the notification area (tray): right-click the icon to open this page, start or stop the media folder, copy the owner key, or exit.</p>
     <div id="appInfo" class="status-line">Checking…</div>
     <label class="checkbox-line" id="autostartRow"><input type="checkbox" id="autostartToggle"> Start Companion when I sign in</label>
     <div class="app-actions">
-      <button class="secondary" id="openDashboardBtn">Open dashboard in browser</button>
+      <button class="secondary" id="openDashboardBtn">Open Companion</button>
       <button class="secondary" id="stopMountBtn">Stop media folder</button>
       <button class="danger" id="exitCompanionBtn">Exit Companion</button>
     </div>
@@ -498,6 +609,121 @@ const autostartToggle = document.getElementById('autostartToggle');
 const autostartRow = document.getElementById('autostartRow');
 const appStatus = document.getElementById('appStatus');
 let knownPlexLibraries = [];
+let currentView = 'home';
+let homeState = { serverConnected: false, serverName: '', libraries: [], peerCount: 0 };
+let incomingState = [];
+let mediaFolderReady = false;
+let publicAddressReady = false;
+const viewCopy = {
+  home: ['Welcome home.', 'Your library connections, all in one place.'],
+  friends: ['Better with friends.', 'Choose what you share. See what comes back.'],
+  incoming: ['More to watch.', 'Bring the libraries your friends share into your Plex.'],
+  settings: ['Make yourself at home.', 'Your server, connection, and background app preferences.']
+};
+
+function showAppView(view, targetId, focusHeading = false) {
+  if (!viewCopy[view]) return;
+  currentView = view;
+  document.querySelectorAll('[data-app-view]').forEach(el => {
+    const visible = el.dataset.appView === view;
+    el.classList.toggle('view-hidden', !visible);
+    el.classList.toggle('view-enter', visible);
+  });
+  document.querySelectorAll('.app-nav [data-view]').forEach(button => {
+    if (button.dataset.view === view) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  const title = document.getElementById('viewTitle');
+  title.textContent = viewCopy[view][0];
+  document.getElementById('viewDescription').textContent = viewCopy[view][1];
+  if (focusHeading) title.focus({ preventScroll: true });
+  const target = targetId && document.getElementById(targetId);
+  if (target?.scrollIntoView) target.scrollIntoView({ block: 'start' });
+  else if (document.documentElement.scrollTo) document.documentElement.scrollTo({ top: 0 });
+}
+
+function navigateToControl(id) {
+  const element = document.getElementById(id);
+  const view = element?.closest('[data-app-view]')?.dataset.appView;
+  if (view) showAppView(view, id, true);
+}
+
+document.addEventListener('click', event => {
+  const viewButton = event.target.closest('[data-view]');
+  const goButton = event.target.closest('[data-go]');
+  const returnLink = event.target.closest('a[href^="#import-"]');
+  if (viewButton) showAppView(viewButton.dataset.view, null, true);
+  else if (goButton) navigateToControl(goButton.dataset.go);
+  else if (returnLink) {
+    event.preventDefault();
+    showAppView('incoming', returnLink.getAttribute('href').slice(1), true);
+  }
+});
+
+function updateHome() {
+  const libraries = homeState.libraries || [];
+  const shared = libraries.filter(l => l.shared && !l.imported).length;
+  const friends = homeState.peerCount || 0;
+  const videos = incomingState.reduce((sum, p) => sum + (Number(p.mountedItemCount) || 0), 0);
+  const pending = incomingState.some(p => p.returnSharePending);
+  const attached = incomingState.some(p => p.plexMovieSectionKey || p.plexShowSectionKey);
+  document.getElementById('friendsSetupHint').classList.toggle('hidden', !!homeState.serverConnected);
+  document.getElementById('friendCount').textContent = String(friends);
+  document.getElementById('sharedCount').textContent = String(shared);
+  document.getElementById('importCount').textContent = videos.toLocaleString();
+  const steps = [
+    ['stepPlex', !!homeState.serverConnected, homeState.serverConnected ? `${homeState.serverName || 'Your Plex'} is connected.` : 'Sign in and choose a server you own.'],
+    ['stepAddress', publicAddressReady, publicAddressReady ? 'Public address saved. Use Test playback connection to check reachability.' : 'Set up a public address so your friend can connect.'],
+    ['stepFriends', friends > 0, friends ? `${friends} connected friend${friends === 1 ? '' : 's'} · ${shared} shared librar${shared === 1 ? 'y' : 'ies'}.` : 'Choose your own libraries and send a friend request.'],
+    ['stepImport', attached && mediaFolderReady, pending ? 'A friend is ready to share back. Choose your libraries.' : attached && mediaFolderReady ? 'Media folder ready and libraries attached. Plex handles scanning and playback.' : 'Choose imports and enable the media folder to watch in Plex.']
+  ];
+  steps.forEach(([id, complete, message], index) => {
+    const row = document.getElementById(id);
+    row.classList.toggle('complete', complete);
+    row.querySelector('.check-circle').textContent = complete ? '✓' : String(index + 1);
+    document.getElementById(id + 'Text').textContent = message;
+  });
+  let title = 'Good libraries are better with friends.';
+  let description = 'Connect your Plex server, choose what to share, and invite someone you know. You both stay in control.';
+  let action = 'Connect my Plex'; let target = 'connectCard';
+  if (homeState.serverConnected) {
+    if (!publicAddressReady) {
+      title = 'Your Plex is connected.'; description = 'Next, give Companion a public address so your friend can reach it from their home.'; action = 'Set up my connection'; target = 'publicUrlCard';
+    } else if (!shared || !friends) {
+      title = 'Make room for your people.'; description = 'Choose the libraries you want to share, then send a request to your friend’s Jellyfin server.'; action = 'Choose libraries & invite'; target = 'librariesCard';
+    } else if (pending || (incomingState.length && (!attached || !mediaFolderReady))) {
+      title = pending ? 'Your friend is sharing back.' : 'Your next watch is almost here.'; description = 'Choose your incoming libraries and finish the media folder setup. Companion keeps everything you select in sync.'; action = 'Finish my imports'; target = 'importCard';
+    } else {
+      title = 'Your libraries, connected.'; description = 'Companion keeps your selected imports current in the background. You can change sharing permissions whenever you need.'; action = 'Manage my friends'; target = 'shareCard';
+    }
+  }
+  document.getElementById('homeTitle').textContent = title;
+  document.getElementById('homeDescription').textContent = description;
+  const button = document.getElementById('nextStepBtn'); button.textContent = action; button.dataset.go = target;
+}
+
+function reportConnectionError(message) {
+  const output = document.getElementById('globalStatus');
+  output.textContent = message;
+  output.classList.toggle('hidden', !message);
+}
+
+let refreshAppBusy = false;
+async function refreshApp() {
+  if (refreshAppBusy) return;
+  const button = document.getElementById('refreshAppBtn');
+  refreshAppBusy = true; button.disabled = true; button.textContent = 'Refreshing…';
+  try {
+    await Promise.all([loadStatus(), loadPublicUrl(), loadMountStatus(), loadAppInfo()]);
+    reportConnectionError('');
+  } catch { reportConnectionError('Companion could not refresh everything. Check that the app is running, then choose Refresh status to retry.'); }
+  finally { refreshAppBusy = false; button.disabled = false; button.textContent = 'Refresh status'; }
+}
+document.getElementById('refreshAppBtn').addEventListener('click', refreshApp);
+document.addEventListener('change', event => {
+  const row = event.target.closest('.peer-row');
+  if (row) row.dataset.editing = 'true';
+});
 
 function formatUptime(totalSeconds) {
   const seconds = Math.max(0, Number(totalSeconds) || 0);
@@ -540,23 +766,47 @@ async function loadTailscale() {
     } else {
       tailscaleContent.innerHTML = `<span class="badge warn">Not installed</span><p class="status-line">Copy and run this, then sign in when your browser opens:</p><code class="cmd">${escapeHtml(data.installCommand)}</code>`;
     }
+    if (/Windows/i.test(navigator.userAgent)) {
+      if (!data.installed) tailscaleContent.innerHTML = '<span class="badge warn">One-time setup</span><p class="status-line">Install Tailscale, then sign in. Companion uses it to connect your libraries across homes.</p><a href="https://tailscale.com/download/windows" target="_blank" rel="noopener">Download Tailscale for Windows ↗</a>';
+      else if (!data.signedIn) tailscaleContent.innerHTML = '<span class="badge warn">Sign-in needed</span><p class="status-line">Open Tailscale and sign in. Then return here and choose Check again.</p>';
+    }
   } catch (e) {
     tailscaleContent.innerHTML = '<p class="status-line error">Could not check Tailscale. Refresh this page after Companion finishes starting.</p>';
   }
 }
 
+document.getElementById('openTailscaleBtn').addEventListener('click', async event => {
+  const output = document.getElementById('tailscaleActionStatus');
+  event.target.disabled = true;
+  try {
+    const res = await apiFetch('/api/tailscale/open', { method: 'POST' });
+    const data = await res.json(); output.textContent = data.message || data.error;
+  } catch { output.textContent = 'Could not open Tailscale. Open it from your Start menu and sign in.'; }
+  finally { event.target.disabled = false; }
+});
+document.getElementById('checkTailscaleBtn').addEventListener('click', async event => {
+  event.target.disabled = true;
+  try { await loadTailscale(); }
+  finally { event.target.disabled = false; }
+});
+
 async function loadPublicUrl() {
   const res = await apiFetch('/api/public-url');
+  if (!res.ok) throw new Error('Could not read your public address.');
   const data = await res.json();
+  publicAddressReady = !!data.publicUrl;
   if (data.publicUrl) {
     publicUrlInput.value = data.publicUrl;
     document.getElementById('publicUrlCard').classList.add('done');
   }
+  updateHome();
 }
 
 async function loadStatus() {
   const res = await apiFetch('/api/status');
+  if (!res.ok) throw new Error('Companion could not read your server status.');
   const data = await res.json();
+  homeState = data;
   knownPlexLibraries = data.libraries || [];
   if (data.plexVisibleImportRoot) {
     plexVisibleRootInput.value = data.plexVisibleImportRoot;
@@ -569,9 +819,7 @@ async function loadStatus() {
     shareCard.classList.remove('hidden');
     document.getElementById('connectCard').classList.add('done');
     renderLibraries(data.libraries || []);
-    loadPlexServers(data.serverMachineIdentifier);
-    loadPeers();
-    loadPoolInvites();
+    await Promise.all([loadPlexServers(data.serverMachineIdentifier), loadPeers(), loadPoolInvites()]);
     const verEl = document.getElementById('companionPluginVersion');
     if (verEl && data.federationPluginVersion) verEl.textContent = data.federationPluginVersion;
   } else {
@@ -581,7 +829,8 @@ async function loadStatus() {
     shareCard.classList.add('hidden');
   }
 
-  loadImportPeers();
+  await loadImportPeers();
+  updateHome();
 }
 
 async function loadPlexServers(selectedId) {
@@ -599,11 +848,18 @@ async function loadPlexServers(selectedId) {
   }
 }
 
-async function loadImportPeers() {
+async function loadImportPeers(quiet = false) {
+  if (quiet && (importPeerList.querySelector('[data-editing], button:disabled:not([data-pending])') || importPeerList.contains(document.activeElement))) return;
   const res = await apiFetch('/api/import/peers');
+  if (!res.ok) throw new Error('Could not read incoming libraries.');
   const peers = await res.json();
+  incomingState = peers;
+  updateHome();
+  const snapshot = JSON.stringify(peers) + mediaFolderReady;
+  if (quiet && importPeerList.dataset.snapshot === snapshot) return;
+  importPeerList.dataset.snapshot = snapshot;
   if (peers.length === 0) {
-    importPeerList.innerHTML = '<p class="empty-state">Not importing from anyone yet.</p>';
+    importPeerList.innerHTML = '<div class="empty-state" style="padding:28px 0"><strong>Your next library starts with a friend.</strong><p>Send a request from Friends &amp; sharing. Once they accept and offer a return connection, it will appear here.</p><button class="secondary" data-view="friends">Go to friends</button></div>';
     return;
   }
 
@@ -611,10 +867,11 @@ async function loadImportPeers() {
   for (const peer of peers) {
     const row = document.createElement('div');
     row.className = 'peer-row import-peer';
+    row.id = 'import-' + peer.id;
 
     const lastSync = peer.lastSyncUtc ? new Date(peer.lastSyncUtc).toLocaleString() : 'never';
     const errorLine = peer.lastError ? `<div class="status-line error">${escapeHtml(peer.lastError)}</div>` : '';
-    const syncBadge = peer.lastError
+    const syncBadge = peer.returnSharePending ? '<span class="badge warn">Choose libraries to start</span>' : peer.lastError
       ? '<span class="badge warn">Needs attention</span>'
       : (peer.lastSyncUtc ? '<span class="badge ok">Catalog synced</span>' : '<span class="badge warn">First sync pending</span>');
     const inPlex = peer.plexMovieSectionKey || peer.plexShowSectionKey
@@ -625,25 +882,48 @@ async function loadImportPeers() {
       <div class="peer-header">
         <div><strong>${escapeHtml(peer.name)}</strong> ${syncBadge} ${inPlex}</div>
         <div class="peer-actions">
-          <button class="secondary" data-action="add-plex" data-id="${escapeHtml(peer.id)}">Add to Plex</button>
-          <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}">Sync now</button>
-          <select aria-label="Remove options" data-cleanup="${escapeHtml(peer.id)}"><option value="keep">Keep legacy links</option><option value="remove">Remove managed legacy links</option></select><button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove</button>
+          <button class="secondary" data-action="add-plex" data-id="${escapeHtml(peer.id)}" ${peer.returnSharePending ? 'disabled data-pending' : ''}>Add to Plex</button>
+          <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}" ${peer.returnSharePending ? 'disabled data-pending' : ''}>Sync now</button>
         </div>
       </div>
-      <div class="peer-meta"><span>Last synced: ${lastSync}</span><span>${peer.lastItemCount} item(s)</span></div>
+      <div class="status-line">${escapeHtml(peer.url || '')}</div><div class="peer-meta"><span>Last synced: ${lastSync}</span><span>${peer.lastItemCount} item(s)</span></div>
+      <div class="sync-steps" aria-label="Import progress"><span class="${peer.returnSharePending ? '' : 'complete'}">1 · Libraries selected</span><span class="${peer.lastSyncUtc && !peer.lastError ? 'complete' : ''}">2 · Catalog synced</span><span class="${mediaFolderReady ? 'complete' : ''}">3 · Media folder ready</span><span class="${peer.plexMovieSectionKey || peer.plexShowSectionKey ? 'complete' : ''}">4 · Added to Plex</span></div>
       <div class="status-line">${peer.mountedItemCount || 0} item(s) have video file information for the media mount. ${peer.lastItemCount > (peer.mountedItemCount || 0) ? 'Some items need a newer Federation plugin on the source server or a fresh sync.' : ''}</div>
-      <details><summary>Libraries to import</summary><div data-libraries="${escapeHtml(peer.id)}">${(peer.availableLibraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}" ${(peer.selectedLibraryIds == null || peer.selectedLibraryIds.includes(lib.id)) ? 'checked' : ''}> ${escapeHtml(lib.name)}</label>`).join('')}</div><button class="secondary" data-action="libraries" data-id="${escapeHtml(peer.id)}">Save selection and sync</button></details>
+      <details ${peer.returnSharePending ? 'open' : ''}><summary>Libraries to import</summary><p class="status-line">Only libraries their Jellyfin owner has shared with you appear here. Unchecked libraries stay out of Plex.</p><button class="secondary" data-action="preview-return" data-id="${escapeHtml(peer.id)}">Refresh available libraries</button><div data-preview-status class="status-line" role="status"></div><div data-libraries="${escapeHtml(peer.id)}">${(peer.availableLibraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}" ${(peer.selectedLibraryIds == null || peer.selectedLibraryIds.includes(lib.id)) ? 'checked' : ''}> ${escapeHtml(lib.name)}</label>`).join('')}</div><button class="secondary" data-action="libraries" data-id="${escapeHtml(peer.id)}">Save selection and sync</button></details>
       <details><summary>Source titles and import issues (${peer.importIssueCount || 0})</summary><p class="status-line">Only directly owned source items belong here. Season and episode numbers follow the source metadata.</p><input data-catalog-search type="search" placeholder="Filter by movie or show" aria-label="Filter source titles"><button class="secondary" data-action="catalog" data-id="${escapeHtml(peer.id)}">Check source catalog</button><div data-catalog-results class="status-line"></div></details>
+      <details class="import-remove"><summary>Remove this import</summary><p class="status-line">Stops importing this friend's media. Their original files stay on their server.</p><div class="app-actions"><select aria-label="Remove options" data-cleanup="${escapeHtml(peer.id)}"><option value="keep">Keep legacy links</option><option value="remove">Remove managed legacy links</option></select><button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove import</button></div></details>
       ${errorLine}`;
     importPeerList.appendChild(row);
   }
 
+  importPeerList.querySelectorAll('button[data-action="preview-return"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.peer-row');
+      const status = row.querySelector('[data-preview-status]');
+      btn.disabled = true; status.textContent = 'Reading their sharing permissions…';
+      try {
+        const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/libraries`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not read libraries.');
+        const picker = row.querySelector('[data-libraries]');
+        picker.replaceChildren();
+        for (const library of data.availableLibraries || []) {
+          const label = document.createElement('label'); label.style.display = 'block';
+          const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = library.id;
+          checkbox.checked = !data.returnSharePending && (data.selectedLibraryIds == null || data.selectedLibraryIds.includes(library.id));
+          label.append(checkbox, ' ' + library.name); picker.append(label);
+        }
+        status.textContent = picker.children.length ? 'Select what to import, then save and sync.' : 'Nothing shared yet. Ask them to open Federation → Friends → Manage → Sharing on Jellyfin, select their own libraries, then retry here.';
+      } catch (e) { status.textContent = e.message; }
+      finally { btn.disabled = false; }
+    });
+  });
   importPeerList.querySelectorAll('button[data-action="sync"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      try { await apiFetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' }); await loadImportPeers(); }
+      btn.disabled = true; btn.textContent = 'Syncing…';
+      try { const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/sync`, { method: 'POST' }); if (!res.ok) throw new Error(); await loadImportPeers(); }
       catch { importConnectStatus.textContent = 'Sync failed. Check Companion is running and retry.'; }
-      finally { btn.disabled = false; }
+      finally { btn.disabled = false; btn.textContent = 'Sync now'; }
     });
   });
   importPeerList.querySelectorAll('button[data-action="remove"]').forEach(btn => {
@@ -677,15 +957,26 @@ async function loadImportPeers() {
   });
   importPeerList.querySelectorAll('button[data-action="libraries"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const libraryIds = Array.from(btn.closest('.peer-row').querySelectorAll('[data-libraries] input:checked'), cb => cb.value);
+      const row = btn.closest('.peer-row');
+      const output = row.querySelector('[data-preview-status]');
+      const libraryIds = Array.from(row.querySelectorAll('[data-libraries] input:checked'), cb => cb.value);
       if (!libraryIds.length && !confirm('Remove all imported titles for this friend from the mount and managed link export?')) return;
-      btn.disabled = true;
+      btn.disabled = true; btn.textContent = 'Importing…';
+      output.textContent = 'Reading the libraries you selected. Larger libraries can take a few minutes.';
+      row.setAttribute('aria-busy', 'true');
       try {
         const res = await apiFetch(`/api/import/peers/${btn.dataset.id}/libraries`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ libraryIds }) });
-        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!res.ok || data.lastError) throw new Error(data.error || data.lastError || 'Could not save your selection. Retry when your friend is online.');
+        if (mediaFolderReady && data.mountedItemCount > 0) {
+          output.textContent = 'Catalog saved. Adding the selected media to Plex…';
+          const attached = await apiFetch(`/api/import/peers/${btn.dataset.id}/add-to-plex`, { method: 'POST' });
+          const result = await attached.json();
+          if (!attached.ok) throw new Error(result.error || 'Catalog saved. Choose Add to Plex to retry the last step.');
+        }
         await loadImportPeers();
-      } catch { importConnectStatus.textContent = 'Could not save the selection. Check the friend is online and retry.'; }
-      finally { btn.disabled = false; }
+      } catch (e) { output.textContent = e.message; }
+      finally { btn.disabled = false; btn.textContent = 'Save selection and sync'; row.removeAttribute('aria-busy'); }
     });
   });
   importPeerList.querySelectorAll('button[data-action="add-plex"]').forEach(btn => {
@@ -745,9 +1036,16 @@ async function loadPoolInvites() {
   }
 }
 
-async function loadPeers() {
+async function loadPeers(quiet = false) {
+  if (quiet && (peerList.querySelector('[data-editing], button:disabled') || peerList.contains(document.activeElement))) return;
   const res = await apiFetch('/api/peers');
+  if (!res.ok) throw new Error('Could not read connected friends.');
   const peers = await res.json();
+  homeState.peerCount = peers.length;
+  updateHome();
+  const snapshot = JSON.stringify(peers);
+  if (quiet && peerList.dataset.snapshot === snapshot) return;
+  peerList.dataset.snapshot = snapshot;
   if (peers.length === 0) {
     peerList.innerHTML = '<p class="empty-state">No one connected yet.</p>';
     return;
@@ -756,7 +1054,7 @@ async function loadPeers() {
   for (const peer of peers) {
     const row = document.createElement('div');
     row.className = 'peer-row share-peer';
-    row.innerHTML = `<div><strong>${escapeHtml(peer.name)}</strong><div class="status-line">Playback remains available while shared. Downloads are separate.</div></div>
+    row.innerHTML = `<div><strong>${escapeHtml(peer.name)}</strong><div class="share-directions"><div><span class="direction-kicker">Your Plex → ${escapeHtml(peer.name)}</span><p>${(peer.sharedLibraries || []).map(escapeHtml).join(' · ') || 'No libraries shared'}</p><span class="status-line">Change your library switches above. Imported libraries cannot be shared onward.</span></div><div><span class="direction-kicker">Their Jellyfin → your Plex</span><p>${peer.returnImportId ? (peer.returnSharePending ? 'Ready for you to choose libraries' : 'Return import connected') : 'Waiting for their return connection'}</p>${peer.returnImportId ? `<a href="#import-${escapeHtml(peer.returnImportId)}">Choose libraries and check import →</a>` : '<span class="status-line">Ask the Jellyfin owner to click Set up / repair two-way sharing on your friend card.</span>'}</div></div></div>
       <div class="peer-download-controls">
         <label><input type="checkbox" data-action="allow-download" data-id="${escapeHtml(peer.id)}" ${peer.allowDownloads ? 'checked' : ''}> Allow individual downloads</label>
         <label><input type="checkbox" data-action="allow-bulk" data-id="${escapeHtml(peer.id)}" ${peer.allowBulkDownloads ? 'checked' : ''} ${peer.allowDownloads ? '' : 'disabled'}> Allow bulk downloads</label>
@@ -780,20 +1078,26 @@ async function loadPeers() {
       const allow = row.querySelector('input[data-action="allow-download"]');
       const bulk = row.querySelector('input[data-action="allow-bulk"]');
       btn.disabled = true;
-      await apiFetch(`/api/peers/${btn.dataset.id}/download-access`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowDownloads: !!allow?.checked, allowBulkDownloads: !!bulk?.checked })
-      });
-      btn.textContent = 'Saved';
+      try {
+        const res = await apiFetch(`/api/peers/${btn.dataset.id}/download-access`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allowDownloads: !!allow?.checked, allowBulkDownloads: !!bulk?.checked })
+        });
+        if (!res.ok) throw new Error();
+        btn.textContent = 'Saved';
+      } catch { btn.textContent = 'Failed — retry'; }
       setTimeout(() => { btn.textContent = 'Save access'; btn.disabled = false; }, 1200);
     });
   });
   peerList.querySelectorAll('button[data-action="revoke"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Revoke this Jellyfin server? It will immediately lose access to your Plex connection.')) return;
-      await apiFetch(`/api/peers/${btn.dataset.id}`, { method: 'DELETE' });
-      loadPeers();
+      if (!confirm('Disconnect this friend in both directions? They will lose Plex access and their imported media will leave your mount.')) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`/api/peers/${btn.dataset.id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error();
+        await loadPeers(); await loadImportPeers();
+      } catch { btn.textContent = 'Failed — retry'; btn.disabled = false; }
     });
   });
 }
@@ -808,7 +1112,7 @@ function renderLibraries(libraries) {
     const row = document.createElement('div');
     row.className = 'library-row';
     row.innerHTML = `
-      <div><span class="library-title">${escapeHtml(lib.title)}</span><span class="library-type">${lib.type}</span></div>
+      <div><span class="library-title">${escapeHtml(lib.title)}</span><span class="library-type">${escapeHtml(lib.type)}</span><span class="badge" data-share-state>${lib.imported ? 'Imported · cannot share' : lib.shared ? 'Shared' : 'Private'}</span></div>
       <label class="switch">
         <input type="checkbox" aria-label="Share ${escapeHtml(lib.title)}" data-key="${escapeHtml(lib.sectionKey)}" ${lib.shared ? 'checked' : ''} ${lib.imported ? 'disabled title="Imported media cannot be shared onward"' : ''}>
         <span class="slider"></span>
@@ -822,9 +1126,14 @@ function renderLibraries(libraries) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionKey: cb.dataset.key, shared: wanted })
-      }); if (!res.ok) throw new Error(); }
+      }); if (!res.ok) throw new Error(); cb.closest('.library-row').querySelector('[data-share-state]').textContent = wanted ? 'Shared' : 'Private';
+        const library = (homeState.libraries || []).find(lib => String(lib.sectionKey) === cb.dataset.key);
+        if (library) library.shared = wanted;
+        updateHome();
+      }
       catch { cb.checked = !wanted; serverSelectStatus.textContent = 'Sharing change failed. Please retry.'; }
       finally { cb.disabled = false; }
+      loadPeers(true).catch(() => reportConnectionError('Your sharing choice was saved. Refresh status to update the friend list.'));
     });
   });
 }
@@ -868,12 +1177,12 @@ connectBtn.addEventListener('click', async () => {
     const res = await apiFetch('/api/plex/start-signin', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Plex sign-in could not start.');
-    const popup = window.open(data.signInUrl, '_blank');
+    const popup = data.openedExternally ? null : window.open(data.signInUrl, '_blank');
     if (popup) popup.opener = null;
-    connectStatus.textContent = popup
+    connectStatus.textContent = (data.openedExternally || popup)
       ? 'Approve access in the Plex tab. This page will finish automatically…'
       : 'Your browser blocked the Plex tab. Allow pop-ups, then try again.';
-    if (!popup) { connectBtn.disabled = false; return; }
+    if (!data.openedExternally && !popup) { connectBtn.disabled = false; return; }
 
     let attempts = 0;
     const poll = setInterval(async () => {
@@ -933,15 +1242,21 @@ plexServerSelect.addEventListener('change', async () => {
 
 savePublicUrlBtn.addEventListener('click', async () => {
   savePublicUrlBtn.disabled = true;
-  const res = await apiFetch('/api/public-url', {
+  try {
+    const res = await apiFetch('/api/public-url', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: publicUrlInput.value.trim() })
   });
-  const data = await res.json();
-  publicUrlStatus.textContent = res.ok ? 'Saved.' : (data.error || 'Could not save.');
-  document.getElementById('publicUrlCard').classList.toggle('done', res.ok);
-  savePublicUrlBtn.disabled = false;
+    const data = await res.json();
+    publicUrlStatus.textContent = res.ok ? 'Saved.' : (data.error || 'Could not save.');
+    if (res.ok) {
+      publicAddressReady = !!publicUrlInput.value.trim();
+      document.getElementById('publicUrlCard').classList.toggle('done', publicAddressReady);
+      updateHome();
+    }
+  } catch { publicUrlStatus.textContent = 'Could not save the address. Check your connection and try again.'; }
+  finally { savePublicUrlBtn.disabled = false; }
 });
 
 enableFunnelBtn.addEventListener('click', async () => {
@@ -952,6 +1267,8 @@ enableFunnelBtn.addEventListener('click', async () => {
     const data = await res.json();
     if (res.ok) {
       publicUrlInput.value = data.funnelUrl || '';
+      publicAddressReady = !!data.funnelUrl;
+      updateHome();
       document.getElementById('publicUrlCard').classList.add('done');
       publicUrlStatus.textContent = data.message || 'Funnel is on.';
     } else {
@@ -1104,6 +1421,8 @@ async function loadMountStatus() {
     const res = await apiFetch('/api/media-mount/status');
     if (!res.ok) throw new Error();
     const data = await res.json();
+    mediaFolderReady = !!data.ready;
+    updateHome();
     document.getElementById('localMountStatus').textContent = data.ready
       ? 'Media mount is readable.' + (data.autoStartMediaMount ? ' Companion will restore it after a restart.' : ' Keep your mount process running.')
       : data.message;
@@ -1126,6 +1445,8 @@ document.getElementById('startLocalMountBtn').addEventListener('click', async ev
     const res = await apiFetch('/api/media-mount/start', { method: 'POST' });
     if (!res.ok) throw new Error();
     const data = await res.json(); output.textContent = data.message;
+    await loadMountStatus();
+    await loadImportPeers(true);
   } catch { output.textContent = 'Could not start the mount. Check Companion is running, then retry.'; }
   finally { event.target.disabled = false; }
 });
@@ -1157,7 +1478,7 @@ document.getElementById('openDashboardBtn').addEventListener('click', async () =
   try {
     const res = await apiFetch('/api/app/open-dashboard', { method: 'POST' });
     const data = await res.json();
-    appStatus.textContent = res.ok ? 'Opened in your default browser.' : (data.error || 'Could not open a browser.');
+    appStatus.textContent = res.ok ? 'Companion opened.' : (data.error || 'Could not open Companion.');
   } catch { appStatus.textContent = 'Could not open a browser.'; }
 });
 
@@ -1233,6 +1554,10 @@ async function unlockOwner() {
     await Promise.all([loadTailscale(), loadPublicUrl(), loadStatus(), loadUpdateStatus(), loadMountStatus(), loadAppInfo()]);
     if (!window._federationMountPoll) window._federationMountPoll = setInterval(() => { if (!document.hidden) loadMountStatus(); }, 30000);
     if (!window._federationAppPoll) window._federationAppPoll = setInterval(() => { if (!document.hidden) loadAppInfo(); }, 30000);
+    if (!window._federationFriendPoll) window._federationFriendPoll = setInterval(() => {
+      if (!document.hidden) Promise.all([loadPeers(true), loadImportPeers(true)])
+        .catch(() => reportConnectionError('Could not check your friends. Your saved choices are kept. Choose Refresh status to retry.'));
+    }, 30000);
   } catch (e) {
     unlockStatus.textContent = e.message || 'Could not unlock Companion.';
   } finally {
@@ -1248,6 +1573,7 @@ ownerKeyInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') unlockBtn.click();
 });
 
+showAppView('home');
 if (ownerKey) unlockOwner();
 </script>
 </body>

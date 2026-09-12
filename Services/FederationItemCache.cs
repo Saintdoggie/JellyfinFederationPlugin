@@ -839,6 +839,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.CommunityRating = remoteItem.CommunityRating ?? Metadata.CommunityRating;
                 Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
                 Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
+                Metadata.PrimaryImageTag = remoteItem.ImageTags?.GetValueOrDefault(ImageType.Primary) ?? Metadata.PrimaryImageTag;
+                Metadata.BackdropImageTag = remoteItem.BackdropImageTags?.FirstOrDefault() ?? Metadata.BackdropImageTag;
                 Metadata.Container = remoteItem.Container ?? Metadata.Container;
                 Metadata.MediaStreams = remoteItem.MediaStreams ?? Metadata.MediaStreams;
                 Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;
@@ -909,6 +911,10 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederatedItemMetadata
     {
+        public string? PrimaryImageTag { get; set; }
+
+        public string? BackdropImageTag { get; set; }
+
         public string Name { get; set; } = string.Empty;
 
         public string? Overview { get; set; }

@@ -5,6 +5,30 @@ namespace FederationCompanion.Tests;
 public class CompanionVersionTests
 {
     [Fact]
+    public async Task PreviewUpdater_RefusesRollingCheckAndApplyWithoutNetwork()
+    {
+        using var handler = new NoNetworkHandler();
+        using var http = new HttpClient(handler);
+        var updater = new CompanionUpdater(http, preview: true);
+        var status = await updater.CheckAsync(CancellationToken.None);
+        Assert.False(status.UpdateAvailable);
+        var result = await updater.ApplyAsync(CancellationToken.None);
+        Assert.False(result.Success);
+        Assert.Contains("preview", result.Message);
+        Assert.Equal(0, handler.Requests);
+    }
+
+    private sealed class NoNetworkHandler : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            throw new InvalidOperationException("Preview updater must not contact the rolling release.");
+        }
+    }
+
+    [Fact]
     public void ParseLocalRevision_ReadsSourceLinkSuffix()
         => Assert.Equal("c7dcb5c", CompanionVersion.ParseLocalRevision("1.0.0+c7dcb5c"));
 

@@ -69,7 +69,7 @@ public static class ImportSyncCoordinator
 
         try
         {
-            if (!state.ImportPeers.Contains(peer)) return;
+            if (!state.ImportPeers.Contains(peer) || peer.ReturnSharePending) return;
 
             var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, cancellationToken).ConfigureAwait(false);
             peer.AvailableLibraries = libraries;

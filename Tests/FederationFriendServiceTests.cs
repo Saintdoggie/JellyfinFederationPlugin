@@ -1075,6 +1075,36 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Contains("send the share request again", message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task ReturnShare_UsesAcceptedRelayOrigin_AndPreservesOutgoingSelections()
+    {
+        _plugin.Configuration.ServerUrl = "https://home.example";
+        var server = new RemoteServer { Kind = ServerKind.Plex, Enabled = true,
+            Url = "https://companion.example/plex/" + Guid.NewGuid(), CompanionUrl = "https://unrelated.example",
+            ApiKey = "relay-test", IssuedApiKey = "return-test", ShareAllLibraries = false,
+            SharedLibraryFolderIds = new() { "chosen" } };
+        var calls = 0;
+        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            calls++;
+            Assert.Equal("https://companion.example/api/link/return-share", req.RequestUri!.ToString());
+            Assert.Equal("relay-test", req.Headers.GetValues("X-Federation-Token").Single());
+            Assert.DoesNotContain("return-test", req.RequestUri.ToString());
+            var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            Assert.Contains("return-test", body);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }));
+        Assert.True((await _service.OfferCompanionReturnShareAsync(server, CancellationToken.None)).Success);
+        Assert.True((await _service.OfferCompanionReturnShareAsync(server, CancellationToken.None)).Success);
+        Assert.Equal(2, calls);
+        Assert.False(server.ShareAllLibraries);
+        Assert.Equal(new[] { "chosen" }, server.SharedLibraryFolderIds);
+        server.Enabled = false;
+        Assert.False((await _service.OfferCompanionReturnShareAsync(server, CancellationToken.None)).Success);
+        Assert.Equal(2, calls);
+        Assert.False(FederationFriendService.DefaultVerifyHandler.AllowAutoRedirect);
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
