@@ -67,6 +67,64 @@ public class FederationMetadataProviderTests : IDisposable
 
     public void Dispose() => _plugin.Dispose();
 
+    [Fact]
+    public async Task JellyfinArtwork_RepairsExistingPoster_WithImageScopedToken_AndRetriesLocalReplacement()
+    {
+        var remoteId = Guid.NewGuid();
+        var server = new RemoteServer { Id = "jellyfin-art", Url = "https://friend.example", ApiKey = "standing-private-test", Enabled = true };
+        _plugin.Configuration.RemoteServers.Add(server);
+        var entry = _cache.UpsertRaw("Movies", server.Id, remoteId, new BaseItemDto { Name = "Movie", ImageTags = new() { [ImageType.Primary] = "source-custom" } }, 0, "Movie");
+        var tokenHandler = new ImageTokenHandler();
+        using var clientHttp = new HttpClient(tokenHandler) { BaseAddress = new Uri(server.Url) };
+        var client = new RemoteServerClient(server, NullLogger.Instance, clientHttp);
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(It.IsAny<string>())).Returns(client);
+        factory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(client);
+        var library = new Mock<ILibraryManager>();
+        var manager = new FederationLibraryManager(library.Object, NullLogger<FederationLibraryManager>.Instance,
+            factory.Object, _cache, new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, factory.Object), Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var item = new Movie { Id = Guid.NewGuid(), ImageInfos = new[] { new MediaBrowser.Controller.Entities.ItemImageInfo { Path = "/wrong-poster.jpg", Type = ImageType.Primary, DateModified = DateTime.UtcNow } } };
+        var saves = 0;
+        var posterPath = System.IO.Path.GetTempFileName();
+        var provider = new Mock<IProviderManager>();
+        provider.Setup(p => p.SaveImage(item, It.IsAny<System.IO.Stream>(), "image/png", ImageType.Primary, 0, It.IsAny<CancellationToken>()))
+            .Returns(() => { saves++; System.IO.File.WriteAllBytes(posterPath, new byte[] { 1, 2, 3 }); item.ImageInfos = new[] { new MediaBrowser.Controller.Entities.ItemImageInfo { Path = posterPath, Type = ImageType.Primary, DateModified = DateTime.UtcNow } }; return Task.CompletedTask; });
+        var artwork = new FederationArtworkService(manager, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), provider.Object,
+            Mock.Of<MediaBrowser.Controller.Persistence.IItemPersistenceService>(), NullLogger<FederationArtworkService>.Instance, library.Object);
+        using var imageHttp = new HttpClient(new JellyfinPosterHandler(remoteId));
+        FederationArtworkService.HttpClientOverride = imageHttp;
+        try
+        {
+            var parent = new MediaBrowser.Controller.Entities.Folder();
+            await artwork.RefreshAsync(item, entry, parent, CancellationToken.None);
+            Assert.Equal(1, saves);
+            Assert.Contains("\"Purpose\":\"Image\"", tokenHandler.LastPlaybackTokenBody);
+            await artwork.RefreshAsync(item, entry, parent, CancellationToken.None);
+            Assert.Equal(1, saves);
+            item.ImageInfos[0].Path = "/another-provider.jpg";
+            await artwork.RefreshAsync(item, entry, parent, CancellationToken.None);
+            Assert.Equal(2, saves);
+            System.IO.File.Delete(posterPath);
+            await artwork.RefreshAsync(item, entry, parent, CancellationToken.None);
+            Assert.Equal(3, saves);
+            Assert.DoesNotContain("private-test", string.Join(',', item.ProviderIds.Values));
+        }
+        finally { FederationArtworkService.HttpClientOverride = null; System.IO.File.Delete(posterPath); }
+    }
+
+    private sealed class JellyfinPosterHandler(Guid id) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal($"/Plugins/Federation/Peer/Images/{id:N}/Primary", request.RequestUri!.AbsolutePath);
+            Assert.Contains("token=img-tok-123", request.RequestUri.Query);
+            Assert.DoesNotContain("standing-private-test", request.RequestUri.Query);
+            var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1, 2, 3 }) };
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+            return Task.FromResult(response);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

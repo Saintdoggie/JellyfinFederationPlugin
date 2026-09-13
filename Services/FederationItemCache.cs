@@ -440,6 +440,10 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var src in source.GetSourcesSnapshot())
             {
                 target.AddSource(src.ServerId, src.RemoteItemId, src.Priority);
+                var merged = target.GetSourcesSnapshot().First(s => s.ServerId == src.ServerId && s.RemoteItemId == src.RemoteItemId);
+                merged.NativeId = src.NativeId ?? merged.NativeId;
+                merged.PrimaryImageTag = src.PrimaryImageTag ?? merged.PrimaryImageTag;
+                merged.BackdropImageTag = src.BackdropImageTag ?? merged.BackdropImageTag;
             }
         }
 
@@ -748,6 +752,27 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>Native ids belong to an exact source, not the deduplicated movie.</summary>
+        public string? GetNativeId(FederatedSource source)
+        {
+            if (!string.IsNullOrEmpty(source.NativeId)) return source.NativeId;
+            // Migrate legacy snapshots only when the numeric id matches this source.
+            var legacy = Metadata.RemoteNativeId;
+            return legacy != null && (GetSourcesSnapshot().Length == 1 || PlexApiClient.RatingKeyToGuid(legacy) == source.RemoteItemId)
+                ? legacy : null;
+        }
+
+        public void SetNativeId(string serverId, Guid remoteId, string nativeId)
+        {
+            lock (_sync)
+            {
+                var source = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteId);
+                if (source == null) return;
+                source.NativeId = nativeId;
+                if (ReferenceEquals(source, GetPrimarySource())) Metadata.RemoteNativeId = nativeId;
+            }
+        }
+
         /// <summary>
         /// Adds or updates a remote source.
         /// </summary>
@@ -822,6 +847,12 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             lock (_sync)
             {
+                var source = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
+                if (source != null)
+                {
+                    source.PrimaryImageTag = remoteItem.ImageTags?.GetValueOrDefault(ImageType.Primary) ?? source.PrimaryImageTag;
+                    source.BackdropImageTag = remoteItem.BackdropImageTags?.FirstOrDefault() ?? source.BackdropImageTag;
+                }
                 var isPrimary = Sources.Count <= 1
                     || (Sources.Count > PrimarySourceIndex
                         && Sources[PrimarySourceIndex].ServerId == serverId
@@ -899,6 +930,12 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederatedSource
     {
+        public string? NativeId { get; set; }
+
+        public string? PrimaryImageTag { get; set; }
+
+        public string? BackdropImageTag { get; set; }
+
         public string ServerId { get; set; } = string.Empty;
 
         public Guid RemoteItemId { get; set; }
