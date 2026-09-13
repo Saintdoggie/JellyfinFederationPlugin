@@ -30,6 +30,7 @@
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <OutputType>WinExe</OutputType>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>companion.ico</ApplicationIcon>
@@ -44,15 +45,8 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
     <EmbeddedResource Include="wwwroot/index.html" LogicalName="FederationCompanion.dashboard.html" />
     <EmbeddedResource Include="companion.ico" LogicalName="FederationCompanion.companion.ico" />
   </ItemGroup>
 
-  <!-- WebView2 adds its WPF assembly even to WinForms-only apps. -->
-  <Target Name="RemoveUnusedWebViewWpfReference" BeforeTargets="ResolveAssemblyReferences" Condition="'$(TargetFramework)' == 'net9.0-windows'">
-    <ItemGroup>
-      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
-    </ItemGroup>
-  </Target>
 </Project>

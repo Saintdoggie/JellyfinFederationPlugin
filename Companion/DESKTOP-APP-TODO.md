@@ -8,14 +8,14 @@ Read root `AGENTS.md`, `TODO.md`, and `Companion/TODO.md` first. This file track
 
 The owner's new implementation request supersedes the earlier planning-only
 scope for two-way Companion connections. See [DESKTOP-PREVIEW.md](DESKTOP-PREVIEW.md).
-Windows now has a WebView2 window with an embedded dashboard; closing it keeps
+Windows now has a native WinForms interface (2026-09-13); closing it keeps
 only the tray/backend running. The accepted Plex relay connection can receive
 an authenticated return offer, with explicit Jellyfin outgoing consent and
 Companion import selection. Existing friends have a repair action.
 
 - [ ] Validate opening/closing/reopening the window, Plex sign-in in the default
-  browser, WebView2 missing-runtime recovery, private mount-config save dialog,
-  tray/autostart/second launch and updater restart on a real Windows machine.
+  browser, library selections, compact layouts, reduced-motion animations,
+  tray/autostart/second launch, DPI changes and updater restart on a real Windows machine.
 - [ ] Verify both directions with the friend's actual WinFsp/Plex/Funnel setup,
   Jellyfin ordinary-user/admin access, custom posters and quality details.
 - [ ] Re-run the release gate after resolving any native-platform findings

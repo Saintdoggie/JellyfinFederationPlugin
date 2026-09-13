@@ -1,5 +1,5 @@
-> Desktop preview (2026-09-12): Windows now opens its own WebView2 window with
-> guided setup and two-way sharing. Download the desktop prerelease from
+> Desktop preview (2026-09-13): Windows now uses native controls, with no browser renderer, for
+> setup and two-way Jellyfin/Plex and Plex/Plex sharing. Download the desktop prerelease from
 > [GitHub Releases](https://github.com/Saintdoggie/JellyfinFederationPlugin/releases).
 > Native Windows validation is still needed before stable release. The installers
 > below fetch the stable build. See [DESKTOP-PREVIEW.md](DESKTOP-PREVIEW.md).

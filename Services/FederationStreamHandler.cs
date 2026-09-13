@@ -129,7 +129,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     && Guid.TryParse(remoteItemId, out var staleGuid)
                     && _federationManager.Cache.TryFindEntryByRemoteItemId(staleGuid) is { } healed)
                 {
-                    nativeId = healed.Metadata.RemoteNativeId;
+                    var healedSource = healed.GetSourcesSnapshot().FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == staleGuid);
+                    nativeId = healedSource == null ? null : healed.GetNativeId(healedSource);
                     if (!string.IsNullOrEmpty(nativeId))
                     {
                         _federationManager.Cache.IndexRemoteItem(serverId, staleGuid, healed.Key);
@@ -206,7 +207,8 @@ namespace Jellyfin.Plugin.Federation.Services
             var entry = key == null
                 ? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid)
                 : _federationManager.Cache.GetEntryByKey(key) ?? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid);
-            return entry?.Metadata.RemoteNativeId;
+            var source = entry?.GetSourcesSnapshot().FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteGuid);
+            return source == null ? null : entry!.GetNativeId(source);
         }
 
         /// <summary>

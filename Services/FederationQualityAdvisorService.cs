@@ -175,7 +175,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // doc comment for why the two can't be interchanged.
                 var nativeItemId = server.Kind == ServerKind.Jellyfin
                     ? source.RemoteItemId.ToString()
-                    : match.Metadata.RemoteNativeId;
+                    : match.GetNativeId(source);
                 if (string.IsNullOrEmpty(nativeItemId))
                 {
                     continue;

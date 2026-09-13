@@ -68,6 +68,8 @@ using var peerSockets = new SocketsHttpHandler
     MaxConnectionsPerServer = 8
 };
 using var peerHttp = new HttpClient(peerSockets, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
+using var companionPeerHttp = PublicPeerConnection.CreateClient();
+using var companionStreamHttp = PublicPeerConnection.CreateClient(streaming: true);
 // Media requests get their own pool so long-running streams cannot starve
 // authorization and catalog calls to the same friend.
 using var streamSockets = new SocketsHttpHandler
@@ -84,7 +86,7 @@ builder.Services.AddSingleton(apiHttp);
 builder.Services.AddSingleton<PlexClient>();
 builder.Services.AddSingleton(sp => new JellyfinImportService(
     peerHttp,
-    streamHttp));
+    streamHttp, companionPeerHttp, companionStreamHttp));
 
 // Loaded once at startup rather than per-request: every request in this app
 // either reads or mutates the same single-user state, and concurrent writes
@@ -102,6 +104,9 @@ builder.Services.AddSingleton<IAutostartRegistration>(_ =>
 #endif
 );
 builder.Services.AddSingleton(sp => new PlexFederationRelay(state, streamHttp));
+builder.Services.AddSingleton<PlexPeerProtocol>();
+builder.Services.AddSingleton(new CompanionConnections(state, companionPeerHttp));
+builder.Services.AddHostedService<CompanionConnectionPoller>();
 builder.Services.AddSingleton(sp => new PlexAuth(sp.GetRequiredService<HttpClient>(), state.ClientIdentifier));
 builder.Services.AddSingleton(sp => new CompanionUpdater(sp.GetRequiredService<HttpClient>()));
 builder.Services.AddSingleton(sp => new RcloneBootstrapper(sp.GetRequiredService<HttpClient>()));
@@ -119,8 +124,16 @@ var app = builder.Build();
 // library consent or mint a friend-scoped Plex relay connection.
 app.Use(async (context, next) =>
 {
+    if (context.Request.Path.Equals("/api/companion/requests", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsPost(context.Request.Method))
+    {
+        var size = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (size is { IsReadOnly: false }) size.MaxRequestBodySize = 8192;
+    }
     if (context.Request.Path.StartsWithSegments("/api")
-        && !IsPublicCompanionApi(context.Request.Path))
+        && !IsPublicCompanionApi(context.Request.Path)
+        && !(HttpMethods.IsPost(context.Request.Method) && context.Request.Path == "/api/companion/requests")
+        && !(HttpMethods.IsGet(context.Request.Method) && context.Request.Path.StartsWithSegments("/api/companion/requests", out var rest)
+            && rest.Value?.Split('/', StringSplitOptions.RemoveEmptyEntries) is [var requestId, "result"] && Guid.TryParse(requestId, out _)))
     {
         var supplied = context.Request.Headers["X-Companion-Admin"].ToString();
         if (!FixedTimeEquals(supplied, state.AdminAccessKey))
@@ -134,9 +147,11 @@ app.Use(async (context, next) =>
     await next().ConfigureAwait(false);
 });
 
+app.MapCompanionPeers();
+
 #if WINDOWS
-// The Windows executable contains the whole dashboard; moving the exe alone
-// must not turn its desktop window into a blank page.
+// Optional browser administration is embedded for people who choose it.
+// The Windows application itself uses native controls, independently of HTML.
 using (var dashboardStream = typeof(CompanionState).Assembly.GetManifestResourceStream("FederationCompanion.dashboard.html")!)
 using (var dashboardReader = new StreamReader(dashboardStream))
 {
@@ -246,7 +261,7 @@ app.MapPost("/api/app/autostart", (AutostartRequest body, IAutostartRegistration
 app.MapPost("/api/app/open-dashboard", (CompanionState s, CompanionRuntime runtime) =>
     CompanionShell.OpenDashboard(runtime, s.AdminAccessKey)
         ? Results.Ok(new { opened = true })
-        : Results.BadRequest(new { error = "Could not open a browser on the Companion machine." }));
+        : Results.BadRequest(new { error = "Could not open the owner interface on the Companion machine." }));
 
 app.MapPost("/api/app/exit", (IHostApplicationLifetime lifetime) =>
 {
@@ -408,7 +423,7 @@ app.MapPost("/api/plex/start-signin", async (HttpRequest req, PlexAuth auth, Can
     var (pinId, signInUrl) = await auth.StartSignInAsync(appBaseUrl, ct).ConfigureAwait(false);
     pendingPinId.Id = pinId;
 #if WINDOWS
-    // Native launch avoids the WebView popup blocker. Plex approval continues
+    // Plex approval continues
     // in the owner's browser while this window polls the one-time PIN.
     if (CompanionShell.DesktopOpener != null)
         return CompanionShell.OpenUrl(signInUrl)
@@ -894,7 +909,7 @@ app.MapGet("/api/import/peers/{id}/libraries", async (string id, CompanionState 
     if (peer == null) return Results.NotFound();
     try
     {
-        var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, ct).ConfigureAwait(false);
+        var libraries = await jellyfin.GetLibrariesAsync(peer, ct).ConfigureAwait(false);
         peer.AvailableLibraries = libraries;
         await s.SaveAsync().ConfigureAwait(false);
         return Results.Ok(ImportPeerView(peer));
@@ -1116,7 +1131,7 @@ app.MapPost("/api/import/peers/{id}/libraries", async (string id, SelectImportLi
 {
     var peer = s.ImportPeers.FirstOrDefault(p => p.Id == id);
     if (peer == null) return Results.NotFound();
-    var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, ct).ConfigureAwait(false);
+    var libraries = await jellyfin.GetLibrariesAsync(peer, ct).ConfigureAwait(false);
     if (body.LibraryIds == null || body.LibraryIds.Any(id => !libraries.Any(l => l.Id == id)))
         return Results.BadRequest(new { error = "Refresh the library list and choose currently shared libraries." });
     peer.SelectedLibraryIds = body.LibraryIds.Distinct().ToList();
@@ -1193,7 +1208,7 @@ app.MapMethods("/plex/{peerId}/{**path}", new[] { "GET", "HEAD" }, async (
         supplied = request.Query["X-Plex-Token"].ToString();
     }
 
-    if (peer == null || !FixedTimeEquals(supplied, peer.AccessToken))
+    if (peer == null || peer.PendingConnection || !FixedTimeEquals(supplied, peer.AccessToken))
     {
         response.StatusCode = StatusCodes.Status401Unauthorized;
         return;
@@ -1382,6 +1397,7 @@ static object ImportPeerView(JellyfinImportPeer peer) => new
     peer.PlaybackBaseUrl,
     peer.CompanionPeerId,
     peer.ReturnSharePending,
+    peer.SourceKind,
     peer.PlexSectionKey,
     peer.PlexMovieSectionKey,
     peer.PlexShowSectionKey,
@@ -1401,6 +1417,8 @@ static object PeerView(CompanionPeer peer, CompanionState state) => new
     peer.AddedUtc,
     peer.AllowDownloads,
     peer.AllowBulkDownloads,
+    peer.CompanionConnection,
+    peer.PendingConnection,
     sharedLibraries = state.Libraries.Where(l => CompanionLibraryPolicy.IsShared(state, l)).Select(l => l.Title),
     returnImportId = state.ImportPeers.FirstOrDefault(p => p.CompanionPeerId == peer.Id)?.Id,
     returnSharePending = state.ImportPeers.FirstOrDefault(p => p.CompanionPeerId == peer.Id)?.ReturnSharePending

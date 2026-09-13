@@ -15,8 +15,10 @@ before changing Companion startup, tray, autostart, or packaging.
 
 New implementation request: Windows Companion ↔ Jellyfin. Local changes and
 validation are recorded in [Companion/DESKTOP-PREVIEW.md](Companion/DESKTOP-PREVIEW.md).
-Includes a desktop window/embedded dashboard, authenticated return offers,
-explicit library consent and repair, and source artwork/metadata updates.
+Includes a native Windows interface (no WebView2), authenticated return offers,
+explicit library consent and repair, source artwork/metadata updates, and
+Companion-to-Companion Plex sharing. Dark monochrome styling uses small service
+accents and respects the Windows animation setting.
 Native Windows and the friend's complete two-server playback/access matrix
 remain required before stable publication. Preview builds are separate from the
 rolling release and plugin catalog; their rolling updater is disabled.

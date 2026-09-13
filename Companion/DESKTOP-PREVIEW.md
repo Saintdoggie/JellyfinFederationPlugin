@@ -1,6 +1,6 @@
 # Desktop and two-way sharing preview
 
-Desktop preview developed on 2026-09-12. Published separately from the stable
+Native desktop and Plex-to-Plex preview updated on 2026-09-13. Published separately from the stable
 catalog, with existing assembly versions retained.
 
 Home guides the next setup step. Friends shows what leaves your Plex and what
@@ -10,20 +10,24 @@ Windows setup uses buttons and links, with manual options tucked away. Status
 refreshes preserve unsaved library choices. Once the media folder is ready,
 saving an import selection also attaches eligible libraries to Plex.
 
-The Windows build opens a real taskbar window using Microsoft WebView2. The
-HTML/CSS/JavaScript dashboard is embedded in the executable; a separate wwwroot
-folder is not required on Windows. Closing the window releases its renderer and
-keeps the tray, listener and media folder available. Normal launch, tray Open
-and a second launch reopen the same window. The existing installer creates the
-shortcuts; the .NET runtime is included in the Windows publish. Microsoft's
-WebView2 Runtime is also required. Missing-runtime recovery offers the official
-installer page and a browser fallback. See Microsoft's
-[WebView2 distribution documentation](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution).
+The Windows build now uses native WinForms controls for navigation, friend requests,
+library consent, imports, Plex sign-in, Tailscale, startup and app settings. It does
+not load HTML or use WebView2, Electron, or a browser renderer. The optional browser
+admin page remains available separately. The self-contained executable includes
+the .NET runtime; it no longer needs the WebView2 Runtime.
 
-The window accepts only its own loopback dashboard. Plex sign-in opens in the
-default browser. External protocols, frames and unsolicited remote downloads
-are blocked; an explicitly downloaded local mount configuration uses a Save
-File dialog. Native Windows runtime behavior remains unverified here.
+The native palette is black and charcoal with white text. Service labels and the
+active navigation marker use small Plex yellow or Jellyfin purple accents. No
+gradients. View changes settle over 150 ms, advanced sections expand over 180 ms,
+and service accents transition briefly. Animations stop when complete and honor
+Windows' [client-area animation setting](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow).
+Per-monitor DPI scaling is enabled; native rendering still needs Windows validation.
+
+Closing releases the native UI while keeping the tray, listener and media folder
+available. Plex account approval opens the owner's normal browser. Desktop API
+commands only target this process's loopback port, authenticate as the owner and
+never follow redirects. Failed actions remain retryable, background status does
+not redraw forms, and unsaved choices on other sections survive a save.
 
 ## One friend connection, two directions
 
@@ -52,7 +56,37 @@ or address changes require reconnecting. Disconnecting the Companion friend also
 removes its linked import. Existing ownership and stream-time revocation checks
 remain authoritative; third-party imported media cannot be shared onward.
 
+## Plex Companion ↔ Plex Companion
+
+Both owners install this preview, connect their own Plex, save public HTTPS
+Companion addresses and select locally owned libraries to share. In Friends,
+choose **Plex Companion**, enter the friend's Companion address and send a request.
+The receiving owner accepts in Friends. The sender checks requests (also checked
+in the background). Both incoming connections initially have no libraries selected.
+Each owner opens Incoming, refreshes available libraries, chooses what to import,
+and saves/syncs. Start the media folder and attach the imports to Plex.
+
+Requests are idempotent, expire after a day, and can be declined/cancelled. Incoming
+requests never fetch an offered URL until the owner accepts and chooses imports.
+Pending peers cannot read media. Companion-to-Companion connections require public
+DNS addresses and reject redirects. Stream grants expire after ten minutes and
+recheck current ownership/sharing on every byte request. Revoking a friend or
+unsharing a library also blocks previously minted grants.
+
+Plex imports use the existing read-only media mount. They include owned movies and
+episodes with complete single-part files; multi-part video is skipped rather than
+presenting one part as a complete movie. Imported Plex sections cannot be shared
+onward. Plex analyzes the mounted bytes for video/audio quality. Custom poster
+repair described below applies to receiving Jellyfin; Plex still controls its own
+metadata matching for mounted imports.
+
 ## Source posters and media details
+
+Jellyfin primary/backdrop artwork now uses the source's scoped image endpoint too.
+Existing missing files and posters overwritten by another image provider are
+repaired during Federation refresh. If multiple Plex servers offer the same movie,
+its native item ID and artwork revision remain attached to the exact source, so
+one server's poster ID cannot select a different movie on another server.
 
 Plex artwork paths contribute credential-free revision hashes to the catalog.
 Reconciliation fetches the source's current primary/backdrop images, including
@@ -76,7 +110,7 @@ friend's actual server or a fix for the separately reported stuttering route.
   cross-publish; disposable Jellyfin → Companion/rclone → Plex playback gate.
 - Real Chromium fixture at 390, 1180 and 1920 pixels: no page errors or horizontal
   overflow; return libraries start unchecked; source text renders safely.
-- Native Windows/WebView2/WinFsp, the friend's actual Funnel and Plex clients,
+- Native Windows/WinFsp, the friend's actual Funnel and Plex clients,
   Plex sign-in popup behavior and the complete two-server ordinary-user/admin
   release matrix remain open. Cross-compilation is not Windows runtime testing.
 

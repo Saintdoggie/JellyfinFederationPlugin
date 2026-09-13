@@ -322,3 +322,69 @@ test('A failed public-address save can be retried', async () => {
     assert.match(d.getElementById('publicUrlStatus').textContent, /try again/);
   } finally { dom.window.close(); }
 });
+
+test('Plex friend requests use Companion and explicit owner acceptance', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    if (url === '/api/companion/requests') return json([{ id: 'request-one', name: '<img src=x>', url: 'https://friend.example', status: 'pending', outgoing: false }]);
+    if (url.includes('/peers')) return json([]);
+    return json({ message: 'Done' });
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    const d = dom.window.document;
+    d.getElementById('friendServerType').value = 'plex';
+    d.getElementById('inviteUrlInput').value = 'https://friend.example';
+    d.getElementById('inviteFriendBtn').click(); await tick();
+    const invite = requests.find(([url]) => url === '/api/companion/invite');
+    assert.ok(invite); assert.equal(header(invite[1], 'X-Companion-Admin'), 'owner-test-key');
+    const list = d.getElementById('companionRequestList');
+    assert.equal(list.querySelector('img'), null);
+    assert.equal(requests.some(([url]) => url.endsWith('/accept')), false);
+    list.querySelector('[data-decision="accept"]').click(); await tick();
+    const accept = requests.find(([url]) => url.endsWith('/request-one/accept'));
+    assert.ok(accept); assert.equal(header(accept[1], 'X-Companion-Admin'), 'owner-test-key');
+  } finally { dom.window.close(); }
+});
+
+test('Service accents follow navigation, friend type and keyboard focus without gradients', async () => {
+  const dom = page(async url => json(url === '/api/import/peers' ? [
+    { id: 'jf', name: 'Jellyfin friend', sourceKind: 'Jellyfin', availableLibraries: [] },
+    { id: 'px', name: 'Plex friend', sourceKind: 'Plex', availableLibraries: [] }
+  ] : []));
+  try {
+    const d = dom.window.document;
+    assert.equal(d.documentElement.dataset.accent, 'plex');
+    await dom.window.loadImportPeers();
+    dom.window.showAppView('incoming', 'import-jf');
+    assert.equal(d.documentElement.dataset.accent, 'jellyfin');
+    assert.equal(d.querySelector('#import-jf .service-badge').textContent, 'Jellyfin');
+    d.querySelector('#import-px button').focus();
+    assert.equal(d.documentElement.dataset.accent, 'plex');
+    dom.window.showAppView('friends');
+    const type = d.getElementById('friendServerType');
+    type.value = 'jellyfin'; type.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(d.documentElement.dataset.accent, 'jellyfin');
+    type.value = 'plex'; type.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(d.documentElement.dataset.accent, 'plex');
+    dom.window.showAppView('settings');
+    assert.equal(d.documentElement.dataset.accent, 'plex');
+    assert.doesNotMatch(html, /(?:linear|radial|conic)-gradient\(/i);
+    assert.match(html, /prefers-reduced-motion: reduce/);
+  } finally { dom.window.close(); }
+});
+
+test('An outgoing pending request can be cancelled with owner authentication', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    return json(url === '/api/companion/requests' ? [{ id: 'sent', outgoing: true, status: 'pending', url: 'https://friend.example' }] : url.includes('/peers') ? [] : { message: 'Cancelled' });
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await dom.window.loadCompanionRequests();
+    dom.window.document.querySelector('[data-decision="cancel"]').click(); await tick();
+    const cancelled = requests.find(([url]) => url.endsWith('/sent/cancel'));
+    assert.ok(cancelled);
+    assert.equal(header(cancelled[1], 'X-Companion-Admin'), 'owner-test-key');
+  } finally { dom.window.close(); }
+});
