@@ -105,6 +105,8 @@ public sealed class CompanionState
     /// </summary>
     public List<CompanionPeer> Peers { get; set; } = new();
 
+    public List<CompanionConnectionRequest> CompanionRequests { get; set; } = new();
+
     /// <summary>
     /// Jellyfin Federation servers this app imports content *from*, via a
     /// connect code the Jellyfin admin generated in their own Companion tab -
@@ -227,6 +229,9 @@ public sealed class CompanionLibrary
 
 public sealed class CompanionPeer
 {
+    public bool CompanionConnection { get; set; }
+
+    public bool PendingConnection { get; set; }
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     /// <summary>Display name only - not used for anything security-relevant.</summary>
@@ -276,6 +281,7 @@ public sealed class CompanionPoolRosterMember
 
 public sealed class JellyfinImportPeer
 {
+    public string SourceKind { get; set; } = "Jellyfin";
     public string? CompanionPeerId { get; set; }
 
     public string? SourceFederationId { get; set; }

@@ -23,17 +23,31 @@ public sealed class JellyfinImportService
 
     private readonly HttpClient _http;
     private readonly HttpClient _streamHttp;
+    private readonly HttpClient _companionHttp;
+    private readonly HttpClient _companionStreamHttp;
 
     public JellyfinImportService(HttpClient http)
         : this(http, http)
     {
     }
 
-    public JellyfinImportService(HttpClient http, HttpClient streamHttp)
+    public JellyfinImportService(HttpClient http, HttpClient streamHttp) : this(http, streamHttp, http) { }
+
+    public JellyfinImportService(HttpClient http, HttpClient streamHttp, HttpClient companionHttp) : this(http, streamHttp, companionHttp, companionHttp) { }
+
+    public JellyfinImportService(HttpClient http, HttpClient streamHttp, HttpClient companionHttp, HttpClient companionStreamHttp)
     {
         _http = http;
         _streamHttp = streamHttp;
+        _companionHttp = companionHttp;
+        _companionStreamHttp = companionStreamHttp;
     }
+
+    public Task<List<PeerLibrary>> GetLibrariesAsync(JellyfinImportPeer peer, CancellationToken ct)
+        => peer.SourceKind == "Plex" ? new JellyfinImportService(_companionHttp).GetLibrariesAsync(peer.Url, peer.Token, ct) : GetLibrariesAsync(peer.Url, peer.Token, ct);
+
+    public Task<List<PeerItem>> GetItemsAsync(JellyfinImportPeer peer, string parentId, string mediaType, CancellationToken ct)
+        => peer.SourceKind == "Plex" ? new JellyfinImportService(_companionHttp).GetItemsAsync(peer.Url, peer.Token, parentId, mediaType, ct) : GetItemsAsync(peer.Url, peer.Token, parentId, mediaType, ct);
 
     public async Task<List<PeerLibrary>> GetLibrariesAsync(string peerUrl, string token, CancellationToken cancellationToken)
     {
@@ -166,6 +180,12 @@ public sealed class JellyfinImportService
         HttpResponse outgoing,
         CancellationToken cancellationToken)
     {
+        if (peer.SourceKind == "Plex")
+        {
+            var directPeer = new JellyfinImportPeer { Url = peer.Url, Token = peer.Token };
+            await new JellyfinImportService(_companionHttp, _companionStreamHttp).RelayStreamAsync(directPeer, itemId, incoming, outgoing, cancellationToken);
+            return;
+        }
         var minted = await GetPlaybackTokenAsync(peer.Url, peer.Token, itemId, cancellationToken).ConfigureAwait(false);
         if (minted == null)
         {

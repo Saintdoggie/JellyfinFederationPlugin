@@ -31,6 +31,8 @@ public class FederationStreamHandlerTests : IDisposable
 {
     private readonly RealPluginInstance _plugin;
     private readonly FederationStreamHandler _handler;
+    private readonly FederationItemCache _cache;
+    private readonly Moq.Mock<IExternalCatalogProvider> _plex = new();
     private readonly RecordingLogger<FederationStreamHandler> _handlerLogger = new();
 
     public FederationStreamHandlerTests()
@@ -45,7 +47,7 @@ public class FederationStreamHandlerTests : IDisposable
             Enabled = true
         });
 
-        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var cache = _cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         var bandwidthMonitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Moq.Mock.Of<IRemoteServerClientFactory>());
         var federationManager = new FederationLibraryManager(
             Moq.Mock.Of<MediaBrowser.Controller.Library.ILibraryManager>(),
@@ -67,7 +69,8 @@ public class FederationStreamHandlerTests : IDisposable
         var clientFactory = new Moq.Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(tokenClient);
 
-        _handler = new FederationStreamHandler(_handlerLogger, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), bandwidthMonitor);
+        _plex.SetupGet(p => p.Kind).Returns(ServerKind.Plex);
+        _handler = new FederationStreamHandler(_handlerLogger, federationManager, accessControl, clientFactory.Object, new ExternalCatalogRegistry(new[] { _plex.Object }), bandwidthMonitor);
     }
 
     private static HttpResponseMessage Json(string body)
@@ -79,6 +82,24 @@ public class FederationStreamHandlerTests : IDisposable
     {
         FederationStreamHandler.HttpClientOverride = null;
         _plugin.Dispose();
+    }
+
+    [Fact]
+    public async Task DuplicatePlexMovie_StreamsTheRequestedSourcesNativeId()
+    {
+        _plugin.Configuration.RemoteServers[0].Kind = ServerKind.Plex;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "serverB", Name = "Other", Kind = ServerKind.Plex, Enabled = true });
+        var a = PlexApiClient.RatingKeyToGuid("100");
+        var b = PlexApiClient.RatingKeyToGuid("900");
+        var entry = _cache.UpsertRaw("Movies", "serverA", a, new MediaBrowser.Model.Dto.BaseItemDto { Name = "Movie" }, 0, "Movie");
+        entry.SetNativeId("serverA", a, "100");
+        entry.AddSource("serverB", b, 1); entry.SetNativeId("serverB", b, "900");
+        _cache.IndexRemoteItem("serverB", b, entry.Key);
+        _plex.Setup(p => p.ResolveStreamUrlAsync(Moq.It.IsAny<RemoteServer>(), Moq.It.IsAny<string>(), Moq.It.IsAny<CancellationToken>()))
+            .Returns((RemoteServer server, string id, CancellationToken ct) => Task.FromResult<string?>("https://media.example/" + server.Id + "/" + id));
+        Assert.Equal("https://media.example/serverA/100", await _handler.BuildDirectStreamUrlAsync("serverA", a.ToString(), false, default));
+        Assert.Equal("https://media.example/serverB/900", await _handler.BuildDirectStreamUrlAsync("serverB", b.ToString(), false, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _handler.BuildDirectStreamUrlAsync("serverA", b.ToString(), false, default));
     }
 
     [Theory]

@@ -55,6 +55,8 @@ and runs an isolated Companion, and starts its managed rclone mount. It checks:
 - Library deselection/reselection and preservation of catalog during a source outage.
 - Actual Plex video/audio analysis and decoding media served through Plex.
 - Refusal to share the imported Plex section onward.
+- A second Companion/Plex receiver: owned Plex catalog, mounted byte identity,
+  Plex analysis/decode, byte ranges and stream-time revocation.
 
 Cleanup stops/removes only the newly named containers and their Companion process.
 Private fixture data is retained for debugging under a mode-0700 directory. Runtime

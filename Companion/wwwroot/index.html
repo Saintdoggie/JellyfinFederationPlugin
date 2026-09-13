@@ -7,13 +7,13 @@
 <style>
   :root {
     color-scheme: dark;
-    --bg: #080b10;
-    --surface: rgba(18, 24, 34, .9);
-    --surface-strong: #151c27;
-    --border: rgba(151, 174, 209, .16);
+    --bg: #101010;
+    --surface: #171717;
+    --surface-strong: #202020;
+    --border: #2b2b2b;
     --border-strong: rgba(110, 168, 255, .38);
-    --text: #f3f7fc;
-    --muted: #a5b2c4;
+    --text: #f5f5f5;
+    --muted: #a1a1a1;
     --blue: #67a4ff;
     --blue-strong: #397ee8;
     --green: #66d99a;
@@ -283,42 +283,45 @@
     button { min-height: 50px; font-size: 16px; }
   }
   /* Desktop application layout; each view keeps its own controls and state. */
-  :root { --blue: #7bd9c1; --blue-strong: #267965; --border-strong: rgba(123,217,193,.35); --shadow: 0 8px 28px rgba(0,0,0,.12); }
-  body { background: #0c1016; }
-  header { position: fixed; inset: 0 auto 0 0; width: 220px; padding: 32px 22px; background: #10171f; border-right: 1px solid var(--border); border-bottom: 0; z-index: 20; }
+  :root { --accent: #e5a00d; --accent-soft: #e5a00d; --accent-surface: #202020; --accent-border: #353535; --accent-ink: #111111; --blue: var(--accent); --blue-strong: var(--accent); --border-strong: var(--accent-border); --shadow: 0 8px 28px rgba(0,0,0,.12); }
+  :root[data-accent="jellyfin"] { --accent: #ad89ec; --accent-soft: #ad89ec; --accent-surface: #202020; --accent-border: #353535; --accent-ink: #111111; }
+  body { background: #101010; }
+  header { position: fixed; inset: 0 auto 0 0; width: 220px; padding: 32px 22px; background: #131313; border-right: 1px solid var(--border); border-bottom: 0; z-index: 20; }
   header h1 { font-size: 18px; letter-spacing: -.03em; line-height: 1.25; }
   header > p { font-size: 12px; line-height: 1.7; margin-top: 20px; }
-  .brand-mark { flex-shrink: 0; width: 36px; height: 36px; border-radius: 11px; background: #203f3a; color: #95ead5; box-shadow: none; }
+  .brand-mark { flex-shrink: 0; width: 36px; height: 36px; border-radius: 6px; background: #242424; color: #f5f5f5; box-shadow: none; }
   .app-nav { position: fixed; top: 186px; left: 16px; width: 188px; z-index: 21; padding: 0; background: none; border: 0; display: grid; gap: 6px; }
-  .app-nav button { display: flex; gap: 12px; align-items: center; text-align: left; background: none; border: 1px solid transparent; color: #94a4b7; font-size: 14px; min-height: 48px; box-shadow: none; }
-  .app-nav button[aria-current="page"] { color: #a4eddb; background: #203730; border-color: #355047; }
+  .app-nav button { display: flex; gap: 12px; align-items: center; text-align: left; background: none; border: 1px solid transparent; color: #a1a1a1; font-size: 14px; min-height: 48px; box-shadow: none; }
+  .app-nav button[aria-current="page"] { color: var(--text); background: #242424; border-color: transparent; box-shadow: inset 2px 0 var(--accent); }
   .app-nav .nav-icon { width: 18px; font-size: 20px; font-weight: 400; text-align: center; }
-  .sidebar-foot { position: absolute; bottom: 28px; left: 22px; right: 22px; color: #92a9a3; font-size: 12px; line-height: 1.8; }
+  .sidebar-foot { position: absolute; bottom: 28px; left: 22px; right: 22px; color: #b8b8b8; font-size: 12px; line-height: 1.8; }
   .sidebar-foot span { display: block; color: var(--muted); }
   main { margin: 0 0 0 220px; max-width: none; padding: 42px clamp(24px, 4vw, 64px) 70px; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; align-content: start; }
   .view-hidden { display: none !important; }
   .view-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 10px; }
   .view-heading h2 { font-size: 32px; font-weight: 650; letter-spacing: -.045em; margin: 6px 0 10px; }
   .view-heading p { color: var(--muted); font-size: 14px; margin: 0; line-height: 1.65; }
-  .eyebrow { color: #89b8aa; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 750; }
-  .card { padding: 24px; border-radius: 14px; background: #131b25; box-shadow: none; }
+  .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 750; }
+  .card { padding: 24px; border-radius: 8px; background: #171717; box-shadow: none; }
   .card h2 { font-size: 17px; letter-spacing: -.02em; font-weight: 600; }
   .step-num { display: none; }
   .card.done { border-color: var(--border); }
-  #homeHero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1.3fr) minmax(210px,1fr); gap: 28px; background: #142822; border-color: #315246; padding: 34px; }
-  #homeHero h2 { font-size: clamp(26px,3vw,38px); letter-spacing: -.045em; max-width: 530px; margin: 12px 0; line-height: 1.15; }
-  #homeHero p { color: #b4c7bf; font-size: 14px; line-height: 1.7; max-width: 440px; }
+  #homeHero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1.3fr) minmax(210px,1fr); gap: 28px; background: #171717; border-color: var(--border); padding: 28px; }
+  #homeHero h2 { font-size: clamp(23px,2.3vw,29px); letter-spacing: -.045em; max-width: 530px; margin: 12px 0; line-height: 1.15; }
+  #homeHero p { color: var(--muted); font-size: 14px; line-height: 1.7; max-width: 440px; }
   .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 22px; }
-  button { background: #2e806a; border-color: rgba(132,212,186,.2); transition: background .15s, border-color .15s; }
+  button { background: #ededed; border-color: #ededed; color: #151515; border-radius: 6px; min-height: 40px; transition: background-color .22s, border-color .22s, color .22s; }
   button:hover:not(:disabled) { transform: none; filter: brightness(1.12); }
-  button.secondary { background: #18222d; border-color: #344352; }
-  button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid #8edec7; outline-offset: 4px; }
-  .connection-art { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 175px; }
-  .connection-node { display: grid; place-items: center; width: 96px; height: 116px; background: rgba(10,24,21,.6); border: 1px solid #40695b; border-radius: 18px; font-size: 13px; color: #c9e8dc; }
-  .connection-node strong { display: block; font-size: 31px; font-weight: 500; color: #a3e5cd; margin-top: 10px; }
-  .connection-line { color: #81b39e; font-size: 27px; }
-  .overview-stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
-  .overview-stat { padding: 20px 22px; background: #131b25; border: 1px solid var(--border); border-radius: 12px; }
+  button.secondary { background: #202020; border-color: #373737; color: var(--text); }
+  button.danger { color: #f4a2a2; background: #222020; border-color: #453030; }
+  button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .connection-art { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 130px; }
+  .connection-node { display: grid; place-items: center; width: 100px; height: 100px; background: #1d1d1d; border: 1px solid #333; border-radius: 8px; font-size: 12px; color: var(--text); }
+  .connection-node[data-service="jellyfin"] { background: #1d1d1d; border-color: #333; color: var(--text); }
+  .connection-node strong { display: block; font-size: 31px; font-weight: 500; color: #e5a00d; margin-top: 10px; }
+  .connection-line { color: var(--muted); font-size: 27px; }
+  .overview-stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; border-block: 1px solid var(--border); }
+  .overview-stat { padding: 20px 22px; background: none; border: 0; border-right: 1px solid var(--border); border-radius: 0; }
   .overview-stat strong { font-size: 26px; font-weight: 550; letter-spacing: -.035em; display: block; margin-bottom: 7px; }
   .overview-stat span { font-size: 12px; color: var(--muted); }
   #setupChecklist { grid-column: 1 / -1; }
@@ -326,66 +329,80 @@
   .checklist-row > div { flex: 1; }
   .checklist-row strong { font-size: 14px; font-weight: 550; }
   .checklist-row p { font-size: 12px; color: var(--muted); margin: 6px 0 0; line-height: 1.5; }
-  .check-circle { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #24313e; color: #a0b2c2; font-size: 12px; }
-  .checklist-row.complete .check-circle { background: #214838; color: #9ae4bc; }
+  .check-circle { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #252525; color: #a1a1a1; font-size: 12px; }
+  .checklist-row.complete .check-circle { background: #252525; color: #ededed; }
   .checklist-row button { min-height: 36px; font-size: 12px; padding: 6px 12px; }
   #connectCard, #librariesCard { grid-column: 1 / -1; }
   .library-row { padding: 16px 0; gap: 14px; }
-  .library-row [data-share-state] { margin-left: 12px; color: #97c9ba; background: #233a33; }
-  input[type=text], input[type=password], input[type=url], input[type=search], select { width: 100%; min-height: 44px; padding: 11px 13px; background: #0d141c; color: var(--text); border: 1px solid #344351; border-radius: 8px; font-size: 14px; }
+  .library-row [data-share-state] { margin-left: 12px; color: var(--text); background: #252525; }
+  input[type=text], input[type=password], input[type=url], input[type=search], select { width: 100%; min-height: 44px; padding: 11px 13px; background: #111111; color: var(--text); border: 1px solid #3a3a3a; border-radius: 8px; font-size: 14px; }
   .switch input:focus-visible + .slider { outline: 2px solid var(--blue); outline-offset: 4px; }
   .badge { font-weight: 550; padding: 5px 9px; }
   .share-directions { gap: 12px; margin-top: 14px; }
-  .share-directions > div { background: #101820; border-color: #293a42; }
-  .direction-kicker { color: #85bcaa; font-size: 10px; letter-spacing: .09em; }
+  .share-directions > div { background: #171717; border-color: #303030; }
+  .direction-kicker { color: var(--muted); font-size: 10px; letter-spacing: .09em; }
+  .service-badge { display: inline-block; margin-left: 10px; padding: 4px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; color: #e5a00d; background: transparent; border: 0; }
+  .service-badge[data-service="jellyfin"] { color: #ad89ec; background: transparent; border-color: transparent; }
   .peer-download-controls { border-top: 1px solid var(--border); padding-top: 15px; }
-  .peer-row.import-peer { background: #111b24; border: 1px solid #2b403e; border-radius: 12px; padding: 20px; margin-top: 18px; }
-  [data-libraries] label { padding: 12px; margin: 8px 0; background: #17232d; border-radius: 8px; cursor: pointer; }
-  [data-libraries] input { accent-color: #6bc5a8; margin-right: 10px; }
+  .peer-row.import-peer { background: #171717; border: 1px solid #303030; border-radius: 8px; padding: 20px; margin-top: 18px; }
+  [data-libraries] label { padding: 12px; margin: 8px 0; background: #202020; border-radius: 8px; cursor: pointer; }
+  [data-libraries] input { accent-color: var(--accent); margin-right: 10px; }
   .import-remove .app-actions { margin-top: 14px; }
   .import-remove select { width: auto; max-width: 100%; }
   details { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px; }
-  summary { cursor: pointer; font-size: 13px; color: #aebccc; padding: 4px 0; }
+  summary { cursor: pointer; font-size: 13px; color: #b0b0b0; padding: 4px 0; }
   details[open] > summary { margin-bottom: 12px; color: var(--text); }
   .sync-steps { display: flex; flex-wrap: wrap; gap: 8px; }
-  .sync-steps span { font-size: 11px; padding: 7px 10px; background: #1d2a34; border-radius: 6px; color: #a8b7c7; }
-  .sync-steps .complete { color: #9cdec2; background: #203b31; }
+  .sync-steps span { font-size: 11px; padding: 7px 10px; background: #202020; border-radius: 6px; color: #999; }
+  .sync-steps .complete { color: #ededed; background: #292929; }
   .save-hint { min-height: 20px; }
   #globalStatus { grid-column: 1 / -1; padding: 12px 16px; background: #422f21; border: 1px solid #715133; border-radius: 8px; color: #f0cc9e; font-size: 13px; }
-  .update-banner { position: fixed; bottom: 20px; left: 240px; right: 20px; max-width: none; background: #203a30; z-index: 30; box-shadow: 0 8px 30px #0006; }
+  .update-banner { position: fixed; bottom: 20px; left: 240px; right: 20px; max-width: none; background: #242424; z-index: 30; box-shadow: 0 8px 30px #0006; }
+  .connection-node[data-service="jellyfin"] strong { color: #ad89ec; }
+  .overview-stat:last-child { border-right: 0; }
+  .view-heading .eyebrow, #homeHero .eyebrow { display: none; }
+  .badge.ok, .badge.warn { color: #c8c8c8; background: #252525; border-color: #353535; }
+  .flow-note { background: #202020; border-color: var(--border); }
+  #importCard { border-color: var(--border); }
+  .slider { background: #454545; }
+  a { color: var(--text); text-decoration-color: #777; text-underline-offset: 3px; }
+  a:hover { color: var(--accent); }
+  .nav-icon svg { display: block; width: 18px; height: 18px; }
   body.owner-locked .app-nav { opacity: .4; pointer-events: none; }
+  .brand-mark, .eyebrow, .app-nav button, .direction-kicker, .library-row [data-share-state], .slider, a { transition: color .22s ease, background-color .22s ease, border-color .22s ease; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
   @media (prefers-reduced-motion: no-preference) { .view-enter { animation: appear .18s ease-out; } @keyframes appear { from { opacity: .5; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } } }
   @media (min-width: 1600px) { main { padding-right: max(60px,calc((100vw - 1440px) / 2)); padding-left: max(60px,calc((100vw - 1440px) / 2)); } }
   @media (max-width: 950px) { header { width: 180px; padding: 26px 17px; } .app-nav { width: 152px; left: 14px; } main { margin-left: 180px; padding: 30px 22px 60px; } .connection-art { display: none; } #homeHero { grid-template-columns: 1fr; } .update-banner { left: 200px; } }
-  @media (max-width: 700px) { header { position: relative; width: auto; padding: 18px 20px; border-right: 0; } header > p, .sidebar-foot { display: none; } header h1 { font-size: 18px; } .app-nav { position: sticky; top: 0; left: 0; width: 100%; padding: 8px 10px; background: #10171ff5; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 3px; } .app-nav button { flex-direction: column; gap: 4px; justify-content: center; padding: 7px 2px; font-size: 10px; } .app-nav .nav-icon { font-size: 17px; } main { margin-left: 0; padding: 24px 16px 50px; gap: 14px; grid-template-columns: 1fr; } .view-heading h2 { font-size: 28px; } .view-heading { gap: 8px; } .view-heading > button { padding: 7px 10px; min-height: 36px; font-size: 12px; } #homeHero { padding: 24px; } .overview-stats { gap: 8px; } .overview-stat { padding: 15px 12px; } .overview-stat strong { font-size: 23px; } .overview-stat span { font-size: 10px; } .checklist-row { gap: 10px; flex-wrap: wrap; } .checklist-row button { margin-left: 40px; } .share-directions { grid-template-columns: 1fr; } .update-banner { left: 12px; right: 12px; } .card { padding: 20px; } .peer-row.import-peer { padding: 16px; } }
+  @media (max-width: 700px) { header { position: relative; width: auto; padding: 18px 20px; border-right: 0; } header > p, .sidebar-foot { display: none; } header h1 { font-size: 18px; } .app-nav { position: sticky; top: 0; left: 0; width: 100%; padding: 8px 10px; background: #131313f5; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 3px; } .app-nav button { flex-direction: column; gap: 4px; justify-content: center; padding: 7px 2px; font-size: 10px; } .app-nav .nav-icon { font-size: 17px; } main { margin-left: 0; padding: 24px 16px 50px; gap: 14px; grid-template-columns: 1fr; } .view-heading h2 { font-size: 28px; } .view-heading { gap: 8px; } .view-heading > button { padding: 7px 10px; min-height: 36px; font-size: 12px; } #homeHero { padding: 24px; } .overview-stats { gap: 8px; } .overview-stat { padding: 15px 12px; } .overview-stat strong { font-size: 23px; } .overview-stat span { font-size: 10px; } .checklist-row { gap: 10px; flex-wrap: wrap; } .checklist-row button { margin-left: 40px; } .share-directions { grid-template-columns: 1fr; } .update-banner { left: 12px; right: 12px; } .card { padding: 20px; } .peer-row.import-peer { padding: 16px; } }
 </style>
 </head>
 <body class="owner-locked">
 <header>
   <div class="brand-line"><div class="brand-mark" aria-hidden="true">↔</div><h1>Federation<br>Companion</h1></div>
-  <p>Your libraries.<br>Your people. Connected.</p>
-  <div class="sidebar-foot">Private by choice<span>Only your own media is shared.</span></div>
+  <p>Library sharing</p>
+  <div class="sidebar-foot">Federation Companion<span>Only your own media is shared.</span></div>
   <div id="updateBanner" class="update-banner hidden">
     <span id="updateBannerText">A newer Companion is available.</span>
     <button id="updateNowBtn">Update now</button>
   </div>
 </header>
 <nav class="app-nav" aria-label="Companion sections">
-  <button type="button" data-view="home" aria-current="page"><span class="nav-icon" aria-hidden="true">⌂</span> Home</button>
-  <button type="button" data-view="friends"><span class="nav-icon" aria-hidden="true">♧</span> Friends &amp; sharing</button>
-  <button type="button" data-view="incoming"><span class="nav-icon" aria-hidden="true">↓</span> Incoming libraries</button>
-  <button type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</button>
+  <button type="button" data-view="home" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-7h6v7"/></svg></span> Home</button>
+  <button type="button" data-view="friends"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m2-17a3 3 0 0 1 0 6m2 11v-4a5 5 0 0 0-2-4"/></svg></span> Friends &amp; sharing</button>
+  <button type="button" data-view="incoming"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></span> Incoming libraries</button>
+  <button type="button" data-view="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></svg></span> Settings</button>
 </nav>
 <main>
   <div class="view-heading"><div><div class="eyebrow">Your private media network</div><h2 id="viewTitle" tabindex="-1">Welcome home.</h2><p id="viewDescription">A little setup. A lot more to watch together.</p></div><button class="secondary" id="refreshAppBtn">Refresh status</button></div>
   <div id="globalStatus" class="hidden" role="status" aria-live="polite"></div>
   <section class="card" id="homeHero" data-app-view="home">
-    <div><span class="eyebrow">Plex + Jellyfin, together</span><h2 id="homeTitle">Good libraries are<br>better with friends.</h2><p id="homeDescription">Connect your Plex server, choose what to share, and invite someone you know. You both stay in control.</p><div class="hero-actions"><button id="nextStepBtn" data-go="connectCard">Connect my Plex</button><button class="secondary" data-view="friends">View friends</button></div></div>
-    <div class="connection-art" aria-hidden="true"><div class="connection-node"><strong>P</strong>Your Plex</div><div class="connection-line">↔</div><div class="connection-node"><strong>J</strong>Their Jellyfin</div></div>
+    <div><span class="eyebrow">Plex + Jellyfin, together</span><h2 id="homeTitle">Connect your Plex server</h2><p id="homeDescription">Connect your Plex server, choose what to share, and invite someone you know. You both stay in control.</p><div class="hero-actions"><button id="nextStepBtn" data-go="connectCard">Connect my Plex</button><button class="secondary" data-view="friends">View friends</button></div></div>
+    <div class="connection-art" aria-hidden="true"><div class="connection-node" data-service="plex"><strong>P</strong>Your Plex</div><div class="connection-line">↔</div><div class="connection-node" id="homeRemoteNode" data-service="jellyfin"><strong>J</strong><span>Their Jellyfin</span></div></div>
   </section>
   <div class="overview-stats" data-app-view="home"><div class="overview-stat"><strong id="friendCount">—</strong><span>Connected friends</span></div><div class="overview-stat"><strong id="sharedCount">—</strong><span>Libraries you share</span></div><div class="overview-stat"><strong id="importCount">—</strong><span>Videos imported</span></div></div>
   <section class="card" id="setupChecklist" data-app-view="home">
-    <h2>A clear path to watching together</h2>
+    <h2>Setup</h2>
     <div class="checklist-row" id="stepPlex"><span class="check-circle">1</span><div><strong>Connect your Plex</strong><p id="stepPlexText">Sign in and choose a server you own.</p></div><button class="secondary" data-go="connectCard">Connect</button></div>
     <div class="checklist-row" id="stepAddress"><span class="check-circle">2</span><div><strong>Make your app reachable</strong><p id="stepAddressText">Set up a public address so your friend can connect.</p></div><button class="secondary" data-go="publicUrlCard">Set up</button></div>
     <div class="checklist-row" id="stepFriends"><span class="check-circle">3</span><div><strong>Choose your libraries. Add a friend.</strong><p id="stepFriendsText">Send a request to their Jellyfin address. They approve it.</p></div><button class="secondary" data-view="friends">Choose &amp; invite</button></div>
@@ -464,13 +481,15 @@
   </div>
 
   <div class="card hidden" id="shareCard" data-app-view="friends">
-    <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Type their Jellyfin address. They accept under Federation → Companion on Jellyfin and choose their own libraries to share back. The return connection appears here automatically. You choose what to import into Plex. Both apps must be updated and your public Companion address must be working.</p>
+    <h2><span class="step-num">5</span> Connect a friend</h2>
+    <p class="status-line" id="friendTypeHint">For Jellyfin, they accept under Federation → Companion and choose libraries to share back. For Plex, they run Companion and accept in Friends &amp; sharing. Both owners choose incoming libraries; imported media cannot be shared onward.</p>
+    <label for="friendServerType">Their server</label><select id="friendServerType"><option value="jellyfin">Jellyfin</option><option value="plex">Plex with Companion</option></select>
     <div class="inline-form">
       <input type="text" id="inviteUrlInput" placeholder="https://their-jellyfin.example:8096" autocomplete="off" autocapitalize="off" spellcheck="false">
       <button id="inviteFriendBtn">Send share request</button>
     </div>
     <div class="status-line" id="inviteStatus"></div>
+    <div style="margin-top:22px"><h2>Companion friend requests</h2><p class="status-line">Only accept people you know. Accepting gives them access to your Libraries to share choices above.</p><button class="secondary" id="checkRequestsBtn">Check requests</button><div id="companionRequestList"></div><div id="companionRequestStatus" class="status-line" role="status"></div></div>
     <details style="margin-top:18px"><summary>Advanced: older servers and connect codes</summary><p class="status-line">For older servers or a friend who cannot receive requests. Only explicitly choose Plex Remote Access if you want a direct Plex connection. It requires a separate Jellyfin import code for the return direction.</p>
     <div class="inline-form">
       <button class="secondary" id="generateCodeBtn">Generate connect code</button>
@@ -496,7 +515,7 @@
   </div>
 
   <div class="card" id="importCard" data-app-view="incoming">
-    <h2><span class="step-num">1</span> Import from a Jellyfin friend</h2>
+    <h2><span class="step-num">1</span> Import from a friend</h2>
     <p class="status-line">Your friends' shared libraries appear below. Choose what you want in Plex; Companion keeps those imports up to date. Set up the media folder once so Plex can read and play the video files.</p>
     <details><summary>Connect an older Jellyfin server with a code</summary><p class="status-line">Use this only if your friend cannot offer a return connection from Jellyfin.</p>
     <div class="inline-form"><input type="text" id="importCodeInput" placeholder="Paste the Jellyfin connect code" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="importConnectBtn">Choose libraries</button></div>
@@ -612,12 +631,22 @@ let incomingState = [];
 let mediaFolderReady = false;
 let publicAddressReady = false;
 const viewCopy = {
-  home: ['Welcome home.', 'Your library connections, all in one place.'],
-  friends: ['Better with friends.', 'Choose what you share. See what comes back.'],
-  incoming: ['More to watch.', 'Bring the libraries your friends share into your Plex.'],
-  settings: ['Make yourself at home.', 'Your server, connection, and background app preferences.']
+  home: ['Overview', 'Your connections and library activity.'],
+  friends: ['Friends & sharing', 'Manage connections and choose what leaves your server.'],
+  incoming: ['Incoming libraries', 'Choose what to import from each friend.'],
+  settings: ['Settings', 'Server, connection and app preferences.']
 };
 
+function setAccent(service) {
+  document.documentElement.dataset.accent = String(service).toLowerCase() === 'jellyfin' ? 'jellyfin' : 'plex';
+}
+function updateViewAccent(target) {
+  const context = target?.closest('[data-source-kind]');
+  if (context) setAccent(context.dataset.sourceKind);
+  else if (currentView === 'friends') setAccent(document.getElementById('friendServerType').value);
+  else if (currentView === 'incoming') setAccent(document.querySelector('#importPeerList [data-source-kind]')?.dataset.sourceKind);
+  else setAccent('plex');
+}
 function showAppView(view, targetId, focusHeading = false) {
   if (!viewCopy[view]) return;
   currentView = view;
@@ -635,6 +664,7 @@ function showAppView(view, targetId, focusHeading = false) {
   document.getElementById('viewDescription').textContent = viewCopy[view][1];
   if (focusHeading) title.focus({ preventScroll: true });
   const target = targetId && document.getElementById(targetId);
+  updateViewAccent(target);
   if (target?.scrollIntoView) target.scrollIntoView({ block: 'start' });
   else if (document.documentElement.scrollTo) document.documentElement.scrollTo({ top: 0 });
 }
@@ -646,6 +676,8 @@ function navigateToControl(id) {
 }
 
 document.addEventListener('click', event => {
+  const context = event.target.closest('[data-source-kind]');
+  if (context) setAccent(context.dataset.sourceKind);
   const viewButton = event.target.closest('[data-view]');
   const goButton = event.target.closest('[data-go]');
   const returnLink = event.target.closest('a[href^="#import-"]');
@@ -657,11 +689,21 @@ document.addEventListener('click', event => {
   }
 });
 
+document.addEventListener('focusin', event => {
+  const context = event.target.closest('[data-source-kind]');
+  if (context) setAccent(context.dataset.sourceKind);
+});
+
 function updateHome() {
   const libraries = homeState.libraries || [];
   const shared = libraries.filter(l => l.shared && !l.imported).length;
   const friends = homeState.peerCount || 0;
   const videos = incomingState.reduce((sum, p) => sum + (Number(p.mountedItemCount) || 0), 0);
+  const remoteNode = document.getElementById('homeRemoteNode');
+  const remotePlex = incomingState.length > 0 && incomingState.every(p => p.sourceKind === 'Plex');
+  remoteNode.dataset.service = remotePlex ? 'plex' : 'jellyfin';
+  remoteNode.querySelector('strong').textContent = remotePlex ? 'P' : 'J';
+  remoteNode.querySelector('span').textContent = remotePlex ? 'Their Plex' : 'Their Jellyfin';
   const pending = incomingState.some(p => p.returnSharePending);
   const attached = incomingState.some(p => p.plexMovieSectionKey || p.plexShowSectionKey);
   document.getElementById('friendsSetupHint').classList.toggle('hidden', !!homeState.serverConnected);
@@ -680,18 +722,18 @@ function updateHome() {
     row.querySelector('.check-circle').textContent = complete ? '✓' : String(index + 1);
     document.getElementById(id + 'Text').textContent = message;
   });
-  let title = 'Good libraries are better with friends.';
+  let title = 'Connect your Plex server';
   let description = 'Connect your Plex server, choose what to share, and invite someone you know. You both stay in control.';
   let action = 'Connect my Plex'; let target = 'connectCard';
   if (homeState.serverConnected) {
     if (!publicAddressReady) {
       title = 'Your Plex is connected.'; description = 'Next, give Companion a public address so your friend can reach it from their home.'; action = 'Set up my connection'; target = 'publicUrlCard';
     } else if (!shared || !friends) {
-      title = 'Make room for your people.'; description = 'Choose the libraries you want to share, then send a request to your friend’s Jellyfin server.'; action = 'Choose libraries & invite'; target = 'librariesCard';
+      title = 'Choose libraries to share'; description = 'Choose the libraries you want to share, then send a request to your friend’s Jellyfin or Plex Companion.'; action = 'Choose libraries & invite'; target = 'librariesCard';
     } else if (pending || (incomingState.length && (!attached || !mediaFolderReady))) {
-      title = pending ? 'Your friend is sharing back.' : 'Your next watch is almost here.'; description = 'Choose your incoming libraries and finish the media folder setup. Companion keeps everything you select in sync.'; action = 'Finish my imports'; target = 'importCard';
+      title = pending ? 'Your friend is sharing back.' : 'Finish setting up imports'; description = 'Choose your incoming libraries and finish the media folder setup. Companion keeps everything you select in sync.'; action = 'Finish my imports'; target = 'importCard';
     } else {
-      title = 'Your libraries, connected.'; description = 'Companion keeps your selected imports current in the background. You can change sharing permissions whenever you need.'; action = 'Manage my friends'; target = 'shareCard';
+      title = 'Your libraries are connected'; description = 'Companion keeps your selected imports current in the background. You can change sharing permissions whenever you need.'; action = 'Manage my friends'; target = 'shareCard';
     }
   }
   document.getElementById('homeTitle').textContent = title;
@@ -816,7 +858,7 @@ async function loadStatus() {
     shareCard.classList.remove('hidden');
     document.getElementById('connectCard').classList.add('done');
     renderLibraries(data.libraries || []);
-    await Promise.all([loadPlexServers(data.serverMachineIdentifier), loadPeers(), loadPoolInvites()]);
+    await Promise.all([loadPlexServers(data.serverMachineIdentifier), loadPeers(), loadPoolInvites(), loadCompanionRequests()]);
     const verEl = document.getElementById('companionPluginVersion');
     if (verEl && data.federationPluginVersion) verEl.textContent = data.federationPluginVersion;
   } else {
@@ -856,7 +898,7 @@ async function loadImportPeers(quiet = false) {
   if (quiet && importPeerList.dataset.snapshot === snapshot) return;
   importPeerList.dataset.snapshot = snapshot;
   if (peers.length === 0) {
-    importPeerList.innerHTML = '<div class="empty-state" style="padding:28px 0"><strong>Your next library starts with a friend.</strong><p>Send a request from Friends &amp; sharing. Once they accept and offer a return connection, it will appear here.</p><button class="secondary" data-view="friends">Go to friends</button></div>';
+    importPeerList.innerHTML = '<div class="empty-state" style="padding:28px 0"><strong>No incoming libraries</strong><p>Send a request from Friends &amp; sharing. Once they accept and offer a return connection, it will appear here.</p><button class="secondary" data-view="friends">Go to friends</button></div>';
     return;
   }
 
@@ -865,6 +907,7 @@ async function loadImportPeers(quiet = false) {
     const row = document.createElement('div');
     row.className = 'peer-row import-peer';
     row.id = 'import-' + peer.id;
+    row.dataset.sourceKind = peer.sourceKind === 'Plex' ? 'plex' : 'jellyfin';
 
     const lastSync = peer.lastSyncUtc ? new Date(peer.lastSyncUtc).toLocaleString() : 'never';
     const errorLine = peer.lastError ? `<div class="status-line error">${escapeHtml(peer.lastError)}</div>` : '';
@@ -877,7 +920,7 @@ async function loadImportPeers(quiet = false) {
 
     row.innerHTML = `
       <div class="peer-header">
-        <div><strong>${escapeHtml(peer.name)}</strong> ${syncBadge} ${inPlex}</div>
+        <div><strong>${escapeHtml(peer.name)}</strong><span class="service-badge" data-service="${row.dataset.sourceKind}">${peer.sourceKind === 'Plex' ? 'Plex' : 'Jellyfin'}</span> ${syncBadge} ${inPlex}</div>
         <div class="peer-actions">
           <button class="secondary" data-action="add-plex" data-id="${escapeHtml(peer.id)}" ${peer.returnSharePending ? 'disabled data-pending' : ''}>Add to Plex</button>
           <button class="secondary" data-action="sync" data-id="${escapeHtml(peer.id)}" ${peer.returnSharePending ? 'disabled data-pending' : ''}>Sync now</button>
@@ -886,7 +929,7 @@ async function loadImportPeers(quiet = false) {
       <div class="status-line">${escapeHtml(peer.url || '')}</div><div class="peer-meta"><span>Last synced: ${lastSync}</span><span>${peer.lastItemCount} item(s)</span></div>
       <div class="sync-steps" aria-label="Import progress"><span class="${peer.returnSharePending ? '' : 'complete'}">1 · Libraries selected</span><span class="${peer.lastSyncUtc && !peer.lastError ? 'complete' : ''}">2 · Catalog synced</span><span class="${mediaFolderReady ? 'complete' : ''}">3 · Media folder ready</span><span class="${peer.plexMovieSectionKey || peer.plexShowSectionKey ? 'complete' : ''}">4 · Added to Plex</span></div>
       <div class="status-line">${peer.mountedItemCount || 0} item(s) have video file information for the media mount. ${peer.lastItemCount > (peer.mountedItemCount || 0) ? 'Some items need a newer Federation plugin on the source server or a fresh sync.' : ''}</div>
-      <details ${peer.returnSharePending ? 'open' : ''}><summary>Libraries to import</summary><p class="status-line">Only libraries their Jellyfin owner has shared with you appear here. Unchecked libraries stay out of Plex.</p><button class="secondary" data-action="preview-return" data-id="${escapeHtml(peer.id)}">Refresh available libraries</button><div data-preview-status class="status-line" role="status"></div><div data-libraries="${escapeHtml(peer.id)}">${(peer.availableLibraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}" ${(peer.selectedLibraryIds == null || peer.selectedLibraryIds.includes(lib.id)) ? 'checked' : ''}> ${escapeHtml(lib.name)}</label>`).join('')}</div><button class="secondary" data-action="libraries" data-id="${escapeHtml(peer.id)}">Save selection and sync</button></details>
+      <details ${peer.returnSharePending ? 'open' : ''}><summary>Libraries to import</summary><p class="status-line">Only libraries their server owner has shared with you appear here. Unchecked libraries stay out of Plex.</p><button class="secondary" data-action="preview-return" data-id="${escapeHtml(peer.id)}">Refresh available libraries</button><div data-preview-status class="status-line" role="status"></div><div data-libraries="${escapeHtml(peer.id)}">${(peer.availableLibraries || []).map(lib => `<label style="display:block"><input type="checkbox" value="${escapeHtml(lib.id)}" ${(peer.selectedLibraryIds == null || peer.selectedLibraryIds.includes(lib.id)) ? 'checked' : ''}> ${escapeHtml(lib.name)}</label>`).join('')}</div><button class="secondary" data-action="libraries" data-id="${escapeHtml(peer.id)}">Save selection and sync</button></details>
       <details><summary>Source titles and import issues (${peer.importIssueCount || 0})</summary><p class="status-line">Only directly owned source items belong here. Season and episode numbers follow the source metadata.</p><input data-catalog-search type="search" placeholder="Filter by movie or show" aria-label="Filter source titles"><button class="secondary" data-action="catalog" data-id="${escapeHtml(peer.id)}">Check source catalog</button><div data-catalog-results class="status-line"></div></details>
       <details class="import-remove"><summary>Remove this import</summary><p class="status-line">Stops importing this friend's media. Their original files stay on their server.</p><div class="app-actions"><select aria-label="Remove options" data-cleanup="${escapeHtml(peer.id)}"><option value="keep">Keep legacy links</option><option value="remove">Remove managed legacy links</option></select><button class="danger" data-action="remove" data-id="${escapeHtml(peer.id)}">Remove import</button></div></details>
       ${errorLine}`;
@@ -910,7 +953,7 @@ async function loadImportPeers(quiet = false) {
           checkbox.checked = !data.returnSharePending && (data.selectedLibraryIds == null || data.selectedLibraryIds.includes(library.id));
           label.append(checkbox, ' ' + library.name); picker.append(label);
         }
-        status.textContent = picker.children.length ? 'Select what to import, then save and sync.' : 'Nothing shared yet. Ask them to open Federation → Friends → Manage → Sharing on Jellyfin, select their own libraries, then retry here.';
+        status.textContent = picker.children.length ? 'Select what to import, then save and sync.' : row.dataset.sourceKind === 'plex' ? 'Nothing shared yet. Ask your friend to select their own Libraries to share in Companion, then retry here.' : 'Nothing shared yet. Ask them to open Federation → Friends → Manage → Sharing on Jellyfin, select their own libraries, then retry here.';
       } catch (e) { status.textContent = e.message; }
       finally { btn.disabled = false; }
     });
@@ -1037,7 +1080,7 @@ async function loadPeers(quiet = false) {
   if (quiet && (peerList.querySelector('[data-editing], button:disabled') || peerList.contains(document.activeElement))) return;
   const res = await apiFetch('/api/peers');
   if (!res.ok) throw new Error('Could not read connected friends.');
-  const peers = await res.json();
+  const peers = (await res.json()).filter(peer => !peer.pendingConnection);
   homeState.peerCount = peers.length;
   updateHome();
   const snapshot = JSON.stringify(peers);
@@ -1051,7 +1094,8 @@ async function loadPeers(quiet = false) {
   for (const peer of peers) {
     const row = document.createElement('div');
     row.className = 'peer-row share-peer';
-    row.innerHTML = `<div><strong>${escapeHtml(peer.name)}</strong><div class="share-directions"><div><span class="direction-kicker">Your Plex → ${escapeHtml(peer.name)}</span><p>${(peer.sharedLibraries || []).map(escapeHtml).join(' · ') || 'No libraries shared'}</p><span class="status-line">Change your library switches above. Imported libraries cannot be shared onward.</span></div><div><span class="direction-kicker">Their Jellyfin → your Plex</span><p>${peer.returnImportId ? (peer.returnSharePending ? 'Ready for you to choose libraries' : 'Return import connected') : 'Waiting for their return connection'}</p>${peer.returnImportId ? `<a href="#import-${escapeHtml(peer.returnImportId)}">Choose libraries and check import →</a>` : '<span class="status-line">Ask the Jellyfin owner to click Set up / repair two-way sharing on your friend card.</span>'}</div></div></div>
+    row.dataset.sourceKind = peer.companionConnection ? 'plex' : 'jellyfin';
+    row.innerHTML = `<div><strong>${escapeHtml(peer.name)}</strong><span class="service-badge" data-service="${row.dataset.sourceKind}">${peer.companionConnection ? 'Plex' : 'Jellyfin'}</span><div class="share-directions"><div><span class="direction-kicker">Your Plex → ${escapeHtml(peer.name)}</span><p>${(peer.sharedLibraries || []).map(escapeHtml).join(' · ') || 'No libraries shared'}</p><span class="status-line">Change your library switches above. Imported libraries cannot be shared onward.</span></div><div><span class="direction-kicker">Their ${peer.companionConnection ? 'Plex' : 'Jellyfin'} → your Plex</span><p>${peer.returnImportId ? (peer.returnSharePending ? 'Ready for you to choose libraries' : 'Return import connected') : 'Waiting for their return connection'}</p>${peer.returnImportId ? `<a href="#import-${escapeHtml(peer.returnImportId)}">Choose libraries and check import →</a>` : '<span class="status-line">Ask the Jellyfin owner to click Set up / repair two-way sharing on your friend card.</span>'}</div></div></div>
       <div class="peer-download-controls">
         <label><input type="checkbox" data-action="allow-download" data-id="${escapeHtml(peer.id)}" ${peer.allowDownloads ? 'checked' : ''}> Allow individual downloads</label>
         <label><input type="checkbox" data-action="allow-bulk" data-id="${escapeHtml(peer.id)}" ${peer.allowBulkDownloads ? 'checked' : ''} ${peer.allowDownloads ? '' : 'disabled'}> Allow bulk downloads</label>
@@ -1280,23 +1324,63 @@ enableFunnelBtn.addEventListener('click', async () => {
 inviteFriendBtn.addEventListener('click', async () => {
   const url = inviteUrlInput.value.trim();
   if (!url) {
-    inviteStatus.textContent = 'Enter their Jellyfin address first.';
+    inviteStatus.textContent = 'Enter their server address first.';
     return;
   }
   inviteFriendBtn.disabled = true;
   inviteStatus.textContent = 'Sending share request…';
   try {
-    const res = await apiFetch('/api/connect/invite', {
+    const res = await apiFetch(document.getElementById('friendServerType').value === 'plex' ? '/api/companion/invite' : '/api/connect/invite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
     const data = await res.json();
     inviteStatus.textContent = res.ok ? (data.message || 'Request sent.') : (data.error || 'Could not send the request.');
+    if (res.ok) await loadCompanionRequests();
   } catch (e) {
     inviteStatus.textContent = 'Error: ' + e.message;
   }
   inviteFriendBtn.disabled = false;
+});
+
+document.getElementById('friendServerType').addEventListener('change', event => {
+  setAccent(event.target.value);
+  inviteUrlInput.placeholder = event.target.value === 'plex' ? 'https://their-companion.example' : 'https://their-jellyfin.example:8096';
+});
+
+async function loadCompanionRequests(quiet = false) {
+  const list = document.getElementById('companionRequestList');
+  if (quiet && list.querySelector('button:disabled')) return;
+  const res = await apiFetch('/api/companion/requests');
+  if (!res.ok) return; // Older Companions do not have this endpoint.
+  const requests = await res.json();
+  if (!Array.isArray(requests)) return;
+  const snapshot = JSON.stringify(requests);
+  if (quiet && list.dataset.snapshot === snapshot) return;
+  list.dataset.snapshot = snapshot;
+  list.innerHTML = requests.filter(r => r.status !== 'accepted').map(r => `<div class="peer-row" data-source-kind="plex"><strong>${escapeHtml(r.name || 'Plex Companion')}</strong><p class="status-line">${escapeHtml(r.url)} · ${escapeHtml(r.status)}${r.outgoing ? ' · sent by you' : ' · wants to connect'}</p>${r.error ? `<p class="status-line error">${escapeHtml(r.error)}</p>` : ''}${!r.outgoing && r.status === 'pending' ? `<div class="app-actions"><button data-request="${escapeHtml(r.id)}" data-decision="accept">Accept friend</button><button class="secondary" data-request="${escapeHtml(r.id)}" data-decision="decline">Decline</button></div>` : r.outgoing && r.status === 'pending' ? `<button class="secondary" data-request="${escapeHtml(r.id)}" data-decision="cancel">Cancel request</button>` : ''}</div>`).join('') || '<p class="status-line">No pending Companion requests.</p>';
+  list.querySelectorAll('[data-decision]').forEach(button => button.addEventListener('click', async () => {
+    const output = document.getElementById('companionRequestStatus');
+    button.disabled = true;
+    try {
+      const res = await apiFetch(`/api/companion/requests/${encodeURIComponent(button.dataset.request)}/${button.dataset.decision}`, { method: 'POST' });
+      const data = await res.json();
+      output.textContent = data.message || data.error || 'Could not update this request.';
+      if (res.ok) await Promise.all([loadCompanionRequests(), loadPeers(), loadImportPeers()]);
+    } catch { output.textContent = 'Could not update this request. Check Companion is running and retry.'; }
+    finally { button.disabled = false; }
+  }));
+}
+
+document.getElementById('checkRequestsBtn').addEventListener('click', async event => {
+  event.target.disabled = true;
+  try {
+    const response = await apiFetch('/api/companion/check', { method: 'POST' });
+    if (!response.ok) throw new Error();
+    await Promise.all([loadCompanionRequests(), loadPeers(), loadImportPeers()]);
+  } catch { document.getElementById('companionRequestStatus').textContent = 'Could not refresh requests. Please retry.'; }
+  finally { event.target.disabled = false; }
 });
 
 async function loadUpdateStatus() {
@@ -1552,7 +1636,7 @@ async function unlockOwner() {
     if (!window._federationMountPoll) window._federationMountPoll = setInterval(() => { if (!document.hidden) loadMountStatus(); }, 30000);
     if (!window._federationAppPoll) window._federationAppPoll = setInterval(() => { if (!document.hidden) loadAppInfo(); }, 30000);
     if (!window._federationFriendPoll) window._federationFriendPoll = setInterval(() => {
-      if (!document.hidden) Promise.all([loadPeers(true), loadImportPeers(true)])
+      if (!document.hidden) Promise.all([loadPeers(true), loadImportPeers(true), loadCompanionRequests(true)])
         .catch(() => reportConnectionError('Could not check your friends. Your saved choices are kept. Choose Refresh status to retry.'));
     }, 30000);
   } catch (e) {

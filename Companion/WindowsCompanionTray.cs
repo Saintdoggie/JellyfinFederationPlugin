@@ -9,7 +9,7 @@ namespace FederationCompanion;
 /// <summary>
 /// The Windows desktop shell: a tray icon that keeps the listener, the Plex
 /// connection and the media mount manageable without a console window. The
-/// owner dashboard opens in a WebView2 desktop window; this tray keeps the
+/// owner interface uses native Windows controls; this tray keeps the
 /// server reachable when that window is closed.
 /// </summary>
 internal static class WindowsCompanionTray

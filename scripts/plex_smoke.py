@@ -212,7 +212,7 @@ def smoke(repo, dotnet, published_app, tools):
 
         stage = 'real Plex scan and decode'
         plex_config = work / 'plex'; plex_config.mkdir()
-        plex = container(plex_name, ['-p', '127.0.0.1::32400', '-v', f'{plex_config}:/config', '-v', f'{mount}:/media:ro',
+        plex = container(plex_name, ['-p', '127.0.0.1::32400', '-v', f'{plex_config}:/config', '-v', f'{mount}:/media:ro', '-v', f'{media}:/owned:ro',
             '-e', 'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config', '-e', 'LD_LIBRARY_PATH=/usr/lib/plexmediaserver'],
             tools['plex_image'], '/usr/lib/plexmediaserver/Plex Media Server')
         plex_headers = {'Accept': 'application/json', 'X-Plex-Token': 'disposable-qa'}
@@ -235,6 +235,10 @@ def smoke(repo, dotnet, published_app, tools):
         request(companion, '/api/libraries/refresh', owner, {}, method='POST')
         request(companion, '/api/libraries/toggle', owner, {'sectionKey': section, 'shared': True}, expected=400, raw=True)
         print('LIVE PASS: Plex H.264/AAC scan, actual Plex-served media decode, imported-section sharing denied', flush=True)
+        stage = 'Plex-to-Plex companion federation'
+        from companion_peer_smoke import exercise
+        exercise(work, published_app, dotnet, tools, companion, owner, plex, plex_headers, movie_file,
+                 request, wait_for, check, command, container)
     except Exception as error:
         # Keep private logs off terminal/CI; exceptions can include credential-bearing URLs.
         detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__

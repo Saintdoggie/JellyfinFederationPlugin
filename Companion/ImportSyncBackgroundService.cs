@@ -71,7 +71,7 @@ public static class ImportSyncCoordinator
         {
             if (!state.ImportPeers.Contains(peer) || peer.ReturnSharePending) return;
 
-            var libraries = await jellyfin.GetLibrariesAsync(peer.Url, peer.Token, cancellationToken).ConfigureAwait(false);
+            var libraries = await jellyfin.GetLibrariesAsync(peer, cancellationToken).ConfigureAwait(false);
             peer.AvailableLibraries = libraries;
             var entries = new List<(PeerItem Item, string Url)>();
             var playbackBaseUrl = FirstNonEmpty(state.PlaybackBaseUrl, peer.PlaybackBaseUrl, state.PublicUrl);
@@ -86,7 +86,7 @@ public static class ImportSyncCoordinator
                 var mediaTypes = MediaTypesFor(library.CollectionType);
                 foreach (var mediaType in mediaTypes)
                 {
-                    var items = await jellyfin.GetItemsAsync(peer.Url, peer.Token, library.Id, mediaType, cancellationToken).ConfigureAwait(false);
+                    var items = await jellyfin.GetItemsAsync(peer, library.Id, mediaType, cancellationToken).ConfigureAwait(false);
                     foreach (var item in items)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
