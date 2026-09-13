@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -15,11 +16,12 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services;
 
-/// <summary>Refresh source Plex artwork on existing items without recreating
+/// <summary>Refresh source artwork on existing items without recreating
 /// them or losing watch history. Never persist a credential-bearing image URL.</summary>
 public sealed class FederationArtworkService
 {
     internal const string StampKey = "FederationArtwork";
+    internal const string LocalStampKey = "FederationArtworkLocal";
     private static readonly HttpClient ImageHttp = new(new SocketsHttpHandler { AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(30) };
     internal static HttpClient? HttpClientOverride { get; set; }
@@ -39,30 +41,66 @@ public sealed class FederationArtworkService
     internal static string? Revision(FederatedCacheEntry entry)
     {
         var source = entry.GetPrimarySource();
-        if (source == null || (entry.Metadata.PrimaryImageTag == null && entry.Metadata.BackdropImageTag == null)) return null;
+        if (source == null) return null;
+        var (primaryTag, backdropTag) = Tags(entry, source);
+        if (primaryTag == null && backdropTag == null) return null;
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            source.ServerId + "\n" + source.RemoteItemId + "\n" + entry.Metadata.PrimaryImageTag + "\n" + entry.Metadata.BackdropImageTag)));
+            source.ServerId + "\n" + source.RemoteItemId + "\n" + primaryTag + "\n" + backdropTag)));
     }
+
+    private static (string? Primary, string? Backdrop) Tags(FederatedCacheEntry entry, FederatedSource source)
+        => (source.PrimaryImageTag ?? entry.Metadata.PrimaryImageTag, source.BackdropImageTag ?? entry.Metadata.BackdropImageTag);
+
+    internal static string LocalRevision(BaseItem item)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n",
+            new[] { ImageType.Primary, ImageType.Backdrop }.Select(type =>
+            {
+                var image = item.GetImageInfo(type, 0);
+                return image == null || !File.Exists(image.Path) ? "missing" : image.Path + "|" + image.DateModified.Ticks + "|" + File.GetLastWriteTimeUtc(image.Path).Ticks;
+            })))));
+
+    private static bool HasStoredImage(BaseItem item, ImageType type)
+        => item.GetImageInfo(type, 0) is { } info && File.Exists(info.Path);
 
     public async Task RefreshAsync(BaseItem item, FederatedCacheEntry entry, Folder parent, CancellationToken ct)
     {
         var source = entry.GetPrimarySource();
         var server = source == null ? null : _manager.GetServer(source.ServerId);
         var revision = Revision(entry);
-        if (server?.Kind != ServerKind.Plex || !server.Enabled || revision == null
-            || entry.Metadata.RemoteNativeId == null) return;
+        if (source == null || server == null || !server.Enabled || revision == null) return;
+        var (primaryTag, backdropTag) = Tags(entry, source);
         if (item.ProviderIds.TryGetValue(StampKey, out var stamp) && stamp == revision
-            && (entry.Metadata.PrimaryImageTag == null || item.HasImage(ImageType.Primary))
-            && (entry.Metadata.BackdropImageTag == null || item.HasImage(ImageType.Backdrop))) return;
+            && item.ProviderIds.TryGetValue(LocalStampKey, out var localStamp) && localStamp == LocalRevision(item)
+            && (primaryTag == null || HasStoredImage(item, ImageType.Primary))
+            && (backdropTag == null || HasStoredImage(item, ImageType.Backdrop))) return;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(60));
             var imageCt = timeout.Token;
-            var images = await _catalogs.For(server)!.GetImagesAsync(server, entry.Metadata.RemoteNativeId, imageCt).ConfigureAwait(false);
+            ExternalImageSet? images;
+            var external = _catalogs.For(server);
+            if (external != null)
+            {
+                var nativeId = entry.GetNativeId(source);
+                if (nativeId == null) return;
+                images = await external.GetImagesAsync(server, nativeId, imageCt).ConfigureAwait(false);
+            }
+            else
+            {
+                var client = _manager.GetClient(server.Id);
+                if (client == null) return;
+                var id = source.RemoteItemId.ToString("N");
+                var (token, _) = await client.GetImageTokenAsync(id, imageCt).ConfigureAwait(false);
+                if (token == null) return;
+                var url = server.Url.TrimEnd('/') + "/Plugins/Federation/Peer/Images/" + id;
+                var query = "?token=" + Uri.EscapeDataString(token);
+                images = new ExternalImageSet(primaryTag == null ? null : url + "/Primary" + query + "&tag=" + Uri.EscapeDataString(primaryTag),
+                    backdropTag == null ? null : url + "/Backdrop/0" + query + "&tag=" + Uri.EscapeDataString(backdropTag));
+            }
             if (images == null) return;
-            var candidates = new[] { (images.PrimaryUrl, ImageType.Primary, entry.Metadata.PrimaryImageTag),
-                (images.BackdropUrl, ImageType.Backdrop, entry.Metadata.BackdropImageTag) };
+            var candidates = new[] { (images.PrimaryUrl, ImageType.Primary, primaryTag),
+                (images.BackdropUrl, ImageType.Backdrop, backdropTag) };
             foreach (var (url, type, tag) in candidates.Where(x => x.Item3 != null))
             {
                 if (url == null) return;
@@ -76,7 +114,9 @@ public sealed class FederationArtworkService
             }
             await _persistence.SaveImagesAsync(item, ct).ConfigureAwait(false);
             item.ProviderIds.TryGetValue(StampKey, out var previous);
+            item.ProviderIds.TryGetValue(LocalStampKey, out var previousLocal);
             item.ProviderIds[StampKey] = revision;
+            item.ProviderIds[LocalStampKey] = LocalRevision(item);
             try
             {
                 await _libraryManager.UpdateItemsAsync(new[] { item }, parent, ItemUpdateType.MetadataEdit, ct).ConfigureAwait(false);
@@ -85,6 +125,8 @@ public sealed class FederationArtworkService
             {
                 if (previous == null) item.ProviderIds.Remove(StampKey);
                 else item.ProviderIds[StampKey] = previous;
+                if (previousLocal == null) item.ProviderIds.Remove(LocalStampKey);
+                else item.ProviderIds[LocalStampKey] = previousLocal;
                 throw;
             }
         }

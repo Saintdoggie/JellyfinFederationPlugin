@@ -116,7 +116,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 }
 
                 var server = _federationManager.GetServer(primary.ServerId);
-                if (server == null)
+                if (server == null || !server.Enabled)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
                 }
@@ -128,7 +128,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 var externalProvider = _externalCatalogs.For(server);
                 if (externalProvider != null)
                 {
-                    var nativeId = entry.Metadata.RemoteNativeId;
+                    var nativeId = entry.GetNativeId(primary);
                     if (nativeId == null)
                     {
                         return Enumerable.Empty<RemoteImageInfo>();

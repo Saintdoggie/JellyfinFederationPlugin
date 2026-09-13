@@ -13,6 +13,38 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 public class FederatedCacheEntryTests
 {
+    [Fact]
+    public void DuplicateMovie_KeepsEachPlexNativeIdAndPosterBoundToItsSource()
+    {
+        var entry = new FederatedCacheEntry();
+        var a = PlexApiClient.RatingKeyToGuid("100");
+        var b = PlexApiClient.RatingKeyToGuid("900");
+        entry.AddSource("a", a, 0);
+        entry.UpdateFromRemote(new BaseItemDto { Name = "Movie", ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "custom-a" } }, "a", a, 0);
+        entry.SetNativeId("a", a, "100");
+        var revision = FederationArtworkService.Revision(entry);
+        entry.AddSource("b", b, 1);
+        entry.UpdateFromRemote(new BaseItemDto { Name = "Movie", ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "custom-b" } }, "b", b, 1);
+        entry.SetNativeId("b", b, "900");
+        Assert.Equal("100", entry.Metadata.RemoteNativeId);
+        Assert.Equal("100", entry.GetNativeId(entry.GetPrimarySource()!));
+        Assert.Equal(revision, FederationArtworkService.Revision(entry));
+        entry.PrimarySourceIndex = 1;
+        Assert.Equal("900", entry.GetNativeId(entry.GetPrimarySource()!));
+        Assert.NotEqual(revision, FederationArtworkService.Revision(entry));
+    }
+
+    [Fact]
+    public void LegacyDuplicateNativeId_IsNotUsedOnTheWrongPlexServer()
+    {
+        var entry = new FederatedCacheEntry();
+        entry.AddSource("a", PlexApiClient.RatingKeyToGuid("100"), 0);
+        entry.AddSource("b", PlexApiClient.RatingKeyToGuid("900"), 1);
+        entry.Metadata.RemoteNativeId = "900";
+        Assert.Null(entry.GetNativeId(entry.GetPrimarySource()!));
+        Assert.Equal("900", entry.GetNativeId(entry.GetSourcesSnapshot()[1]));
+    }
+
     private static FederationItemCache CreateCache()
         => new(NullLogger<FederationItemCache>.Instance);
 

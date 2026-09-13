@@ -747,7 +747,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     // The provider's own id for this item, which the stream path
                     // needs because the Guid above is derived from it one-way.
-                    entry.Metadata.RemoteNativeId = item.NativeId;
+                    entry.SetNativeId(server.Id, item.Dto.Id, item.NativeId);
                     seen.Add(item.Dto.Id);
                     total++;
                 }
