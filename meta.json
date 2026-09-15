@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.159",
-  "changelog": "Companion desktop app (Windows tray/WinExe, Linux autostart and launcher, single-instance, SHA256SUMS installers), lifecycle hardening (no automatic media helper on fresh install, persisted Stop, credential ACLs, safer updater), Storage tab review, and friend-callback SSRF hardening that connects only to public resolved addresses.",
+  "version": "0.0.160",
+  "changelog": "Faster Downloads browsing (slim catalog payloads, batched cover art, cached duplicate checks) and offline hide/unhide: a background check pings every friend every couple of minutes, hiding unreachable servers' titles until they return. Nothing is ever deleted; items reappear on rescan.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-10T14:30:00Z",
+  "timestamp": "2026-09-15T17:31:49Z",
   "imageUrl": "thumb.png"
 }

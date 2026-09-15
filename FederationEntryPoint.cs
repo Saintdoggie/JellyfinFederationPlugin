@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly FederationItemPersistenceService _persistence;
         private readonly FederationDownloadService _downloads;
         private readonly WebClientInjector _webClientInjector;
+        private readonly FederationAvailabilityService _availability;
         private readonly IHostApplicationLifetime _appLifetime;
 
         /// <summary>
@@ -39,6 +40,7 @@ namespace Jellyfin.Plugin.Federation
             FederationItemPersistenceService persistence,
             FederationDownloadService downloads,
             WebClientInjector webClientInjector,
+            FederationAvailabilityService availability,
             IHostApplicationLifetime appLifetime)
         {
             _logger = logger;
@@ -48,7 +50,9 @@ namespace Jellyfin.Plugin.Federation
             _persistence = persistence;
             _downloads = downloads;
             _webClientInjector = webClientInjector;
+            _availability = availability;
             _appLifetime = appLifetime;
+            FederationItemPersistenceService.AvailabilityOverride = availability;
         }
 
         /// <inheritdoc />
@@ -167,6 +171,25 @@ namespace Jellyfin.Plugin.Federation
                 _webClientInjector.EnsureBadgeScriptInjected();
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
+
+                // Wire reachability flips to a hide/unhide rescan: when the
+                // background pinger marks a server offline (or back online),
+                // re-reconcile every mapping so its items disappear (or
+                // reappear) without touching the cache. Sync itself keeps
+                // preserving cached data on failure exactly as before.
+                _availability.OnReachabilityChangedAsync = async (serverId, online, ct) =>
+                {
+                    var mappings = Plugin.Instance?.Configuration?.LibraryMappings ?? new List<LibraryMapping>();
+                    foreach (var mapping in mappings)
+                    {
+                        await _persistence.ReconcileMappingAsync(mapping, ct).ConfigureAwait(false);
+                    }
+
+                    _logger.LogInformation(
+                        "[Federation] Reachability change applied for {ServerId}: items {Visibility}",
+                        serverId,
+                        online ? "re-shown" : "hidden until the server returns");
+                };
 
                 // Kick off a background sync so federation items appear without
                 // waiting for the first scheduled task run. Fire-and-forget so

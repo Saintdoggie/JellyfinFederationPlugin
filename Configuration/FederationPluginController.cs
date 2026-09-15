@@ -74,6 +74,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly TailscaleService _tailscale;
         private readonly ITaskManager _taskManager;
         private readonly FederationQualityAdvisorService _qualityAdvisor;
+        private readonly FederationAvailabilityService _availability;
         private readonly IAuthorizationContext _authorizationContext;
 
         public FederationController(
@@ -99,6 +100,7 @@ namespace Jellyfin.Plugin.Federation.Api
             TailscaleService tailscale,
             ITaskManager taskManager,
             FederationQualityAdvisorService qualityAdvisor,
+            FederationAvailabilityService availability,
             IAuthorizationContext authorizationContext)
         {
             _logger = logger;
@@ -123,6 +125,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _tailscale = tailscale;
             _taskManager = taskManager;
             _qualityAdvisor = qualityAdvisor;
+            _availability = availability;
             _authorizationContext = authorizationContext;
         }
 
@@ -2381,10 +2384,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>
         /// Resolves a browser-downloadable URL for a federated item, given its
-        /// local Jellyfin item id: the same proxy stream URL playback already
+        /// local Jellyfin item id: the same proxy stream path playback already
         /// uses (see <see cref="Stream"/> above), with <c>download=true</c> and a
         /// filesystem-safe filename appended so the browser saves it to the
-        /// viewer's own device instead of playing it inline. Distinct from
+        /// viewer's own device instead of playing it inline. The JSON <c>url</c>
+        /// is origin-relative so a phone or remote browser is not sent to this
+        /// server's loopback port. Distinct from
         /// <see cref="StartDownload"/>, which downloads a permanent copy onto
         /// *this server's* disk instead - this never touches server storage at
         /// all, it just streams straight to whoever asked.
@@ -2477,6 +2482,11 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var remoteUserId = RequestingRemoteUserId();
+            if (request?.ItemIds is List<string> batchIds && batchIds.Count > 0)
+            {
+                return IssueImageTokenBatch(caller, remoteUserId, batchIds);
+            }
+
             if (!_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
@@ -2531,6 +2541,46 @@ namespace Jellyfin.Plugin.Federation.Api
                 expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(purpose)),
                 purpose = purpose.ToString()
             });
+        }
+
+        /// <summary>
+        /// Batch half of <see cref="IssuePlaybackToken"/> for the Browse grid's
+        /// cover art: mints one Image-purpose token per requested item in a
+        /// single WAN round trip instead of one round trip per poster. Only
+        /// Image purpose is honored here - playback/download tokens are never
+        /// batch-minted, and every id is visibility-checked exactly as the
+        /// single-item path checks it. Unknown/invisible ids come back with a
+        /// null token rather than failing the whole batch, so one unshared
+        /// item never blocks the other 59 posters.
+        /// </summary>
+        private IActionResult IssueImageTokenBatch(RemoteServer caller, string? remoteUserId, List<string> itemIds)
+        {
+            var distinct = itemIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(200)
+                .ToList();
+            if (distinct.Count == 0)
+            {
+                return BadRequest(new { error = "Invalid item id" });
+            }
+
+            var expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(FederationTokenPurpose.Image));
+            var tokens = new List<object>(distinct.Count);
+            foreach (var rawId in distinct)
+            {
+                if (!Guid.TryParse(rawId, out var itemGuid)
+                    || !_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
+                {
+                    tokens.Add(new { itemId = rawId, token = (string?)null });
+                    continue;
+                }
+
+                var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId, FederationTokenPurpose.Image, remoteUserId);
+                tokens.Add(new { itemId = itemGuid.ToString("N"), token });
+            }
+
+            return Ok(new { tokens, expiresUtc, purpose = FederationTokenPurpose.Image.ToString() });
         }
 
         /// <summary>
@@ -2939,7 +2989,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string? sortBy,
             [FromQuery] string? sortOrder,
             CancellationToken cancellationToken,
-            [FromQuery] bool includeMediaSources = false)
+            [FromQuery] bool includeMediaSources = false,
+            [FromQuery] bool slim = false)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -2965,8 +3016,16 @@ namespace Jellyfin.Plugin.Federation.Api
                 // "multiple collection Include" query-splitting warning (no
                 // QuerySplittingBehavior configured), which is a real slow-query hit
                 // repeated on every 200-item page across every mapping, every sync.
-                (includeMediaSources ? "Fields=MediaSources," : "Fields=") + "BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,OfficialRating,CommunityRating,PremiereDate,ProductionYear,DateCreated,ImageTags,BackdropImageTags",
-                "EnableImageTypes=Primary,Backdrop,Banner,Thumb"
+                // Slim mode (the Browse/Downloads grid) goes further and drops every
+                // heavy field outright: card rendering only needs identity, card
+                // text, dedup provider ids, and image tags. Slim payloads stay the
+                // same shape as full ones - just with the dropped fields absent -
+                // so RemoteServerClient.ParseItem keeps working unchanged and old
+                // callers that never send slim=true see byte-identical behavior.
+                (includeMediaSources ? "Fields=MediaSources," : "Fields=") + (slim
+                    ? "ProviderIds,ProductionYear,DateCreated,ImageTags"
+                    : "BasicSyncInfo,Path,MediaStreams,Overview,Genres,Tags,Studios,People,ProviderIds,OriginalTitle,OfficialRating,CommunityRating,PremiereDate,ProductionYear,DateCreated,ImageTags,BackdropImageTags"),
+                "EnableImageTypes=" + (slim ? "Primary" : "Primary,Backdrop,Banner,Thumb")
             };
             if (string.Equals(sortBy, "DateCreated", StringComparison.OrdinalIgnoreCase))
             {
@@ -3003,12 +3062,13 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var remoteUserId = RequestingRemoteUserId();
             var pageItems = new System.Text.Json.Nodes.JsonArray();
-            // startIndex counts visible items, not raw rows. Starting the raw
+            // StartIndex counts visible items, not raw rows. Starting the raw
             // query at this offset repeats items whenever earlier rows were
             // filtered out (and can keep imports paging forever).
             var remainingSkip = Math.Max(0, startIndex ?? 0);
             var cursor = 0;
             var safetyPage = 0;
+            var exhausted = false;
 
             while (pageItems.Count < target)
             {
@@ -3039,6 +3099,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 if (items.Count == 0)
                 {
+                    exhausted = true;
                     break;
                 }
 
@@ -3069,6 +3130,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     // The internal source returned fewer raw items than asked -
                     // there is nothing further to fill the page from.
+                    exhausted = true;
                     break;
                 }
             }
@@ -3078,12 +3140,23 @@ namespace Jellyfin.Plugin.Federation.Api
                 pageItems.RemoveAt(pageItems.Count - 1);
             }
 
+            // HasMore answers "is there another visible item after this page",
+            // which is what the Browse grid pages on. When the page filled
+            // exactly, one more raw row may still exist past it - but peeking
+            // costs an extra internal query on every full page, so report
+            // HasMore=true and let the caller's next page come back empty
+            // instead. When the page came back short, the loop above already
+            // proved exhaustion (a short internal read), so HasMore=false lets
+            // that caller stop after exactly one WAN round trip on the last
+            // page. TotalRecordCount stays a page-length echo for old callers;
+            // only new callers that read HasMore change behavior.
             return new ContentResult
             {
                 Content = new System.Text.Json.Nodes.JsonObject
                 {
                     ["Items"] = pageItems,
-                    ["TotalRecordCount"] = pageItems.Count
+                    ["TotalRecordCount"] = pageItems.Count,
+                    ["HasMore"] = !exhausted
                 }.ToJsonString(),
                 ContentType = "application/json",
                 StatusCode = StatusCodes.Status200OK
@@ -3598,9 +3671,61 @@ namespace Jellyfin.Plugin.Federation.Api
                     id = s.Id,
                     name = s.Name,
                     enabled = s.Enabled,
-                    streamingMode = s.StreamingMode.ToString()
+                    streamingMode = s.StreamingMode.ToString(),
+                    reachability = (_availability.GetAvailability(s.Id)?.Reachability ?? ServerReachability.Unknown).ToString(),
+                    lastCheckedUtc = _availability.GetAvailability(s.Id)?.LastCheckedUtc,
+                    lastOnlineUtc = _availability.GetAvailability(s.Id)?.LastOnlineUtc,
+                    lastError = _availability.GetAvailability(s.Id)?.LastError
                 }).ToList()
             });
+        }
+
+        /// <summary>
+        /// Current reachability for every friend server, as last observed by the
+        /// background availability pinger (see
+        /// <see cref="FederationAvailabilityService"/>). Backs the Friends list
+        /// online/offline badges. Never triggers a probe itself - use
+        /// <see cref="RescanAvailability"/> for an on-demand round.
+        /// </summary>
+        [HttpGet("Availability")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetAvailability()
+        {
+            var config = Plugin.Instance?.Configuration;
+            return Ok((config?.RemoteServers ?? new List<RemoteServer>()).Select(s =>
+            {
+                var snapshot = _availability.GetAvailability(s.Id);
+                return new
+                {
+                    serverId = s.Id,
+                    serverName = s.Name,
+                    enabled = s.Enabled,
+                    reachability = (snapshot?.Reachability ?? ServerReachability.Unknown).ToString(),
+                    lastCheckedUtc = snapshot?.LastCheckedUtc,
+                    lastOnlineUtc = snapshot?.LastOnlineUtc,
+                    lastError = snapshot?.LastError
+                };
+            }).ToList());
+        }
+
+        /// <summary>
+        /// Runs one availability probe round on demand and re-reconciles every
+        /// mapping so newly-offline servers hide and returned servers re-show
+        /// immediately, without waiting for the next background round or sync.
+        /// Nothing is deleted from the cache or the database either way.
+        /// </summary>
+        [HttpPost("Availability/Rescan")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> RescanAvailability(CancellationToken cancellationToken)
+        {
+            await _availability.ProbeAllAsync(cancellationToken).ConfigureAwait(false);
+            var config = Plugin.Instance?.Configuration;
+            foreach (var mapping in config?.LibraryMappings ?? new List<LibraryMapping>())
+            {
+                await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await Task.FromResult(Ok(new { success = true })).ConfigureAwait(false);
         }
 
         [HttpGet("Progress/{operationId}")]
@@ -3778,28 +3903,18 @@ namespace Jellyfin.Plugin.Federation.Api
                 _ => Jellyfin.Data.Enums.BaseItemKind.Movie
             };
 
-            IReadOnlyList<MediaBrowser.Controller.Entities.BaseItem> localOwned;
-            try
-            {
-                localOwned = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
-                {
-                    Recursive = true,
-                    IsVirtualItem = false,
-                    IncludeItemTypes = new[] { requestedKind }
-                })
-                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
-                .ToList();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Could not build local duplicate index for Downloads");
-                localOwned = Array.Empty<MediaBrowser.Controller.Entities.BaseItem>();
-            }
+            // Local duplicate index used only for the "!" badge. The old code
+            // loaded every local movie/series row plus full provider-id maps on
+            // every Browse page turn - on a large local library that DB read
+            // alone dwarfed the WAN fetch, and the per-item scan below was
+            // O(local x page x keys). Now: only the dedup provider-id values,
+            // built once and cached for a minute (see BuildLocalDedupIndex).
+            var dedupIndex = BuildLocalDedupIndex(requestedKind);
 
             bool HasLocalCopy(MediaBrowser.Model.Dto.BaseItemDto remote)
                 => HasEquivalentLocalCopy(
                     remote,
-                    localOwned,
+                    dedupIndex,
                     Plugin.Instance?.Configuration?.DedupProviderIds ?? new List<string> { "imdb", "tmdb", "tvdb" });
 
             if (server.Kind != ServerKind.Jellyfin)
@@ -3844,7 +3959,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 (offset, count) => client.GetItemsAsync(
                     mediaType: requestedKind.ToString(), parentId: libraryId,
                     startIndex: offset, limit: count, sortBy: "DateCreated", sortOrder: "Descending",
-                    cancellationToken: cancellationToken), startIndex, pageSize, cancellationToken).ConfigureAwait(false);
+                    cancellationToken: cancellationToken, slim: true), startIndex, pageSize, cancellationToken).ConfigureAwait(false);
             if (ownedPage == null) return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The selected server's catalog could not be read. Retry without changing the source." });
             Response.Headers["X-Federation-Next-Start"] = ownedPage.NextStartIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var jfItems = ownedPage.Items;
@@ -3891,28 +4006,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 return NotFound(new { success = false, message = "Server not found." });
             }
 
-            IReadOnlyList<MediaBrowser.Controller.Entities.BaseItem> localOwned;
-            try
-            {
-                localOwned = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
-                {
-                    Recursive = true,
-                    IsVirtualItem = false,
-                    IncludeItemTypes = new[] { Jellyfin.Data.Enums.BaseItemKind.Episode }
-                })
-                .Where(i => FederationLibraryManager.GetFederationKey(i) == null)
-                .ToList();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Could not build local duplicate index for series episode browse");
-                localOwned = Array.Empty<MediaBrowser.Controller.Entities.BaseItem>();
-            }
+            var dedupIndex = BuildLocalDedupIndex(Jellyfin.Data.Enums.BaseItemKind.Episode);
 
             bool HasLocalCopy(MediaBrowser.Model.Dto.BaseItemDto remote)
                 => HasEquivalentLocalCopy(
                     remote,
-                    localOwned,
+                    dedupIndex,
                     Plugin.Instance?.Configuration?.DedupProviderIds ?? new List<string> { "imdb", "tmdb", "tvdb" });
 
             List<(string Id, MediaBrowser.Model.Dto.BaseItemDto Dto)> episodes;
@@ -3957,7 +4056,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 var ownedPage = await PeerCatalogPage.ReadAsync(
                     (offset, count) => client.GetItemsAsync(mediaType: "Episode", parentId: seriesId,
                         startIndex: offset, limit: count, sortBy: "EpisodeOrder", sortOrder: "Ascending",
-                        cancellationToken: cancellationToken), 0, 20000, cancellationToken).ConfigureAwait(false);
+                        cancellationToken: cancellationToken, slim: true), 0, 20000, cancellationToken).ConfigureAwait(false);
                 if (ownedPage == null) return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The selected server's episodes could not be read completely. Retry." });
                 var jfItems = ownedPage.Items;
                 episodes = (jfItems ?? new List<MediaBrowser.Model.Dto.BaseItemDto>())
@@ -3988,15 +4087,194 @@ namespace Jellyfin.Plugin.Federation.Api
         private static readonly HttpClient BrowseImageHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
         /// <summary>
-        /// Cover art for one item in the Browse tab's catalog grid, proxied
-        /// through this server so neither kind of remote credential ever reaches
-        /// the admin's browser directly: a Jellyfin peer's image is fetched using
-        /// a short-lived, single-item-scoped Image-purpose token (see
-        /// <c>Peer/Images</c> on the receiving side), and a Plex source's image
-        /// URL carries a real, whole-server Plex token that must never leave the
-        /// server (see <see cref="IExternalCatalogProvider.GetImagesAsync"/>'s own
-        /// doc comment). Both are fetched here and the bytes streamed straight
-        /// back - the browser never sees either credential.
+        /// Cover art for a whole Browse grid page, proxied through this server
+        /// so neither kind of remote credential ever reaches the admin's
+        /// browser: a Jellyfin peer uses short-lived, item-scoped Image tokens
+        /// and Plex uses an internal whole-server token. One call covers up to
+        /// 60 items in a single WAN round trip per source kind, instead of one
+        /// round trip per poster plus one per image fetch. Items whose artwork
+        /// is already mirrored locally (see BrowseImage) are skipped without
+        /// any remote call; invisible/unknown ids come back as null entries.
+        /// The single-item <see cref="BrowseImage"/> route stays for the info
+        /// modal and episode rows.
+        /// </summary>
+        [HttpPost("Browse/{serverId}/Images")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> BrowseImages(string serverId, [FromBody] BrowseImagesBody body, CancellationToken cancellationToken)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server == null)
+            {
+                return NotFound();
+            }
+
+            var ids = (body?.ItemIds ?? new List<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(60)
+                .ToList();
+            if (ids.Count == 0)
+            {
+                return Ok(new List<object>());
+            }
+
+            // Locally mirrored artwork first (same rule as BrowseImage): no
+            // remote call at all for items reconciliation already mirrored.
+            // Resolved through the existing remote-to-local index
+            // (TryGetLocalKeyForRemoteItem) rather than the uncommitted
+            // GetEntryForRemoteItem helper, so this file stands alone.
+            var pending = new List<string>(ids.Count);
+            var localHits = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rawId in ids)
+            {
+                Guid remoteGuid;
+                var hasRemoteGuid = server.Kind == ServerKind.Plex
+                    ? (remoteGuid = PlexApiClient.RatingKeyToGuid(rawId)) != Guid.Empty
+                    : Guid.TryParse(rawId, out remoteGuid);
+                if (hasRemoteGuid)
+                {
+                    var localKey = _cache.TryGetLocalKeyForRemoteItem(server.Id, remoteGuid);
+                    var cachedEntry = localKey == null ? null : _cache.GetEntryByKey(localKey);
+                    var primary = cachedEntry?.GetPrimarySource();
+                    if (cachedEntry != null
+                        && primary?.ServerId == server.Id
+                        && primary.RemoteItemId == remoteGuid)
+                    {
+                        var localItem = _libraryManager.GetItemById(_federationManager.ComputeItemId(cachedEntry));
+                        if (localItem?.HasImage(MediaBrowser.Model.Entities.ImageType.Primary, 0) == true)
+                        {
+                            localHits[rawId] = "local";
+                            continue;
+                        }
+                    }
+                }
+
+                pending.Add(rawId);
+            }
+
+            var remoteImages = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (pending.Count > 0)
+            {
+                if (server.Kind != ServerKind.Jellyfin)
+                {
+                    var provider = _externalCatalogs.For(server);
+                    if (provider != null)
+                    {
+                        // Bound: one slow Plex metadata lookup must not hold the
+                        // whole page. 8 at a time keeps a 60-poster grid to a
+                        // handful of sequential batches instead of 60 serial
+                        // calls or a 60-wide burst against the friend's server.
+                        using var gate = new SemaphoreSlim(8);
+                        var tasks = pending.Select(async rawId =>
+                        {
+                            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                            try
+                            {
+                                var images = await provider.GetImagesAsync(server, rawId, cancellationToken).ConfigureAwait(false);
+                                return (rawId, images?.PrimaryUrl);
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "[Federation] Browse batch image lookup failed for {Server}/{Item}", server.Name, rawId);
+                                return (rawId, (string?)null);
+                            }
+                            finally
+                            {
+                                gate.Release();
+                            }
+                        });
+                        foreach (var (rawId, url) in await Task.WhenAll(tasks).ConfigureAwait(false))
+                        {
+                            remoteImages[rawId] = url;
+                        }
+                    }
+                }
+                else
+                {
+                    var client = _clientFactory.GetClient(server);
+                    var tokens = await client.GetImageTokensAsync(pending, cancellationToken).ConfigureAwait(false);
+                    foreach (var rawId in pending)
+                    {
+                        tokens.TryGetValue(rawId, out var token);
+                        remoteImages[rawId] = token == null
+                            ? null
+                            : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{rawId}/Primary?token={Uri.EscapeDataString(token)}";
+                    }
+                }
+            }
+
+            // Fetch bytes here (never hand credential-bearing URLs to the
+            // browser), 8 at a time for the same reason as above. Responses are
+            // data URLs keyed by item id, so the grid can paint posters without
+            // 60 separate authenticated fetches from the admin's browser.
+            using var fetchGate = new SemaphoreSlim(8);
+            var fetches = ids.Select(async rawId =>
+            {
+                if (localHits.ContainsKey(rawId))
+                {
+                    return (rawId, (string?)null, true);
+                }
+
+                if (!remoteImages.TryGetValue(rawId, out var url) || string.IsNullOrEmpty(url))
+                {
+                    return (rawId, (string?)null, false);
+                }
+
+                await fetchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    using var response = await BrowseImageHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        return (rawId, (string?)null, false);
+                    }
+
+                    var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                    if (bytes.Length == 0 || bytes.Length > 5 * 1024 * 1024)
+                    {
+                        return (rawId, (string?)null, false);
+                    }
+
+                    var contentType = response.Content.Headers.ContentType?.MediaType;
+                    if (string.IsNullOrWhiteSpace(contentType) || !contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        contentType = "image/jpeg";
+                    }
+
+                    return (rawId, (string?)$"data:{contentType};base64,{Convert.ToBase64String(bytes)}", false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Browse batch image fetch failed for {Server}/{Item}", server.Name, rawId);
+                    return (rawId, (string?)null, false);
+                }
+                finally
+                {
+                    fetchGate.Release();
+                }
+            });
+
+            var results = (await Task.WhenAll(fetches).ConfigureAwait(false))
+                .Select(r => new { itemId = r.rawId, dataUrl = r.Item2, local = r.Item3 })
+                .ToList();
+            return Ok(results);
+        }
+
+        /// <summary>
+        /// Cover art for one item in the Browse tab's catalog grid. Same proxy
+        /// rules as <see cref="BrowseImages"/> - kept for the info modal and
+        /// episode rows, which need one poster outside the batch path.
+        /// responses. Locally mirrored artwork is served first; otherwise the
+        /// image is proxied through this server so neither kind of remote
+        /// credential ever reaches the admin's browser.
         /// </summary>
         [HttpGet("Browse/{serverId}/Image")]
         [Authorize(Policy = "RequiresElevation")]
@@ -4011,6 +4289,42 @@ namespace Jellyfin.Plugin.Federation.Api
             if (server == null)
             {
                 return NotFound();
+            }
+
+            // Reconciliation mirrors indexed source artwork into Jellyfin's own
+            // image store. Prefer that copy so opening Downloads/search grids is
+            // instant and still looks complete while a friend is temporarily
+            // offline. Only reuse it when this server is the entry's primary
+            // source; a deduplicated fallback server may have different custom
+            // artwork and must not be mislabeled as the selected server's copy.
+            // Resolved through the existing remote-to-local index
+            // (TryGetLocalKeyForRemoteItem), not the uncommitted
+            // GetEntryForRemoteItem helper, so this file stands alone.
+            Guid remoteGuid;
+            var hasRemoteGuid = server.Kind == ServerKind.Plex
+                ? (remoteGuid = PlexApiClient.RatingKeyToGuid(itemId)) != Guid.Empty
+                : Guid.TryParse(itemId, out remoteGuid);
+            if (hasRemoteGuid)
+            {
+                var localKey = _cache.TryGetLocalKeyForRemoteItem(server.Id, remoteGuid);
+                var cachedEntry = localKey == null ? null : _cache.GetEntryByKey(localKey);
+                var primary = cachedEntry?.GetPrimarySource();
+                if (cachedEntry != null
+                    && primary?.ServerId == server.Id
+                    && primary.RemoteItemId == remoteGuid)
+                {
+                    var localItem = _libraryManager.GetItemById(_federationManager.ComputeItemId(cachedEntry));
+                    if (localItem?.HasImage(MediaBrowser.Model.Entities.ImageType.Primary, 0) == true)
+                    {
+                        var imagePath = localItem.GetImagePath(MediaBrowser.Model.Entities.ImageType.Primary, 0);
+                        if (!string.IsNullOrEmpty(imagePath) && System.IO.File.Exists(imagePath))
+                        {
+                            return PhysicalFile(
+                                imagePath,
+                                MediaBrowser.Model.Net.MimeTypes.GetMimeType(imagePath, "image/jpeg"));
+                        }
+                    }
+                }
             }
 
             string? imageUrl;
@@ -4440,6 +4754,135 @@ namespace Jellyfin.Plugin.Federation.Api
             return false;
         }
 
+        /// <summary>
+        /// Pre-indexed local duplicate lookup for the Browse grid's "!" badge.
+        /// Carries only the dedup provider-id values and title/year pairs, so a
+        /// Browse page turn checks 60 remote cards against hash sets instead of
+        /// re-scanning the whole local library row-by-row per card.
+        /// </summary>
+        internal sealed class LocalDedupIndex
+        {
+            public Dictionary<string, HashSet<string>> ProviderIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+            public HashSet<string> TitleYear { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+            public bool IsEmpty => ProviderIds.Count == 0 && TitleYear.Count == 0;
+        }
+
+        internal static bool HasEquivalentLocalCopy(
+            MediaBrowser.Model.Dto.BaseItemDto remote,
+            LocalDedupIndex index,
+            IEnumerable<string> dedupKeys)
+        {
+            if (index == null || index.IsEmpty)
+            {
+                return false;
+            }
+
+            if (remote.ProviderIds != null)
+            {
+                foreach (var key in dedupKeys)
+                {
+                    if (FederationLibraryManager.TryGetProviderId(remote.ProviderIds, key, out var remoteValue)
+                        && !string.IsNullOrWhiteSpace(remoteValue)
+                        && index.ProviderIds.TryGetValue(key, out var locals)
+                        && locals.Contains(remoteValue))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(remote.Name))
+            {
+                return index.TitleYear.Contains(TitleYearKey(remote.Name!, remote.ProductionYear));
+            }
+
+            return false;
+        }
+
+        internal static string TitleYearKey(string name, int? year)
+            => name.Trim().ToUpperInvariant() + "\n" + (year?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+
+        // Cached per item kind for a short window so paging through a Browse
+        // grid ("Load more", switching pages) reuses one index instead of
+        // re-reading the local library on every single page turn. Keyed by
+        // item kind only - the index deliberately ignores which friend/library
+        // is being browsed, so browsing server B right after server A is a
+        // cache hit, not another full scan.
+        private static readonly object LocalDedupIndexLock = new();
+        private static readonly Dictionary<string, (DateTime ExpiresUtc, LocalDedupIndex Index)> LocalDedupIndexCache = new(StringComparer.Ordinal);
+        private static readonly TimeSpan LocalDedupIndexTtl = TimeSpan.FromMinutes(1);
+
+        private LocalDedupIndex BuildLocalDedupIndex(Jellyfin.Data.Enums.BaseItemKind kind)
+        {
+            var cacheKey = kind.ToString();
+            lock (LocalDedupIndexLock)
+            {
+                if (LocalDedupIndexCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresUtc > DateTime.UtcNow)
+                {
+                    return cached.Index;
+                }
+            }
+
+            var index = new LocalDedupIndex();
+            try
+            {
+                var localOwned = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
+                {
+                    Recursive = true,
+                    IsVirtualItem = false,
+                    IncludeItemTypes = new[] { kind }
+                })
+                .Where(i => FederationLibraryManager.GetFederationKey(i) == null);
+                foreach (var local in localOwned)
+                {
+                    try
+                    {
+                        if (local.ProviderIds != null)
+                        {
+                            foreach (var pair in local.ProviderIds)
+                            {
+                                if (string.IsNullOrWhiteSpace(pair.Value))
+                                {
+                                    continue;
+                                }
+
+                                if (!index.ProviderIds.TryGetValue(pair.Key, out var set))
+                                {
+                                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    index.ProviderIds[pair.Key] = set;
+                                }
+
+                                set.Add(pair.Value);
+                            }
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(local.Name))
+                        {
+                            index.TitleYear.Add(TitleYearKey(local.Name, local.ProductionYear));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "[Federation] Skipping local item in duplicate index");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not build local duplicate index for Downloads");
+                return new LocalDedupIndex();
+            }
+
+            lock (LocalDedupIndexLock)
+            {
+                LocalDedupIndexCache[cacheKey] = (DateTime.UtcNow + LocalDedupIndexTtl, index);
+            }
+
+            return index;
+        }
+
         private static object Sanitize(PluginConfiguration config)
         {
             return new
@@ -4591,6 +5034,11 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Name { get; set; }
     }
 
+    public class BrowseImagesBody
+    {
+        public List<string>? ItemIds { get; set; }
+    }
+
     public class BrowseDownloadBatchBody
     {
         public string? ServerId { get; set; }
@@ -4627,6 +5075,13 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? ItemId { get; set; }
 
         public string? Purpose { get; set; }
+
+        /// <summary>
+        /// Batch cover-art mint: when set (Image purpose only), one token per
+        /// id is returned in a single response instead of one request per
+        /// poster. Capped server-side; unknown/invisible ids yield null tokens.
+        /// </summary>
+        public List<string>? ItemIds { get; set; }
     }
 
     /// <summary>

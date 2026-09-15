@@ -152,6 +152,29 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetImageTokensAsync_BatchesOneCall_AndCachesForSingleItemPath()
+    {
+        var handler = new FakeHttpMessageHandler(
+            playbackTokenJson: "{\"tokens\":[{\"itemId\":\"item-1\",\"token\":\"img-1\"},{\"itemId\":\"item-2\",\"token\":null}],\"purpose\":\"Image\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "image-batch-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var batch = await client.GetImageTokensAsync(new[] { "item-1", "item-2" }, CancellationToken.None);
+
+        Assert.Equal("img-1", batch["item-1"]);
+        Assert.Null(batch["item-2"]);
+        Assert.Contains("ItemIds", handler.LastRequestBody);
+        Assert.Equal(1, handler.PlaybackTokenCallCount);
+
+        // The batched mint populates the single-item cache, so a later modal
+        // open for the same poster reuses the token with no extra call.
+        var (token, _) = await client.GetImageTokenAsync("item-1", CancellationToken.None);
+        Assert.Equal("img-1", token);
+        Assert.Equal(1, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
     public async Task GetImageTokenAsync_OldPeerWithoutPurposeEcho_FailsClosed()
     {
         var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"legacy-playback-token\"}");
@@ -337,6 +360,22 @@ public class RemoteServerClientPlaybackTests
         Assert.Contains("limit=5", handler.LastRequestedQuery);
         Assert.Contains("sortBy=DateCreated", handler.LastRequestedQuery);
         Assert.Contains("sortOrder=Descending", handler.LastRequestedQuery);
+        Assert.DoesNotContain("slim=true", handler.LastRequestedQuery);
+    }
+
+    [Fact]
+    public async Task GetItemsAsync_SlimMode_RequestsSlimPeerPayload()
+    {
+        var handler = new FakeHttpMessageHandler(itemsJson: "{\"Items\":[],\"HasMore\":false}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var result = await client.GetItemsAsync(mediaType: "Movie", parentId: "lib-1", startIndex: 0, limit: 5, cancellationToken: CancellationToken.None, slim: true);
+
+        Assert.Contains("slim=true", handler.LastRequestedQuery);
+        var page = Assert.IsType<PeerCatalogPage.RemoteItemPage>(result);
+        Assert.False(page.HasMore);
     }
 
     [Fact]

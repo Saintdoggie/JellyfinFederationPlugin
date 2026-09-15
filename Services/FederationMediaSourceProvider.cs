@@ -215,6 +215,21 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
+                    if (FederationItemPersistenceService.AvailabilityOverride?.IsOffline(src.ServerId) == true)
+                    {
+                        // The background pinger marked this server unreachable:
+                        // its items are hidden from the library, but a client
+                        // holding an older PlaybackInfo URL could still ask.
+                        // Refuse here too so a dead server fails fast instead of
+                        // hanging playback on timeouts.
+                        _logger.LogDebug(
+                            "[Federation] {Name} source #{Index} on {ServerName} skipped: server currently offline",
+                            item.Name,
+                            i,
+                            server.Name);
+                        continue;
+                    }
+
                     if (!_accessControl.IsAllowed(server, localUserId, entry.MappingName, src.RemoteItemId))
                     {
                         _logger.LogInformation(

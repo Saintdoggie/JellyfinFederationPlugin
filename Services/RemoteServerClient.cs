@@ -126,6 +126,10 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets items from the remote server, including ProviderIds and People.
         /// Returns null when the request fails (callers must treat null as
         /// "sync failed" and preserve any existing cached data).
+        /// Set <paramref name="slim"/> for the Browse tab's ad-hoc grid: the
+        /// peer then returns only the card fields (id/name/type/year/created/
+        /// series/season/episode/provider ids/image tags), which is an order of
+        /// magnitude less JSON over a WAN link than the full sync payload.
         /// </summary>
         public async Task<List<BaseItemDto>?> GetItemsAsync(
             string? userId = null,
@@ -137,7 +141,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? sortOrder = null,
             CancellationToken cancellationToken = default,
             string? localActingUserId = null,
-            string? localActingUserName = null)
+            string? localActingUserName = null,
+            bool slim = false)
         {
             try
             {
@@ -178,6 +183,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     queryParams.Add($"sortOrder={Uri.EscapeDataString(sortOrder)}");
                 }
 
+                if (slim)
+                {
+                    queryParams.Add("slim=true");
+                }
+
                 var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
 
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
@@ -194,6 +204,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     totalRecordCount = totalCount;
                     _logger.LogDebug("[Federation] TotalRecordCount from API: {Count}", totalCount);
+                }
+
+                bool? hasMore = null;
+                if (root.TryGetProperty("HasMore", out var hasMoreProp)
+                    && (hasMoreProp.ValueKind == System.Text.Json.JsonValueKind.True || hasMoreProp.ValueKind == System.Text.Json.JsonValueKind.False))
+                {
+                    hasMore = hasMoreProp.GetBoolean();
                 }
 
                 if (!root.TryGetProperty("Items", out var itemsElement))
@@ -216,7 +233,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogDebug("[Federation] Retrieved {Count} items from remote server {ServerName}", items.Count, _server.Name);
-                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount);
+                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount, hasMore);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -652,6 +669,139 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "Error getting {Purpose} token for item {ItemId} from remote server {ServerName}", purpose, remoteItemId, _server.Name);
                 return (null, null);
+            }
+        }
+
+        /// <summary>
+        /// Mints image tokens for a whole Browse grid page in one WAN round
+        /// trip instead of one per poster. Falls back gracefully: an old peer
+        /// without the batch shape answers 400 (unknown ItemIds field is
+        /// ignored, ItemId missing), and the Browse image path then mints
+        /// per-item exactly as before. Results are also written into the same
+        /// <c>ItemPlaybackTokenCache</c> single-item path so a later modal open
+        /// for the same poster reuses the token with no extra call.
+        /// </summary>
+        public async Task<Dictionary<string, string?>> GetImageTokensAsync(
+            IReadOnlyList<string> remoteItemIds,
+            CancellationToken cancellationToken = default,
+            string? localActingUserId = null,
+            string? localActingUserName = null)
+        {
+            var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (remoteItemIds == null || remoteItemIds.Count == 0)
+            {
+                return result;
+            }
+
+            var distinct = remoteItemIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(200)
+                .ToList();
+            var uncached = new List<string>(distinct.Count);
+            foreach (var id in distinct)
+            {
+                var cacheKey = $"{_server.Id}:{id}:{localActingUserId ?? string.Empty}:{FederationTokenPurpose.Image}";
+                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+                {
+                    result[id] = cached.Token;
+                }
+                else
+                {
+                    uncached.Add(id);
+                }
+            }
+
+            if (uncached.Count == 0)
+            {
+                return result;
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { ItemIds = uncached, Purpose = FederationTokenPurpose.Image.ToString() }),
+                        System.Text.Encoding.UTF8,
+                        "application/json")
+                };
+
+                if (!string.IsNullOrEmpty(localActingUserId))
+                {
+                    request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+                    if (!string.IsNullOrEmpty(localActingUserName))
+                    {
+                        request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localActingUserName);
+                    }
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    foreach (var id in uncached)
+                    {
+                        result[id] = null;
+                    }
+
+                    return result;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var batch = JsonSerializer.Deserialize<PlaybackTokenBatchResponse>(body, JsonOpts);
+                if (batch?.Tokens == null)
+                {
+                    foreach (var id in uncached)
+                    {
+                        result[id] = null;
+                    }
+
+                    return result;
+                }
+
+                var cachedUntil = batch.ExpiresUtc.HasValue
+                    ? batch.ExpiresUtc.Value - ItemTokenExpirySkew
+                    : DateTime.UtcNow + ItemTokenDefaultTtl;
+                if (cachedUntil <= DateTime.UtcNow)
+                {
+                    cachedUntil = DateTime.UtcNow + ItemTokenDefaultTtl;
+                }
+
+                foreach (var entry in batch.Tokens)
+                {
+                    var id = entry.ItemId;
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        continue;
+                    }
+
+                    result[id!] = entry.Token;
+                    if (!string.IsNullOrEmpty(entry.Token))
+                    {
+                        var cacheKey = $"{_server.Id}:{id}:{localActingUserId ?? string.Empty}:{FederationTokenPurpose.Image}";
+                        ItemPlaybackTokenCache[cacheKey] = (cachedUntil, entry.Token!);
+                    }
+                }
+
+                foreach (var id in uncached)
+                {
+                    if (!result.ContainsKey(id))
+                    {
+                        result[id] = null;
+                    }
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Batch image token mint failed for {ServerName}; Browse images fall back to per-item mint", _server.Name);
+                foreach (var id in uncached)
+                {
+                    result[id] = null;
+                }
+
+                return result;
             }
         }
 
@@ -1567,6 +1717,34 @@ namespace Jellyfin.Plugin.Federation.Services
     internal sealed class DownloadTokenErrorResponse
     {
         public string? Error { get; set; }
+    }
+
+    /// <summary>
+    /// Response to a batched <c>POST /Plugins/Federation/PlaybackToken</c>
+    /// cover-art mint (see <see cref="RemoteServerClient.GetImageTokensAsync"/>).
+    /// </summary>
+    public sealed class PlaybackTokenBatchResponse
+    {
+        /// <summary>Gets or sets the per-item tokens.</summary>
+        public List<PlaybackTokenBatchEntry>? Tokens { get; set; }
+
+        /// <summary>Gets or sets when the tokens expire.</summary>
+        public DateTime? ExpiresUtc { get; set; }
+
+        /// <summary>Purpose echoed by the peer (always Image for this shape).</summary>
+        public string? Purpose { get; set; }
+    }
+
+    /// <summary>
+    /// One entry in a <see cref="PlaybackTokenBatchResponse"/>.
+    /// </summary>
+    public sealed class PlaybackTokenBatchEntry
+    {
+        /// <summary>Gets or sets the requested item id.</summary>
+        public string? ItemId { get; set; }
+
+        /// <summary>Gets or sets the minted token (null when not visible).</summary>
+        public string? Token { get; set; }
     }
 
     /// <summary>

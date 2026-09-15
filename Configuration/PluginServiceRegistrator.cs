@@ -30,6 +30,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<RemoteAccessControlService>();
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
+            serviceCollection.AddSingleton<FederationAvailabilityService>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
             serviceCollection.AddSingleton<FederationDownloadService>();
@@ -72,6 +73,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<IStartupFilter, ConfigurationPageCompressionFixStartupFilter>();
 
             serviceCollection.AddHostedService<FederationEntryPoint>();
+            serviceCollection.AddHostedService<FederationAvailabilityService>();
         }
     }
 }

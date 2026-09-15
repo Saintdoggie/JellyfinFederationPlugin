@@ -285,6 +285,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     : new List<string>();
                 var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
 
+                // Offline servers (see FederationAvailabilityService): entries
+                // whose every source server is currently unreachable are hidden
+                // from the local library - never created, and removed if already
+                // present - but the cache entries themselves are left untouched,
+                // so the items come back on the next rescan after the server
+                // returns. A deduped entry served by two servers stays visible
+                // while any one of its sources is still reachable; only a total
+                // outage across all of its sources hides it.
+                var offlineServerIds = ResolveOfflineServerIds(config);
+                var hideOffline = offlineServerIds.Count > 0;
+
                 // Admin-chosen local suppression list (see PluginConfiguration.
                 // HiddenFederatedItemIds) - keyed on the same stable cache key as
                 // dedup, folded into IsEntryValid/HasLocalMatch below so a hidden
@@ -309,6 +320,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var skipExisting = 0;
                 var skipLocalMatch = 0;
                 var skipHidden = 0;
+                var skipOffline = 0;
                 var skipOrphan = 0;
                 var skipOrphanNoParentEntry = 0;
                 var localMatchSamples = new List<string>();
@@ -324,6 +336,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (IsHidden(e, hiddenKeys))
                     {
                         skipHidden++;
+                        continue;
+                    }
+
+                if (hideOffline && IsEntryOffline(e, offlineServerIds))
+                    {
+                        skipOffline++;
                         continue;
                     }
 
@@ -343,7 +361,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (e.ParentKey != null)
                     {
                         parentEntry = _federationManager.Cache.GetEntryByKey(e.ParentKey);
-                        if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds, hiddenKeys))
+                        if (!IsEntryValid(parentEntry, dedupKeys, localProviderIds, hiddenKeys, offlineServerIds))
                         {
                             skipOrphan++;
                             if (parentEntry == null)
@@ -373,10 +391,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipHidden={SkipHidden}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate} (byDepth={ByDepth})",
+                    "[Federation] Debug {Name}: skipExisting={SkipExisting}, skipHidden={SkipHidden}, skipOffline={SkipOffline}, skipLocalMatch={SkipLocalMatch} [{LocalMatchSamples}], skipOrphan={SkipOrphan} (noParentEntry={NoParentEntry}) [{OrphanSamples}], willCreate={WillCreate} (byDepth={ByDepth})",
                     mapping.LocalLibraryName,
                     skipExisting,
                     skipHidden,
+                    skipOffline,
                     skipLocalMatch,
                     string.Join(" | ", localMatchSamples),
                     skipOrphan,
@@ -389,9 +408,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // user already owns locally (added by earlier plugin versions before
                 // this dedup check existed, or left behind by a config change), and
                 // cascade that removal down to their Seasons/Episodes so nothing is
-                // left pointing at a deleted parent.
+                // left pointing at a deleted parent. Offline-server items are
+                // removed the same way - cache entries stay, so they are
+                // re-created on the next rescan once the server is back.
                 var toDelete = existing
-                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds, hiddenKeys)
+                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds, hiddenKeys, offlineServerIds)
                         || forcedRecreateKeys.Contains(x.Key!))
                     .Select(x => x.Item)
                     .ToList();
@@ -431,8 +452,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var entry = _federationManager.Cache.GetEntryByKey(x.Key!);
-                    if (entry == null || !FederationLibraryManager.IsStreamableType(entry.ItemType))
+                    if (entry == null) continue;
+                    var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata);
+                    if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
+                        if (sourceMetadataChanged) restamped.Add(x.Item);
                         continue;
                     }
 
@@ -454,7 +478,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // to provide. The dynamic provider already picks the first enabled
                     // source this way; this keeps the stamped path consistent with it.
                     var playable = FirstEnabledSource(entry, config);
-                    var changed = false;
+                    var changed = sourceMetadataChanged;
 
                     // The duration/container shown on an item (grid badge, detail page,
                     // and - via item.RunTimeTicks as GetMediaSources' last-resort
@@ -526,18 +550,16 @@ namespace Jellyfin.Plugin.Federation.Services
                     // this doesn't re-save on every sync once it's already caught up.
                     var storedStreams = x.Item.GetMediaStreams();
                     var cachedStreams = entry.Metadata.MediaStreams;
-                    var missingBitrate = cachedStreams != null
-                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate == null)
-                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && s.BitRate.HasValue);
-                    var missingColorData = cachedStreams != null
-                        && storedStreams.Any(s => s.Type == MediaStreamType.Video && string.IsNullOrEmpty(s.ColorTransfer))
-                        && cachedStreams.Any(s => s.Type == MediaStreamType.Video && !string.IsNullOrEmpty(s.ColorTransfer));
-                    var missingAudioTracks = cachedStreams != null
-                        && storedStreams.Count(s => s.Type == MediaStreamType.Audio) < cachedStreams.Count(s => s.Type == MediaStreamType.Audio);
-
-                    if (storedStreams.Count == 0 || missingBitrate || missingColorData || missingAudioTracks)
+                    if (cachedStreams is { Length: > 0 }
+                        && !System.Text.Json.JsonSerializer.Serialize(storedStreams)
+                            .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
                     {
                         _federationManager.TryPersistMediaStreams(x.Item, entry);
+                    }
+                    if (!string.IsNullOrEmpty(entry.Metadata.Container) && x.Item.Container != entry.Metadata.Container)
+                    {
+                        x.Item.Container = entry.Metadata.Container;
+                        changed = true;
                     }
 
                     // Only when no source has an enabled home does the title genuinely
@@ -845,7 +867,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// nothing sensible to nest under once it's gone from local browsing, so
         /// they are hidden along with it.
         /// </summary>
-        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds, HashSet<string> hiddenKeys)
+        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds, HashSet<string> hiddenKeys, HashSet<string>? offlineServerIds = null)
         {
             var depth = 0;
             while (entry != null)
@@ -856,6 +878,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 if (IsHidden(entry, hiddenKeys))
+                {
+                    return false;
+                }
+
+                if (offlineServerIds != null && offlineServerIds.Count > 0 && IsEntryOffline(entry, offlineServerIds))
                 {
                     return false;
                 }
@@ -949,6 +976,64 @@ namespace Jellyfin.Plugin.Federation.Services
             return entry != null && hiddenKeys.Count > 0 && hiddenKeys.Contains(entry.Key);
         }
 
+        /// <summary>
+        /// Test seam: the live availability service, resolved lazily so unit
+        /// tests (which construct this service without DI) get "no server is
+        /// offline" instead of a null reference. Production wires the real
+        /// singleton via <see cref="AvailabilityOverride"/>.
+        /// </summary>
+        internal static FederationAvailabilityService? AvailabilityOverride { get; set; }
+
+        private static HashSet<string> ResolveOfflineServerIds(PluginConfiguration? config)
+        {
+            var offline = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var availability = AvailabilityOverride;
+            if (availability == null || config?.RemoteServers == null)
+            {
+                return offline;
+            }
+
+            foreach (var server in config.RemoteServers)
+            {
+                if (server.Enabled && availability.IsOffline(server.Id))
+                {
+                    offline.Add(server.Id);
+                }
+            }
+
+            return offline;
+        }
+
+        /// <summary>
+        /// True when every source backing <paramref name="entry"/> (and, for a
+        /// nested entry, every source backing each ancestor up the ParentKey
+        /// chain - checked by the caller via <see cref="IsEntryValid"/>) sits on
+        /// a currently-offline server. A deduped entry with at least one
+        /// reachable source stays visible.
+        /// </summary>
+        /// <summary>
+        /// True when every source backing <paramref name="entry"/> (and, for a
+        /// nested entry, every source backing each ancestor up the ParentKey
+        /// chain - checked by the caller via <see cref="IsEntryValid"/>) sits on
+        /// a currently-offline server. A deduped entry with at least one
+        /// reachable source stays visible.
+        /// </summary>
+        internal static bool IsEntryOffline(FederatedCacheEntry? entry, HashSet<string> offlineServerIds)
+        {
+            if (entry == null || offlineServerIds.Count == 0)
+            {
+                return false;
+            }
+
+            var sources = entry.GetSourcesSnapshot();
+            if (sources.Length == 0)
+            {
+                return false;
+            }
+
+            return sources.All(s => offlineServerIds.Contains(s.ServerId));
+        }
+
         private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
         {
             if (entry == null || dedupKeys.Count == 0 || localProviderIds.Count == 0 || entry.Metadata.ProviderIds == null)
@@ -966,6 +1051,38 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Applies the cache's latest title/plot/year/rating/genre/studio values
+        /// onto an already-persisted item so corrections from the source reach
+        /// it without a delete/recreate (which would lose watch progress). A
+        /// missing remote field preserves the last known value. Local-only
+        /// restamp of what the cache already holds - no network, no credentials.
+        /// </summary>
+        internal static bool ApplySourceMetadata(BaseItem item, FederatedItemMetadata metadata)
+        {
+            var before = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
+                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
+            });
+            if (!string.IsNullOrEmpty(metadata.Name)) item.Name = metadata.Name;
+            item.Overview = metadata.Overview ?? item.Overview;
+            item.OriginalTitle = metadata.OriginalTitle ?? item.OriginalTitle;
+            item.ProductionYear = metadata.ProductionYear ?? item.ProductionYear;
+            item.PremiereDate = metadata.PremiereDate ?? item.PremiereDate;
+            item.CommunityRating = metadata.CommunityRating ?? item.CommunityRating;
+            item.OfficialRating = metadata.OfficialRating ?? item.OfficialRating;
+            item.RunTimeTicks = metadata.RunTimeTicks ?? item.RunTimeTicks;
+            item.Genres = metadata.Genres ?? item.Genres;
+            item.Studios = metadata.Studios ?? item.Studios;
+            var after = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
+                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
+            });
+            return !string.Equals(before, after, StringComparison.Ordinal);
         }
     }
 }
