@@ -478,7 +478,7 @@
                         them in a pool, or tweak connection settings.
                     </p>
 
-                    <p class="fieldDescription">Availability is checked while this page is open. An unreachable friend may be offline or need to reconnect. Their titles stay in your library.</p>
+                    <p class="fieldDescription">A background check pings every friend every couple of minutes. When a friend goes unreachable, their titles are hidden from your library until they return — nothing is deleted, and they reappear on the next rescan. <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="rescan-availability">Check now</button> <span id="fedAvailabilityStatus" class="fed-muted" role="status"></span></p>
                     <div id="fedFriendList"></div>
                 </div>
             </div>
@@ -1989,11 +1989,53 @@
                             var id = el.getAttribute('data-server-health');
                             var server = currentConfig.RemoteServers.find(function (s) { return s.Id === id; });
                             var health = friendHealth[id];
-                            var state = server && server.Enabled === false ? 'disabled' : health ? health.status : 'checking';
-                            el.textContent = { online: 'Online', unreachable: 'Unreachable', disabled: 'Paused', receiver: 'Receives your library', checking: 'Checking…', unknown: 'Not checked' }[state] || 'Not checked';
+                            var avail = availabilityState[id];
+                            var state;
+                            if (server && server.Enabled === false) {
+                                state = 'disabled';
+                            } else if (avail === 'Offline') {
+                                // Background pinger says unreachable: titles from
+                                // this server are hidden until it returns. Shown
+                                // distinctly from a one-off "Check connection"
+                                // failure so an admin can tell "temporarily gone,
+                                // nothing deleted" from "never connected".
+                                state = 'offline-hidden';
+                            } else if (health) {
+                                state = health.status;
+                            } else {
+                                state = 'checking';
+                            }
+                            var labels = { online: 'Online', unreachable: 'Unreachable', offline: 'Offline — titles hidden', 'offline-hidden': 'Offline — titles hidden', disabled: 'Paused', receiver: 'Receives your library', checking: 'Checking…', unknown: 'Not checked' };
+                            el.textContent = labels[state] || 'Not checked';
                             el.setAttribute('data-state', state);
                             el.title = health && health.checkedAtUtc ? 'Checked ' + new Date(health.checkedAtUtc).toLocaleTimeString() : '';
                         });
+                    }
+
+                    // Background availability snapshots (the silent pinger's view),
+                    // keyed by server id. Refreshed alongside the one-off health
+                    // check below; a manual Rescan posts first so its result is
+                    // immediate rather than up to 2 minutes stale.
+                    var availabilityState = {};
+                    function loadAvailability() {
+                        return fedFetch('/Plugins/Federation/Availability')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (rows) {
+                            (rows || []).forEach(function (row) {
+                                if (row && row.serverId) { availabilityState[row.serverId] = row.reachability; }
+                            });
+                            renderFriendHealth();
+                        })
+                        .catch(function () { /* badges keep their one-off state */ });
+                    }
+
+                    function rescanAvailability(statusEl) {
+                        if (statusEl) { statusEl.textContent = 'Checking every server…'; }
+                        return fedFetch('/Plugins/Federation/Availability/Rescan', { method: 'POST' })
+                        .then(function (r) { return readJson(r); })
+                        .then(function () { return loadAvailability(); })
+                        .then(function () { if (statusEl) { statusEl.textContent = 'Availability rechecked — offline servers’ titles are hidden until they return. Nothing was deleted.'; } })
+                        .catch(function (e) { if (statusEl) { statusEl.textContent = 'Recheck failed: ' + (e && e.message ? e.message : 'unknown error'); } });
                     }
 
                     function loadFriendHealth(force) {
@@ -2011,7 +2053,7 @@
                         .catch(function () {
                             currentConfig.RemoteServers.forEach(function (s) { friendHealth[s.Id] = { status: 'unknown' }; });
                         })
-                        .then(function () { healthRequest = null; renderFriendHealth(); });
+                        .then(function () { healthRequest = null; renderFriendHealth(); loadAvailability(); });
                         return healthRequest;
                     }
 
@@ -3348,6 +3390,10 @@
                             + '&type=' + encodeURIComponent(browseState.mediaType)
                             + '&sort=DateCreatedDescending'
                             + '&startIndex=' + browseState.startIndex + '&limit=' + browseState.pageSize;
+                        // Names render the moment the catalog page arrives; cover
+                        // art follows via the batched Images call inside
+                        // renderBrowseList, so a slow friend delays posters, not
+                        // the whole list.
                         fedFetch(url)
                         .then(function (r) {
                             var cursor = r.headers.get('X-Federation-Next-Start');
@@ -3438,23 +3484,87 @@
 
                     // Shared by the shows/movies grid and one show's episode list -
                     // both fetch cover art the same way, just against a different
-                    // item array and a different element id prefix.
+                    // item array and a different element id prefix. One batched
+                    // POST per page (Browse/{serverId}/Images) instead of one GET
+                    // per poster: the old loop fired 60 separate authenticated
+                    // requests - 60 token mints plus 60 image fetches over the
+                    // WAN - before any cover art appeared. Posters already seen
+                    // this session are painted from an in-memory cache with no
+                    // request at all; the batch endpoint serves locally mirrored
+                    // artwork first, so repeat visits are instant even when the
+                    // friend is offline.
+                    var browsePosterCache = {};
+                    function paintPoster(el, item, dataUrl) {
+                        if (!el || !el.isConnected) { return; }
+                        if (dataUrl) {
+                            el.style.backgroundImage = "url(\"" + dataUrl + "\")";
+                            return;
+                        }
+                        if (item && item.id && browsePosterCache[item.id]) {
+                            el.style.backgroundImage = "url(\"" + browsePosterCache[item.id] + "\")";
+                        }
+                    }
                     function loadPostersFor(items, idPrefix) {
+                        if (!items || items.length === 0) { return; }
+                        var sourceServerId = browseState.serverId;
+                        var pending = [];
+                        var pendingIndex = {};
                         items.forEach(function (item, i) {
                             var el = q('#' + idPrefix + i);
-                            if (!el) {
-                                return;
-                            }
-
-                            fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(browseState.serverId) + '/Image?itemId=' + encodeURIComponent(item.id))
-                            .then(function (r) { return r.ok ? r.blob() : null; })
-                            .then(function (blob) {
-                                if (blob && el.isConnected) {
-                                    el.style.backgroundImage = "url('" + URL.createObjectURL(blob) + "')";
+                            if (!el) { return; }
+                            if (item && item.id && browsePosterCache[item.id]) {
+                                paintPoster(el, item, browsePosterCache[item.id]);
+                            } else if (item && item.id) {
+                                if (pendingIndex[item.id] === undefined) {
+                                    pendingIndex[item.id] = [];
+                                    pending.push(item.id);
                                 }
-                            })
-                            .catch(function () { /* no cover art available - poster stays a blank placeholder, still fine to browse/download by name */ });
+                                pendingIndex[item.id].push(i);
+                            }
                         });
+                        if (pending.length === 0) { return; }
+                        fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(sourceServerId) + '/Images', {
+                            method: 'POST',
+                            body: JSON.stringify({ ItemIds: pending })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (results) {
+                            if (sourceServerId !== browseState.serverId) { return; }
+                            (results || []).forEach(function (row) {
+                                if (!row || !row.itemId) { return; }
+                                var url = row.dataUrl || null;
+                                if (url) { browsePosterCache[row.itemId] = url; }
+                                var indexes = pendingIndex[row.itemId] || [];
+                                // A local:// marker means this server already has
+                                // the artwork mirrored: point the poster at the
+                                // single-item route, which serves that copy with
+                                // no remote call. Cached the same way so repeat
+                                // visits skip the batch entirely.
+                                var posterUrl = row.local
+                                    ? '/Plugins/Federation/Browse/' + encodeURIComponent(sourceServerId) + '/Image?itemId=' + encodeURIComponent(row.itemId)
+                                    : url;
+                                if (row.local && !browsePosterCache[row.itemId]) { browsePosterCache[row.itemId] = posterUrl; }
+                                indexes.forEach(function (i) {
+                                    var el = q('#' + idPrefix + i);
+                                    if (!el || !el.isConnected) { return; }
+                                    if (row.local) {
+                                        fedFetch(posterUrl)
+                                        .then(function (r) { return r.ok ? r.blob() : null; })
+                                        .then(function (blob) {
+                                            if (blob && el.isConnected) {
+                                                var objectUrl = URL.createObjectURL(blob);
+                                                browsePosterCache[row.itemId] = objectUrl;
+                                                el.style.backgroundImage = "url('" + objectUrl + "')";
+                                            }
+                                        })
+                                        .catch(function () { /* no cover art - blank placeholder stays */ });
+                                    } else {
+                                        paintPoster(el, null, posterUrl);
+                                    }
+                                });
+                            });
+                        })
+                        .catch(function () { /* no cover art available - posters stay blank placeholders, still fine to browse/download by name */ });
                     }
 
                     function setBrowseSeasonSelected(seasonKey, selected) {
@@ -5953,6 +6063,9 @@
                                         setAdvancedStatus('Servers online: ' + online + '/' + results.length, online === results.length ? 'ok' : 'err');
                                     })
                                     .catch(function (err) { setAdvancedStatus('Test failed: ' + err.message, 'err'); });
+                                    break;
+                                case 'rescan-availability':
+                                    rescanAvailability(q('#fedAvailabilityStatus'));
                                     break;
                             }
                         });

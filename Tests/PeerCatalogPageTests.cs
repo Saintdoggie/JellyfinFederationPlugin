@@ -50,6 +50,18 @@ public sealed class PeerCatalogPageTests
     }
 
     [Fact]
+    public void HasMore_FalsePropagates_AndNullLeavesLegacyHeuristicAlone()
+    {
+        var full = new PeerCatalogPage.RemoteItemPage(
+            new[] { new BaseItemDto { Id = Guid.NewGuid(), Name = "A" } }, 1, false);
+        Assert.False(full.HasMore);
+
+        var legacy = new PeerCatalogPage.RemoteItemPage(
+            new[] { new BaseItemDto { Id = Guid.NewGuid(), Name = "B" } }, 1);
+        Assert.Null(legacy.HasMore);
+    }
+
+    [Fact]
     public async Task DownloadOfForwardedItem_IsRejectedBeforeTokenOrMediaRequest()
     {
         var id = Guid.NewGuid().ToString("N");

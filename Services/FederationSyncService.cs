@@ -856,6 +856,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (page.Count < pageSize)
                 {
+                    var hasMore = (page as PeerCatalogPage.RemoteItemPage)?.HasMore;
+                    if (hasMore == false)
+                    {
+                        // New peer: it already proved exhaustion server-side, so
+                        // no probe fetch is needed - this is the common EOF path
+                        // going forward.
+                        break;
+                    }
+
                     if (PeerCatalogPage.RemoteItemPage.HasMoreRecords(startIndex, page.Count, totalRecordCount))
                     {
                         _logger.LogWarning(

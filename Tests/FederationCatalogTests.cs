@@ -70,6 +70,34 @@ public sealed class FederationCatalogTests
     }
 
     [Fact]
+    public void HasEquivalentLocalCopy_IndexMatchesProviderId_AndTitleYearFallback()
+    {
+        var index = new FederationController.LocalDedupIndex();
+        index.ProviderIds["tmdb"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "1234" };
+        index.TitleYear.Add(FederationController.TitleYearKey("The Example", 2025));
+
+        Assert.True(FederationController.HasEquivalentLocalCopy(
+            new BaseItemDto { Name = "Different localized title", ProviderIds = new Dictionary<string, string> { ["Tmdb"] = "1234" } },
+            index,
+            new[] { "tmdb" }));
+
+        Assert.True(FederationController.HasEquivalentLocalCopy(
+            new BaseItemDto { Name = "The Example", ProductionYear = 2025 },
+            index,
+            new[] { "tmdb" }));
+
+        Assert.False(FederationController.HasEquivalentLocalCopy(
+            new BaseItemDto { Name = "The Example", ProductionYear = 2024 },
+            index,
+            new[] { "tmdb" }));
+
+        Assert.False(FederationController.HasEquivalentLocalCopy(
+            new BaseItemDto { Name = "Unknown", ProductionYear = 2025 },
+            new FederationController.LocalDedupIndex(),
+            new[] { "tmdb" }));
+    }
+
+    [Fact]
     public void FederatedIds_RequiresLoggedInUser_NotAnonymousOrElevation()
     {
         var method = typeof(FederationController).GetMethod(nameof(FederationController.GetFederatedIds));
