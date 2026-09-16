@@ -44,6 +44,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IItemPersistenceService _itemPersistence;
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
+        private readonly FederationArtworkService? _artworkService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationItemPersistenceService"/> class.
@@ -52,12 +53,14 @@ namespace Jellyfin.Plugin.Federation.Services
             ILibraryManager libraryManager,
             ILogger<FederationItemPersistenceService> logger,
             FederationLibraryManager federationManager,
-            IItemPersistenceService itemPersistence)
+            IItemPersistenceService itemPersistence,
+            FederationArtworkService? artworkService = null)
         {
             _libraryManager = libraryManager;
             _itemPersistence = itemPersistence;
             _logger = logger;
             _federationManager = federationManager;
+            _artworkService = artworkService;
         }
 
         /// <summary>
@@ -444,6 +447,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // point over a URL change.
                 var deletedIds = new HashSet<Guid>(toDelete.Select(d => d.Id));
                 var restamped = new List<BaseItem>();
+                var artworkCandidates = new List<(BaseItem Item, FederatedCacheEntry Entry)>();
                 foreach (var x in existing)
                 {
                     if (deletedIds.Contains(x.Item.Id))
@@ -453,6 +457,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     var entry = _federationManager.Cache.GetEntryByKey(x.Key!);
                     if (entry == null) continue;
+                    artworkCandidates.Add((x.Item, entry));
                     var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata);
                     if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
@@ -649,6 +654,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         // any tier is created) always fails.
                         foreach (var (item, entry, _) in tierList)
                         {
+                            artworkCandidates.Add((item, entry));
                             _federationManager.TryPersistMediaStreams(item, entry);
                             var people = FederationLibraryManager.ToPersonInfos(entry);
                             if (people.Count > 0)
@@ -664,6 +670,50 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Debug {Name}: after create, federated items now visible via GetRecursiveChildren={FreshCount}",
                         mapping.LocalLibraryName,
                         freshCount);
+                }
+
+                if (_artworkService != null && artworkCandidates.Count > 0)
+                {
+                    var artworkUpdated = new List<BaseItem>();
+                    // A first run can backfill hundreds of Plex posters. Keep a
+                    // small bound so this remains much faster than serial WAN
+                    // downloads without flooding the friend's server or SQLite.
+                    using var gate = new SemaphoreSlim(4);
+                    var artworkTasks = artworkCandidates.Select(async candidate =>
+                    {
+                        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            if (await _artworkService.SyncPrimaryImageAsync(
+                                candidate.Item,
+                                candidate.Entry,
+                                cancellationToken).ConfigureAwait(false))
+                            {
+                                lock (artworkUpdated)
+                                {
+                                    artworkUpdated.Add(candidate.Item);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            gate.Release();
+                        }
+                    });
+
+                    await Task.WhenAll(artworkTasks).ConfigureAwait(false);
+                    if (artworkUpdated.Count > 0)
+                    {
+                        await _libraryManager.UpdateItemsAsync(
+                            artworkUpdated,
+                            itemParent,
+                            ItemUpdateType.MetadataEdit,
+                            cancellationToken).ConfigureAwait(false);
+                        _logger.LogInformation(
+                            "[Federation] Refreshed {Count} source-controlled poster(s) in {Name}",
+                            artworkUpdated.Count,
+                            mapping.LocalLibraryName);
+                    }
                 }
 
                 // Runs after creation so the federated seasons above are back in

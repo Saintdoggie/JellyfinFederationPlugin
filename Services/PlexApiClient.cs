@@ -296,6 +296,50 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Opens the current Plex poster using the token as a request header, so
+        /// the credential never becomes part of a URL passed into another
+        /// component. The caller owns the returned response.
+        /// </summary>
+        public async Task<HttpResponseMessage?> GetPrimaryImageResponseAsync(string ratingKey, CancellationToken cancellationToken)
+        {
+            var paths = await GetImagePathsAsync(ratingKey, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(paths?.Thumb))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, _baseUrl + paths.Value.Thumb);
+                request.Headers.TryAddWithoutValidation("X-Plex-Token", _token);
+                var response = await _http.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return response;
+                }
+
+                _logger.LogWarning(
+                    "[Federation] Plex poster request for item {RatingKey} failed with {Status}",
+                    ratingKey,
+                    (int)response.StatusCode);
+                response.Dispose();
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Plex poster request for item {RatingKey} failed", ratingKey);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Builds the absolute, token-bearing URL for a part or image path.
         /// Internal use only - the token authenticates against the whole Plex
         /// server, so this URL must never be handed to a client (see
@@ -388,6 +432,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 Genres = ReadTagArray(m, "Genre"),
                 People = ReadPeople(m)
             };
+
+            // Keep Plex's current poster identity in the catalog snapshot. The
+            // path includes Plex's image timestamp, so it changes when the owner
+            // selects or uploads a different poster. Reconciliation uses that
+            // tag to fetch the exact Plex image once and to replace it only when
+            // Plex reports a newer selection.
+            var thumb = GetString(m, "thumb");
+            if (!string.IsNullOrWhiteSpace(thumb))
+            {
+                dto.ImageTags = new Dictionary<ImageType, string>
+                {
+                    [ImageType.Primary] = thumb
+                };
+            }
 
             var studio = GetString(m, "studio");
             if (!string.IsNullOrWhiteSpace(studio))

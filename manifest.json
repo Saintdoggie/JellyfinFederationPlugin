@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.161",
+        "changelog": "Plex artwork repair: existing and newly federated movies now cache the exact poster selected on the source Plex server, refresh when that poster changes, and keep native IDs and artwork revisions bound to the correct source when duplicate titles span multiple Plex servers. Poster credentials remain server-side and watch history is preserved.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-16T01:46:42Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.161/Jellyfin.Federation.zip",
+        "checksum": "69cd214ee8f911a38240fd91b68cf1a9"
+      },
+      {
         "version": "0.0.160",
         "changelog": "Faster Downloads browsing (slim catalog payloads, batched cover art, cached duplicate checks) and offline hide/unhide: a background check pings every friend every couple of minutes, hiding unreachable servers' titles until they return. Nothing is ever deleted; items reappear on rescan.",
         "targetAbi": "12.0.0.0",

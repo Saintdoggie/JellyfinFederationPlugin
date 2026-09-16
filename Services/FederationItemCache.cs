@@ -440,6 +440,10 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var src in source.GetSourcesSnapshot())
             {
                 target.AddSource(src.ServerId, src.RemoteItemId, src.Priority);
+                var merged = target.GetSourcesSnapshot()
+                    .First(s => s.ServerId == src.ServerId && s.RemoteItemId == src.RemoteItemId);
+                merged.NativeId = src.NativeId ?? merged.NativeId;
+                merged.PrimaryImageTag = src.PrimaryImageTag ?? merged.PrimaryImageTag;
             }
         }
 
@@ -749,6 +753,45 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Resolves a source product's native id for one exact source. Legacy
+        /// cache snapshots stored one id on the merged item; that fallback is
+        /// safe for a single source, or when its deterministic Plex Guid proves
+        /// that the id belongs to this source.
+        /// </summary>
+        public string? GetNativeId(FederatedSource source)
+        {
+            if (!string.IsNullOrWhiteSpace(source.NativeId))
+            {
+                return source.NativeId;
+            }
+
+            var legacy = Metadata.RemoteNativeId;
+            return legacy != null
+                && (GetSourcesSnapshot().Length == 1 || PlexApiClient.RatingKeyToGuid(legacy) == source.RemoteItemId)
+                ? legacy
+                : null;
+        }
+
+        /// <summary>Records a native id on the exact source it came from.</summary>
+        public void SetNativeId(string serverId, Guid remoteItemId, string nativeId)
+        {
+            lock (_sync)
+            {
+                var source = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
+                if (source == null)
+                {
+                    return;
+                }
+
+                source.NativeId = nativeId;
+                if (ReferenceEquals(source, GetPrimarySource()))
+                {
+                    Metadata.RemoteNativeId = nativeId;
+                }
+            }
+        }
+
+        /// <summary>
         /// Adds or updates a remote source.
         /// </summary>
         public void AddSource(string serverId, Guid remoteItemId, int serverPriority)
@@ -822,6 +865,12 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             lock (_sync)
             {
+                var source = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
+                if (source != null && remoteItem.ImageTags?.TryGetValue(ImageType.Primary, out var sourcePrimaryTag) == true)
+                {
+                    source.PrimaryImageTag = sourcePrimaryTag;
+                }
+
                 var isPrimary = Sources.Count <= 1
                     || (Sources.Count > PrimarySourceIndex
                         && Sources[PrimarySourceIndex].ServerId == serverId
@@ -852,6 +901,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.Artists = remoteItem.Artists != null ? remoteItem.Artists.ToArray() : Metadata.Artists;
                 Metadata.OriginalTitle = remoteItem.OriginalTitle ?? Metadata.OriginalTitle;
                 Metadata.ProviderIds = remoteItem.ProviderIds ?? Metadata.ProviderIds;
+                if (remoteItem.ImageTags?.TryGetValue(ImageType.Primary, out var primaryImageTag) == true)
+                {
+                    Metadata.PrimaryImageTag = primaryImageTag;
+                }
                 Metadata.People = remoteItem.People != null
                     ? remoteItem.People.Select(p => new FederatedPerson
                     {
@@ -897,6 +950,12 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederatedSource
     {
+        /// <summary>Gets or sets this exact external source's native item id.</summary>
+        public string? NativeId { get; set; }
+
+        /// <summary>Gets or sets this exact source's current primary-image tag.</summary>
+        public string? PrimaryImageTag { get; set; }
+
         public string ServerId { get; set; } = string.Empty;
 
         public Guid RemoteItemId { get; set; }
@@ -960,6 +1019,13 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? OriginalTitle { get; set; }
 
         public Dictionary<string, string>? ProviderIds { get; set; }
+
+        /// <summary>
+        /// Gets or sets the primary source's current poster identity. For Plex
+        /// this is its timestamped <c>thumb</c> path, which lets persistence
+        /// distinguish an unchanged poster from one the Plex owner replaced.
+        /// </summary>
+        public string? PrimaryImageTag { get; set; }
 
         public List<FederatedPerson>? People { get; set; }
 
