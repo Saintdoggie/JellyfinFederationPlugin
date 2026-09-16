@@ -17,6 +17,35 @@ public class FederatedCacheEntryTests
         => new(NullLogger<FederationItemCache>.Instance);
 
     [Fact]
+    public void DeduplicatedPlexMovie_KeepsNativeIdAndPosterBoundToEachSource()
+    {
+        var entry = new FederatedCacheEntry();
+        var sourceA = PlexApiClient.RatingKeyToGuid("100");
+        var sourceB = PlexApiClient.RatingKeyToGuid("900");
+        entry.AddSource("plex-a", sourceA, 0);
+        entry.UpdateFromRemote(new BaseItemDto
+        {
+            Name = "Movie",
+            ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "poster-a" }
+        }, "plex-a", sourceA, 0);
+        entry.SetNativeId("plex-a", sourceA, "100");
+
+        entry.AddSource("plex-b", sourceB, 1);
+        entry.UpdateFromRemote(new BaseItemDto
+        {
+            Name = "Movie",
+            ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "poster-b" }
+        }, "plex-b", sourceB, 1);
+        entry.SetNativeId("plex-b", sourceB, "900");
+
+        var sources = entry.GetSourcesSnapshot();
+        Assert.Equal("100", entry.GetNativeId(sources[0]));
+        Assert.Equal("poster-a", sources[0].PrimaryImageTag);
+        Assert.Equal("900", entry.GetNativeId(sources[1]));
+        Assert.Equal("poster-b", sources[1].PrimaryImageTag);
+    }
+
+    [Fact]
     public void UpdateFromRemote_MapsPeopleIntoMetadata()
     {
         var cache = CreateCache();

@@ -127,6 +127,51 @@ public class PlexApiClientTests
     }
 
     [Fact]
+    public async Task GetPrimaryImageResponseAsync_FetchesPosterWithHeader_NotCredentialInUrl()
+    {
+        var handler = new PosterResponseHandler();
+        var client = BuildClient(handler, token: "header-secret");
+
+        using var response = await client.GetPrimaryImageResponseAsync("100", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal(new byte[] { 1, 2, 3 }, await response!.Content.ReadAsByteArrayAsync());
+        Assert.Equal("header-secret", handler.PosterToken);
+        Assert.DoesNotContain("header-secret", handler.PosterUrl, StringComparison.Ordinal);
+    }
+
+    private sealed class PosterResponseHandler : HttpMessageHandler
+    {
+        public string PosterUrl { get; private set; } = string.Empty;
+
+        public string? PosterToken { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (path.EndsWith("/thumb/111", StringComparison.Ordinal))
+            {
+                PosterUrl = request.RequestUri!.ToString();
+                PosterToken = request.Headers.TryGetValues("X-Plex-Token", out var values)
+                    ? values.SingleOrDefault()
+                    : null;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(new byte[] { 1, 2, 3 })
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"MediaContainer\":{\"Metadata\":[{\"ratingKey\":\"100\",\"thumb\":\"/library/metadata/100/thumb/111\"}]}}",
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
+    }
+
+    [Fact]
     public void BuildStreamUrl_AppendsTokenWithQuestionMark_WhenPathHasNoExistingQuery()
     {
         var client = BuildClient(new ScriptedPlexHandler(), baseUrl: "https://plex.example:32400", token: "abc123");
@@ -218,6 +263,9 @@ public class PlexApiClientTests
         Assert.Contains(dto.People!, p => p.Name == "Jane Doe" && p.Role == "Lead" && p.Type == Jellyfin.Data.Enums.PersonKind.Actor);
         Assert.Contains(dto.People!, p => p.Name == "A Director" && p.Type == Jellyfin.Data.Enums.PersonKind.Director);
         Assert.Equal(1999, dto.PremiereDate!.Value.Year);
+        Assert.Equal(
+            "/library/metadata/500/thumb/custom",
+            dto.ImageTags![MediaBrowser.Model.Entities.ImageType.Primary]);
     }
 
     private sealed class ScriptedSectionAndDetailHandler : HttpMessageHandler

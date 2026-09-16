@@ -188,6 +188,15 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <inheritdoc />
+        public Task<HttpResponseMessage?> GetPrimaryImageResponseAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            return client == null
+                ? Task.FromResult<HttpResponseMessage?>(null)
+                : client.GetPrimaryImageResponseAsync(nativeId, cancellationToken);
+        }
+
+        /// <inheritdoc />
         public async Task<string?> TestConnectionAsync(RemoteServer server, CancellationToken cancellationToken)
         {
             var client = CreateClient(server);

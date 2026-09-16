@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
@@ -95,6 +96,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// handed the URL itself.
         /// </summary>
         Task<ExternalImageSet?> GetImagesAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Opens the current primary image for a server-side cache write. Unlike
+        /// <see cref="GetImagesAsync"/>, the response carries no credential in a
+        /// URL that could be retained by a metadata component or exposed by an
+        /// error message. The caller owns and must dispose the response.
+        /// </summary>
+        Task<HttpResponseMessage?> GetPrimaryImageResponseAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
 
         /// <summary>
         /// Verifies the server is reachable and its credential works, returning
