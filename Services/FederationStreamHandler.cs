@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -129,7 +130,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     && Guid.TryParse(remoteItemId, out var staleGuid)
                     && _federationManager.Cache.TryFindEntryByRemoteItemId(staleGuid) is { } healed)
                 {
-                    nativeId = healed.Metadata.RemoteNativeId;
+                    var healedSource = healed.GetSourcesSnapshot().FirstOrDefault(s =>
+                        s.ServerId == serverId && s.RemoteItemId == staleGuid);
+                    nativeId = healedSource == null ? null : healed.GetNativeId(healedSource);
                     if (!string.IsNullOrEmpty(nativeId))
                     {
                         _federationManager.Cache.IndexRemoteItem(serverId, staleGuid, healed.Key);
@@ -206,7 +209,9 @@ namespace Jellyfin.Plugin.Federation.Services
             var entry = key == null
                 ? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid)
                 : _federationManager.Cache.GetEntryByKey(key) ?? _federationManager.Cache.TryFindEntryByRemoteItemId(remoteGuid);
-            return entry?.Metadata.RemoteNativeId;
+            var source = entry?.GetSourcesSnapshot().FirstOrDefault(s =>
+                s.ServerId == serverId && s.RemoteItemId == remoteGuid);
+            return entry == null || source == null ? null : entry.GetNativeId(source);
         }
 
         /// <summary>
@@ -276,6 +281,126 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Resolves the best currently-live sibling for a shared Auto path. Every
+        /// candidate is preflighted before response headers are committed. Sources
+        /// that fit the measured/configured path are ordered by quality; when none
+        /// fit, the least-over-budget source wins to minimize buffering.
+        /// </summary>
+        private async Task<(string Url, RemoteServer Server, FederatedSource Source)?> BuildAutoSourceUrlAsync(
+            FederatedCacheEntry entry,
+            bool isAudio,
+            CancellationToken cancellationToken,
+            Guid? requestingUserGuid)
+        {
+            var candidates = entry.GetSourcesSnapshot()
+                .Select(src => (Source: src, Server: _federationManager.GetServer(src.ServerId)))
+                .Where(candidate => candidate.Server is { Enabled: true })
+                .Select(candidate => (candidate.Source, Server: candidate.Server!))
+                .OrderBy(candidate => SourceFitGroup(candidate.Server, candidate.Source))
+                .ThenBy(candidate => SourceOverageBitrate(candidate.Server, candidate.Source))
+                .ThenByDescending(candidate => SourceHeight(candidate.Source))
+                .ThenByDescending(candidate => SourceBitrate(candidate.Source))
+                .ThenBy(candidate => candidate.Source.Priority)
+                .ToArray();
+
+            foreach (var candidate in candidates)
+            {
+                var source = candidate.Source;
+                var server = candidate.Server;
+                var allowed = requestingUserGuid.HasValue
+                    ? _accessControl.IsAllowed(server, requestingUserGuid, entry.MappingName, source.RemoteItemId)
+                    : RemoteAccessControlService.IsAllowedForEveryConfiguredUser(
+                        server,
+                        entry.MappingName,
+                        source.RemoteItemId,
+                        entry.Metadata.OfficialRating,
+                        _federationManager.Cache);
+                if (!allowed)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    // External adapters validate the native item while resolving
+                    // their internal URL in BuildDirectStreamUrlAsync. Jellyfin
+                    // peers need an explicit live PlaybackInfo preflight: token
+                    // minting alone can succeed for a stale/deleted cache entry.
+                    if (_externalCatalogs.For(server) == null)
+                    {
+                        var client = _clientFactory.GetClient(server);
+                        var playback = await client.GetPlaybackInfoAsync(
+                            source.RemoteItemId.ToString("N"),
+                            cancellationToken: cancellationToken,
+                            localActingUserId: requestingUserGuid?.ToString("N")).ConfigureAwait(false);
+                        if (playback?.MediaSources?.Count is not > 0)
+                        {
+                            _logger.LogWarning(
+                                "[Federation] Auto skipped {ServerName} for item {ItemId}: live PlaybackInfo returned no media",
+                                server.Name,
+                                source.RemoteItemId);
+                            continue;
+                        }
+                    }
+
+                    var url = await BuildDirectStreamUrlAsync(
+                        source.ServerId,
+                        source.RemoteItemId.ToString("N"),
+                        isAudio,
+                        cancellationToken,
+                        requestingUserGuid?.ToString("N")).ConfigureAwait(false);
+                    return (url, server, source);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+                {
+                    _logger.LogWarning(
+                        "[Federation] Auto skipped {ServerName} for item {ItemId}: preflight failed ({ErrorType})",
+                        server.Name,
+                        source.RemoteItemId,
+                        ex.GetType().Name);
+                }
+            }
+
+            return null;
+        }
+
+        private int SourceFitGroup(RemoteServer server, FederatedSource source)
+        {
+            var bitrate = SourceBitrate(source);
+            var cap = _bandwidthMonitor.GetEffectiveCapMbps(server);
+            if (!cap.HasValue)
+            {
+                return bitrate > 0 ? 0 : 2;
+            }
+
+            if (bitrate <= 0)
+            {
+                return 2;
+            }
+
+            return bitrate <= cap.Value * 1_000_000L ? 0 : 1;
+        }
+
+        private long SourceOverageBitrate(RemoteServer server, FederatedSource source)
+        {
+            var bitrate = SourceBitrate(source);
+            var cap = _bandwidthMonitor.GetEffectiveCapMbps(server);
+            return cap.HasValue && bitrate > cap.Value * 1_000_000L ? bitrate : 0;
+        }
+
+        private static long SourceBitrate(FederatedSource source)
+            => source.Bitrate.GetValueOrDefault() > 0
+                ? source.Bitrate.GetValueOrDefault()
+                : source.MediaStreams?.Where(stream => stream.BitRate.HasValue).Sum(stream => (long)stream.BitRate!.Value) ?? 0;
+
+        private static int SourceHeight(FederatedSource source)
+            => source.MediaStreams?
+                .Where(stream => stream.Type == MediaBrowser.Model.Entities.MediaStreamType.Video)
+                .Select(stream => stream.Height.GetValueOrDefault())
+                .DefaultIfEmpty(0)
+                .Max() ?? 0;
+
+        /// <summary>
         /// Proxies the stream body through this server (Proxy mode). Preserves Range.
         /// </summary>
         public async Task HandleProxyAsync(
@@ -285,7 +410,8 @@ namespace Jellyfin.Plugin.Federation.Services
             HttpResponse response,
             CancellationToken cancellationToken,
             bool isAudio = false,
-            string? requestingUserId = null)
+            string? requestingUserId = null,
+            bool autoSelect = false)
         {
             try
             {
@@ -298,6 +424,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 Guid? requestingUserGuid = null;
                 string? mappingName = null;
+                FederatedCacheEntry? entry = null;
                 if (!string.IsNullOrEmpty(requestingUserId) && Guid.TryParse(requestingUserId, out var parsedUserGuid))
                 {
                     requestingUserGuid = parsedUserGuid;
@@ -306,9 +433,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 var hasRemoteItemGuid = Guid.TryParse(remoteItemId, out var remoteItemGuid);
                 if (hasRemoteItemGuid)
                 {
-                    mappingName = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemGuid) is string key
-                        ? _federationManager.Cache.GetEntryByKey(key)?.MappingName
-                        : null;
+                    entry = _federationManager.Cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemGuid) is string key
+                        ? _federationManager.Cache.GetEntryByKey(key)
+                        : _federationManager.Cache.TryFindEntryByRemoteItemId(remoteItemGuid);
+                    mappingName = entry?.MappingName;
                 }
 
                 // Redundant with FederationMediaSourceProvider already having decided
@@ -335,33 +463,61 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                var activeServerId = serverId;
+                var activeItemId = remoteItemId;
                 string url;
-                try
+                if (autoSelect && entry != null && entry.GetSourcesSnapshot().Length > 1)
                 {
-                    url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
-                {
-                    // The requested source cannot serve this item right now
-                    // (token mint refused - content unshared/deleted on the
-                    // friend, or the friend is down). Before giving up, try the
-                    // same cache entry's OTHER sources: on a deduped item that
-                    // is exactly the redundancy dedup exists to provide, and
-                    // without this the client sees "Playback Error" while an
-                    // identical copy sits on a second server.
-                    var fallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
-                    if (fallbackUrl == null)
+                    var selected = await BuildAutoSourceUrlAsync(
+                        entry,
+                        isAudio,
+                        cancellationToken,
+                        requestingUserGuid).ConfigureAwait(false);
+                    if (selected == null)
                     {
-                        throw;
+                        throw new InvalidOperationException($"No currently playable source for item {remoteItemId}.");
                     }
 
-                    url = fallbackUrl;
+                    url = selected.Value.Url;
+                    server = selected.Value.Server;
+                    activeServerId = selected.Value.Source.ServerId;
+                    activeItemId = selected.Value.Source.RemoteItemId.ToString("N");
                     _logger.LogInformation(
-                        "[Federation] Primary source refused item {ItemId}; serving from a sibling source instead",
-                        remoteItemId);
+                        "[Federation] Auto selected {ServerName} for item {ItemId} ({Bitrate} bps, {Height}p)",
+                        server.Name,
+                        activeItemId,
+                        SourceBitrate(selected.Value.Source),
+                        SourceHeight(selected.Value.Source));
+                }
+                else
+                {
+                    try
+                    {
+                        url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+                    {
+                        // The requested source cannot serve this item right now
+                        // (token mint refused - content unshared/deleted on the
+                        // friend, or the friend is down). Before giving up, try the
+                        // same cache entry's OTHER sources: on a deduped item that
+                        // is exactly the redundancy dedup exists to provide, and
+                        // without this the client sees "Playback Error" while an
+                        // identical copy sits on a second server.
+                        var fallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
+                        if (fallbackUrl == null)
+                        {
+                            throw;
+                        }
+
+                        url = fallbackUrl;
+                        _logger.LogInformation(
+                            "[Federation] Primary source refused item {ItemId}; serving from a sibling source instead",
+                            remoteItemId);
+                    }
                 }
 
-                _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", remoteItemId, server.Name);
+                _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", activeItemId, server.Name);
 
                 // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
                 // a Direct-mode Jellyfin peer: real-world audio bitrates are already
@@ -382,20 +538,20 @@ namespace Jellyfin.Plugin.Federation.Services
                 // dies - same rationale as the primary-path catch above.
                 if (upstreamStatus is 401 or 403 && !response.HasStarted)
                 {
-                    RemoteServerClient.InvalidateUserSessionToken(serverId, requestingUserId);
+                    RemoteServerClient.InvalidateUserSessionToken(activeServerId, requestingUserId);
                     // The dead token may equally have come from the item-scoped
                     // token cache (this is the common case for the no-user proxy
                     // gateway URL the transcoder fetches) - drop that too, or the
                     // retry below would pull the exact rejected token straight
                     // back out of the cache and fail identically forever.
-                    RemoteServerClient.InvalidateItemPlaybackToken(serverId, remoteItemId, requestingUserId);
+                    RemoteServerClient.InvalidateItemPlaybackToken(activeServerId, activeItemId, requestingUserId);
                     try
                     {
-                        url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                        url = await BuildDirectStreamUrlAsync(activeServerId, activeItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
                     {
-                        var retryFallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
+                        var retryFallbackUrl = await BuildFallbackSiblingUrlAsync(activeServerId, activeItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
                         if (retryFallbackUrl == null)
                         {
                             throw;

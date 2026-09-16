@@ -227,7 +227,7 @@ public class FederationStreamPathTests : IDisposable
     [Fact]
     public void Movie_ProxyMode_WithPath_ResolvesLocationTypeRemote()
     {
-        AddServer(StreamingMode.Proxy);
+        var server = AddServer(StreamingMode.Proxy);
         _plugin.Configuration.ServerUrl = "https://my-server.example";
         var item = _manager.MaterializeItem(AddEntry("Movie", Guid.NewGuid()));
 
@@ -299,6 +299,19 @@ public class FederationStreamPathTests : IDisposable
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, new string('z', 64)));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature + "00"));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, signature, download: true));
+    }
+
+    [Fact]
+    public void ProxySignature_AutoSelectionCannotBeAddedOrRemoved()
+    {
+        AddServer(StreamingMode.Proxy);
+        var itemId = Guid.NewGuid();
+        var ordinary = _manager.CreateProxySignature("serverA", itemId, false, null);
+        var automatic = _manager.CreateProxySignature("serverA", itemId, false, null, autoSelect: true);
+
+        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, null, automatic, autoSelect: true));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, ordinary, autoSelect: true));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, null, automatic));
     }
 
     [Fact]
@@ -984,7 +997,7 @@ public class FederationStreamPathTests : IDisposable
     [Fact]
     public async Task GetMediaSources_StampedDefault8096_OnLiveNonDefaultPort_EmitsLiveUrl()
     {
-        AddServer(StreamingMode.Proxy);
+        var server = AddServer(StreamingMode.Proxy);
         var remoteId = Guid.NewGuid();
         var item = _manager.MaterializeItem(AddEntry("Movie", remoteId));
         Assert.Contains("http://127.0.0.1:8096/Plugins/Federation/Stream", item.Path);
@@ -993,22 +1006,25 @@ public class FederationStreamPathTests : IDisposable
         context.Connection.LocalPort = 18096;
         var accessor = new Mock<IHttpContextAccessor>();
         accessor.SetupGet(a => a.HttpContext).Returns(context);
+        var remoteClient = new RemoteServerClient(
+            server,
+            NullLogger.Instance,
+            new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK)) { BaseAddress = new Uri(server.Url) });
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(server.Id)).Returns(remoteClient);
         var manager = new FederationLibraryManager(
             Mock.Of<ILibraryManager>(),
             NullLogger<FederationLibraryManager>.Instance,
-            Mock.Of<IRemoteServerClientFactory>(),
+            clientFactory.Object,
             _cache,
             _bandwidthMonitor,
             _mediaStreamRepository.Object,
             accessor.Object);
-        var authorization = new Mock<IAuthorizationContext>();
-        authorization.Setup(a => a.GetAuthorizationInfo(It.IsAny<HttpContext>()))
-            .ReturnsAsync((AuthorizationInfo?)null);
         var provider = new FederationMediaSourceProvider(
             NullLogger<FederationMediaSourceProvider>.Instance,
             manager,
             accessor.Object,
-            authorization.Object,
+            Mock.Of<IAuthorizationContext>(),
             new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
 
         var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
@@ -1017,6 +1033,101 @@ public class FederationStreamPathTests : IDisposable
         Assert.Contains("http://127.0.0.1:18096/Plugins/Federation/Stream", path);
         Assert.DoesNotContain("http://127.0.0.1:8096/", path);
         Assert.True(FederationLibraryManager.IsDeadDefaultLoopbackUrl(item.Path, "http://127.0.0.1:18096"));
+    }
+
+    [Fact]
+    public async Task GetMediaSources_FailedPrimary_IsRemovedAndHealthySiblingBecomesAutoWithoutChangingItem()
+    {
+        var failedId = Guid.NewGuid();
+        var healthyId = Guid.NewGuid();
+        var failed = new RemoteServer
+        {
+            Id = "failed-primary",
+            Name = "Failed primary",
+            Url = "http://failed.example",
+            ApiKey = "failed-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Proxy
+        };
+        var healthy = new RemoteServer
+        {
+            Id = "healthy-sibling",
+            Name = "Healthy sibling",
+            Url = "http://healthy.example",
+            ApiKey = "healthy-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Proxy
+        };
+        _plugin.Configuration.RemoteServers.Add(failed);
+        _plugin.Configuration.RemoteServers.Add(healthy);
+
+        var entry = _cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt0816692",
+            new BaseItemDto { Id = failedId, Name = "Interstellar", Container = "mkv" },
+            failed.Id,
+            failedId,
+            0,
+            "Movie");
+        _cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt0816692",
+            new BaseItemDto
+            {
+                Id = healthyId,
+                Name = "Interstellar",
+                Container = "mkv",
+                MediaStreams = new[]
+                {
+                    new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Height = 2160, BitRate = 59_000_000 }
+                }
+            },
+            healthy.Id,
+            healthyId,
+            1,
+            "Movie");
+
+        var item = _manager.MaterializeItem(entry);
+        var stableItemId = item.Id;
+        Assert.Contains("&auto=true", item.Path);
+        item.Path = "stale-path-so-both-live-sources-are-preflighted";
+
+        var failedClient = new RemoteServerClient(
+            failed,
+            NullLogger.Instance,
+            new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.NotFound)) { BaseAddress = new Uri(failed.Url) });
+        var healthyClient = new RemoteServerClient(
+            healthy,
+            NullLogger.Instance,
+            new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK)) { BaseAddress = new Uri(healthy.Url) });
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(failed.Id)).Returns(failedClient);
+        factory.Setup(f => f.GetClient(healthy.Id)).Returns(healthyClient);
+
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            factory.Object,
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            Mock.Of<IHttpContextAccessor>(),
+            Mock.Of<IAuthorizationContext>(),
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        var selected = Assert.Single(sources);
+        Assert.Contains("Healthy sibling", selected.Name);
+        Assert.Contains("(Auto)", selected.Name);
+        Assert.Equal(MediaSourceType.Default, selected.Type);
+        Assert.Contains($"itemId={healthyId:N}", selected.Path);
+        Assert.Equal(stableItemId, item.Id);
     }
 
     [Theory]
@@ -1074,6 +1185,32 @@ public class FederationStreamPathTests : IDisposable
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
+    }
+
+    private sealed class PlaybackPreflightHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _status;
+
+        public PlaybackPreflightHandler(HttpStatusCode status)
+        {
+            _status = status;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (_status != HttpStatusCode.OK)
+            {
+                return Task.FromResult(new HttpResponseMessage(_status));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"MediaSources\":[{\"Id\":\"healthy\",\"Container\":\"mkv\",\"Bitrate\":59000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Height\":2160,\"BitRate\":59000000}]}]}",
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
     }
 
 }

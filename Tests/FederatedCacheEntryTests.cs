@@ -26,6 +26,17 @@ public class FederatedCacheEntryTests
         entry.UpdateFromRemote(new BaseItemDto
         {
             Name = "Movie",
+            Container = "mkv",
+            RunTimeTicks = 111,
+            MediaStreams = new[]
+            {
+                new MediaBrowser.Model.Entities.MediaStream
+                {
+                    Type = MediaBrowser.Model.Entities.MediaStreamType.Video,
+                    Height = 2160,
+                    BitRate = 40_000_000
+                }
+            },
             ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "poster-a" }
         }, "plex-a", sourceA, 0);
         entry.SetNativeId("plex-a", sourceA, "100");
@@ -34,6 +45,17 @@ public class FederatedCacheEntryTests
         entry.UpdateFromRemote(new BaseItemDto
         {
             Name = "Movie",
+            Container = "mp4",
+            RunTimeTicks = 222,
+            MediaStreams = new[]
+            {
+                new MediaBrowser.Model.Entities.MediaStream
+                {
+                    Type = MediaBrowser.Model.Entities.MediaStreamType.Video,
+                    Height = 1080,
+                    BitRate = 8_000_000
+                }
+            },
             ImageTags = new() { [MediaBrowser.Model.Entities.ImageType.Primary] = "poster-b" }
         }, "plex-b", sourceB, 1);
         entry.SetNativeId("plex-b", sourceB, "900");
@@ -41,8 +63,16 @@ public class FederatedCacheEntryTests
         var sources = entry.GetSourcesSnapshot();
         Assert.Equal("100", entry.GetNativeId(sources[0]));
         Assert.Equal("poster-a", sources[0].PrimaryImageTag);
+        Assert.Equal("mkv", sources[0].Container);
+        Assert.Equal(111, sources[0].RunTimeTicks);
+        Assert.Equal(40_000_000, sources[0].Bitrate);
+        Assert.Equal(2160, Assert.Single(sources[0].MediaStreams!).Height);
         Assert.Equal("900", entry.GetNativeId(sources[1]));
         Assert.Equal("poster-b", sources[1].PrimaryImageTag);
+        Assert.Equal("mp4", sources[1].Container);
+        Assert.Equal(222, sources[1].RunTimeTicks);
+        Assert.Equal(8_000_000, sources[1].Bitrate);
+        Assert.Equal(1080, Assert.Single(sources[1].MediaStreams!).Height);
     }
 
     [Fact]

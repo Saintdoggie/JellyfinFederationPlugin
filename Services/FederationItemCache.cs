@@ -444,6 +444,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     .First(s => s.ServerId == src.ServerId && s.RemoteItemId == src.RemoteItemId);
                 merged.NativeId = src.NativeId ?? merged.NativeId;
                 merged.PrimaryImageTag = src.PrimaryImageTag ?? merged.PrimaryImageTag;
+                merged.Container = src.Container ?? merged.Container;
+                merged.Size = src.Size ?? merged.Size;
+                merged.Bitrate = src.Bitrate ?? merged.Bitrate;
+                merged.RunTimeTicks = src.RunTimeTicks ?? merged.RunTimeTicks;
+                merged.MediaStreams = src.MediaStreams ?? merged.MediaStreams;
             }
         }
 
@@ -866,9 +871,23 @@ namespace Jellyfin.Plugin.Federation.Services
             lock (_sync)
             {
                 var source = Sources.FirstOrDefault(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId);
-                if (source != null && remoteItem.ImageTags?.TryGetValue(ImageType.Primary, out var sourcePrimaryTag) == true)
+                if (source != null)
                 {
-                    source.PrimaryImageTag = sourcePrimaryTag;
+                    if (remoteItem.ImageTags?.TryGetValue(ImageType.Primary, out var sourcePrimaryTag) == true)
+                    {
+                        source.PrimaryImageTag = sourcePrimaryTag;
+                    }
+
+                    // Playback decisions must stay bound to the exact source. A
+                    // deduplicated title can be a small H.264 copy on one server
+                    // and a 4K HEVC remux on another; merged item metadata cannot
+                    // safely describe both.
+                    source.Container = remoteItem.Container ?? source.Container;
+                    source.Bitrate = remoteItem.MediaStreams?
+                        .Where(stream => stream.BitRate.HasValue)
+                        .Sum(stream => stream.BitRate!.Value) ?? source.Bitrate;
+                    source.RunTimeTicks = remoteItem.RunTimeTicks ?? source.RunTimeTicks;
+                    source.MediaStreams = remoteItem.MediaStreams?.ToArray() ?? source.MediaStreams;
                 }
 
                 var isPrimary = Sources.Count <= 1
@@ -955,6 +974,21 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets this exact source's current primary-image tag.</summary>
         public string? PrimaryImageTag { get; set; }
+
+        /// <summary>Gets or sets this exact source's media container.</summary>
+        public string? Container { get; set; }
+
+        /// <summary>Gets or sets this exact source's file size.</summary>
+        public long? Size { get; set; }
+
+        /// <summary>Gets or sets this exact source's aggregate bitrate.</summary>
+        public int? Bitrate { get; set; }
+
+        /// <summary>Gets or sets this exact source's runtime.</summary>
+        public long? RunTimeTicks { get; set; }
+
+        /// <summary>Gets or sets codec and resolution data for this exact source.</summary>
+        public MediaStream[]? MediaStreams { get; set; }
 
         public string ServerId { get; set; } = string.Empty;
 
