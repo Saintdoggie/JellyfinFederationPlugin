@@ -491,7 +491,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            return BuildProxyStreamUrl(entry.ItemType, src, download: download);
+            // A deduplicated item needs one stable Play-button path, but its
+            // preferred source is a runtime decision: health and measured WAN
+            // capacity can change without recreating the Jellyfin item. Mark the
+            // shared path as Auto so the relay preflights and ranks all siblings.
+            return BuildProxyStreamUrl(
+                entry.ItemType,
+                src,
+                download: download,
+                autoSelect: !download && entry.GetSourcesSnapshot().Length > 1);
         }
 
         /// <summary>
@@ -499,7 +507,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="BuildStaticPath"/>). Contains an item-scoped HMAC capability,
         /// never the remote server credential used to create it.
         /// </summary>
-        private string? BuildProxyStreamUrl(string itemType, FederatedSource src, string? requestingUserId = null, bool download = false)
+        private string? BuildProxyStreamUrl(
+            string itemType,
+            FederatedSource src,
+            string? requestingUserId = null,
+            bool download = false,
+            bool autoSelect = false)
         {
             var server = GetServer(src.ServerId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -518,19 +531,26 @@ namespace Jellyfin.Plugin.Federation.Services
             var audioFlag = IsAudioType(itemType) ? "&audio=true" : string.Empty;
             var userFlag = string.IsNullOrEmpty(requestingUserId) ? string.Empty : $"&requestingUserId={Uri.EscapeDataString(requestingUserId)}";
             var downloadFlag = download ? "&download=true" : string.Empty;
-            var signature = CreateProxySignature(src.ServerId, src.RemoteItemId, IsAudioType(itemType), requestingUserId, download);
-            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{userFlag}{downloadFlag}&sig={signature}";
+            var autoFlag = autoSelect ? "&auto=true" : string.Empty;
+            var signature = CreateProxySignature(src.ServerId, src.RemoteItemId, IsAudioType(itemType), requestingUserId, download, autoSelect);
+            return $"{localUrl}/Plugins/Federation/Stream?serverId={Uri.EscapeDataString(src.ServerId)}&itemId={src.RemoteItemId:N}{audioFlag}{userFlag}{downloadFlag}{autoFlag}&sig={signature}";
         }
 
         /// <summary>
         /// Creates an item/user-scoped signature for the capability media URL. The
         /// configured remote credential is only HMAC key material and never appears
         /// in the URL; changing or removing the server immediately invalidates it.
-        /// v2 binds a UTC unix-hour expiry and the download purpose so a play URL
-        /// cannot be turned into an attachment download by appending <c>download=true</c>.
+        /// v2 binds a UTC unix-hour expiry, download purpose, and Auto-selection
+        /// authority so query parameters cannot broaden a signed URL's behavior.
         /// </summary>
-        public string CreateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, bool download = false)
-            => CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, DateTimeOffset.UtcNow, download);
+        public string CreateProxySignature(
+            string serverId,
+            Guid remoteItemId,
+            bool isAudio,
+            string? requestingUserId,
+            bool download = false,
+            bool autoSelect = false)
+            => CreateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, DateTimeOffset.UtcNow, download, autoSelect);
 
         /// <summary>
         /// Test seam for minting a signature at a chosen UTC time.
@@ -541,7 +561,8 @@ namespace Jellyfin.Plugin.Federation.Services
             bool isAudio,
             string? requestingUserId,
             DateTimeOffset utcNow,
-            bool download = false)
+            bool download = false,
+            bool autoSelect = false)
         {
             var server = GetServer(serverId);
             if (server == null || !server.Enabled || string.IsNullOrEmpty(server.ApiKey))
@@ -551,18 +572,25 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
             var expUnixHour = GetUtcUnixHour(utcNow) + ProxySignatureLifetimeHours;
-            var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download);
+            var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download, autoSelect);
             return $"{ComputeProxySignatureMac(server.ApiKey, payload)}.{expUnixHour}";
         }
 
         /// <summary>
         /// Validates a proxy URL signature in constant time. v2 binds expiry and
-        /// download purpose. Legacy v1 (64 hex, no expiry) remains play-only so
+        /// download purpose and Auto-selection authority. Legacy v1 (64 hex, no expiry) remains play-only so
         /// persisted Paths keep working until the next restamp; it never authorizes
         /// <c>download=true</c>.
         /// </summary>
-        public bool ValidateProxySignature(string serverId, Guid remoteItemId, bool isAudio, string? requestingUserId, string? signature, bool download = false)
-            => ValidateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, signature, DateTimeOffset.UtcNow, download);
+        public bool ValidateProxySignature(
+            string serverId,
+            Guid remoteItemId,
+            bool isAudio,
+            string? requestingUserId,
+            string? signature,
+            bool download = false,
+            bool autoSelect = false)
+            => ValidateProxySignature(serverId, remoteItemId, isAudio, requestingUserId, signature, DateTimeOffset.UtcNow, download, autoSelect);
 
         /// <summary>
         /// Test seam for validating a signature against a chosen UTC time.
@@ -574,7 +602,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? requestingUserId,
             string? signature,
             DateTimeOffset utcNow,
-            bool download = false)
+            bool download = false,
+            bool autoSelect = false)
         {
             if (string.IsNullOrEmpty(signature)
                 || (!string.IsNullOrEmpty(requestingUserId) && !Guid.TryParse(requestingUserId, out _)))
@@ -617,7 +646,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (hexOk
                     && long.TryParse(signature.AsSpan(65), NumberStyles.None, CultureInfo.InvariantCulture, out var expUnixHour))
                 {
-                    var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download);
+                    var payload = BuildV2ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser, expUnixHour, download, autoSelect);
                     var expectedMac = ComputeProxySignatureMac(server.ApiKey, payload);
                     var macOk = MacEquals(expectedMac, signature.Substring(0, 64));
                     var notExpired = GetUtcUnixHour(utcNow) < expUnixHour;
@@ -625,7 +654,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            return download ? v2Match : (v2Match | v1Match);
+            return download || autoSelect ? v2Match : (v2Match | v1Match);
         }
 
         private static long GetUtcUnixHour(DateTimeOffset utcNow)
@@ -640,8 +669,9 @@ namespace Jellyfin.Plugin.Federation.Services
             bool isAudio,
             string normalizedUser,
             long expUnixHour,
-            bool download)
-            => $"v2\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}\n{expUnixHour}\n{(download ? "1" : "0")}";
+            bool download,
+            bool autoSelect)
+            => $"v2\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}\n{expUnixHour}\n{(download ? "1" : "0")}{(autoSelect ? "\n1" : string.Empty)}";
 
         private static bool MacEquals(string expected, string supplied)
         {
@@ -749,6 +779,14 @@ namespace Jellyfin.Plugin.Federation.Services
             var height = server.WanMaxHeight > 0 ? $"&maxHeight={server.WanMaxHeight}" : string.Empty;
             return $"&capMbps={capMbps.Value}{height}";
         }
+
+        /// <summary>
+        /// Returns the currently sustainable configured/measured video rate for a
+        /// server, or null when the path is intentionally uncapped or unknown.
+        /// Used to order live alternate sources before Jellyfin picks its default.
+        /// </summary>
+        public int? GetEffectiveWanCapMbps(RemoteServer server)
+            => _bandwidthMonitor.GetEffectiveCapMbps(server);
 
         /// <summary>
         /// Native loopback stream URL used by DirectStream. LAN/uncapped stays

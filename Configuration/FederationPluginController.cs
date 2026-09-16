@@ -2317,6 +2317,7 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] bool audio = false,
             [FromQuery] string? requestingUserId = null,
             [FromQuery] bool download = false,
+            [FromQuery] bool auto = false,
             [FromQuery] string? fileName = null,
             [FromQuery] string? sig = null)
         {
@@ -2328,9 +2329,10 @@ namespace Jellyfin.Plugin.Federation.Api
             // This endpoint has to remain anonymous because Jellyfin's ffmpeg
             // fetch does not forward the viewer's auth header. The URL itself is
             // therefore an item/user-scoped capability: changing the server, item,
-            // media kind, download purpose or claimed user invalidates it. A play
-            // signature must not authorize attachment downloads.
-            if (!_federationManager.ValidateProxySignature(serverId, itemGuid, audio, requestingUserId, sig, download))
+            // media kind, download purpose, Auto-selection authority, or claimed
+            // user invalidates it. A play signature must not authorize downloads
+            // or switching to a sibling source.
+            if (!_federationManager.ValidateProxySignature(serverId, itemGuid, audio, requestingUserId, sig, download, auto))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -2378,7 +2380,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 Response.Headers["Content-Disposition"] = $"attachment; filename=\"{safeName}\"";
             }
 
-            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio, requestingUserId).ConfigureAwait(false);
+            await _streamHandler.HandleProxyAsync(serverId, itemId, Request, Response, cancellationToken, audio, requestingUserId, auto).ConfigureAwait(false);
             return new EmptyResult();
         }
 

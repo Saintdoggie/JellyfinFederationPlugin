@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.162",
+        "changelog": "Playback Auto now rejects dead sources before playback, chooses the highest-quality live copy that fits each server's measured or configured WAN capacity, and falls back across duplicate Jellyfin or Plex copies without changing the stable Jellyfin item or its watch progress. Exact per-source bitrate, resolution, container, runtime, Plex native ID, and signed Auto authority remain bound to the selected source.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-16T02:18:55Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.162/Jellyfin.Federation.zip",
+        "checksum": "b6b2b36030ec88f88ac57b20c0b2996e"
+      },
+      {
         "version": "0.0.161",
         "changelog": "Plex artwork repair: existing and newly federated movies now cache the exact poster selected on the source Plex server, refresh when that poster changes, and keep native IDs and artwork revisions bound to the correct source when duplicate titles span multiple Plex servers. Poster credentials remain server-side and watch history is preserved.",
         "targetAbi": "12.0.0.0",

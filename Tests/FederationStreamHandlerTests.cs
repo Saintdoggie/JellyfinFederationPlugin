@@ -95,6 +95,130 @@ public class FederationStreamHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task AutoPath_PrefersHighestQualitySourceThatFitsMeasuredCap_AndPreservesItemRoute()
+    {
+        var highId = Guid.NewGuid();
+        var healthyId = Guid.NewGuid();
+        var high = new RemoteServer
+        {
+            Id = "plex-high",
+            Name = "Plex high",
+            Url = "http://plex-high.example",
+            ApiKey = "high-token",
+            Kind = ServerKind.Plex,
+            Enabled = true,
+            WanCapMode = WanCapMode.Manual,
+            WanMaxBitrateMbps = 10
+        };
+        var healthy = new RemoteServer
+        {
+            Id = "plex-healthy",
+            Name = "Plex healthy",
+            Url = "http://plex-healthy.example",
+            ApiKey = "healthy-token",
+            Kind = ServerKind.Plex,
+            Enabled = true,
+            WanCapMode = WanCapMode.Manual,
+            WanMaxBitrateMbps = 10
+        };
+        _plugin.Configuration.RemoteServers.Add(high);
+        _plugin.Configuration.RemoteServers.Add(healthy);
+
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var entry = cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-auto-fallback",
+            new MediaBrowser.Model.Dto.BaseItemDto
+            {
+                Id = highId,
+                Name = "Shared Movie",
+                MediaStreams = new[]
+                {
+                    new MediaBrowser.Model.Entities.MediaStream
+                    {
+                        Type = MediaBrowser.Model.Entities.MediaStreamType.Video,
+                        Height = 2160,
+                        BitRate = 40_000_000
+                    }
+                }
+            },
+            high.Id,
+            highId,
+            0,
+            "Movie");
+        cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-auto-fallback",
+            new MediaBrowser.Model.Dto.BaseItemDto
+            {
+                Id = healthyId,
+                Name = "Shared Movie",
+                MediaStreams = new[]
+                {
+                    new MediaBrowser.Model.Entities.MediaStream
+                    {
+                        Type = MediaBrowser.Model.Entities.MediaStreamType.Video,
+                        Height = 1080,
+                        BitRate = 8_000_000
+                    }
+                }
+            },
+            healthy.Id,
+            healthyId,
+            1,
+            "Movie");
+        entry.SetNativeId(high.Id, highId, "plex-native-high");
+        entry.SetNativeId(healthy.Id, healthyId, "plex-native-healthy");
+
+        var external = new Moq.Mock<IExternalCatalogProvider>();
+        external.SetupGet(provider => provider.Kind).Returns(ServerKind.Plex);
+        external.Setup(provider => provider.ResolveStreamUrlAsync(high, "plex-native-high", Moq.It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult<string?>("http://media.example/high.mp4"));
+        external.Setup(provider => provider.ResolveStreamUrlAsync(healthy, "plex-native-healthy", Moq.It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult<string?>("http://media.example/healthy.mp4"));
+        var registry = new ExternalCatalogRegistry(new[] { external.Object });
+        var bandwidth = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Moq.Mock.Of<IRemoteServerClientFactory>());
+        var manager = new FederationLibraryManager(
+            Moq.Mock.Of<MediaBrowser.Controller.Library.ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            Moq.Mock.Of<IRemoteServerClientFactory>(),
+            cache,
+            bandwidth,
+            Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var handler = new FederationStreamHandler(
+            NullLogger<FederationStreamHandler>.Instance,
+            manager,
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance),
+            Moq.Mock.Of<IRemoteServerClientFactory>(),
+            registry,
+            bandwidth);
+
+        string? relayedUrl = null;
+        var expected = Encoding.UTF8.GetBytes("healthy fallback bytes");
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(request =>
+        {
+            relayedUrl = request.RequestUri?.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(expected) };
+        }));
+        var (request, response, body) = MakeContext(null);
+
+        await handler.HandleProxyAsync(
+            high.Id,
+            highId.ToString("N"),
+            request,
+            response,
+            CancellationToken.None,
+            autoSelect: true);
+
+        Assert.Equal("http://media.example/healthy.mp4", relayedUrl);
+        Assert.Equal(expected, body.ToArray());
+        external.Verify(provider => provider.ResolveStreamUrlAsync(high, "plex-native-high", Moq.It.IsAny<CancellationToken>()), Moq.Times.Never);
+        external.Verify(provider => provider.ResolveStreamUrlAsync(healthy, "plex-native-healthy", Moq.It.IsAny<CancellationToken>()), Moq.Times.Once);
+    }
+
+    [Fact]
     public async Task RelayFailure_DoesNotLogCredentialBearingUrlOrExceptionMessage()
     {
         const string secret = "do-not-log-this-token";
