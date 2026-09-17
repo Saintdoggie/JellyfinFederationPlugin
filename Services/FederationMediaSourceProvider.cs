@@ -340,6 +340,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     var candidate = ordered[position];
                     var remote = candidate.Remote;
+                    var advertised = DescribeDeliveredSource(candidate.Server, candidate.Path, remote, entry.ItemType);
 
                     sources.Add(new MediaSourceInfo
                     {
@@ -360,10 +361,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         // (several smart-TV webviews), which would needlessly block
                         // Proxy-mode playback that this server is perfectly able to serve.
                         IsRemote = candidate.Server.StreamingMode == StreamingMode.Direct,
-                        Container = remote.Container,
-                        Size = remote.Size,
-                        Bitrate = remote.Bitrate,
-                        MediaStreams = remote.MediaStreams ?? new List<MediaStream>(),
+                        Container = advertised.Container,
+                        Size = advertised.Size,
+                        Bitrate = advertised.Bitrate,
+                        MediaStreams = advertised.MediaStreams,
                         SupportsDirectPlay = true,
                         SupportsDirectStream = true,
 
@@ -526,6 +527,107 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var bytes = MD5.HashData(Encoding.UTF8.GetBytes($"{src.ServerId}:{src.RemoteItemId:N}"));
             return new Guid(bytes).ToString("N");
+        }
+
+        /// <summary>
+        /// Describes what the built Path will actually deliver. Proxy mode and audio
+        /// serve the original file, so the remote's live metadata stands. A capped
+        /// Direct-mode path requests a fixed H.264/AAC MP4 transcode from the peer
+        /// (see <see cref="FederationLibraryManager.BuildDirectGatewayLoopbackUrl"/>);
+        /// advertising the original HEVC/AV1 MKV there made local StreamBuilder
+        /// negotiate against bytes the client would never receive. Resolution, HDR
+        /// and profile details of the original stream are unknowable after that
+        /// transcode, so they are dropped rather than guessed; bitrate is the
+        /// encoded budget, and Size is unknown because the transcode remuxes.
+        /// </summary>
+        private static MediaSourceInfo DescribeDeliveredSource(RemoteServer server, string path, MediaSourceInfo remote, string itemType)
+        {
+            var isAudio = string.Equals(itemType, "Audio", StringComparison.OrdinalIgnoreCase);
+            if (isAudio || server.StreamingMode != StreamingMode.Direct)
+            {
+                return new MediaSourceInfo
+                {
+                    Container = remote.Container,
+                    Size = remote.Size,
+                    Bitrate = remote.Bitrate,
+                    MediaStreams = remote.MediaStreams ?? new List<MediaStream>()
+                };
+            }
+
+            int? capMbps = null;
+            int? maxHeight = null;
+            if (Uri.TryCreate(path, UriKind.Absolute, out var uri))
+            {
+                var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+                if (query.TryGetValue("capMbps", out var capValue) && int.TryParse(capValue.ToString(), out var parsedCap) && parsedCap > 0)
+                {
+                    capMbps = parsedCap;
+                }
+
+                if (query.TryGetValue("maxHeight", out var heightValue) && int.TryParse(heightValue.ToString(), out var parsedHeight) && parsedHeight > 0)
+                {
+                    maxHeight = parsedHeight;
+                }
+            }
+
+            if (capMbps is not > 0)
+            {
+                return new MediaSourceInfo
+                {
+                    Container = remote.Container,
+                    Size = remote.Size,
+                    Bitrate = remote.Bitrate,
+                    MediaStreams = remote.MediaStreams ?? new List<MediaStream>()
+                };
+            }
+
+            var audioBitrate = 256_000;
+            var videoBitrate = (int)Math.Min(int.MaxValue, Math.Max(1, (long)capMbps.Value * 950_000L - audioBitrate));
+            var originalVideo = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            var originalAudio = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio && s.IsDefault == true)
+                ?? remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
+            var streams = new List<MediaStream>();
+            if (originalVideo != null)
+            {
+                var downscale = maxHeight is > 0 && originalVideo.Height.GetValueOrDefault() > maxHeight.Value;
+                streams.Add(new MediaStream
+                {
+                    Type = MediaStreamType.Video,
+                    Index = originalVideo.Index,
+                    Codec = "h264",
+                    Language = originalVideo.Language,
+                    IsDefault = originalVideo.IsDefault,
+                    BitRate = videoBitrate,
+                    AverageFrameRate = originalVideo.AverageFrameRate,
+                    RealFrameRate = originalVideo.RealFrameRate,
+                    Height = downscale ? maxHeight : originalVideo.Height,
+                    Width = downscale && originalVideo.Width.HasValue
+                        ? (int)Math.Round(originalVideo.Width.Value * (double)maxHeight!.Value / originalVideo.Height!.Value, MidpointRounding.AwayFromZero)
+                        : originalVideo.Width
+                });
+            }
+
+            streams.Add(originalAudio == null
+                ? new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, BitRate = audioBitrate, IsDefault = true }
+                : new MediaStream
+                {
+                    Type = originalAudio.Type,
+                    Index = originalAudio.Index,
+                    Codec = "aac",
+                    Language = originalAudio.Language,
+                    IsDefault = originalAudio.IsDefault,
+                    BitRate = audioBitrate,
+                    Channels = Math.Max(1, Math.Min(originalAudio.Channels.GetValueOrDefault(2), 2)),
+                    SampleRate = originalAudio.SampleRate
+                });
+
+            return new MediaSourceInfo
+            {
+                Container = "mp4",
+                Size = null,
+                Bitrate = videoBitrate + audioBitrate,
+                MediaStreams = streams
+            };
         }
 
         /// <inheritdoc />

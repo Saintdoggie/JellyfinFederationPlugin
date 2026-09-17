@@ -523,7 +523,7 @@ public class FederationStreamPathTests : IDisposable
         // serializes straight into a client-facing static media source.
         var expectedUrl =
             $"http://friend.example:8096/Videos/{remoteId:N}/stream.mp4"
-                + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080";
+                + "?api_key=secret-key&VideoCodec=h264&AudioCodec=aac&VideoBitrate=11144000&AudioBitrate=256000&MaxHeight=1080";
         Assert.Contains("/Plugins/Federation/Stream", item.Path);
         Assert.DoesNotContain("secret-key", item.Path);
         // Every client-facing URL (stamped proxy path and provider token URL
@@ -619,7 +619,7 @@ public class FederationStreamPathTests : IDisposable
         Assert.Contains("/Plugins/Federation/Stream", item.Path);
 
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
-        Assert.Contains("VideoBitrate=10000000", liveUrl);
+        Assert.Contains("VideoBitrate=9244000", liveUrl);
     }
 
     [Fact]
@@ -648,7 +648,7 @@ public class FederationStreamPathTests : IDisposable
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
         // 20 Mbps measured * 0.85 safety margin = 17 Mbps.
-        Assert.Contains("VideoBitrate=17000000", liveUrl);
+        Assert.Contains("VideoBitrate=15894000", liveUrl);
     }
 
     [Fact]
@@ -664,7 +664,7 @@ public class FederationStreamPathTests : IDisposable
         var entry = AddEntry("Movie", Guid.NewGuid());
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("VideoBitrate=10000000", liveUrl);
+        Assert.Contains("VideoBitrate=9244000", liveUrl);
     }
 
     [Fact]
@@ -727,9 +727,44 @@ public class FederationStreamPathTests : IDisposable
             maxHeight: 1080);
 
         Assert.Equal(
-            $"http://127.0.0.1:8096/Videos/{itemId:N}/stream.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate=12000000&AudioBitrate=256000&MaxHeight=1080",
+            $"http://127.0.0.1:8096/Videos/{itemId:N}/stream.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate=11144000&AudioBitrate=256000&MaxHeight=1080",
             url);
         Assert.DoesNotContain("Static=true", url);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(10)]
+    [InlineData(12)]
+    [InlineData(17)]
+    [InlineData(100)]
+    [InlineData(int.MaxValue)]
+    public void CappedTranscodeBuilders_ReserveAudioAndMuxHeadroomWithinRelayBudget(int capMbps)
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = capMbps;
+        var remoteId = Guid.NewGuid();
+        var entry = AddEntry("Movie", remoteId);
+        var urls = new[]
+        {
+            _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!)!,
+            FederationLibraryManager.BuildDirectGatewayLoopbackUrl(
+                "http://127.0.0.1:8096", remoteId, audio: false, capMbps: capMbps)
+        };
+
+        foreach (var url in urls)
+        {
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(url).Query);
+            var video = long.Parse(query["VideoBitrate"].ToString(), System.Globalization.CultureInfo.InvariantCulture);
+            var audio = long.Parse(query["AudioBitrate"].ToString(), System.Globalization.CultureInfo.InvariantCulture);
+            var budget = capMbps * 1_000_000L;
+            Assert.True(video > 0);
+            Assert.Equal(256_000L, audio);
+            Assert.True(video + audio <= budget * 95 / 100,
+                $"Video {video} + audio {audio} must leave 5% of {budget} bps for muxing and rate variation.");
+        }
     }
 
     [Fact]
@@ -1130,6 +1165,51 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal(stableItemId, item.Id);
     }
 
+    [Fact]
+    public async Task GetMediaSources_CappedWan_MatchesAdvertisedMetadataToTheCappedRepresentation()
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 12;
+        server.WanMaxHeight = 1080;
+        var remoteId = Guid.NewGuid();
+        var entry = AddEntry("Movie", remoteId, container: "mkv");
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-so-provider-emits-live-sources";
+
+        var remoteClient = new RemoteServerClient(
+            server,
+            NullLogger.Instance,
+            new HttpClient(new CappedRepresentationHandler()) { BaseAddress = new Uri(server.Url) });
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(server.Id)).Returns(remoteClient);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            clientFactory.Object,
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            Mock.Of<IHttpContextAccessor>(),
+            Mock.Of<IAuthorizationContext>(),
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        var source = Assert.Single(sources);
+        Assert.Contains("/Plugins/Federation/DirectStream/", source.Path);
+        Assert.Contains("capMbps=12", source.Path);
+        Assert.Equal("mp4", source.Container);
+        Assert.True(source.Bitrate!.Value <= 12_256_000,
+            $"Advertised bitrate {source.Bitrate.Value} must describe the capped representation, not the original.");
+        var video = Assert.Single(source.MediaStreams, s => s.Type == MediaStreamType.Video);
+        Assert.Equal("h264", video.Codec);
+        Assert.Null(source.Size);
+    }
+
     [Theory]
     [InlineData("http://127.0.0.1:8096/Plugins/Federation/Stream", "http://127.0.0.1:18096", true)]
     [InlineData("http://localhost:8096/Plugins/Federation/Stream", "http://127.0.0.1:12345", true)]
@@ -1138,6 +1218,37 @@ public class FederationStreamPathTests : IDisposable
     public void IsDeadDefaultLoopbackUrl_OnlyWhenStamped8096DisagreesWithLivePort(string stamped, string live, bool expected)
     {
         Assert.Equal(expected, FederationLibraryManager.IsDeadDefaultLoopbackUrl(stamped, live));
+    }
+
+    private sealed class CappedRepresentationHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"token\":\"item-tok-123\",\"purpose\":\"Playback\"}", Encoding.UTF8, "application/json")
+                });
+            }
+
+            if (path.Contains("/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"MediaSources\":[{\"Id\":\"capped-src\",\"Container\":\"mkv\",\"Size\":90000000000,\"Bitrate\":59460000," +
+                        "\"MediaStreams\":[" +
+                        "{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Index\":0,\"Profile\":\"Main 10\",\"BitDepth\":10,\"Height\":2160,\"Width\":3840,\"BitRate\":59000000,\"ColorTransfer\":\"smpte2084\",\"ColorPrimaries\":\"bt2020\",\"ColorSpace\":\"bt2020nc\",\"VideoRange\":\"HDR\",\"VideoRangeType\":\"HDR10\"}," +
+                        "{\"Type\":\"Audio\",\"Codec\":\"eac3\",\"Index\":1,\"Channels\":6,\"BitRate\":256000,\"IsDefault\":true}]}]}",
+                        Encoding.UTF8,
+                        "application/json")
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
     }
 
     private sealed class DirectPathTokenHandler : HttpMessageHandler

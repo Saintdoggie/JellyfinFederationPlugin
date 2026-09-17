@@ -3,11 +3,17 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Session;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
@@ -60,6 +66,179 @@ public class RemoteServerClientPlaybackTests
         using var client = new RemoteServerClient(server, NullLogger.Instance);
         Assert.Contains("federation-token", GetDefaultHeaderValues(client, FederationTokenAuth.Header));
         Assert.Empty(GetDefaultHeaderValues(client, "X-Emby-Token"));
+    }
+
+    [Theory]
+    [InlineData("h264", 8, "High", 41d, 23.976f, "aac", 2, "mp4", false)]
+    [InlineData("hevc", 10, "Main 10", 153d, 59.94f, "eac3", 6, "mkv", true)]
+    [InlineData("av1", 10, "Main", 13d, 24f, "opus", 8, "webm", false)]
+    [InlineData("vp9", 8, "Profile 0", 41d, 30f, "opus", 2, "webm", false)]
+    public async Task GetPlaybackInfoAsync_RoundTripsDeviceCompatibilityMetadata(
+        string codec, int bitDepth, string profile, double level, float frameRate,
+        string audioCodec, int audioChannels, string container, bool hdr)
+    {
+        var expectedVideo = new MediaStream
+        {
+            Type = MediaStreamType.Video, Index = 0, Codec = codec, BitDepth = bitDepth,
+            Profile = profile, Level = level, RealFrameRate = frameRate, AverageFrameRate = frameRate,
+            Width = 3840, Height = 2160, PixelFormat = bitDepth == 10 ? "yuv420p10le" : "yuv420p",
+            ColorTransfer = hdr ? "smpte2084" : "bt709",
+            ColorPrimaries = hdr ? "bt2020" : "bt709", ColorSpace = hdr ? "bt2020nc" : "bt709"
+        };
+        var expectedAudio = new MediaStream
+        {
+            Type = MediaStreamType.Audio, Index = 1, Codec = audioCodec, Channels = audioChannels, SampleRate = 48000
+        };
+        var playbackJson = JsonSerializer.Serialize(new
+        {
+            PlaySessionId = "metadata-session",
+            MediaSources = new[] { new { Id = "src-metadata", Container = container, MediaStreams = new[] { expectedVideo, expectedAudio } } }
+        }, new JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } });
+        var handler = new FakeHttpMessageHandler(playbackJson: playbackJson);
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-metadata-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        using var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        var itemId = Guid.NewGuid().ToString("N");
+
+        var result = await client.GetPlaybackInfoAsync(itemId, cancellationToken: CancellationToken.None);
+
+        Assert.NotNull(result);
+        var source = Assert.Single(result!.MediaSources!);
+        Assert.Equal(container, source.Container);
+        Assert.Equal("src-metadata", source.Id);
+        Assert.Equal("metadata-session", result.PlaySessionId);
+        Assert.Equal($"/Plugins/Federation/Peer/PlaybackInfo/{itemId}", handler.LastRequestedPath);
+        Assert.Equal(2, source.MediaStreams.Count);
+        var video = Assert.Single(source.MediaStreams, s => s.Type == MediaStreamType.Video);
+        Assert.Equal(0, video.Index);
+        Assert.Equal(codec, video.Codec);
+        Assert.Equal(profile, video.Profile);
+        Assert.Equal(level, video.Level);
+        Assert.Equal(bitDepth, video.BitDepth);
+        Assert.Equal(frameRate, video.RealFrameRate);
+        Assert.Equal(frameRate, video.AverageFrameRate);
+        Assert.Equal(expectedVideo.Width, video.Width);
+        Assert.Equal(expectedVideo.Height, video.Height);
+        Assert.Equal(expectedVideo.PixelFormat, video.PixelFormat);
+        Assert.Equal(expectedVideo.ColorTransfer, video.ColorTransfer);
+        Assert.Equal(expectedVideo.ColorPrimaries, video.ColorPrimaries);
+        Assert.Equal(expectedVideo.ColorSpace, video.ColorSpace);
+        Assert.Equal(hdr ? VideoRange.HDR : VideoRange.SDR, video.VideoRange);
+        Assert.Equal(hdr ? VideoRangeType.HDR10 : VideoRangeType.SDR, video.VideoRangeType);
+        var audio = Assert.Single(source.MediaStreams, s => s.Type == MediaStreamType.Audio);
+        Assert.Equal(1, audio.Index);
+        Assert.Equal(audioCodec, audio.Codec);
+        Assert.Equal(audioChannels, audio.Channels);
+        Assert.Equal(48000, audio.SampleRate);
+    }
+
+    [Theory]
+    [InlineData("h264", "h264", "mp4", 2_000_000, PlayMethod.DirectPlay, "h264", "mp4", (TranscodeReason)0)]
+    [InlineData("h264", "hevc", "mp4", 2_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.VideoCodecNotSupported)]
+    [InlineData("h264", "av1", "mp4", 2_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.VideoCodecNotSupported)]
+    [InlineData("h264,hevc,av1", "h264", "mp4", 2_000_000, PlayMethod.DirectPlay, "h264", "mp4", (TranscodeReason)0)]
+    [InlineData("h264,hevc,av1", "hevc", "mp4", 2_000_000, PlayMethod.DirectPlay, "hevc", "mp4", (TranscodeReason)0)]
+    [InlineData("h264,hevc,av1", "av1", "mp4", 2_000_000, PlayMethod.DirectPlay, "av1", "mp4", (TranscodeReason)0)]
+    [InlineData("h264", "h264", "mkv", 2_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.ContainerNotSupported)]
+    [InlineData("h264,hevc,av1", "h264", "mkv", 2_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.ContainerNotSupported)]
+    [InlineData("h264", "h264", "mp4", 20_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.ContainerBitrateExceedsLimit)]
+    [InlineData("h264,hevc,av1", "h264", "mp4", 20_000_000, PlayMethod.Transcode, "h264", "mp4", TranscodeReason.ContainerBitrateExceedsLimit)]
+    public async Task GetPlaybackInfoAsync_StreamBuilderNegotiatesSyntheticCapabilities(
+        string supportedVideoCodecs, string sourceCodec, string sourceContainer, int sourceBitrate,
+        PlayMethod expectedPlayMethod, string expectedVideoCodec, string expectedContainer, TranscodeReason expectedReasons)
+    {
+        var video = new MediaStream
+        {
+            Type = MediaStreamType.Video, Index = 0, Codec = sourceCodec, BitDepth = 8,
+            Width = 1280, Height = 720, BitRate = sourceBitrate - 128_000,
+            RealFrameRate = 24, AverageFrameRate = 24, PixelFormat = "yuv420p",
+            ColorTransfer = "bt709", ColorPrimaries = "bt709", ColorSpace = "bt709"
+        };
+        var audio = new MediaStream
+        {
+            Type = MediaStreamType.Audio, Index = 1, Codec = "aac", Channels = 2,
+            SampleRate = 48000, BitRate = 128_000, IsDefault = true
+        };
+        var playbackJson = JsonSerializer.Serialize(new
+        {
+            PlaySessionId = "negotiation-session",
+            MediaSources = new[]
+            {
+                new
+                {
+                    Id = "src-negotiation", Path = "http://fake.local/video", Protocol = "Http",
+                    Container = sourceContainer, Bitrate = sourceBitrate,
+                    RunTimeTicks = TimeSpan.FromMinutes(1).Ticks,
+                    SupportsDirectPlay = true, SupportsDirectStream = true, SupportsTranscoding = true,
+                    DefaultAudioStreamIndex = 1, MediaStreams = new[] { video, audio }
+                }
+            }
+        }, new JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } });
+        var handler = new FakeHttpMessageHandler(playbackJson: playbackJson);
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "server-negotiation-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        using var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        var itemId = Guid.NewGuid();
+
+        var playback = await client.GetPlaybackInfoAsync(itemId.ToString("N"), cancellationToken: CancellationToken.None);
+
+        Assert.NotNull(playback);
+        var source = Assert.Single(playback!.MediaSources!);
+        Assert.Equal($"/Plugins/Federation/Peer/PlaybackInfo/{itemId:N}", handler.LastRequestedPath);
+        Assert.Equal(sourceContainer, source.Container);
+        Assert.Equal(sourceBitrate, source.Bitrate);
+        var parsedVideo = Assert.Single(source.MediaStreams, s => s.Type == MediaStreamType.Video);
+        Assert.Equal(sourceCodec, parsedVideo.Codec);
+        Assert.Equal(video.BitRate, parsedVideo.BitRate);
+        Assert.Equal(VideoRangeType.SDR, parsedVideo.VideoRangeType);
+        var parsedAudio = Assert.Single(source.MediaStreams, s => s.Type == MediaStreamType.Audio);
+        Assert.Equal("aac", parsedAudio.Codec);
+        Assert.Equal(2, parsedAudio.Channels);
+        var profile = new DeviceProfile
+        {
+            Name = "Synthetic " + supportedVideoCodecs,
+            MaxStreamingBitrate = 8_000_000,
+            DirectPlayProfiles = new[]
+            {
+                new DirectPlayProfile
+                {
+                    Type = DlnaProfileType.Video, Container = "mp4",
+                    VideoCodec = supportedVideoCodecs, AudioCodec = "aac"
+                }
+            },
+            TranscodingProfiles = new[]
+            {
+                new TranscodingProfile
+                {
+                    Type = DlnaProfileType.Video, Container = "mp4", VideoCodec = "h264", AudioCodec = "aac",
+                    Protocol = MediaStreamProtocol.http, Context = EncodingContext.Streaming, MaxAudioChannels = "2"
+                }
+            }
+        };
+        var transcoderSupport = new Mock<ITranscoderSupport>(MockBehavior.Strict);
+        transcoderSupport.Setup(s => s.CanEncodeToAudioCodec("aac")).Returns(true);
+        var builder = new StreamBuilder(transcoderSupport.Object, NullLogger.Instance);
+
+        var stream = builder.GetOptimalVideoStream(new MediaOptions
+        {
+            ItemId = itemId, DeviceId = "synthetic-device", MediaSources = playback.MediaSources!.ToArray(),
+            Profile = profile, Context = EncodingContext.Streaming, MaxBitrate = 8_000_000,
+            EnableDirectPlay = true, EnableDirectStream = false,
+            AllowVideoStreamCopy = true, AllowAudioStreamCopy = true
+        });
+
+        Assert.NotNull(stream);
+        Assert.Same(source, stream!.MediaSource);
+        Assert.Equal("src-negotiation", stream.MediaSourceId);
+        Assert.Equal(expectedPlayMethod, stream.PlayMethod);
+        Assert.Equal(expectedVideoCodec, Assert.Single(stream.TargetVideoCodec));
+        Assert.Equal("aac", Assert.Single(stream.TargetAudioCodec));
+        Assert.Equal(expectedContainer, stream.Container);
+        Assert.Equal(expectedReasons, stream.TranscodeReasons);
+        if (sourceBitrate > 8_000_000)
+        {
+            Assert.InRange(stream.TargetTotalBitrate ?? 0, 1, 8_000_000);
+        }
     }
 
     [Fact]
