@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.163",
-  "changelog": "Capped WAN playback now advertises the representation the gateway actually delivers instead of the original HEVC/AV1 file, so client codec and bitrate negotiation works on weak clients, and transcode budgets reserve audio and muxing headroom instead of exceeding the relay cap. Relay buffers are pooled to reduce allocation churn under concurrent streams.",
+  "version": "0.0.164",
+  "changelog": "Settings UI polish: the federation badge is a crisp solid chip with a clean border (no gradients), and the Catalog and Downloads browsers now lazy-load as you scroll instead of using Load more buttons, with bounded pages, stale-response protection, and explicit retry after a network error.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-17T14:30:26Z",
+  "timestamp": "2026-09-17T17:20:57Z",
   "imageUrl": "thumb.png"
 }

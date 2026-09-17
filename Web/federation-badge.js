@@ -55,12 +55,12 @@
       // legible over any poster art, and doesn't compete visually with
       // Jellyfin's own colored state badges.
       '.federation-badge-corner{position:absolute;top:.45em;left:.45em;width:clamp(1.65em,1.55vw,2em);height:clamp(1.65em,1.55vw,2em);border-radius:.48em;',
-      'background:linear-gradient(145deg,rgba(20,25,34,.94),rgba(5,8,13,.82));color:#fff;',
+      'background:rgba(8,11,16,.92);color:#fff;',
       'display:flex;align-items:center;justify-content:center;',
       'z-index:3;pointer-events:none;line-height:0;',
-      'border:1px solid rgba(255,255,255,.18);',
-      'box-shadow:0 2px 8px rgba(0,0,0,.45);backdrop-filter:blur(5px);}',
-      '.federation-badge-corner svg{display:block;width:58%;height:58%;opacity:.98;}',
+      'border:1px solid rgba(255,255,255,.28);',
+      'box-shadow:0 1px 4px rgba(0,0,0,.5);}',
+      '.federation-badge-corner svg{display:block;width:56%;height:56%;opacity:1;}',
 
       // Progress ring shown centered over a card/poster while an item is
       // actively being downloaded. Keeps its own dark backing plate since it

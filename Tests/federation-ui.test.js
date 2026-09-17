@@ -56,6 +56,17 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
   };
 }
 
+test('badge styling is solid and crisp, with no gradients', () => {
+  const styleBlock = badgeScript.match(/\.federation-badge-corner\{[^}]+\}/);
+  assert.ok(styleBlock, 'federation-badge-corner rule not found');
+  assert.equal(styleBlock[0].includes('linear-gradient'), false);
+  assert.equal(styleBlock[0].includes('radial-gradient'), false);
+  assert.equal(styleBlock[0].includes('backdrop-filter'), false);
+  assert.match(styleBlock[0], /background:rgba\(\d+,\s*\d+,\s*\d+,\s*\d?\.?\d+\);/);
+  assert.match(styleBlock[0], /border:1px solid rgba\(\d+,\s*\d+,\s*\d+,\s*\d?\.?\d+\);/);
+  assert.equal(badgeScript.slice(0, badgeScript.indexOf('.federation-download-ring')).includes('gradient'), false);
+});
+
 test('cloud badge is anchored to artwork rather than the outer card', async () => {
   const { dom } = makeWindow(false);
   await settle();
@@ -389,27 +400,8 @@ test('fed-check checkboxes render with a visible native box, not the unupgraded 
   assert.match(configPage, /#federationConfigPage input\.fed-check\s*\{[^}]*opacity:\s*1/);
 });
 
-function browseHarness() {
-  const names = ['loadBrowseItems', 'resetBrowseSeriesState', 'browseSelectionItems', 'onBrowseServerChange'];
-  const source = names.map(name => {
-    const start = configPage.indexOf('                    function ' + name + '(');
-    assert.notEqual(start, -1);
-    const end = configPage.indexOf('\n                    }', start) + '\n                    }'.length;
-    return configPage.slice(start, end);
-  }).join('\n');
-  const pending = [];
-  const nodes = new Map();
-  const q = id => { if (!nodes.has(id)) nodes.set(id, { value: '', style: {}, innerHTML: '', disabled: false }); return nodes.get(id); };
-  const api = new Function('fedFetch', 'q', `
-    var browseState = {serverId:'',libraryId:'lib',mediaType:'Movie',startIndex:0,pageSize:2,items:[],seriesEpisodes:[]};
-    var browseRequestEpoch = 0, browseLoading = false, browseSelected = {};
-    function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus() {}
-    function escapeHtml(x) { return x; } function readJson(r) { return r.json(); }
-    ${source}
-    return {state:browseState, load:loadBrowseItems, changeServer:onBrowseServerChange, selected:browseSelectionItems,
-      select: function(item) {browseSelected[item.id] = item;}};
-  `)(url => new Promise(resolve => pending.push({url, resolve})), q);
-  return { api, pending, q, respond(index, items, cursor = null) { pending[index].resolve({ok:true,headers:{get:()=>cursor},json:async()=>items}); } };
+function browseHarness(options) {
+  return pagingHarness('browse', options);
 }
 
 test('Downloads ignores an old server response after the selected server changes', async () => {
@@ -435,6 +427,309 @@ test('Downloads library picker cannot be replaced by a slow previous server', as
   h.respond(0, [{id:'a',name:'A library'}]); await settle();
   assert.match(h.q('#fedBrowseLibrary').innerHTML, /B library/);
   assert.doesNotMatch(h.q('#fedBrowseLibrary').innerHTML, /A library/);
+});
+
+test('catalog and downloads load more via scroll sentinels instead of a Load more button', () => {
+  assert.equal(configPage.includes('data-fed-action="catalog-more"'), false);
+  assert.equal(configPage.includes('data-fed-action="browse-more"'), false);
+  const dom = new JSDOM(configPage);
+  for (const id of ['fedCatalogSentinel', 'fedBrowseSentinel']) {
+    const sentinel = dom.window.document.getElementById(id);
+    assert.ok(sentinel.classList.contains('fed-lazy-sentinel'));
+    assert.equal(sentinel.getAttribute('aria-hidden'), 'true');
+    assert.equal(dom.window.getComputedStyle(sentinel).height, '1px');
+  }
+  dom.window.close();
+});
+
+function catalogHarness(options) {
+  return pagingHarness('catalog', options);
+}
+
+function pagingHarness(kind, { fallback = false } = {}) {
+  const names = ['loadCatalog', 'armCatalogSentinel', 'observePagingSentinel', 'retryCatalog', 'retryBrowse',
+    'loadBrowseItems', 'armBrowseSentinel', 'resetBrowseSeriesState', 'browseSelectionItems',
+    'onBrowseServerChange', 'onBrowseLibraryChange', 'openBrowseSeries', 'closeBrowseSeries',
+    'switchTab', 'setDownloadView', 'stopPagePolling', 'pageIsVisible', 'readJson'];
+  const source = names.map(name => {
+    const start = configPage.indexOf('                    function ' + name + '(');
+    assert.notEqual(start, -1, name);
+    const end = configPage.indexOf('\n                    }', start) + '\n                    }'.length;
+    return configPage.slice(start, end);
+  }).join('\n');
+  const pending = [], observers = [], nodes = new Map(), listeners = new Map(), timers = new Map();
+  let timerId = 0;
+  const q = id => {
+    if (!nodes.has(id)) nodes.set(id, { value: '', style: {}, innerHTML: '', isConnected: true,
+      top: 2000, getClientRects() { return this.isConnected ? [1] : []; },
+      getBoundingClientRect() { return { top: this.top, bottom: this.top + 1 }; } });
+    return nodes.get(id);
+  };
+  class FakeIntersectionObserver {
+    constructor(callback, options) { this.callback = callback; this.options = options; this.observing = []; observers.push(this); }
+    observe(element) { this.observing.push(element); }
+    disconnect() { this.disconnected = true; this.observing = []; }
+    fire(entries = [{ isIntersecting: true }]) { this.callback(entries); }
+  }
+  const window = {
+    innerHeight: 800,
+    setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+    addEventListener(type, callback, capture) { if (!listeners.has(type)) listeners.set(type, new Map()); listeners.get(type).set(callback, capture); },
+    removeEventListener(type, callback) { if (listeners.has(type)) listeners.get(type).delete(callback); },
+    ...(fallback ? {} : { IntersectionObserver: FakeIntersectionObserver })
+  };
+  const api = new Function('fedFetch', 'q', 'window', 'kind', `
+    var catalogItems = [], catalogQuery = '', catalogType = 'Movie', catalogStartIndex = 0;
+    var catalogTotal = 0, catalogLoaded = false, catalogSelected = {}, catalogLoading = false, catalogSentinelObserver = null;
+    var catalogRequestEpoch = 0, catalogHasMore = false, catalogFailed = false;
+    var browseState = {serverId:'A',libraryId:'lib',mediaType:'Movie',startIndex:0,pageSize:60,items:[],seriesEpisodes:[]};
+    var browseRequestEpoch = 0, browseLoading = false, browseSelected = {}, browseSentinelObserver = null, browseFailed = false;
+    var activeTab = kind, downloadView = 'select', document = {hidden:false};
+    var activePage = {isConnected:true,classList:{contains:()=>false}};
+    var downloadsPollInterval, watchingPollInterval, healthPollInterval;
+    var TAB_NAMES = ['friends','catalog','browse'], TAB_STORAGE_KEY = 'test', localStorage = {setItem:()=>{}};
+    function qa() {return [];} function stopWatchdog() {} function loadDownloads() {}
+    function loadBrowseServers() {} function populateCatalogFriendPick() {}
+    function renderCatalogGrid() {} function setCatalogStatus(msg) {q('#fedCatalogStatus').textContent = msg;}
+    function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus(msg) {q('#fedBrowseStatus').textContent = msg;}
+    function renderSeriesHeader() {} function renderSeriesEpisodes() {}
+    function escapeHtml(x) { return x; }
+    ${source}
+    return {
+      load: kind === 'catalog' ? loadCatalog : loadBrowseItems,
+      state: kind === 'catalog' ? () => ({items:catalogItems,total:catalogTotal,start:catalogStartIndex,loaded:catalogLoaded,loading:catalogLoading,failed:catalogFailed}) : browseState,
+      changeServer:onBrowseServerChange, changeLibrary:onBrowseLibraryChange, selected:browseSelectionItems,
+      select: item => {browseSelected[item.id] = item;}, retry:kind === 'catalog' ? retryCatalog : retryBrowse,
+      query: (query,type) => {catalogQuery=query;catalogType=type;loadCatalog(true);},
+      tab:switchTab, view:setDownloadView, open:openBrowseSeries, back:closeBrowseSeries,
+      hide:stopPagePolling, show:() => {activePage={isConnected:true,classList:{contains:()=>false}};switchTab(kind);},
+      loading:() => kind === 'catalog' ? catalogLoading : browseLoading
+    };
+  `)(url => new Promise((resolve, reject) => pending.push({ url, resolve, reject })), q, window, kind);
+  return { api, pending, observers, nodes, q, listeners, timers,
+    fire() { observers.at(-1).fire(); },
+    flush() { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach(callback => callback()); },
+    scroll() { for (const callback of (listeners.get('scroll') || new Map()).keys()) callback(); },
+    respond(index, items, totalOrCursor = null, ok = true) {
+      const data = kind === 'catalog' ? {totalRecordCount:totalOrCursor,items} : items;
+      pending[index].resolve({ok,status:ok ? 200 : 503,headers:{get:()=>kind === 'browse' ? totalOrCursor : null},text:async()=>JSON.stringify(data)});
+    }
+  };
+}
+
+const catalogBatch = (offset, count) => Array.from({ length: count }, (_, i) => ({ id: 'id' + (offset + i), name: 'Item ' + (offset + i) }));
+
+for (const kind of ['catalog', 'browse']) {
+  test(kind + ' rearms for multiple bounded pages and stops on exhaustion', async () => {
+    const h = pagingHarness(kind);
+    h.api.load(true);
+    for (let page = 0; page < 3; page++) {
+      assert.match(h.pending[page].url, new RegExp('startIndex=' + page * 60 + '&limit=60(?:&|$)'));
+      h.respond(page, catalogBatch(page * 60, 60), kind === 'catalog' ? 180 : null);
+      await settle();
+      if (page < 2 || kind === 'browse') {
+        const observer = h.observers.at(-1);
+        assert.equal(observer.options.rootMargin, '480px 0px');
+        observer.fire([{isIntersecting:false}]);
+        assert.equal(h.pending.length, page + 1);
+        observer.fire();
+        observer.fire();
+        assert.equal(h.pending.length, page + 2);
+        assert.equal(observer.disconnected, true);
+      }
+    }
+    if (kind === 'browse') { h.respond(3, []); await settle(); }
+    const count = h.pending.length;
+    h.fire(); h.api.load(false);
+    assert.equal(h.pending.length, count);
+    assert.equal(h.api.loading(), false);
+  });
+
+  test(kind + ' ignores stale success and failure without unlocking the current request', async () => {
+    const h = pagingHarness(kind);
+    h.api.load(true);
+    h.api.load(true);
+    h.respond(0, catalogBatch(0, 60), kind === 'catalog' ? 300 : '60');
+    await settle();
+    assert.equal(h.api.loading(), true);
+    assert.equal(h.observers.length, 0);
+    h.api.load(false);
+    assert.equal(h.pending.length, 2);
+    h.api.load(true);
+    h.pending[1].reject(new Error('Old failure'));
+    await settle();
+    assert.equal(h.api.loading(), true);
+    h.respond(2, catalogBatch(120, 60), kind === 'catalog' ? 300 : '180');
+    await settle();
+    const items = kind === 'catalog' ? h.api.state().items : h.api.state.items;
+    assert.equal(items[0].id, 'id120');
+    assert.equal(items.length, 60);
+    assert.equal(h.api.loading(), false);
+    assert.equal(h.observers.length, 1);
+  });
+
+  test(kind + ' stops after an error until explicit retry, preserving the failed cursor', async () => {
+    const h = pagingHarness(kind);
+    h.api.load(true);
+    h.respond(0, catalogBatch(0, 60), kind === 'catalog' ? 300 : '80');
+    await settle(); h.fire();
+    const failedUrl = h.pending[1].url;
+    h.pending[1].reject(new Error('Offline'));
+    await settle();
+    h.fire(); h.api.load(false); h.api.tab('friends'); h.api.tab(kind);
+    assert.equal(h.pending.length, 2);
+    assert.equal(h.q(kind === 'catalog' ? '#fedCatalogRetry' : '#fedBrowseRetry').style.display, '');
+    h.api.retry(); h.api.retry();
+    assert.equal(h.pending.length, 3);
+    assert.equal(h.pending[2].url, failedUrl);
+    h.respond(2, catalogBatch(60, 60), kind === 'catalog' ? 300 : '140');
+    await settle();
+    assert.equal(h.observers.at(-1).disconnected, undefined);
+  });
+
+  test(kind + ' pauses on tab and page exit, ignores queued callbacks and rearms on return', async () => {
+    const h = pagingHarness(kind);
+    h.api.load(true);
+    h.respond(0, catalogBatch(0, 60), kind === 'catalog' ? 300 : '60');
+    await settle();
+    const old = h.observers.at(-1);
+    h.api.tab('friends'); old.fire();
+    assert.equal(old.disconnected, true);
+    assert.equal(h.pending.length, 1);
+    h.api.tab(kind); h.fire();
+    assert.equal(h.pending.length, 2);
+    h.api.hide();
+    h.respond(1, catalogBatch(60, 60), kind === 'catalog' ? 300 : '120');
+    await settle();
+    h.api.show(); h.fire();
+    assert.equal(h.pending.length, 3);
+    assert.equal(h.pending[2].url, h.pending[1].url);
+  });
+
+  test(kind + ' scroll fallback fills short pages, captures nested scrolls and cleans up', async () => {
+    const h = pagingHarness(kind, {fallback:true});
+    const sentinel = h.q(kind === 'catalog' ? '#fedCatalogSentinel' : '#fedBrowseSentinel');
+    h.api.load(true);
+    h.respond(0, catalogBatch(0, 60), kind === 'catalog' ? 300 : '60');
+    await settle(); h.flush();
+    assert.equal(h.pending.length, 1);
+    assert.deepEqual([...h.listeners.get('scroll').values()], [true]);
+    sentinel.top = 900;
+    h.scroll(); h.scroll();
+    assert.equal(h.timers.size, 1);
+    h.flush();
+    assert.equal(h.pending.length, 2);
+    assert.equal(h.listeners.get('scroll').size, 0);
+    h.respond(1, catalogBatch(60, 60), kind === 'catalog' ? 300 : '120');
+    await settle(); h.flush();
+    assert.equal(h.pending.length, 3, 'still-visible sentinel continues without another scroll event');
+    h.pending[2].reject(new Error('Offline'));
+    await settle(); h.scroll(); h.flush();
+    assert.equal(h.pending.length, 3);
+    h.api.retry();
+    h.respond(3, catalogBatch(120, 60), kind === 'catalog' ? 300 : '180');
+    await settle();
+    h.api.hide(); h.flush();
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.listeners.get('scroll').size, 0);
+    assert.equal(h.listeners.get('resize').size, 0);
+  });
+
+  test(kind + ' stops repeated pages without duplicating cards', async () => {
+    const h = pagingHarness(kind);
+    h.api.load(true);
+    h.respond(0, catalogBatch(0, 60), kind === 'catalog' ? 300 : '60');
+    await settle(); h.fire();
+    h.respond(1, catalogBatch(0, 60), kind === 'catalog' ? 300 : '120');
+    await settle(); h.fire(); h.api.load(false);
+    assert.equal(h.pending.length, 2);
+    assert.equal((kind === 'catalog' ? h.api.state().items : h.api.state.items).length, 60);
+  });
+}
+
+test('Downloads follows forward cursors through short and empty filtered pages, stopping on no progress', async () => {
+  const h = browseHarness();
+  h.api.load(true);
+  h.respond(0, [{id:'first'}], '80');
+  await settle(); h.fire();
+  assert.match(h.pending[1].url, /startIndex=80&limit=60/);
+  h.respond(1, [], '140');
+  await settle(); h.fire();
+  assert.match(h.pending[2].url, /startIndex=140&limit=60/);
+  h.respond(2, [], '140');
+  await settle(); h.fire(); h.api.load(false);
+  assert.equal(h.pending.length, 3);
+  assert.equal(h.api.state.startIndex, 140);
+});
+
+test('Downloads rejects invalid cursors and server mismatches without automatic retries', async () => {
+  for (const [items, cursor] of [[[], 'NaN'], [[], '9007199254740992'], [[{id:'wrong',sourceServerId:'B'}], '60']]) {
+    const h = browseHarness();
+    h.api.load(true); h.respond(0, items, cursor);
+    await settle(); h.api.load(false);
+    assert.equal(h.pending.length, 1);
+    assert.equal(h.api.state.items.length, 0);
+    assert.equal(h.q('#fedBrowseRetry').style.display, '');
+  }
+});
+
+test('Downloads activity and series drill-down disconnect and rearm the list sentinel', async () => {
+  const h = browseHarness();
+  h.api.load(true); h.respond(0, catalogBatch(0, 60), '60');
+  await settle();
+  h.api.view('activity'); h.fire();
+  assert.equal(h.pending.length, 1);
+  h.api.view('select'); h.fire();
+  assert.equal(h.pending.length, 2);
+  h.api.open(0);
+  assert.match(h.pending[2].url, /\/Series\/id0\/Episodes/);
+  h.respond(1, catalogBatch(60, 60), '120');
+  await settle();
+  assert.equal(h.api.state.items.length, 60);
+  h.api.back(); h.fire();
+  assert.equal(h.pending[3].url, h.pending[1].url);
+  h.respond(2, [{id:'late-episode'}]);
+  await settle();
+  assert.equal(h.api.state.seriesEpisodes.length, 0);
+});
+
+test('catalog search and media resets replace in-flight results with the newest query', async () => {
+  const h = catalogHarness();
+  h.api.load(true);
+  h.api.query('new title', 'Series');
+  assert.match(h.pending[1].url, /startIndex=0&limit=60&type=Series&query=new%20title/);
+  h.respond(1, [{id:'new'}], 1); await settle();
+  h.respond(0, catalogBatch(0, 60), 300); await settle();
+  assert.deepEqual(h.api.state().items, [{id:'new'}]);
+  assert.equal(h.api.state().total, 1);
+});
+
+test('catalog lazily loads the next page when the sentinel scrolls into view', async () => {
+  const h = catalogHarness();
+  h.api.load(true);
+  h.respond(0, catalogBatch(0, 60), 120);
+  await settle(); await settle();
+  assert.equal(h.api.state().items.length, 60);
+
+  assert.equal(h.observers.length, 1, 'sentinel arms after the first full page');
+  const sentinel = h.nodes.get('#fedCatalogSentinel');
+  assert.deepEqual(h.observers[0].observing, [sentinel]);
+
+  h.observers[0].fire([{ isIntersecting: false }]);
+  assert.equal(h.pending.length, 1, 'off-screen sentinel does not fetch');
+
+  h.observers[0].fire([{ isIntersecting: true }]);
+  assert.equal(h.pending.length, 2, 'visible sentinel fetches the next page');
+  assert.match(h.pending[1].url, /startIndex=60/);
+
+  h.observers[0].fire([{ isIntersecting: true }]);
+  assert.equal(h.pending.length, 2, 'in-flight page is not requested twice');
+
+  h.respond(1, catalogBatch(60, 60), 120);
+  await settle(); await settle();
+  assert.equal(h.api.state().items.length, 120);
+  assert.ok(h.observers[0].disconnected, 'observer releases when the list is exhausted');
 });
 
 // Jellyfin 12 disables X-Emby-Token by default. Exercise actual browser requests.
