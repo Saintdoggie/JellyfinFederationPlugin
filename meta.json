@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.164",
-  "changelog": "Settings UI polish: the federation badge is a crisp solid chip with a clean border (no gradients), and the Catalog and Downloads browsers now lazy-load as you scroll instead of using Load more buttons, with bounded pages, stale-response protection, and explicit retry after a network error.",
+  "version": "0.0.165",
+  "changelog": "Fix federated playback when Auto fails over to a duplicate in a different container: ffmpeg was launched with the primary's -f (Matroska) while Auto served MP4 bytes, which exited 183. Mixed-container Auto items no longer stamp a single container, Auto prefers a live sibling the advertised demuxer can parse, and a failed live preflight no longer leaves a title with zero playable sources.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-17T17:20:57Z",
+  "timestamp": "2026-09-17T18:15:00Z",
   "imageUrl": "thumb.png"
 }

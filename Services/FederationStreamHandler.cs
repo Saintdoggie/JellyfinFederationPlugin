@@ -249,7 +249,12 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             mappingName ??= entry.MappingName;
-            foreach (var src in entry.GetSourcesSnapshot())
+            var failedSource = entry.GetSourcesSnapshot().FirstOrDefault(source =>
+                source.ServerId == failedServerId && source.RemoteItemId == remoteGuid);
+            var advertisedContainer = failedSource?.Container ?? entry.Metadata.Container;
+            foreach (var src in entry.GetSourcesSnapshot()
+                .OrderBy(source => FederationLibraryManager.ContainersAreCompatible(advertisedContainer, source.Container) ? 0 : 1)
+                .ThenBy(source => source.Priority))
             {
                 if (src.ServerId == failedServerId)
                 {
@@ -291,13 +296,19 @@ namespace Jellyfin.Plugin.Federation.Services
             FederatedCacheEntry entry,
             bool isAudio,
             CancellationToken cancellationToken,
-            Guid? requestingUserGuid)
+            Guid? requestingUserGuid,
+            string? advertisedContainer = null)
         {
             var candidates = entry.GetSourcesSnapshot()
                 .Select(src => (Source: src, Server: _federationManager.GetServer(src.ServerId)))
                 .Where(candidate => candidate.Server is { Enabled: true })
                 .Select(candidate => (candidate.Source, Server: candidate.Server!))
-                .OrderBy(candidate => SourceFitGroup(candidate.Server, candidate.Source))
+                // ffmpeg already chose `-f` from the stamped Path's container.
+                // Prefer a live sibling that demuxer can parse; only then a
+                // different family (and only when Container was left unset so
+                // ffmpeg will probe).
+                .OrderBy(candidate => FederationLibraryManager.ContainersAreCompatible(advertisedContainer, candidate.Source.Container) ? 0 : 1)
+                .ThenBy(candidate => SourceFitGroup(candidate.Server, candidate.Source))
                 .ThenBy(candidate => SourceOverageBitrate(candidate.Server, candidate.Source))
                 .ThenByDescending(candidate => SourceHeight(candidate.Source))
                 .ThenByDescending(candidate => SourceBitrate(candidate.Source))
@@ -469,11 +480,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 string url;
                 if (autoSelect && entry != null && entry.GetSourcesSnapshot().Length > 1)
                 {
+                    var requestedSource = hasRemoteItemGuid
+                        ? entry.GetSourcesSnapshot().FirstOrDefault(source =>
+                            string.Equals(source.ServerId, serverId, StringComparison.OrdinalIgnoreCase)
+                            && source.RemoteItemId == remoteItemGuid)
+                        : null;
                     var selected = await BuildAutoSourceUrlAsync(
                         entry,
                         isAudio,
                         cancellationToken,
-                        requestingUserGuid).ConfigureAwait(false);
+                        requestingUserGuid,
+                        requestedSource?.Container ?? entry.Metadata.Container).ConfigureAwait(false);
                     if (selected == null)
                     {
                         throw new InvalidOperationException($"No currently playable source for item {remoteItemId}.");

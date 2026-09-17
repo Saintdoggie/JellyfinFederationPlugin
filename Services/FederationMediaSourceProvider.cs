@@ -327,6 +327,49 @@ namespace Jellyfin.Plugin.Federation.Services
                     playable.Add((i, src, server, sourceName, remote, path));
                 }
 
+                if (playable.Count == 0)
+                {
+                    // Live preflight failed for every candidate. Skipping them all
+                    // leaves PlaybackInfo empty and the Play button dead; the
+                    // previous behavior still emitted a cached description so the
+                    // static Path could be tried. Only used when nothing live
+                    // remains - a healthy sibling still wins Auto ranking above.
+                    for (int c = 0; c < candidates.Count; c++)
+                    {
+                        var path = paths[c];
+                        if (path == null)
+                        {
+                            continue;
+                        }
+
+                        var (i, src, server, sourceName) = candidates[c];
+                        var cachedStreams = src.MediaStreams?.ToList()
+                            ?? entry.Metadata.MediaStreams?.ToList()
+                            ?? new List<MediaStream>();
+                        if (string.IsNullOrEmpty(src.Container)
+                            && string.IsNullOrEmpty(entry.Metadata.Container)
+                            && cachedStreams.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        playable.Add((
+                            i,
+                            src,
+                            server,
+                            sourceName,
+                            new MediaSourceInfo
+                            {
+                                Container = src.Container ?? entry.Metadata.Container,
+                                Size = src.Size,
+                                Bitrate = src.Bitrate,
+                                RunTimeTicks = src.RunTimeTicks ?? entry.Metadata.RunTimeTicks,
+                                MediaStreams = cachedStreams
+                            },
+                            path));
+                    }
+                }
+
                 var ordered = playable
                     .OrderBy(p => SourceFitGroup(p.Server, p.Remote))
                     .ThenBy(p => SourceOverageBitrate(p.Server, p.Remote))
