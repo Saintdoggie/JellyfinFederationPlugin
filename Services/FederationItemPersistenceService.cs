@@ -554,17 +554,39 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Only when actually missing something the cache now has, so
                     // this doesn't re-save on every sync once it's already caught up.
                     var storedStreams = x.Item.GetMediaStreams();
-                    var cachedStreams = entry.Metadata.MediaStreams;
-                    if (cachedStreams is { Length: > 0 }
-                        && !System.Text.Json.JsonSerializer.Serialize(storedStreams)
-                            .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
+                    var mixedContainers = FederationLibraryManager.SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot());
+                    if (mixedContainers)
                     {
-                        _federationManager.TryPersistMediaStreams(x.Item, entry);
+                        // Auto Path can deliver a sibling whose demuxer is not the
+                        // primary's. Stamping the primary's Container/streams makes
+                        // ffmpeg open that Path with the wrong `-f` (mkv over mp4
+                        // was exit 183). Clear both so the live bytes are probed.
+                        if (!string.IsNullOrEmpty(x.Item.Container))
+                        {
+                            x.Item.Container = null;
+                            changed = true;
+                        }
+
+                        if (storedStreams.Count > 0)
+                        {
+                            _federationManager.ClearPersistedMediaStreams(x.Item);
+                        }
                     }
-                    if (!string.IsNullOrEmpty(entry.Metadata.Container) && x.Item.Container != entry.Metadata.Container)
+                    else
                     {
-                        x.Item.Container = entry.Metadata.Container;
-                        changed = true;
+                        var cachedStreams = entry.Metadata.MediaStreams;
+                        if (cachedStreams is { Length: > 0 }
+                            && !System.Text.Json.JsonSerializer.Serialize(storedStreams)
+                                .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
+                        {
+                            _federationManager.TryPersistMediaStreams(x.Item, entry);
+                        }
+
+                        if (!string.IsNullOrEmpty(entry.Metadata.Container) && x.Item.Container != entry.Metadata.Container)
+                        {
+                            x.Item.Container = entry.Metadata.Container;
+                            changed = true;
+                        }
                     }
 
                     // Only when no source has an enabled home does the title genuinely

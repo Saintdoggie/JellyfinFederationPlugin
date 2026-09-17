@@ -456,6 +456,69 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal("mkv", item.Container);
     }
 
+    [Theory]
+    [InlineData("mkv", "mkv")]
+    [InlineData("matroska,webm", "mkv")]
+    [InlineData("mov,mp4,m4a,3gp,3g2,mj2", "mp4")]
+    [InlineData("mp4", "mp4")]
+    [InlineData("mpegts", "mpegts")]
+    [InlineData("ts", "mpegts")]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    public void NormalizeContainerFamily_MapsFfprobeAliasesOntoADemuxerFamily(string? container, string? expected)
+    {
+        Assert.Equal(expected, FederationLibraryManager.NormalizeContainerFamily(container));
+    }
+
+    [Fact]
+    public void MixedContainerSiblings_DoNotStampASingleContainerOnTheItem()
+    {
+        var mkv = new RemoteServer
+        {
+            Id = "mkv-friend",
+            Name = "Mkv",
+            Url = "http://mkv.example",
+            ApiKey = "mkv-key",
+            Enabled = true
+        };
+        var mp4 = new RemoteServer
+        {
+            Id = "mp4-friend",
+            Name = "Mp4",
+            Url = "http://mp4.example",
+            ApiKey = "mp4-key",
+            Enabled = true
+        };
+        _plugin.Configuration.RemoteServers.Add(mkv);
+        _plugin.Configuration.RemoteServers.Add(mp4);
+
+        var mkvId = Guid.NewGuid();
+        var mp4Id = Guid.NewGuid();
+        var entry = _cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-mixed-container",
+            new BaseItemDto { Id = mkvId, Name = "Mixed", Container = "mkv" },
+            mkv.Id,
+            mkvId,
+            0,
+            "Movie");
+        _cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-mixed-container",
+            new BaseItemDto { Id = mp4Id, Name = "Mixed", Container = "mov,mp4,m4a,3gp,3g2,mj2" },
+            mp4.Id,
+            mp4Id,
+            1,
+            "Movie");
+
+        Assert.True(FederationLibraryManager.SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot()));
+        var item = _manager.MaterializeItem(entry);
+        Assert.True(string.IsNullOrEmpty(item.Container));
+        Assert.Contains("&auto=true", item.Path);
+    }
+
     [Fact]
     public void WanCapMode_DefaultsToAuto_AndUnclassifiedMeansNoCap_SoTheStampedPathIsUncapped()
     {
@@ -1163,6 +1226,66 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal(MediaSourceType.Default, selected.Type);
         Assert.Contains($"itemId={healthyId:N}", selected.Path);
         Assert.Equal(stableItemId, item.Id);
+    }
+
+    [Fact]
+    public async Task GetMediaSources_AllLivePreflightsFailed_StillEmitsCachedSource()
+    {
+        var remoteId = Guid.NewGuid();
+        var server = new RemoteServer
+        {
+            Id = "only-friend",
+            Name = "Only friend",
+            Url = "http://only.example",
+            ApiKey = "only-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Proxy
+        };
+        _plugin.Configuration.RemoteServers.Add(server);
+        var entry = _cache.UpsertRaw(
+            "Movies",
+            server.Id,
+            remoteId,
+            new BaseItemDto
+            {
+                Id = remoteId,
+                Name = "Solo",
+                Container = "mkv",
+                MediaStreams = new[]
+                {
+                    new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Height = 1080, BitRate = 8_000_000 }
+                }
+            },
+            0,
+            "Movie");
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-so-provider-emits";
+
+        var client = new RemoteServerClient(
+            server,
+            NullLogger.Instance,
+            new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.NotFound)) { BaseAddress = new Uri(server.Url) });
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(server.Id)).Returns(client);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            factory.Object,
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            Mock.Of<IHttpContextAccessor>(),
+            Mock.Of<IAuthorizationContext>(),
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        var source = Assert.Single(sources);
+        Assert.Equal("mkv", source.Container);
+        Assert.Contains($"itemId={remoteId:N}", source.Path);
     }
 
     [Fact]

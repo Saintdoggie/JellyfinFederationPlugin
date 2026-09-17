@@ -178,15 +178,20 @@ namespace Jellyfin.Plugin.Federation.Services
             // the provider's token-gated DirectStream URL alike - serves the raw
             // source file. The remote's real container describes those bytes.
             //
+            // Deduped Auto paths are the exception: ffmpeg is launched against the
+            // shared Path with `-f` taken from this stamped Container, then Auto
+            // may relay a sibling whose bytes are a different family (live:
+            // Matroska `-f` over an MP4 Auto failover → ffmpeg exit 183). Leave
+            // Container unset there so ffmpeg probes the live bytes instead.
+            //
             // Gated on the server being resolvable and enabled, mirroring
             // BuildPlaybackUrl's own "no server, no URL" guard.
             if (IsStreamableType(entry.ItemType) && entry.GetPrimarySource() is { } primaryForContainer
-                && GetServer(primaryForContainer.ServerId) is { Enabled: true })
+                && GetServer(primaryForContainer.ServerId) is { Enabled: true }
+                && !SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot())
+                && !string.IsNullOrEmpty(entry.Metadata.Container))
             {
-                if (!string.IsNullOrEmpty(entry.Metadata.Container))
-                {
-                    item.Container = entry.Metadata.Container;
-                }
+                item.Container = entry.Metadata.Container;
             }
 
             item.Overview = entry.Metadata.Overview;
@@ -818,6 +823,106 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// True when a deduplicated item's siblings are not the same container
+        /// family (mkv vs mp4 vs mpegts). Auto may switch which sibling the
+        /// shared Path delivers, so a single stamped Container cannot describe
+        /// the bytes ffmpeg will actually read.
+        /// </summary>
+        public static bool SourcesHaveMixedContainerFamilies(IEnumerable<FederatedSource> sources)
+        {
+            string? family = null;
+            foreach (var source in sources)
+            {
+                var next = NormalizeContainerFamily(source.Container);
+                if (next == null)
+                {
+                    continue;
+                }
+
+                if (family == null)
+                {
+                    family = next;
+                    continue;
+                }
+
+                if (!string.Equals(family, next, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// True when both containers are unknown or belong to the same demuxer
+        /// family, so ffmpeg `-f` for one can parse the other.
+        /// </summary>
+        public static bool ContainersAreCompatible(string? advertised, string? candidate)
+        {
+            var advertisedFamily = NormalizeContainerFamily(advertised);
+            var candidateFamily = NormalizeContainerFamily(candidate);
+            return advertisedFamily == null
+                || candidateFamily == null
+                || string.Equals(advertisedFamily, candidateFamily, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Maps a Jellyfin/ffprobe container string onto the demuxer family ffmpeg
+        /// would use for `-f`. Unknown or empty values return null.
+        /// </summary>
+        public static string? NormalizeContainerFamily(string? container)
+        {
+            if (string.IsNullOrWhiteSpace(container))
+            {
+                return null;
+            }
+
+            var normalized = container.Trim().ToLowerInvariant();
+            if (HasContainerToken(normalized, "mkv")
+                || normalized.Contains("matroska", StringComparison.Ordinal)
+                || HasContainerToken(normalized, "webm"))
+            {
+                return "mkv";
+            }
+
+            if (normalized.Contains("mpegts", StringComparison.Ordinal)
+                || HasContainerToken(normalized, "ts")
+                || HasContainerToken(normalized, "m2ts")
+                || HasContainerToken(normalized, "mts"))
+            {
+                return "mpegts";
+            }
+
+            if (HasContainerToken(normalized, "mp4")
+                || HasContainerToken(normalized, "m4v")
+                || HasContainerToken(normalized, "m4a")
+                || HasContainerToken(normalized, "mov")
+                || HasContainerToken(normalized, "3gp")
+                || HasContainerToken(normalized, "3g2")
+                || HasContainerToken(normalized, "mj2"))
+            {
+                return "mp4";
+            }
+
+            var first = normalized.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return first.Length == 0 ? null : first[0];
+        }
+
+        private static bool HasContainerToken(string container, string token)
+        {
+            foreach (var part in container.Split(new[] { ',', '/', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (part.Equals(token, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Backfills real per-stream codec/resolution/audio data onto an item that
         /// already exists (created before this was tracked, or synced before the
         /// remote reported any) - the reconciliation loop's equivalent of the save in
@@ -829,6 +934,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool TryPersistMediaStreams(BaseItem item, FederatedCacheEntry entry)
         {
+            if (SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot()))
+            {
+                // Primary-only streams would make StreamBuilder emit `-f`/HDR
+                // filters for a sibling Auto may not deliver. Probe the live Path.
+                return ClearPersistedMediaStreams(item);
+            }
+
             if (entry.Metadata.MediaStreams is not { Length: > 0 } streams)
             {
                 return false;
@@ -842,6 +954,24 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Could not backfill media streams for {Name}", item.Name);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Removes persisted per-stream rows so the next play probes the live Path.
+        /// Used when Auto can switch between incompatible containers.
+        /// </summary>
+        public bool ClearPersistedMediaStreams(BaseItem item)
+        {
+            try
+            {
+                _mediaStreamRepository.SaveMediaStreams(item.Id, Array.Empty<MediaStream>(), CancellationToken.None);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not clear media streams for {Name}", item.Name);
                 return false;
             }
         }
