@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Jellyfin.Plugin.Federation.Tests;
 
@@ -32,9 +33,11 @@ public class FederationStreamHandlerTests : IDisposable
     private readonly RealPluginInstance _plugin;
     private readonly FederationStreamHandler _handler;
     private readonly RecordingLogger<FederationStreamHandler> _handlerLogger = new();
+    private readonly ITestOutputHelper _output;
 
-    public FederationStreamHandlerTests()
+    public FederationStreamHandlerTests(ITestOutputHelper output)
     {
+        _output = output;
         _plugin = new RealPluginInstance();
         _plugin.Configuration.RemoteServers.Add(new RemoteServer
         {
@@ -279,6 +282,227 @@ public class FederationStreamHandlerTests : IDisposable
         Assert.Equal(206, response.StatusCode);
         Assert.Equal(method == "HEAD" ? 0 : 3, body.Length);
         Assert.DoesNotContain(relayKey, string.Join(" ", response.Headers));
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(4, false)]
+    [InlineData(8, false)]
+    [InlineData(1, true)]
+    [InlineData(4, true)]
+    [InlineData(8, true)]
+    public async Task DirectGateway_BoundedConcurrentRelays_PreserveBytesAndHonorCancellation(int concurrency, bool cancelMidStream)
+    {
+        const int length = 8 * 1024 * 1024 + 123;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var previousClient = FederationStreamHandler.HttpClientOverride;
+        var sources = new GeneratedMediaStream[concurrency];
+        var calls = 0;
+        using var client = new HttpClient(new FakeHandler(request =>
+        {
+            Interlocked.Increment(ref calls);
+            var index = int.Parse(request.RequestUri!.Query.AsSpan(1));
+            var content = new StreamContent(sources[index]);
+            content.Headers.ContentLength = length;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        }));
+        FederationStreamHandler.HttpClientOverride = client;
+        try
+        {
+            for (var round = 0; round < (cancelMidStream ? 1 : 2); round++)
+            {
+                var arrived = 0;
+                var waitingForCancellation = 0;
+                var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var contexts = new DefaultHttpContext[concurrency];
+                var sinks = new VerifyingCountingStream[concurrency];
+                var lifetimes = new SpyRequestLifetimeFeature[concurrency];
+                for (var index = 0; index < concurrency; index++)
+                {
+                    sources[index] = new GeneratedMediaStream(length, index + round * concurrency, async token =>
+                    {
+                        if (Interlocked.Increment(ref arrived) == concurrency)
+                        {
+                            ready.TrySetResult();
+                        }
+
+                        await ready.Task.WaitAsync(token);
+                    }, cancelMidStream ? () =>
+                    {
+                        if (Interlocked.Increment(ref waitingForCancellation) == concurrency)
+                        {
+                            cancellation.Cancel();
+                        }
+                    } : null);
+                    sinks[index] = new VerifyingCountingStream(length, index + round * concurrency);
+                    lifetimes[index] = new SpyRequestLifetimeFeature();
+                    contexts[index] = new DefaultHttpContext();
+                    contexts[index].Request.Method = HttpMethods.Get;
+                    contexts[index].Response.Body = sinks[index];
+                    contexts[index].Features.Set<IHttpRequestLifetimeFeature>(lifetimes[index]);
+                }
+
+                var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+                var stopwatch = Stopwatch.StartNew();
+                var tasks = Enumerable.Range(0, concurrency).Select(index => _handler.HandleDirectGatewayAsync(
+                    $"http://127.0.0.1/relay?{index}",
+                    contexts[index].Request,
+                    contexts[index].Response,
+                    cancellation.Token)).ToArray();
+                await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(35));
+                stopwatch.Stop();
+                var allocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+
+                Assert.False(deadline.IsCancellationRequested);
+                Assert.Equal(concurrency, arrived);
+                Assert.Equal(concurrency * (round + 1), calls);
+                for (var index = 0; index < concurrency; index++)
+                {
+                    Assert.Equal(StatusCodes.Status200OK, contexts[index].Response.StatusCode);
+                    Assert.Equal(length, contexts[index].Response.ContentLength);
+                    Assert.Equal(cancelMidStream ? 262144 : length, sinks[index].BytesWritten);
+                    Assert.Equal(0, sinks[index].MismatchedBytes);
+                    Assert.InRange(sinks[index].LargestWrite, 1, 262144);
+                    Assert.True(sources[index].Disposed);
+                    Assert.Equal(cancelMidStream, lifetimes[index].AbortCalled);
+                    sinks[index].Dispose();
+                }
+
+                var totalBytes = sinks.Sum(sink => sink.BytesWritten);
+                _output.WriteLine(
+                    $"Concurrency={concurrency}, cancellation={cancelMidStream}, round={round + 1}, " +
+                    $"bytes={totalBytes}, elapsedMs={stopwatch.Elapsed.TotalMilliseconds:F2}, " +
+                    $"MiB/s={totalBytes / 1048576d / stopwatch.Elapsed.TotalSeconds:F2}, " +
+                    $"processAllocatedBytes={allocated}. Synthetic generation/verification included; not a network or isolated allocation benchmark.");
+            }
+        }
+        finally
+        {
+            cancellation.Cancel();
+            FederationStreamHandler.HttpClientOverride = previousClient;
+        }
+    }
+
+    private sealed class GeneratedMediaStream : Stream
+    {
+        private readonly int _length;
+        private readonly int _seed;
+        private readonly Func<CancellationToken, Task> _onFirstRead;
+        private readonly Action? _onSecondRead;
+        private int _position;
+
+        public GeneratedMediaStream(int length, int seed, Func<CancellationToken, Task> onFirstRead, Action? onSecondRead)
+        {
+            _length = length;
+            _seed = seed;
+            _onFirstRead = onFirstRead;
+            _onSecondRead = onSecondRead;
+        }
+
+        public bool Disposed { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _length;
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_position == 0)
+            {
+                await _onFirstRead(cancellationToken);
+            }
+            else if (_onSecondRead != null)
+            {
+                _onSecondRead();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = Math.Min(buffer.Length, _length - _position);
+            for (var index = 0; index < count; index++)
+            {
+                var position = _position + index;
+                buffer.Span[index] = unchecked((byte)((position * 31) ^ (position >> 8) ^ (position >> 16) ^ (_seed * 97)));
+            }
+
+            _position += count;
+            return count;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class VerifyingCountingStream : Stream
+    {
+        private readonly int _length;
+        private readonly int _seed;
+
+        public VerifyingCountingStream(int length, int seed)
+        {
+            _length = length;
+            _seed = seed;
+        }
+
+        public long BytesWritten { get; private set; }
+        public long MismatchedBytes { get; private set; }
+        public int LargestWrite { get; private set; }
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => BytesWritten;
+        public override long Position
+        {
+            get => BytesWritten;
+            set => throw new NotSupportedException();
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (BytesWritten + buffer.Length > _length)
+            {
+                throw new IOException("Relay exceeded the finite expected body length");
+            }
+
+            for (var index = 0; index < buffer.Length; index++)
+            {
+                var position = BytesWritten + index;
+                var expected = unchecked((byte)((position * 31) ^ (position >> 8) ^ (position >> 16) ^ (_seed * 97)));
+                if (buffer.Span[index] != expected)
+                {
+                    MismatchedBytes++;
+                }
+            }
+
+            BytesWritten += buffer.Length;
+            LargestWrite = Math.Max(LargestWrite, buffer.Length);
+            return ValueTask.CompletedTask;
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -537,7 +761,12 @@ public class FederationStreamHandlerTests : IDisposable
             TState state,
             Exception? exception,
             Func<TState, Exception?, string> formatter)
-            => Entries.Add((formatter(state, exception), exception));
+        {
+            lock (Entries)
+            {
+                Entries.Add((formatter(state, exception), exception));
+            }
+        }
     }
 
     /// <summary>

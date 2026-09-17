@@ -751,7 +751,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // sustain before this server ever pulls a byte, instead of pulling the raw
             // (potentially 25+ Mbps for a 4K HDR release) source file across the
             // internet only to immediately re-encode it.
-            var videoBitrateBps = capMbps.Value * 1_000_000L;
+            var videoBitrateBps = capMbps.Value * 950_000L - 256_000L;
             var heightParam = server.WanMaxHeight > 0 ? $"&MaxHeight={server.WanMaxHeight}" : string.Empty;
             return $"{baseUrl}.mp4?{apiKeyParam}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
         }
@@ -802,7 +802,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return $"{baseUrl}?Static=true";
             }
 
-            var videoBitrateBps = capMbps.Value * 1_000_000L;
+            var videoBitrateBps = capMbps.Value * 950_000L - 256_000L;
             var heightParam = maxHeight > 0 ? $"&MaxHeight={maxHeight}" : string.Empty;
             return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
         }

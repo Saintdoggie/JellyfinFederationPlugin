@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
@@ -634,6 +635,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string? internalRelayKey = null)
         {
             var rangeStart = 0L;
+            byte[]? buffer = null;
             try
             {
                 var range = request.Headers["Range"].FirstOrDefault();
@@ -645,7 +647,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // proportionally fewer await/syscall round trips per byte on the
                 // hot path of every federated stream - meaningful for 4K bitrates
                 // and seek-heavy HLS segment fetching through the two-hop chain.
-                var buffer = new byte[262144];
+                const int bufferSize = 262144;
 
                 // Consecutive failures with no successful byte relayed in between -
                 // reset to 0 on every chunk actually written to the client, so a
@@ -772,13 +774,14 @@ namespace Jellyfin.Plugin.Federation.Services
                         if (HttpMethods.IsHead(request.Method)) return null;
 
                         await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                        buffer ??= ArrayPool<byte>.Shared.Rent(bufferSize);
                         while (true)
                         {
                             int read;
                             using (var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                             {
                                 idleCts.CancelAfter(IdleReadTimeout);
-                                read = await remoteStream.ReadAsync(buffer, idleCts.Token).ConfigureAwait(false);
+                                read = await remoteStream.ReadAsync(buffer.AsMemory(0, bufferSize), idleCts.Token).ConfigureAwait(false);
                             }
 
                             if (read == 0)
@@ -880,6 +883,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 return null;
+            }
+            finally
+            {
+                if (buffer != null)
+                {
+                    ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                }
             }
         }
 
