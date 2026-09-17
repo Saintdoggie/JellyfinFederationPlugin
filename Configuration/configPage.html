@@ -270,7 +270,8 @@
                 #federationConfigPage .fed-episode-row input.fed-check { margin-top:0; }
 
                 /* Storage review: compact artwork, readable source comparisons, clear selection. */
-                #federationConfigPage .fed-storage-intro { padding:1.3em; border:1px solid var(--fed-border-soft); border-radius:1em; background:linear-gradient(120deg,rgba(0,164,220,.09),transparent); }
+                #federationConfigPage .fed-storage-intro { padding:1.3em; border:1px solid var(--fed-border-soft); border-radius:1em; background:rgba(0,164,220,.09); }
+                #federationConfigPage .fed-lazy-sentinel { width:100%; height:1px; min-height:1px; }
                 #federationConfigPage .fed-storage-intro .sectionTitle { margin-top:0; }
                 #federationConfigPage .fed-storage-note { border-left:3px solid var(--fed-warn-text); padding:.65em 1em; margin:1em 0; line-height:1.6; }
                 #fedPanelStorage .fed-quality-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,22em),1fr)); gap:.85em; }
@@ -661,9 +662,8 @@
 
                     <div id="fedCatalogStatus" class="fed-srvstatus" style="display:none;"></div>
                     <div id="fedCatalogGrid" class="fed-catalog-grid"></div>
-                    <div class="fed-picker-actions" id="fedCatalogMoreWrap" style="display:none;">
-                        <a data-fed-action="catalog-more">Load more</a>
-                    </div>
+                    <div id="fedCatalogSentinel" class="fed-lazy-sentinel" aria-hidden="true"></div>
+                    <button type="button" class="emby-button button-flat" id="fedCatalogRetry" data-fed-action="catalog-retry" style="display:none;">Retry catalog</button>
 
                     <div class="fed-catalog-actionbar" id="fedCatalogActionBar" style="display:none;">
                         <div class="fed-catalog-actionbar-row">
@@ -743,9 +743,8 @@
                     <div id="fedBrowseSeriesHeader" style="display:none;"></div>
                     <div id="fedBrowseStatus" class="fed-srvstatus" style="display:none;"></div>
                     <div id="fedBrowseList"></div>
-                    <div class="fed-picker-actions" id="fedBrowseMoreWrap" style="display:none;">
-                        <a data-fed-action="browse-more">Load more</a>
-                    </div>
+                    <div id="fedBrowseSentinel" class="fed-lazy-sentinel" aria-hidden="true"></div>
+                    <button type="button" class="emby-button button-flat" id="fedBrowseRetry" data-fed-action="browse-retry" style="display:none;">Retry downloads catalog</button>
                     <div class="fed-download-selectionbar" id="fedBrowseSelectionBar" style="display:none;">
                         <strong id="fedBrowseSelectedCount">0 selected</strong>
                         <span id="fedBrowseBulkNotice" class="fed-hint"></span>
@@ -3168,6 +3167,8 @@
                     var browseSelected = {};
                     var browseRequestEpoch = 0;
                     var browseLoading = false;
+                    var browseSentinelObserver = null;
+                    var browseFailed = false;
                     var downloadView = 'select';
 
                     function setDownloadView(view) {
@@ -3181,6 +3182,7 @@
                             btn.classList.toggle('fed-subtab-active', active);
                             btn.setAttribute('aria-selected', active ? 'true' : 'false');
                         });
+                        armBrowseSentinel(browseState.lastBatchFull);
                         if (downloadView === 'activity') { loadDownloads(); }
                     }
 
@@ -3240,6 +3242,7 @@
                     // place that invalidates the current episode view: switching
                     // server/library/media type, or the explicit back link.
                     function resetBrowseSeriesState() {
+                        armBrowseSentinel(false);
                         browseRequestEpoch++;
                         browseLoading = false;
                         browseState.seriesId = null;
@@ -3302,6 +3305,10 @@
                         browseState.serverId = serverId;
                         browseState.libraryId = '';
                         browseState.items = [];
+                        browseState.startIndex = 0;
+                        browseState.lastBatchFull = false;
+                        browseFailed = false;
+                        q('#fedBrowseRetry').style.display = 'none';
                         browseSelected = {};
                         resetBrowseSeriesState();
                         var requestEpoch = browseRequestEpoch;
@@ -3312,10 +3319,7 @@
                             list.innerHTML = '';
                         }
 
-                        var moreWrap = q('#fedBrowseMoreWrap');
-                        if (moreWrap) {
-                            moreWrap.style.display = 'none';
-                        }
+                        armBrowseSentinel(false);
 
                         if (!serverId) {
                             libSel.innerHTML = '<option value="">Pick a server first</option>';
@@ -3353,6 +3357,9 @@
                         var sel = q('#fedBrowseLibrary');
                         browseState.libraryId = sel ? sel.value : '';
                         browseState.items = [];
+                        browseState.lastBatchFull = false;
+                        browseFailed = false;
+                        q('#fedBrowseRetry').style.display = 'none';
                         browseSelected = {};
                         resetBrowseSeriesState();
                         var list = q('#fedBrowseList');
@@ -3363,24 +3370,67 @@
                         if (browseState.libraryId) {
                             loadBrowseItems(true);
                         } else {
-                            var moreWrap = q('#fedBrowseMoreWrap');
-                            if (moreWrap) {
-                                moreWrap.style.display = 'none';
-                            }
+                            armBrowseSentinel(false);
                         }
                     }
 
+                    function observePagingSentinel(sentinel, load) {
+                        var disconnected = false;
+                        var observer = null;
+                        var timer = null;
+                        function check() {
+                            timer = null;
+                            if (disconnected || !pageIsVisible() || !sentinel.isConnected || !sentinel.getClientRects().length) { return; }
+                            var rect = sentinel.getBoundingClientRect();
+                            if (rect.bottom >= -480 && rect.top <= window.innerHeight + 480) { load(); }
+                        }
+                        function schedule() {
+                            if (!disconnected && timer === null) { timer = window.setTimeout(check, 0); }
+                        }
+                        if (typeof window.IntersectionObserver === 'function') {
+                            observer = new window.IntersectionObserver(function (entries) {
+                                if (!disconnected && pageIsVisible() && entries.some(function (entry) { return entry.isIntersecting; })) { load(); }
+                            }, { rootMargin: '480px 0px' });
+                            observer.observe(sentinel);
+                        } else {
+                            window.addEventListener('scroll', schedule, true);
+                            window.addEventListener('resize', schedule);
+                            schedule();
+                        }
+                        return { disconnect: function () {
+                            disconnected = true;
+                            if (observer) { observer.disconnect(); }
+                            window.clearTimeout(timer);
+                            window.removeEventListener('scroll', schedule, true);
+                            window.removeEventListener('resize', schedule);
+                        } };
+                    }
+
+                    function armBrowseSentinel(armed) {
+                        if (browseSentinelObserver) { browseSentinelObserver.disconnect(); browseSentinelObserver = null; }
+                        var sentinel = q('#fedBrowseSentinel');
+                        if (!sentinel || !armed || !browseState.lastBatchFull || browseLoading || browseFailed
+                            || browseState.seriesId || downloadView !== 'select' || activeTab !== 'browse' || !pageIsVisible()) { return; }
+                        browseSentinelObserver = observePagingSentinel(sentinel, function () { loadBrowseItems(false); });
+                    }
+
                     function loadBrowseItems(reset) {
-                        if (!reset && browseLoading) { return; }
                         if (reset) {
                             browseRequestEpoch++;
+                            browseLoading = false;
+                            browseFailed = false;
+                            browseState.lastBatchFull = true;
                             browseState.startIndex = 0;
                             browseState.items = [];
                             browseSelected = {};
                             renderBrowseList();
                         }
-                        if (!browseState.serverId || !browseState.libraryId) { return; }
+                        if (browseLoading || browseFailed || !browseState.lastBatchFull || browseState.seriesId
+                            || !browseState.serverId || !browseState.libraryId) { return; }
+                        armBrowseSentinel(false);
+                        q('#fedBrowseRetry').style.display = 'none';
                         browseLoading = true;
+                        var start = browseState.startIndex;
                         var requestEpoch = browseRequestEpoch;
                         var sourceServerId = browseState.serverId;
                         var nextStart = null;
@@ -3397,7 +3447,10 @@
                         fedFetch(url)
                         .then(function (r) {
                             var cursor = r.headers.get('X-Federation-Next-Start');
-                            if (cursor !== null && /^\d+$/.test(cursor)) { nextStart = Number(cursor); }
+                            if (cursor !== null) {
+                                if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor))) { throw new Error('Invalid catalog cursor.'); }
+                                nextStart = Number(cursor);
+                            }
                             return readJson(r).then(function (items) {
                                 if (!r.ok || !Array.isArray(items)) { throw new Error(items.error || items.message || 'Could not read this server’s catalog.'); }
                                 return items;
@@ -3411,16 +3464,26 @@
                             items = items.map(function (item) { return Object.assign({}, item, { sourceServerId: sourceServerId }); });
                             browseLoading = false;
                             setBrowseStatus('', 'info');
-                            browseState.items = browseState.items.concat(items);
-                            browseState.startIndex = nextStart !== null ? nextStart : browseState.startIndex + items.length;
-                            browseState.lastBatchFull = items.length >= browseState.pageSize;
+                            var seen = new Set(browseState.items.map(function (item) { return item.id; }));
+                            var fresh = items.filter(function (item) {
+                                if (seen.has(item.id)) { return false; }
+                                seen.add(item.id);
+                                return true;
+                            });
+                            var next = nextStart !== null ? nextStart : start + items.length;
+                            browseState.items = browseState.items.concat(fresh);
+                            browseState.startIndex = Math.max(start, next);
+                            browseState.lastBatchFull = next > start && (items.length === 0 || fresh.length > 0)
+                                && (nextStart !== null || items.length >= browseState.pageSize);
                             renderBrowseList();
-                            var moreWrap = q('#fedBrowseMoreWrap');
-                            if (moreWrap) { moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none'; }
+                            armBrowseSentinel(browseState.lastBatchFull);
                         })
                         .catch(function (e) {
                             if (requestEpoch !== browseRequestEpoch) { return; }
                             browseLoading = false;
+                            browseFailed = true;
+                            armBrowseSentinel(false);
+                            q('#fedBrowseRetry').style.display = '';
                             setBrowseStatus('Error: ' + e.message, 'err');
                         });
                     }
@@ -3635,6 +3698,8 @@
                         }
 
                         var requestEpoch = ++browseRequestEpoch;
+                        browseLoading = false;
+                        q('#fedBrowseRetry').style.display = 'none';
                         var sourceServerId = browseState.serverId;
                         browseState.seriesId = item.id;
                         browseState.seriesName = item.name;
@@ -3643,10 +3708,7 @@
                         if (toolbar) {
                             toolbar.style.display = 'none';
                         }
-                        var moreWrap = q('#fedBrowseMoreWrap');
-                        if (moreWrap) {
-                            moreWrap.style.display = 'none';
-                        }
+                        armBrowseSentinel(false);
 
                         renderSeriesHeader(true);
                         setBrowseStatus('Loading episodes…', 'info');
@@ -3672,11 +3734,9 @@
 
                     function closeBrowseSeries() {
                         resetBrowseSeriesState();
-                        var moreWrap = q('#fedBrowseMoreWrap');
-                        if (moreWrap) {
-                            moreWrap.style.display = browseState.lastBatchFull ? 'block' : 'none';
-                        }
                         renderBrowseList();
+                        q('#fedBrowseRetry').style.display = browseFailed ? '' : 'none';
+                        armBrowseSentinel(browseState.lastBatchFull);
                     }
 
                     function renderSeriesHeader(loading) {
@@ -4745,6 +4805,11 @@
                     var catalogTotal = 0;
                     var catalogLoaded = false;
                     var catalogSelected = {};
+                    var catalogLoading = false;
+                    var catalogSentinelObserver = null;
+                    var catalogRequestEpoch = 0;
+                    var catalogHasMore = false;
+                    var catalogFailed = false;
                     // Last BlockedItemIds posted per friend+user. GET used to omit
                     // the field; union with this so a second hide cannot replace
                     // the deny-list with only the newly selected ids.
@@ -4812,36 +4877,80 @@
                         });
 
                         grid.innerHTML = html;
-
-                        var moreWrap = q('#fedCatalogMoreWrap');
-                        if (moreWrap) {
-                            moreWrap.style.display = catalogItems.length < catalogTotal ? 'flex' : 'none';
-                        }
                     }
 
                     function loadCatalog(reset) {
                         if (reset) {
+                            catalogRequestEpoch++;
+                            catalogLoading = false;
                             catalogStartIndex = 0;
                             catalogItems = [];
+                            catalogTotal = 0;
+                            catalogLoaded = false;
+                            catalogHasMore = true;
+                            catalogFailed = false;
+                            renderCatalogGrid();
                         }
-
+                        if (catalogLoading || catalogFailed || !catalogHasMore) { return; }
+                        armCatalogSentinel(false);
+                        q('#fedCatalogRetry').style.display = 'none';
                         setCatalogStatus('Loading…', 'info');
-                        var url = '/Plugins/Federation/BrowseLocalItems?startIndex=' + catalogStartIndex + '&limit=60'
+                        catalogLoading = true;
+                        var requestEpoch = catalogRequestEpoch;
+                        var start = catalogStartIndex;
+                        var url = '/Plugins/Federation/BrowseLocalItems?startIndex=' + start + '&limit=60'
                             + '&type=' + encodeURIComponent(catalogType)
                             + (catalogQuery ? '&query=' + encodeURIComponent(catalogQuery) : '');
                         fedFetch(url)
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
+                            if (requestEpoch !== catalogRequestEpoch) { return; }
+                            if (!res || !Array.isArray(res.items)) { throw new Error('Could not read your catalog.'); }
+                            var items = res.items;
+                            var seen = new Set(catalogItems.map(function (item) { return item.id; }));
+                            var fresh = items.filter(function (item) {
+                                if (seen.has(item.id)) { return false; }
+                                seen.add(item.id);
+                                return true;
+                            });
                             catalogLoaded = true;
                             catalogTotal = res.totalRecordCount || 0;
-                            catalogItems = catalogItems.concat(res.items || []);
-                            catalogStartIndex = catalogItems.length;
+                            catalogItems = catalogItems.concat(fresh);
+                            catalogStartIndex = start + items.length;
+                            catalogHasMore = fresh.length > 0 && catalogStartIndex < catalogTotal;
+                            catalogLoading = false;
                             setCatalogStatus('');
                             renderCatalogGrid();
+                            armCatalogSentinel(catalogHasMore);
                         })
                         .catch(function (e) {
+                            if (requestEpoch !== catalogRequestEpoch) { return; }
+                            catalogLoading = false;
+                            catalogFailed = true;
+                            armCatalogSentinel(false);
+                            q('#fedCatalogRetry').style.display = '';
                             setCatalogStatus('Could not load your catalog: ' + e.message, 'err');
                         });
+                    }
+
+                    function armCatalogSentinel(armed) {
+                        if (catalogSentinelObserver) { catalogSentinelObserver.disconnect(); catalogSentinelObserver = null; }
+                        var sentinel = q('#fedCatalogSentinel');
+                        if (!sentinel || !armed || !catalogHasMore || catalogLoading || catalogFailed
+                            || activeTab !== 'catalog' || !pageIsVisible()) { return; }
+                        catalogSentinelObserver = observePagingSentinel(sentinel, function () { loadCatalog(false); });
+                    }
+
+                    function retryCatalog() {
+                        if (!catalogFailed) { return; }
+                        catalogFailed = false;
+                        loadCatalog(false);
+                    }
+
+                    function retryBrowse() {
+                        if (!browseFailed) { return; }
+                        browseFailed = false;
+                        loadBrowseItems(false);
                     }
 
                     function toggleCatalogSelect(id) {
@@ -5626,12 +5735,16 @@
 
                     var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'advanced'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
+                    var activeTab = 'friends';
 
                     function switchTab(tab) {
                         if (TAB_NAMES.indexOf(tab) === -1) {
                             tab = TAB_NAMES[0];
                         }
 
+                        activeTab = tab;
+                        armCatalogSentinel(false);
+                        armBrowseSentinel(false);
                         qa('.fed-tabpanel').forEach(function (panel) {
                             panel.classList.toggle('fed-tabpanel-active', panel.getAttribute('data-tab-panel') === tab);
                         });
@@ -5645,7 +5758,7 @@
                         // Lazy: the catalog can be a large fetch, so it's only loaded
                         // the first time an admin actually opens this tab, not on
                         // every page load.
-                        if (tab === 'catalog' && !catalogLoaded) {
+                        if (tab === 'catalog' && !catalogLoaded && !catalogLoading && !catalogFailed) {
                             populateCatalogFriendPick();
                             loadCatalog(true);
                         }
@@ -5668,6 +5781,8 @@
                             loadBrowseServers();
                         }
 
+                        armCatalogSentinel(catalogHasMore);
+                        armBrowseSentinel(browseState.lastBatchFull);
                         if (tab === 'storage') {
                             loadQualityUpgrades();
                         }
@@ -5902,8 +6017,8 @@
                                     catalogQuery = (q('#fedCatalogSearch') || {}).value || '';
                                     loadCatalog(true);
                                     break;
-                                case 'catalog-more':
-                                    loadCatalog(false);
+                                case 'catalog-retry':
+                                    retryCatalog();
                                     break;
                                 case 'download-view':
                                     setDownloadView(t.getAttribute('data-view'));
@@ -5923,8 +6038,8 @@
                                 case 'browse-download-selected':
                                     downloadSelectedBrowseItems();
                                     break;
-                                case 'browse-more':
-                                    loadBrowseItems(false);
+                                case 'browse-retry':
+                                    retryBrowse();
                                     break;
                                 case 'browse-info':
                                     showItemInfoModal(browseState.items[parseInt(t.getAttribute('data-idx'), 10)]);
@@ -6282,6 +6397,12 @@
                     var activePage = null;
 
                     function stopPagePolling() {
+                        armCatalogSentinel(false);
+                        armBrowseSentinel(false);
+                        catalogRequestEpoch++;
+                        browseRequestEpoch++;
+                        catalogLoading = false;
+                        browseLoading = false;
                         clearInterval(downloadsPollInterval);
                         clearInterval(watchingPollInterval);
                         clearInterval(healthPollInterval);

@@ -125,6 +125,40 @@ Use the same failing item on the same phone/network in Opera GX and Chrome/Jelly
 - This fixes what PlaybackInfo ADVERTISES; it does not prove the peer's ffmpeg output matches, that the phone decodes the result smoothly, or that no double transcode occurs end to end.
 - No deployment, restart, commit, push, or release. Test-only server handlers; no production or deployed configuration touched.
 
+## Fourth pass — UI polish (badge + lazy loading), 2026-09-17, post-0.0.163
+
+### Scope and requests
+
+- User asked for: plugin UI screenshots, a "really good and crisp" federation badge with NO gradients, and Catalog/Downloads converted to lazy infinite scroll (no "Load more" button).
+- Baseline: commit `a86e80d` (0.0.163). Dirty files at end of this pass: `Web/federation-badge.js`, `Configuration/configPage.html`, `Tests/federation-ui.test.js`. Nothing committed, pushed, or deployed.
+
+### Badge changes (`Web/federation-badge.js` only, `.federation-badge-corner` rule)
+
+- Removed `linear-gradient(145deg,rgba(20,25,34,.94),rgba(5,8,13,.82))` → solid `background:rgba(8,11,16,.92)`.
+- Border `rgba(255,255,255,.18)` → `.28`; shadow `0 2px 8px rgba(0,0,0,.45)` → crisper `0 1px 4px rgba(0,0,0,.5)`; `backdrop-filter:blur(5px)` removed; svg 58%/`.98` → 56%/`1`.
+- Earlier in the pass the `.fed-storage-intro` rule in `Configuration/configPage.html` was also changed from a gradient to solid `rgba(0,164,220,.09)`.
+- New regression test "badge styling is solid and crisp, with no gradients" asserts no gradient/backdrop-filter, solid background and 1px border in the rule.
+- Visual proof: headless Chromium fixture (`/tmp/opencode/ui-harness/badge-check.mjs` + `badge-fixture.html`, script injected via `addScriptTag`) — computed style confirmed `backgroundImage:none`, `backgroundColor:rgba(8,11,16,0.92)`, `1px solid rgba(255,255,255,0.28)`, `backdropFilter:none`; screenshots `/tmp/opencode/ui-shots/04-badge-polished.png`, `05-badge-on-card.png`. An earlier attempt failed because the fixture referenced a non-existent local `federation-badge.js` copy (`ERR_FILE_NOT_FOUND`); no product change involved.
+
+### Lazy loading changes (`Configuration/configPage.html` + tests)
+
+- Removed both "Load more" anchors and their `catalog-more`/`browse-more` case handlers and the stale `#fedCatalogMoreWrap` JS block; added `#fedCatalogSentinel` / `#fedBrowseSentinel` sentinel divs with `.fed-lazy-sentinel` styling.
+- `armCatalogSentinel(hasMore)` / `armBrowseSentinel(armed)` manage IntersectionObservers (rootMargin 480px 0px), with disconnect/rearm on tab switches, series drill-down, exhaustion, and page lifecycle; scroll/resize fallback when IntersectionObserver is unavailable; request epochs reject stale responses; loading guards prevent duplicate pages; errors suspend auto-loading until explicit retry; Downloads follows forward cursors through short/empty filtered pages and stops on exhaustion/no-progress.
+- Bounded 60-item pages. During the pass, defects found and fixed: a broken `case 'download-view':` switch label (accidental deletion), an unarmed catalog sentinel (`armCatalogSentinel()` called with no argument after signature change — would have silently disabled lazy loading; caught and covered by behavioral tests), zero-height sentinel, and reset/filtered-page races.
+- Test coverage replaced brittle regex-only assertions with mocked-behavior harnesses (fake IntersectionObserver, deferred fetches): stale-response rejection, exhaustion, error-retry, tab/page pause-rearm, nested-scroll fallback cleanup, repeated-page dedup, forward-cursor Downloads paging, catalog sentinel arming/firing/in-flight dedup. UI suite: 46 → 65 tests, all passing.
+- Mid-pass note: a delegated rework briefly reported "64 passed"; the final on-disk suite is 65/65 — trust the final gate, not intermediate counts.
+
+### Commands/results (final gate, this pass)
+
+- `npm test`: 65/65 UI tests.
+- `./scripts/test.sh`: PASS — 8 script tests, clean Release builds, plugin + Companion suites twice, UI 65 twice, `git diff --check` clean; receipt `.git/federation-qa.json` (passed, automated scope).
+- Live-server screenshots via `/tmp/opencode/ui-harness/config-tabs.mjs` (Playwright, login ai@127.0.0.1:8096): `10-catalog-tab.png`, `11-downloads-tab.png` — both tabs render with no Load more button. IMPORTANT: the live server still runs released 0.0.163; these screenshots show layout only, not the new lazy-load code, which is validated by the jsdom behavior tests until a deploy is approved. (Deploying to the container `fed-ui-preview` was attempted and reverted as unable to validate CSS/data-less rendering; container may still exist locally, harmless.)
+- One unrelated pageerror ("Response") appeared in the live config page console; present independent of these changes, worth watching separately.
+
+### Rollback procedure (this pass)
+
+Nothing committed. `git diff Web/federation-badge.js` → badge rule revert; `git diff Configuration/configPage.html` + `git restore Tests/federation-ui.test.js`-style reversal for lazy loading (test file contains only additive tests; configPage changes are self-contained to sentinel markup/JS). Or `git restore --source=a86e80d -- Web/federation-badge.js Configuration/configPage.html Tests/federation-ui.test.js` since no other work depends on these hunks yet.
+
 ## Rollback procedure
 
 No rollback commands have been executed. Review `git diff` and `git status --short` first. For each tracked source/test file listed here, use `git restore --source=7a104359a8a899268fbe660ae21af56d336ed5c3 -- <file>` only if it still contains exclusively this session's changes; otherwise reverse the relevant hunks manually to preserve later work. Copy this log elsewhere before removing it if the record should survive rollback. Build/test outputs are ignored generated artifacts, not deployed binaries.
