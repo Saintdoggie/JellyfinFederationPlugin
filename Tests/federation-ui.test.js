@@ -56,6 +56,53 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
   };
 }
 
+const localItemId = '22222222222222222222222222222222';
+
+function makeLibraryWindow() {
+  const calls = [];
+  const requests = [];
+  const intervals = [];
+  const getItemsCalls = [];
+  const itemId = '11111111111111111111111111111111';
+  const localItemId = '22222222222222222222222222222222';
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div class="page libraryPage">'
+      + '<div class="itemsViewSettingsContainer"><button class="btnFilter">Filter</button></div>'
+      + '<div class="itemsContainer">'
+      + '<div class="card" data-id="' + itemId + '"><div class="cardImageContainer"></div></div>'
+      + '<div class="card" data-id="' + localItemId + '"><div class="cardImageContainer"></div></div>'
+      + '</div></div></body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#!/movies.html?tab=0' }
+  );
+  dom.window.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    accessToken: () => 'test-token',
+    getItems: (userId, options) => {
+      getItemsCalls.push(options || {});
+      return Promise.resolve({ Items: [] });
+    }
+  };
+  dom.window.fetch = (url, options) => {
+    requests.push({ url: String(url), options });
+    calls.push(String(url));
+    let data = {};
+    if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
+    if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: true };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = (callback) => {
+    intervals.push(callback);
+    return intervals.length;
+  };
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  try {
+    dom.window.sessionStorage.clear();
+  } catch (e) { /* jsdom storage may already be empty */ }
+  dom.window.eval(badgeScript);
+  return { dom, calls, requests, intervals, getItemsCalls };
+}
+
 test('badge styling is solid and crisp, with no gradients', () => {
   const styleBlock = badgeScript.match(/\.federation-badge-corner\{[^}]+\}/);
   assert.ok(styleBlock, 'federation-badge-corner rule not found');
@@ -191,6 +238,59 @@ test('injected action buttons have independent SVG icons and accessible text', a
     assert.ok(button.textContent.trim().length > 0);
   });
   dom.window.close();
+});
+
+test('library origin tabs list this server and each federated friend', async () => {
+  const { dom } = makeLibraryWindow();
+  await settle();
+  await settle();
+  const tabs = [...dom.window.document.querySelectorAll('.federation-origin-tab')].map((tab) => tab.textContent.trim());
+  assert.deepEqual(tabs, ['All', 'This server', 'Friend']);
+  assert.equal(dom.window.document.querySelector('.federation-origin-filter').getAttribute('role'), 'tablist');
+  assert.equal(dom.window.document.querySelector('.federation-origin-tab[aria-selected="true"]').textContent.trim(), 'All');
+  dom.window.close();
+});
+
+test('this-server origin tab hides federated cards and tags item queries', async () => {
+  const { dom, getItemsCalls, calls } = makeLibraryWindow();
+  await settle();
+  await settle();
+  const friendCard = dom.window.document.querySelector('.card[data-id="' + itemId + '"]');
+  const localCard = dom.window.document.querySelector('.card[data-id="' + localItemId + '"]');
+  const thisServer = [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'This server');
+  thisServer.click();
+  await settle();
+  await settle();
+  assert.equal(friendCard.classList.contains('federation-origin-hidden'), true);
+  assert.equal(localCard.classList.contains('federation-origin-hidden'), false);
+  assert.equal(dom.window.document.querySelector('.federation-origin-tab[aria-selected="true"]').textContent.trim(), 'This server');
+  await dom.window.fetch('/Users/abc/Items?ParentId=1');
+  assert.ok(calls.some((url) => url.includes('ExcludeItemTags=Federated')));
+  await dom.window.ApiClient.getItems('abc', { ParentId: '1' });
+  assert.equal(getItemsCalls.at(-1).ExcludeItemTags, 'Federated');
+  dom.window.close();
+});
+
+test('friend origin tab keeps that friend and hides local titles', async () => {
+  const { dom, getItemsCalls } = makeLibraryWindow();
+  await settle();
+  await settle();
+  const friendTab = [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'Friend');
+  friendTab.click();
+  await settle();
+  await settle();
+  assert.equal(dom.window.document.querySelector('.card[data-id="' + itemId + '"]').classList.contains('federation-origin-hidden'), false);
+  assert.equal(dom.window.document.querySelector('.card[data-id="' + localItemId + '"]').classList.contains('federation-origin-hidden'), true);
+  await dom.window.ApiClient.getItems('abc', {});
+  assert.equal(getItemsCalls.at(-1).Tags, '🌐 Friend');
+  dom.window.close();
+});
+
+test('origin filter CSS is a tab strip, not a floating overlay', () => {
+  assert.match(badgeScript, /\.federation-origin-filter\{/);
+  assert.match(badgeScript, /Library source/);
+  assert.match(badgeScript, /This server/);
+  assert.equal(badgeScript.includes('ExcludeItemTags'), true);
 });
 
 test('admin sessions initialize admin-only download and sharing state', async () => {
