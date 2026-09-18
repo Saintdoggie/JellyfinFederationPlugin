@@ -840,6 +840,108 @@ public class FederationDownloadServiceTests : IDisposable
         await (Task)method!.Invoke(_service, new object[] { downloadsRoot })!;
     }
 
+    [Fact]
+    public void HydrateProgressFromQueue_RestoresPausedTransfer()
+    {
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var item = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(item);
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Resume Me", Container = "mkv" }, 0, "Movie");
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "server-1", Name = "Friend", Url = "http://friend.example:8096", Enabled = true });
+
+        var root = FederationDownloadService.GetDownloadsRoot();
+        Directory.CreateDirectory(root);
+        var partial = Path.Combine(root, ".Resume Me.mkv." + Guid.NewGuid().ToString("N") + ".partial");
+        File.WriteAllBytes(partial, ValidMediaBytes());
+
+        var queue = new FederationDownloadQueue();
+        var job = new DownloadJob
+        {
+            OperationId = Guid.NewGuid().ToString(),
+            Kind = DownloadJob.KindFederated,
+            State = DownloadJob.StatePaused,
+            DedupeKey = itemId.ToString(),
+            ItemName = "Resume Me",
+            ServerId = "server-1",
+            RemoteItemId = remoteItemId.ToString(),
+            FederationKey = key,
+            LocalItemId = itemId.ToString(),
+            DestinationPath = Path.Combine(root, "Resume Me.mkv"),
+            PartialPath = partial,
+            BytesDownloaded = ValidMediaBytes().Length,
+            TotalBytes = 20_000,
+            PauseReason = "Paused — the source server is unreachable",
+            StartedUtc = DateTime.UtcNow
+        };
+        queue.Upsert(job);
+
+        _service.HydrateProgressFromQueue();
+        var progress = DownloadProgressTracker.Get(job.OperationId);
+        Assert.NotNull(progress);
+        Assert.True(progress!.Paused);
+        Assert.False(progress.IsComplete);
+        Assert.Equal("Resume Me", progress.ItemName);
+        Assert.Equal(ValidMediaBytes().Length, progress.BytesDownloaded);
+        Assert.Equal(0, progress.BytesPerSecond);
+    }
+
+    [Fact]
+    public async Task PauseForServer_KeepsPartialAndShowsPausedProgress()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            Enabled = true,
+            AllowDownloads = true
+        });
+        var transferStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateQualityService(
+            async (path, token) =>
+            {
+                await File.WriteAllBytesAsync(path, ValidMediaBytes(), token);
+                transferStarted.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            },
+            () => true);
+
+        var itemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        var federated = new Movie { Id = itemId, ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key } };
+        _libraryManager.Setup(l => l.GetItemById(itemId)).Returns(federated);
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Hold Me", Container = "mkv" }, 0, "Movie");
+
+        var (started, message, operationId) = service.StartDownload(itemId.ToString());
+        Assert.True(started, message);
+        await transferStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        service.PauseForServer("server-1", "Paused — the source server is unreachable");
+        DownloadProgress? progress = null;
+        for (var i = 0; i < 50; i++)
+        {
+            progress = DownloadProgressTracker.Get(operationId!);
+            if (progress?.Paused == true)
+            {
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.NotNull(progress);
+        Assert.True(progress!.Paused);
+        Assert.False(progress.IsComplete);
+        Assert.NotEmpty(Directory.GetFiles(FederationDownloadService.GetDownloadsRoot(), "*.partial"));
+    }
+
     private static async Task<DownloadProgress> WaitForCompletion(string operationId)
     {
         for (var attempt = 0; attempt < 250; attempt++)

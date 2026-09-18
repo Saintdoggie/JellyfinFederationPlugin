@@ -60,6 +60,7 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederationAvailabilityService : IHostedService, IDisposable
     {
         internal static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(2);
+        internal static readonly TimeSpan ConfirmInterval = TimeSpan.FromSeconds(15);
         internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
         internal const int OfflineThreshold = 2;
 
@@ -199,7 +200,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 try
                 {
-                    await Task.Delay(ProbeInterval, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(DelayAfterRound(_consecutiveFailures.Values), cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -377,6 +378,17 @@ namespace Jellyfin.Plugin.Federation.Services
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// After a probe round: confirm a first failure in 15s instead of
+        /// waiting the full two-minute idle interval, so hide/unhide is not
+        /// delayed by a whole extra cycle.
+        /// </summary>
+        internal static TimeSpan DelayAfterRound(IEnumerable<int> consecutiveFailures)
+        {
+            var confirming = consecutiveFailures.Any(count => count > 0 && count < OfflineThreshold);
+            return confirming ? ConfirmInterval : ProbeInterval;
         }
 
         /// <summary>

@@ -322,6 +322,16 @@ test('storage size calculator totals eligible, selected, show, season, and episo
   assert.match(configPage, /localSizeBytes/);
 });
 
+test('download activity always shows live speed and a strip while transferring', () => {
+  assert.match(configPage, /fedDownloadLiveStrip/);
+  assert.match(configPage, /Transfers resume automatically after a restart/);
+  assert.match(configPage, /function formatSpeed\(bytesPerSecond, always\)/);
+  assert.match(configPage, /if \(!always && \(bytesPerSecond == null \|\| bytesPerSecond <= 0\)\)/);
+  assert.match(configPage, /return '0 KB\/s'/);
+  assert.match(configPage, /d\.paused && !d\.isComplete/);
+  assert.match(configPage, /setInterval\(function \(\) \{ if \(pageIsVisible\(\)\) \{ loadDownloads\(\); \} \}, 1000\)/);
+});
+
 test('downloads separate selection from activity and require bulk source consent', () => {
   const dom = new JSDOM(configPage);
   const document = dom.window.document;

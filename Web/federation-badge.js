@@ -290,16 +290,17 @@
   var activeDownloadsByItem = new Map();
 
   function formatSpeed(bytesPerSecond) {
-    if (!bytesPerSecond || bytesPerSecond <= 0) {
-      return '';
+    var n = Number(bytesPerSecond) || 0;
+    if (n <= 0) {
+      return '0 KB/s';
     }
 
-    var mbPerSec = bytesPerSecond / (1024 * 1024);
+    var mbPerSec = n / (1024 * 1024);
     if (mbPerSec >= 0.1) {
       return mbPerSec.toFixed(1) + ' MB/s';
     }
 
-    return Math.round(bytesPerSecond / 1024) + ' KB/s';
+    return Math.round(n / 1024) + ' KB/s';
   }
 
   function ringSvg(pct, sizePx) {
@@ -429,6 +430,7 @@
         (list || []).forEach(function (d) {
           if (!d.isComplete && d.localItemId) {
             next.set(normalizeId(d.localItemId), d);
+            pollDownloadProgress(d.localItemId, d.operationId, null);
           }
         });
 
@@ -533,7 +535,15 @@
         credentials: 'same-origin',
         headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
       })
-        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (res) {
+          if (res.status === 404) {
+            delete pollingOperations[operationId];
+            clearActiveDownload(itemId);
+            return null;
+          }
+
+          return res.ok ? res.json() : null;
+        })
         .then(function (data) {
           if (!data) {
             return;
@@ -550,9 +560,9 @@
 
           if (!data.isComplete) {
             var pct = Math.round(data.percentComplete || 0);
-            var speed = formatSpeed(data.bytesPerSecond);
+            var speed = data.paused ? 'paused' : formatSpeed(data.bytesPerSecond);
             if (liveButton) {
-              setButtonState(liveButton, 'busy', pct + '%' + (speed ? ' ' + speed : ''), 'Downloading to this server');
+              setButtonState(liveButton, 'busy', pct + '% ' + speed, data.paused ? (data.status || 'Paused') : 'Downloading to this server');
             }
 
             updateDetailPageRing(itemId, pct);
@@ -669,25 +679,18 @@
   // still in progress when the page was last unloaded, so a refresh
   // mid-download doesn't just silently drop it.
   function resumeActiveDownloads() {
+    refreshDownloadsList();
     var map = loadActiveDownloads();
-    var now = Date.now();
-    var changed = false;
     Object.keys(map).forEach(function (itemId) {
       var entry = map[itemId];
-      // Drop anything implausibly old rather than polling forever if the
-      // server-side tracker entry is long gone (server restarted, etc.).
-      if (!entry || now - (entry.startedAt || 0) > 6 * 60 * 60 * 1000) {
+      if (!entry || !entry.operationId) {
         delete map[itemId];
-        changed = true;
         return;
       }
 
       pollDownloadProgress(itemId, entry.operationId, null);
     });
-
-    if (changed) {
-      saveActiveDownloads(map);
-    }
+    saveActiveDownloads(map);
   }
 
   // Hides this item from the admin's own local library going forward: a

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -96,5 +97,72 @@ public sealed class FederationOfflineHideTests
         var entry = EntryFrom("serverA");
 
         Assert.True(FederationItemPersistenceService.IsEntryOffline(entry, Offline("SERVERA")));
+    }
+
+    [Fact]
+    public void FirstEnabledSource_SkipsOfflineSiblings()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var plexId = Guid.NewGuid();
+        var jfId = Guid.NewGuid();
+        var entry = cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-offline-path",
+            new BaseItemDto { Id = plexId, Name = "Shared" },
+            "plex",
+            plexId,
+            0,
+            "Movie");
+        cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-offline-path",
+            new BaseItemDto { Id = jfId, Name = "Shared" },
+            "jellyfin",
+            jfId,
+            1,
+            "Movie");
+
+        var config = new PluginConfiguration
+        {
+            RemoteServers =
+            {
+                new RemoteServer { Id = "plex", Name = "Plex", Enabled = true, Kind = ServerKind.Plex },
+                new RemoteServer { Id = "jellyfin", Name = "Jellyfin", Enabled = true }
+            }
+        };
+
+        var withPlex = FederationItemPersistenceService.FirstEnabledSource(entry, config);
+        Assert.Equal("plex", withPlex!.ServerId);
+
+        var withoutPlex = FederationItemPersistenceService.FirstEnabledSource(entry, config, Offline("plex"));
+        Assert.Equal("jellyfin", withoutPlex!.ServerId);
+    }
+
+    [Fact]
+    public void FirstEnabledSource_ServerIdMatch_IsCaseInsensitive()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var remoteId = Guid.NewGuid();
+        var entry = cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-case",
+            new BaseItemDto { Id = remoteId, Name = "Shared" },
+            "ServerA",
+            remoteId,
+            0,
+            "Movie");
+
+        var config = new PluginConfiguration
+        {
+            RemoteServers =
+            {
+                new RemoteServer { Id = "servera", Name = "A", Enabled = true }
+            }
+        };
+
+        Assert.Equal("ServerA", FederationItemPersistenceService.FirstEnabledSource(entry, config)!.ServerId);
     }
 }

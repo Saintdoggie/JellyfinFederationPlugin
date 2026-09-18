@@ -28,6 +28,8 @@ namespace Jellyfin.Plugin.Federation
         private readonly WebClientInjector _webClientInjector;
         private readonly FederationAvailabilityService _availability;
         private readonly IHostApplicationLifetime _appLifetime;
+        private readonly SemaphoreSlim _reachabilityRescanGate = new(1, 1);
+        private int _reachabilityRescanEpoch;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -172,23 +174,27 @@ namespace Jellyfin.Plugin.Federation
 
                 _logger.LogInformation("Federation Plugin services initialized successfully");
 
+                _downloads.HydrateProgressFromQueue();
+
                 // Wire reachability flips to a hide/unhide rescan: when the
                 // background pinger marks a server offline (or back online),
                 // re-reconcile every mapping so its items disappear (or
                 // reappear) without touching the cache. Sync itself keeps
                 // preserving cached data on failure exactly as before.
+                // Several friends can flip in one probe round; coalesce so we
+                // do not run overlapping full-library reconciles.
                 _availability.OnReachabilityChangedAsync = async (serverId, online, ct) =>
                 {
-                    var mappings = Plugin.Instance?.Configuration?.LibraryMappings ?? new List<LibraryMapping>();
-                    foreach (var mapping in mappings)
+                    if (online)
                     {
-                        await _persistence.ReconcileMappingAsync(mapping, ct).ConfigureAwait(false);
+                        _downloads.ResumePausedForServer(serverId);
+                    }
+                    else
+                    {
+                        _downloads.PauseForServer(serverId, "Paused — the source server is unreachable");
                     }
 
-                    _logger.LogInformation(
-                        "[Federation] Reachability change applied for {ServerId}: items {Visibility}",
-                        serverId,
-                        online ? "re-shown" : "hidden until the server returns");
+                    await ApplyReachabilityRescanAsync(serverId, online, ct).ConfigureAwait(false);
                 };
 
                 // Kick off a background sync so federation items appear without
@@ -205,6 +211,7 @@ namespace Jellyfin.Plugin.Federation
                         // and touch disposed DI-scoped services.
                         var shutdownToken = _appLifetime.ApplicationStopping;
                         await Task.Delay(TimeSpan.FromSeconds(5), shutdownToken).ConfigureAwait(false);
+                        await _downloads.ResumeIncompleteDownloadsAsync(shutdownToken).ConfigureAwait(false);
                         _logger.LogInformation("[Federation] Starting background startup sync");
                         var result = await _syncService.SyncAllAsync(shutdownToken).ConfigureAwait(false);
                         if (result.Success)
@@ -238,5 +245,55 @@ namespace Jellyfin.Plugin.Federation
 
         /// <inheritdoc />
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        private async Task ApplyReachabilityRescanAsync(string serverId, bool online, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _reachabilityRescanEpoch);
+            await DrainReachabilityRescanAsync(serverId, online, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task DrainReachabilityRescanAsync(string serverId, bool online, CancellationToken cancellationToken)
+        {
+            if (!await _reachabilityRescanGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            try
+            {
+                do
+                {
+                    Interlocked.Exchange(ref _reachabilityRescanEpoch, 0);
+                    var mappings = Plugin.Instance?.Configuration?.LibraryMappings ?? new List<LibraryMapping>();
+                    foreach (var mapping in mappings)
+                    {
+                        await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    _logger.LogInformation(
+                        "[Federation] Reachability change applied for {ServerId}: items {Visibility}",
+                        serverId,
+                        online ? "re-shown" : "hidden until the server returns");
+                }
+                while (Volatile.Read(ref _reachabilityRescanEpoch) != 0);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Reachability-change rescan failed for {ServerId}", serverId);
+            }
+            finally
+            {
+                _reachabilityRescanGate.Release();
+            }
+
+            if (Volatile.Read(ref _reachabilityRescanEpoch) != 0)
+            {
+                await DrainReachabilityRescanAsync(serverId, online, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 }
