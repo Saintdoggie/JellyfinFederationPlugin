@@ -141,6 +141,127 @@ public sealed class FederationArtworkServiceTests : IDisposable
         providerManager.VerifyNoOtherCalls();
     }
 
+    [Fact]
+    public async Task PlexPoster_WithoutCachedThumbTag_StillFetchesByNativeId()
+    {
+        var server = new RemoteServer
+        {
+            Id = "plex-notag",
+            Name = "Plex",
+            Kind = ServerKind.Plex,
+            Enabled = true
+        };
+        _plugin.Configuration.RemoteServers.Add(server);
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var remoteId = Guid.NewGuid();
+        var entry = cache.UpsertRaw("Movies", server.Id, remoteId, new BaseItemDto { Name = "Movie" }, 0, "Movie");
+        entry.SetNativeId(server.Id, remoteId, "9626");
+
+        var clients = Mock.Of<IRemoteServerClientFactory>();
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            clients,
+            cache,
+            new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clients),
+            Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var external = new FakeExternalProvider();
+        var providerManager = new Mock<IProviderManager>();
+        providerManager
+            .Setup(p => p.SaveImage(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<Stream>(), "image/jpeg", ImageType.Primary, null, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var service = new FederationArtworkService(
+            NullLogger<FederationArtworkService>.Instance,
+            manager,
+            new ExternalCatalogRegistry(new[] { external }),
+            providerManager.Object);
+
+        var item = new Movie { Name = "Movie" };
+        Assert.True(await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None));
+        Assert.Equal("9626", external.LastNativeId);
+        Assert.Equal("native:9626", item.GetProviderId(FederationArtworkService.PrimaryImageTagProviderId));
+        providerManager.Verify(p => p.SaveImage(
+            item,
+            It.IsAny<Stream>(),
+            "image/jpeg",
+            ImageType.Primary,
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task MixedItem_JellyfinPrimary_StillCopiesPlexSiblingPoster()
+    {
+        var jellyfin = new RemoteServer
+        {
+            Id = "jf-primary",
+            Name = "Jellyfin friend",
+            Kind = ServerKind.Jellyfin,
+            Enabled = true
+        };
+        var plex = new RemoteServer
+        {
+            Id = "plex-sib",
+            Name = "Plex",
+            Kind = ServerKind.Plex,
+            Enabled = true
+        };
+        _plugin.Configuration.RemoteServers.Add(jellyfin);
+        _plugin.Configuration.RemoteServers.Add(plex);
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var jfId = Guid.NewGuid();
+        var plexId = Guid.NewGuid();
+        var entry = cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-art-mixed",
+            new BaseItemDto { Id = jfId, Name = "Shared" },
+            jellyfin.Id,
+            jfId,
+            0,
+            "Movie");
+        cache.UpsertByProviderId(
+            "Movies",
+            "imdb",
+            "tt-art-mixed",
+            new BaseItemDto { Id = plexId, Name = "Shared" },
+            plex.Id,
+            plexId,
+            1,
+            "Movie");
+        entry.SetNativeId(plex.Id, plexId, "9111");
+
+        var clients = Mock.Of<IRemoteServerClientFactory>();
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            clients,
+            cache,
+            new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clients),
+            Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var external = new FakeExternalProvider();
+        var providerManager = new Mock<IProviderManager>();
+        providerManager
+            .Setup(p => p.SaveImage(It.IsAny<MediaBrowser.Controller.Entities.BaseItem>(), It.IsAny<Stream>(), "image/jpeg", ImageType.Primary, null, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var service = new FederationArtworkService(
+            NullLogger<FederationArtworkService>.Instance,
+            manager,
+            new ExternalCatalogRegistry(new[] { external }),
+            providerManager.Object);
+
+        var item = new Movie { Name = "Shared" };
+        Assert.True(await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None));
+        Assert.Equal("9111", external.LastNativeId);
+        providerManager.Verify(p => p.SaveImage(
+            item,
+            It.IsAny<Stream>(),
+            "image/jpeg",
+            ImageType.Primary,
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private sealed class FakeExternalProvider : IExternalCatalogProvider
     {
         public ServerKind Kind => ServerKind.Plex;

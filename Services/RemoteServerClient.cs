@@ -1040,11 +1040,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Downloads a remote item's whole media file straight to local disk. Separate
         /// from Proxy-mode streaming (<see cref="FederationStreamHandler"/>) - this is a
-        /// one-shot server-side fetch-and-save, not a live client-facing relay, so it
-        /// has no Range/seek handling.
+        /// one-shot server-side fetch-and-save, not a live client-facing relay.
+        /// Pass <paramref name="resumeFrom"/> to continue a partial file via HTTP Range.
         /// </summary>
         /// <param name="itemId">The item id on the remote server.</param>
-        /// <param name="destinationPath">Local file path to write to; overwritten if present.</param>
+        /// <param name="destinationPath">Local file path to write to.</param>
         /// <param name="progress">
         /// Receives (bytes written so far, total bytes if the remote reported
         /// Content-Length) after every chunk - byte counts rather than a bare
@@ -1052,12 +1052,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// reports.
         /// </param>
         /// <param name="cancellationToken">Cancellation token.</param>
+        /// <param name="bulk">Whether this is part of a bulk download grant.</param>
+        /// <param name="resumeFrom">Existing byte count on disk to resume from.</param>
         public async Task DownloadToFileAsync(
             string itemId,
             string destinationPath,
             IProgress<(long BytesRead, long? TotalBytes)>? progress,
             CancellationToken cancellationToken,
-            bool bulk = false)
+            bool bulk = false,
+            long resumeFrom = 0)
         {
             var item = await GetItemAsync(itemId, cancellationToken: cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
@@ -1080,24 +1083,13 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var url = $"{_server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}&download=true";
-            using var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength;
-            await using var remoteStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-
-            var buffer = new byte[81920];
-            long totalRead = 0;
-            int read;
-            while ((read = await remoteStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                totalRead += read;
-                progress?.Report((totalRead, totalBytes));
-            }
-
-            progress?.Report((totalRead, totalBytes));
+            await DownloadTransfer.CopyUrlToFileAsync(
+                DownloadHttpClient,
+                url,
+                destinationPath,
+                resumeFrom,
+                progress,
+                cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

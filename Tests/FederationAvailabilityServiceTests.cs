@@ -110,6 +110,15 @@ public sealed class FederationAvailabilityServiceTests
     }
 
     [Fact]
+    public void DelayAfterRound_ConfirmsFirstFailureQuickly()
+    {
+        Assert.Equal(FederationAvailabilityService.ConfirmInterval, FederationAvailabilityService.DelayAfterRound(new[] { 1 }));
+        Assert.Equal(FederationAvailabilityService.ProbeInterval, FederationAvailabilityService.DelayAfterRound(new[] { 0 }));
+        Assert.Equal(FederationAvailabilityService.ProbeInterval, FederationAvailabilityService.DelayAfterRound(new[] { 2 }));
+        Assert.Equal(FederationAvailabilityService.ConfirmInterval, FederationAvailabilityService.DelayAfterRound(new[] { 0, 1, 2 }));
+    }
+
+    [Fact]
     public void Forget_DropsState()
     {
         var service = Service();

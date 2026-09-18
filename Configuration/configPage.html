@@ -296,6 +296,8 @@
                 #fedPanelStorage .fed-episode-row .fed-download-info { min-width:min(100%,12em); }
 
                 /* Downloads */
+                #federationConfigPage .fed-download-live { margin: 0 0 1em; padding: .85em 1em; border: 1px solid var(--fed-accent); border-radius: .7em; background: rgba(0,164,220,.08); }
+                #federationConfigPage .fed-download-live .fed-download-row:first-child { border-top: none; }
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
                 #federationConfigPage .fed-download-row:first-child { border-top: none; }
                 #federationConfigPage .fed-download-info { flex: 1; min-width: 0; }
@@ -704,7 +706,9 @@
                         Browse media held by connected servers and pull an exact title down to this server. Local-only
                         titles never appear here. An exclamation mark means Jellyfin already has a matching local copy,
                         so review it before downloading another. Downloads land in the "Federation Downloads" library.
+                        Transfers resume automatically after a restart or if the source drops out.
                     </p>
+                    <div id="fedDownloadLiveStrip" class="fed-download-live" style="display:none;" role="status"></div>
                     <div class="fed-subtabs" role="tablist" aria-label="Download workspace">
                         <button id="fedDownloadSelectTab" type="button" class="fed-subtab fed-subtab-active" data-fed-action="download-view" data-view="select" role="tab" aria-controls="fedDownloadSelectView" aria-selected="true">Select media</button>
                         <button id="fedDownloadActivityTab" type="button" class="fed-subtab" data-fed-action="download-view" data-view="activity" role="tab" aria-controls="fedDownloadActivityView" aria-selected="false">Transfer activity</button>
@@ -5398,10 +5402,12 @@
                         return (i === 0 ? String(Math.round(n)) : n.toFixed(n >= 10 || i >= 3 ? 0 : 1)) + ' ' + units[i];
                     }
 
-                    function formatSpeed(bytesPerSecond) {
-                        if (!bytesPerSecond || bytesPerSecond <= 0) { return ''; }
-                        var mb = bytesPerSecond / (1024 * 1024);
-                        return (mb >= 0.1 ? mb.toFixed(1) + ' MB/s' : Math.round(bytesPerSecond / 1024) + ' KB/s');
+                    function formatSpeed(bytesPerSecond, always) {
+                        if (!always && (bytesPerSecond == null || bytesPerSecond <= 0)) { return ''; }
+                        var n = Number(bytesPerSecond) || 0;
+                        if (n <= 0) { return '0 KB/s'; }
+                        var mb = n / (1024 * 1024);
+                        return (mb >= 0.1 ? mb.toFixed(1) + ' MB/s' : Math.round(n / 1024) + ' KB/s');
                     }
 
                     function formatEta(bytesDownloaded, totalBytes, bytesPerSecond) {
@@ -5417,10 +5423,55 @@
                         return hoursLeft.toFixed(1) + 'h left';
                     }
 
+                    function downloadRowHtml(d) {
+                        var pct = Math.round(d.percentComplete || 0);
+                        var sizeInfo = d.totalBytes ? (formatBytes(d.bytesDownloaded) + ' / ' + formatBytes(d.totalBytes)) : formatBytes(d.bytesDownloaded);
+                        var speed = formatSpeed(d.bytesPerSecond, !d.isComplete);
+                        var eta = formatEta(d.bytesDownloaded, d.totalBytes, d.bytesPerSecond);
+                        var statusLine;
+                        var pathLine = d.destinationPath
+                            ? '<div class="fed-hint fed-download-path" title="' + escapeHtml(d.destinationPath) + '">' + escapeHtml(d.destinationPath) + '</div>'
+                            : '';
+                        var cancelBtn = '';
+                        if (d.paused && !d.isComplete) {
+                            statusLine = (sizeInfo ? sizeInfo + ' — ' : '') + 'paused — ' + escapeHtml(d.status || 'Waiting to resume');
+                            cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
+                        } else if (!d.isComplete) {
+                            statusLine = (sizeInfo ? sizeInfo + ' — ' : '') + speed + ' — ' + (eta ? eta + ' — ' : '') + escapeHtml(d.status || 'Downloading…');
+                            cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
+                        } else if (d.success) {
+                            statusLine = 'Downloaded — ' + formatBytes(d.bytesDownloaded);
+                        } else {
+                            statusLine = escapeHtml(d.status || 'Failed');
+                        }
+
+                        return '<div class="fed-download-row">' +
+                            '<div class="fed-download-info">' +
+                                '<div class="fed-download-name">' + escapeHtml(d.itemName || 'Item') + '</div>' +
+                                '<div class="fed-hint">' + statusLine + '</div>' +
+                                pathLine +
+                                (!d.isComplete ? '<div class="fed-progress-track"><div class="fed-progress-fill" style="width:' + pct + '%;"></div></div>' : '') +
+                            '</div>' +
+                            cancelBtn +
+                        '</div>';
+                    }
+
                     function renderDownloads(list) {
                         list = list || [];
                         var card = q('#fedDownloadsCard');
                         var listEl = q('#fedDownloadsList');
+                        var strip = q('#fedDownloadLiveStrip');
+                        var active = list.filter(function (d) { return !d.isComplete; });
+                        if (strip) {
+                            if (active.length === 0) {
+                                strip.style.display = 'none';
+                                strip.innerHTML = '';
+                            } else {
+                                strip.style.display = '';
+                                strip.innerHTML = '<div class="fed-download-name">' + active.length + (active.length === 1 ? ' transfer in progress' : ' transfers in progress') + '</div>' +
+                                    active.map(downloadRowHtml).join('');
+                            }
+                        }
                         if (!card || !listEl) { return; }
 
                         if (list.length === 0) {
@@ -5430,35 +5481,7 @@
                         }
 
                         card.style.display = '';
-                        listEl.innerHTML = list.map(function (d) {
-                            var pct = Math.round(d.percentComplete || 0);
-                            var sizeInfo = d.totalBytes ? (formatBytes(d.bytesDownloaded) + ' / ' + formatBytes(d.totalBytes)) : formatBytes(d.bytesDownloaded);
-                            var speed = formatSpeed(d.bytesPerSecond);
-                            var eta = formatEta(d.bytesDownloaded, d.totalBytes, d.bytesPerSecond);
-                            var statusLine;
-                            var pathLine = d.destinationPath
-                                ? '<div class="fed-hint fed-download-path" title="' + escapeHtml(d.destinationPath) + '">' + escapeHtml(d.destinationPath) + '</div>'
-                                : '';
-                            var cancelBtn = '';
-                            if (!d.isComplete) {
-                                statusLine = (sizeInfo ? sizeInfo + ' — ' : '') + (speed ? speed + ' — ' : '') + (eta ? eta + ' — ' : '') + escapeHtml(d.status || 'Downloading…');
-                                cancelBtn = '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="cancel-download" data-op-id="' + escapeHtml(d.operationId) + '">Cancel</button>';
-                            } else if (d.success) {
-                                statusLine = 'Downloaded — ' + formatBytes(d.bytesDownloaded);
-                            } else {
-                                statusLine = escapeHtml(d.status || 'Failed');
-                            }
-
-                            return '<div class="fed-download-row">' +
-                                '<div class="fed-download-info">' +
-                                    '<div class="fed-download-name">' + escapeHtml(d.itemName || 'Item') + '</div>' +
-                                    '<div class="fed-hint">' + statusLine + '</div>' +
-                                    pathLine +
-                                    (!d.isComplete ? '<div class="fed-progress-track"><div class="fed-progress-fill" style="width:' + pct + '%;"></div></div>' : '') +
-                                '</div>' +
-                                cancelBtn +
-                            '</div>';
-                        }).join('');
+                        listEl.innerHTML = list.map(downloadRowHtml).join('');
                     }
 
                     function loadDownloads() {
@@ -6443,7 +6466,7 @@
                             clearInterval(downloadsPollInterval);
                         }
 
-                        downloadsPollInterval = setInterval(function () { if (pageIsVisible()) { loadDownloads(); } }, 3000);
+                        downloadsPollInterval = setInterval(function () { if (pageIsVisible()) { loadDownloads(); } }, 1000);
 
                         loadWatching();
                         if (watchingPollInterval) {

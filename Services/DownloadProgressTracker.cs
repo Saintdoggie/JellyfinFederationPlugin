@@ -33,6 +33,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 LocalItemId = localItemId,
                 ItemName = itemName,
                 Status = "Starting...",
+                Paused = false,
                 StartTime = DateTime.UtcNow
             };
         }
@@ -110,14 +111,62 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 progress.Status = message;
                 progress.IsComplete = true;
+                progress.Paused = false;
                 progress.Success = success;
                 progress.EndTime = DateTime.UtcNow;
-                progress.BytesPerSecond = null;
+                progress.BytesPerSecond = success ? null : 0;
                 if (success)
                 {
                     progress.PercentComplete = 100;
                 }
             }
+        }
+
+        /// <summary>
+        /// Marks an in-flight download paused. The partial file stays on disk
+        /// and the tracker row stays visible so the UI can keep showing size
+        /// and a zero speed until it resumes.
+        /// </summary>
+        public static void Pause(string operationId, string status)
+        {
+            if (_progress.TryGetValue(operationId, out var progress))
+            {
+                progress.Status = status;
+                progress.Paused = true;
+                progress.IsComplete = false;
+                progress.BytesPerSecond = 0;
+                progress.LastUpdate = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// Clears the paused flag so a restored or resumed job looks live.
+        /// </summary>
+        public static void Resume(string operationId, string status = "Downloading...")
+        {
+            if (_progress.TryGetValue(operationId, out var progress))
+            {
+                progress.Status = status;
+                progress.Paused = false;
+                progress.IsComplete = false;
+                progress.Success = false;
+                progress.EndTime = null;
+                progress.LastUpdate = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// Rehydrates a tracker row from the persisted queue after process start.
+        /// </summary>
+        public static void Restore(DownloadProgress snapshot)
+        {
+            if (snapshot == null || string.IsNullOrEmpty(snapshot.OperationId))
+            {
+                return;
+            }
+
+            Cleanup();
+            _progress[snapshot.OperationId] = snapshot;
         }
 
         /// <summary>
@@ -194,6 +243,12 @@ namespace Jellyfin.Plugin.Federation.Services
         public string Status { get; set; } = string.Empty;
 
         public bool IsComplete { get; set; }
+
+        /// <summary>
+        /// True while the job is held (source offline, crash recovery, or a
+        /// transient transfer error) and will resume automatically.
+        /// </summary>
+        public bool Paused { get; set; }
 
         public bool Success { get; set; }
 

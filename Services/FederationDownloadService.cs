@@ -44,6 +44,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly Func<BaseItem, RemoteServer, string, bool>? _qualityUpgradeValidatorOverride;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationSources = new();
         private readonly ConcurrentDictionary<string, string> _pendingDownloadOrigins = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _pauseRequested = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _resumeWhenPaused = new(StringComparer.OrdinalIgnoreCase);
+        private readonly FederationDownloadQueue _queue = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationDownloadService"/> class.
@@ -187,6 +190,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (DownloadProgressTracker.IsDownloadingItem(localItemId))
             {
+                if (TryResumeExisting(localItemId, out var resumedId))
+                {
+                    return (true, "Resuming download.", resumedId);
+                }
+
                 return (false, "Already downloading.", null);
             }
 
@@ -203,15 +211,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, $"Downloads from {srcServer.Name} are disabled (Catalog → {srcServer.Name} → Download access).", null);
             }
 
-            var operationId = Guid.NewGuid().ToString();
-            DownloadProgressTracker.Start(operationId, localItemId, entry.Metadata.Name);
+            var job = NewJob(
+                DownloadJob.KindFederated,
+                localItemId,
+                entry.Metadata.Name,
+                source.ServerId,
+                source.RemoteItemId.ToString(),
+                key,
+                localItemId,
+                bulk: false);
+            EnqueueAndStart(job, ct => RunDownloadAsync(job, itemGuid, entry, source, ct));
 
-            var cts = new CancellationTokenSource();
-            _cancellationSources[operationId] = cts;
-
-            _ = Task.Run(() => RunDownloadAsync(operationId, itemGuid, entry, source, cts.Token));
-
-            return (true, "Download started.", operationId);
+            return (true, "Download started.", job.OperationId);
         }
 
         /// <summary>
@@ -267,18 +278,26 @@ namespace Jellyfin.Plugin.Federation.Services
             var dedupeKey = $"browse:{serverId}:{nativeItemId}";
             if (DownloadProgressTracker.IsDownloadingItem(dedupeKey))
             {
+                if (TryResumeExisting(dedupeKey, out var resumedId))
+                {
+                    return (true, "Resuming download.", resumedId);
+                }
+
                 return (false, "Already downloading.", null);
             }
 
-            var operationId = Guid.NewGuid().ToString();
-            DownloadProgressTracker.Start(operationId, dedupeKey, itemName);
+            var job = NewJob(
+                DownloadJob.KindBrowse,
+                dedupeKey,
+                itemName,
+                server.Id,
+                nativeItemId,
+                federationKey: null,
+                localItemId: null,
+                bulk);
+            EnqueueAndStart(job, ct => RunBrowseDownloadAsync(job, server, nativeItemId, itemName, bulk, ct));
 
-            var cts = new CancellationTokenSource();
-            _cancellationSources[operationId] = cts;
-
-            _ = Task.Run(() => RunBrowseDownloadAsync(operationId, server, nativeItemId, itemName, bulk, cts.Token));
-
-            return (true, "Download started.", operationId);
+            return (true, "Download started.", job.OperationId);
         }
 
         /// <summary>
@@ -343,18 +362,26 @@ namespace Jellyfin.Plugin.Federation.Services
             var dedupeKey = $"qreplace:{localItemId}";
             if (DownloadProgressTracker.IsDownloadingItem(dedupeKey))
             {
+                if (TryResumeExisting(dedupeKey, out var resumedId))
+                {
+                    return (true, "Resuming download.", resumedId);
+                }
+
                 return (false, "Already downloading.", null);
             }
 
-            var operationId = Guid.NewGuid().ToString();
-            DownloadProgressTracker.Start(operationId, dedupeKey, item.Name);
+            var job = NewJob(
+                DownloadJob.KindQualityReplace,
+                dedupeKey,
+                item.Name,
+                server.Id,
+                nativeItemId,
+                federationKey: null,
+                localItemId,
+                bulk: false);
+            EnqueueAndStart(job, ct => RunQualityReplaceAsync(job, itemGuid, server, nativeItemId, item.Name, ct));
 
-            var cts = new CancellationTokenSource();
-            _cancellationSources[operationId] = cts;
-
-            _ = Task.Run(() => RunQualityReplaceAsync(operationId, itemGuid, server, nativeItemId, item.Name, cts.Token));
-
-            return (true, "Download started.", operationId);
+            return (true, "Download started.", job.OperationId);
         }
 
         /// <summary>
@@ -429,10 +456,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public (bool Success, string Message) CancelDownload(string operationId)
         {
+            _pauseRequested.TryRemove(operationId, out _);
             if (_cancellationSources.TryGetValue(operationId, out var cts))
             {
                 cts.Cancel();
                 return (true, "Cancelling...");
+            }
+
+            var job = _queue.Get(operationId);
+            if (job != null)
+            {
+                FailPermanently(job, "Cancelled.");
+                DeletePartialFile(job.PartialPath);
+                return (true, "Cancelled.");
             }
 
             var progress = DownloadProgressTracker.Get(operationId);
@@ -444,82 +480,145 @@ namespace Jellyfin.Plugin.Federation.Services
             return (true, "Already finished.");
         }
 
-        private async Task RunDownloadAsync(string operationId, Guid itemGuid, FederatedCacheEntry entry, FederatedSource source, CancellationToken cancellationToken)
+        /// <summary>
+        /// Rebuilds in-memory progress rows from the on-disk queue so the UI
+        /// can show unfinished transfers immediately after a restart.
+        /// </summary>
+        internal void HydrateProgressFromQueue()
         {
-            string? destinationPath = null;
-            string? partialPath = null;
+            foreach (var job in _queue.Load())
+            {
+                DownloadProgressTracker.Restore(ToProgress(job));
+            }
+        }
+
+        /// <summary>
+        /// Restarts any unfinished jobs whose source is reachable. Called on
+        /// plugin startup after a short delay so configuration is loaded.
+        /// </summary>
+        internal Task ResumeIncompleteDownloadsAsync(CancellationToken cancellationToken)
+        {
+            foreach (var job in _queue.Load())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsServerOffline(job.ServerId))
+                {
+                    PauseJob(job, "Paused — the source server is unreachable");
+                    continue;
+                }
+
+                ResumeJob(job);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Holds every in-flight transfer from <paramref name="serverId"/> when
+        /// that friend goes offline. Partial files stay on disk.
+        /// </summary>
+        internal void PauseForServer(string serverId, string reason)
+        {
+            foreach (var job in _queue.Load())
+            {
+                if (!string.Equals(job.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                _pauseRequested[job.OperationId] = 1;
+                if (_cancellationSources.TryGetValue(job.OperationId, out var cts))
+                {
+                    try
+                    {
+                        cts.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                }
+                else
+                {
+                    PauseJob(job, reason);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Continues paused transfers from a friend that just came back.
+        /// </summary>
+        internal void ResumePausedForServer(string serverId)
+        {
+            foreach (var job in _queue.Load())
+            {
+                if (!string.Equals(job.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (_cancellationSources.ContainsKey(job.OperationId))
+                {
+                    // The pause cancel is still unwinding; continue once PauseJob runs.
+                    _resumeWhenPaused[job.OperationId] = 1;
+                    continue;
+                }
+
+                ResumeJob(job);
+            }
+        }
+
+        private async Task RunDownloadAsync(DownloadJob job, Guid itemGuid, FederatedCacheEntry entry, FederatedSource source, CancellationToken cancellationToken)
+        {
+            var operationId = job.OperationId;
+            string? destinationPath = job.DestinationPath;
+            string? partialPath = job.PartialPath;
+            _cancellationSources.TryGetValue(operationId, out var ownedCts);
             try
             {
                 var srcServer = _federationManager.GetServer(source.ServerId);
                 if (srcServer == null)
                 {
-                    DownloadProgressTracker.Complete(operationId, false, "Source server is not configured.");
+                    FailPermanently(job, "Source server is not configured.");
+                    return;
+                }
+
+                if (ShouldHoldForOfflineServer(srcServer, job))
+                {
                     return;
                 }
 
                 var downloadsRoot = GetDownloadsRoot();
                 if (string.IsNullOrEmpty(downloadsRoot))
                 {
-                    DownloadProgressTracker.Complete(operationId, false, "Plugin data path unavailable.");
+                    FailPermanently(job, "Plugin data path unavailable.");
                     return;
                 }
 
                 Directory.CreateDirectory(downloadsRoot);
 
-                var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
-                var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
-                destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
+                if (string.IsNullOrEmpty(destinationPath) || string.IsNullOrEmpty(partialPath))
+                {
+                    var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
+                    var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
+                    destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
+                    job.DestinationPath = destinationPath;
+                    job.PartialPath = partialPath;
+                    PersistJob(job);
+                }
+
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
-                DownloadProgressTracker.Update(operationId, "Downloading...");
-                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
-                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
-
-                if (_qualityDownloadOverride != null)
+                var transferId = srcServer.Kind == ServerKind.Jellyfin
+                    ? source.RemoteItemId.ToString()
+                    : entry.Metadata.RemoteNativeId;
+                if (string.IsNullOrEmpty(transferId))
                 {
-                    await _qualityDownloadOverride(srcServer, source.RemoteItemId.ToString(), partialPath, progress, cancellationToken).ConfigureAwait(false);
+                    FailPermanently(job, "Could not resolve this item's id on the remote server - try refreshing the library.");
+                    return;
                 }
-                else if (srcServer.Kind == ServerKind.Jellyfin)
-                {
-                    var client = _federationManager.GetClient(source.ServerId);
-                    if (client == null)
-                    {
-                        DownloadProgressTracker.Complete(operationId, false, "Source server is not configured.");
-                        return;
-                    }
 
-                    await client.DownloadToFileAsync(source.RemoteItemId.ToString(), partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    // Non-Jellyfin sources (Plex today) have no
-                    // Plugins/Federation/DirectStream route to hit - source.RemoteItemId
-                    // is only the deterministically-derived local Guid, not something
-                    // the remote itself understands. The real rating key/native id the
-                    // remote needs is what sync recorded on the entry at materialize
-                    // time (see FederatedItemMetadata.RemoteNativeId), same lookup
-                    // FederationStreamHandler's own external-source path already relies
-                    // on for playback - a null here means a stale entry from before that
-                    // field was recorded, fixed by a library refresh.
-                    if (string.IsNullOrEmpty(entry.Metadata.RemoteNativeId))
-                    {
-                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve this item's id on the remote server - try refreshing the library.");
-                        return;
-                    }
-
-                    var provider = _externalCatalogs.For(srcServer);
-                    var url = provider == null
-                        ? null
-                        : await provider.ResolveStreamUrlAsync(srcServer, entry.Metadata.RemoteNativeId, cancellationToken).ConfigureAwait(false);
-                    if (url == null)
-                    {
-                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
-                        return;
-                    }
-
-                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk: false), partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
+                await TransferJobAsync(job, srcServer, transferId, bulk: false, "Downloading...", cancellationToken).ConfigureAwait(false);
 
                 if (!ValidateCompletedDownload(partialPath))
                 {
@@ -562,40 +661,31 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogInformation("[Federation] Downloaded {Name} to {Path}", entry.Metadata.Name, destinationPath);
-                DownloadProgressTracker.Complete(operationId, true, "Downloaded. It will appear as a local item after the next library scan.");
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("[Federation] Download cancelled for {Name}", entry.Metadata.Name);
-                DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
-                DeletePartialFile(partialPath);
+                SucceedJob(job, "Downloaded. It will appear as a local item after the next library scan.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Download failed for {Name}", entry.Metadata.Name);
-                DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
-                DeletePartialFile(partialPath);
+                HandleTransferFailure(job, entry.Metadata.Name, ex, cancellationToken, partialPath);
             }
             finally
             {
-                if (_cancellationSources.TryRemove(operationId, out var cts))
-                {
-                    cts.Dispose();
-                }
+                ReleaseOwnedCts(operationId, ownedCts);
             }
         }
 
         private async Task RunBrowseDownloadAsync(
-            string operationId,
+            DownloadJob job,
             RemoteServer server,
             string nativeItemId,
             string itemName,
             bool bulk,
             CancellationToken cancellationToken)
         {
-            string? destinationPath = null;
-            string? partialPath = null;
+            var operationId = job.OperationId;
+            string? destinationPath = job.DestinationPath;
+            string? partialPath = job.PartialPath;
             var slotHeld = false;
+            _cancellationSources.TryGetValue(operationId, out var ownedCts);
             try
             {
                 DownloadProgressTracker.Update(operationId, "Queued...");
@@ -606,52 +696,38 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (currentServer == null) throw new InvalidOperationException("The selected server is no longer connected or enabled.");
                 server = currentServer;
 
+                if (ShouldHoldForOfflineServer(server, job))
+                {
+                    return;
+                }
+
                 var downloadsRoot = GetDownloadsRoot();
                 if (string.IsNullOrEmpty(downloadsRoot))
                 {
-                    DownloadProgressTracker.Complete(operationId, false, "Plugin data path unavailable.");
+                    FailPermanently(job, "Plugin data path unavailable.");
                     return;
                 }
 
                 Directory.CreateDirectory(downloadsRoot);
 
-                // The remote's real container isn't known up front the way
-                // RunDownloadAsync's federated-entry path knows it from synced
-                // metadata - mkv is a safe default container extension for
-                // whatever bytes come back; Jellyfin's own library scan probes
-                // the actual codecs regardless of the extension.
-                var fileName = SafeFileName(itemName) + ".mkv";
-                destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
+                if (string.IsNullOrEmpty(destinationPath) || string.IsNullOrEmpty(partialPath))
+                {
+                    // The remote's real container isn't known up front the way
+                    // RunDownloadAsync's federated-entry path knows it from synced
+                    // metadata - mkv is a safe default container extension for
+                    // whatever bytes come back; Jellyfin's own library scan probes
+                    // the actual codecs regardless of the extension.
+                    var fileName = SafeFileName(itemName) + ".mkv";
+                    destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
+                    job.DestinationPath = destinationPath;
+                    job.PartialPath = partialPath;
+                    PersistJob(job);
+                }
+
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
-                DownloadProgressTracker.Update(operationId, "Downloading...");
-                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
-                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading..."));
-
-                if (_qualityDownloadOverride != null)
-                {
-                    await _qualityDownloadOverride(server, nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
-                else if (server.Kind == ServerKind.Jellyfin)
-                {
-                    var client = _clientFactory.GetClient(server);
-                    await client.DownloadToFileAsync(nativeItemId, partialPath, progress, cancellationToken, bulk).ConfigureAwait(false);
-                }
-                else
-                {
-                    var provider = _externalCatalogs.For(server);
-                    var url = provider == null
-                        ? null
-                        : await provider.ResolveStreamUrlAsync(server, nativeItemId, cancellationToken).ConfigureAwait(false);
-                    if (url == null)
-                    {
-                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
-                        return;
-                    }
-
-                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk), partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
+                await TransferJobAsync(job, server, nativeItemId, bulk, "Downloading...", cancellationToken).ConfigureAwait(false);
 
                 if (!ValidateCompletedDownload(partialPath))
                 {
@@ -666,19 +742,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 _libraryManager.QueueLibraryScan();
 
                 _logger.LogInformation("[Federation] Browse-downloaded {Name} from {Server} to {Path}", itemName, server.Name, destinationPath);
-                DownloadProgressTracker.Complete(operationId, true, "Downloaded. It will appear as a local item after the next library scan.");
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("[Federation] Browse download cancelled for {Name}", itemName);
-                DownloadProgressTracker.Complete(operationId, false, "Cancelled.");
-                DeletePartialFile(partialPath);
+                SucceedJob(job, "Downloaded. It will appear as a local item after the next library scan.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Browse download failed for {Name}", itemName);
-                DownloadProgressTracker.Complete(operationId, false, "Download failed: " + ex.Message);
-                DeletePartialFile(partialPath);
+                HandleTransferFailure(job, itemName, ex, cancellationToken, partialPath);
             }
             finally
             {
@@ -687,60 +755,45 @@ namespace Jellyfin.Plugin.Federation.Services
                     BrowseDownloadSlots.Release();
                 }
 
-                if (_cancellationSources.TryRemove(operationId, out var cts))
-                {
-                    cts.Dispose();
-                }
+                ReleaseOwnedCts(operationId, ownedCts);
             }
         }
 
-        private async Task RunQualityReplaceAsync(string operationId, Guid oldItemGuid, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
+        private async Task RunQualityReplaceAsync(DownloadJob job, Guid oldItemGuid, RemoteServer server, string nativeItemId, string itemName, CancellationToken cancellationToken)
         {
-            string? partialPath = null;
-            string? committedPath = null;
+            var operationId = job.OperationId;
+            string? partialPath = job.PartialPath;
+            string? committedPath = job.DestinationPath;
+            _cancellationSources.TryGetValue(operationId, out var ownedCts);
             try
             {
+                if (ShouldHoldForOfflineServer(server, job))
+                {
+                    return;
+                }
+
                 var downloadsRoot = GetDownloadsRoot();
                 if (string.IsNullOrEmpty(downloadsRoot))
                 {
-                    DownloadProgressTracker.Complete(operationId, false, "Plugin data path unavailable.");
+                    FailPermanently(job, "Plugin data path unavailable.");
                     return;
                 }
 
                 Directory.CreateDirectory(downloadsRoot);
 
-                var fileName = SafeFileName(itemName) + ".mkv";
-                committedPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(committedPath) + "." + operationId + ".partial");
+                if (string.IsNullOrEmpty(committedPath) || string.IsNullOrEmpty(partialPath))
+                {
+                    var fileName = SafeFileName(itemName) + ".mkv";
+                    committedPath = GetUniqueDestinationPath(downloadsRoot, fileName);
+                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(committedPath) + "." + operationId + ".partial");
+                    job.DestinationPath = committedPath;
+                    job.PartialPath = partialPath;
+                    PersistJob(job);
+                }
+
                 DownloadProgressTracker.SetDestinationPath(operationId, committedPath);
 
-                DownloadProgressTracker.Update(operationId, "Downloading higher-quality copy...");
-                var progress = new Progress<(long BytesRead, long? TotalBytes)>(
-                    p => DownloadProgressTracker.UpdateBytes(operationId, p.BytesRead, p.TotalBytes, "Downloading higher-quality copy..."));
-
-                if (_qualityDownloadOverride != null)
-                {
-                    await _qualityDownloadOverride(server, nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
-                else if (server.Kind == ServerKind.Jellyfin)
-                {
-                    var client = _clientFactory.GetClient(server);
-                    await client.DownloadToFileAsync(nativeItemId, partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    var provider = _externalCatalogs.For(server);
-                    var url = provider == null
-                        ? null
-                        : await provider.ResolveStreamUrlAsync(server, nativeItemId, cancellationToken).ConfigureAwait(false);
-                    if (url == null)
-                    {
-                        DownloadProgressTracker.Complete(operationId, false, "Could not resolve a download URL from the remote server.");
-                        return;
-                    }
-
-                    await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk: false), partialPath, progress, cancellationToken).ConfigureAwait(false);
-                }
+                await TransferJobAsync(job, server, nativeItemId, bulk: false, "Downloading higher-quality copy...", cancellationToken).ConfigureAwait(false);
 
                 if (!ValidateCompletedDownload(partialPath))
                 {
@@ -788,29 +841,31 @@ namespace Jellyfin.Plugin.Federation.Services
                     "[Federation] Quality-replaced {Name}: downloaded a higher-quality copy from {Server} and removed the old local copy",
                     itemName,
                     server.Name);
-                DownloadProgressTracker.Complete(operationId, true, "Downloaded a higher-quality copy and removed the old one. It will appear as a local item after the next library scan.");
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("[Federation] Quality-replace cancelled for {Name}", itemName);
-                DownloadProgressTracker.Complete(operationId, false, "Cancelled. The old copy was not touched.");
-                DeletePartialFile(partialPath);
+                SucceedJob(job, "Downloaded a higher-quality copy and removed the old one. It will appear as a local item after the next library scan.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Federation] Quality-replace failed for {Name}", itemName);
                 var preservation = committedPath != null && File.Exists(committedPath)
                     ? " The downloaded copy was kept. Verify the old copy before retrying."
                     : " The old copy was not touched.";
-                DownloadProgressTracker.Complete(operationId, false, "Replacement failed: " + ex.Message + preservation);
-                DeletePartialFile(partialPath);
+                if (ex is OperationCanceledException && !_pauseRequested.ContainsKey(operationId) && cancellationToken.IsCancellationRequested)
+                {
+                    HandleTransferFailure(job, itemName, ex, cancellationToken, partialPath, "Cancelled. The old copy was not touched.");
+                }
+                else if (ex is OperationCanceledException || IsTransientDownloadFailure(ex))
+                {
+                    HandleTransferFailure(job, itemName, ex, cancellationToken, partialPath);
+                }
+                else
+                {
+                    _logger.LogError(ex, "[Federation] Quality-replace failed for {Name}", itemName);
+                    FailPermanently(job, "Replacement failed: " + ex.Message + preservation);
+                    DeletePartialFile(partialPath);
+                }
             }
             finally
             {
-                if (_cancellationSources.TryRemove(operationId, out var cts))
-                {
-                    cts.Dispose();
-                }
+                ReleaseOwnedCts(operationId, ownedCts);
             }
         }
 
@@ -823,26 +878,378 @@ namespace Jellyfin.Plugin.Federation.Services
         /// external provider, which hands back a complete fetchable URL rather than
         /// a token to mint one from.
         /// </summary>
-        private static async Task DownloadUrlToFileAsync(string url, string destinationPath, IProgress<(long BytesRead, long? TotalBytes)> progress, CancellationToken cancellationToken)
+        private static Task DownloadUrlToFileAsync(
+            string url,
+            string destinationPath,
+            IProgress<(long BytesRead, long? TotalBytes)> progress,
+            CancellationToken cancellationToken,
+            long resumeFrom = 0)
         {
-            using var response = await BrowseDownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            return DownloadTransfer.CopyUrlToFileAsync(
+                BrowseDownloadHttpClient,
+                url,
+                destinationPath,
+                resumeFrom,
+                progress,
+                cancellationToken);
+        }
 
-            var totalBytes = response.Content.Headers.ContentLength;
-            await using var remoteStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-
-            var buffer = new byte[81920];
-            long totalRead = 0;
-            int read;
-            while ((read = await remoteStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+        private DownloadJob NewJob(
+            string kind,
+            string dedupeKey,
+            string itemName,
+            string? serverId,
+            string? remoteItemId,
+            string? federationKey,
+            string? localItemId,
+            bool bulk)
+        {
+            return new DownloadJob
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                totalRead += read;
-                progress.Report((totalRead, totalBytes));
+                OperationId = Guid.NewGuid().ToString(),
+                Kind = kind,
+                State = DownloadJob.StateRunning,
+                DedupeKey = dedupeKey,
+                ItemName = itemName,
+                ServerId = serverId,
+                RemoteItemId = remoteItemId,
+                FederationKey = federationKey,
+                LocalItemId = localItemId,
+                Bulk = bulk,
+                StartedUtc = DateTime.UtcNow
+            };
+        }
+
+        private void EnqueueAndStart(DownloadJob job, Func<CancellationToken, Task> worker)
+        {
+            PersistJob(job);
+            DownloadProgressTracker.Start(job.OperationId, job.DedupeKey, job.ItemName);
+            var cts = new CancellationTokenSource();
+            _cancellationSources[job.OperationId] = cts;
+            _ = Task.Run(() => worker(cts.Token));
+        }
+
+        private bool TryResumeExisting(string dedupeKey, out string? operationId)
+        {
+            operationId = null;
+            var job = _queue.FindByDedupeKey(dedupeKey);
+            if (job == null)
+            {
+                return false;
             }
 
-            progress.Report((totalRead, totalBytes));
+            if (_cancellationSources.ContainsKey(job.OperationId)
+                && !string.Equals(job.State, DownloadJob.StatePaused, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            ResumeJob(job);
+            operationId = job.OperationId;
+            return true;
+        }
+
+        private void ResumeJob(DownloadJob job)
+        {
+            if (_cancellationSources.ContainsKey(job.OperationId))
+            {
+                return;
+            }
+
+            _pauseRequested.TryRemove(job.OperationId, out _);
+            job.State = DownloadJob.StateRunning;
+            job.PauseReason = null;
+            PersistJob(job);
+            DownloadProgressTracker.Restore(ToProgress(job));
+            DownloadProgressTracker.Resume(job.OperationId);
+
+            var cts = new CancellationTokenSource();
+            _cancellationSources[job.OperationId] = cts;
+            _ = Task.Run(() => RunQueuedJobAsync(job, cts.Token));
+        }
+
+        private async Task RunQueuedJobAsync(DownloadJob job, CancellationToken cancellationToken)
+        {
+            _cancellationSources.TryGetValue(job.OperationId, out var ownedCts);
+            try
+            {
+                switch (job.Kind)
+                {
+                    case DownloadJob.KindBrowse:
+                        {
+                            var server = _federationManager.GetServer(job.ServerId ?? string.Empty);
+                            if (server == null)
+                            {
+                                FailPermanently(job, "Source server is not configured.");
+                                return;
+                            }
+
+                            await RunBrowseDownloadAsync(job, server, job.RemoteItemId ?? string.Empty, job.ItemName, job.Bulk, cancellationToken).ConfigureAwait(false);
+                            return;
+                        }
+
+                    case DownloadJob.KindQualityReplace:
+                        {
+                            if (!Guid.TryParse(job.LocalItemId, out var oldItemGuid))
+                            {
+                                FailPermanently(job, "Invalid item id.");
+                                return;
+                            }
+
+                            var server = _federationManager.GetServer(job.ServerId ?? string.Empty);
+                            if (server == null)
+                            {
+                                FailPermanently(job, "Source server is not configured.");
+                                return;
+                            }
+
+                            await RunQualityReplaceAsync(job, oldItemGuid, server, job.RemoteItemId ?? string.Empty, job.ItemName, cancellationToken).ConfigureAwait(false);
+                            return;
+                        }
+
+                    default:
+                        {
+                            if (!Guid.TryParse(job.LocalItemId, out var itemGuid))
+                            {
+                                FailPermanently(job, "Invalid item id.");
+                                return;
+                            }
+
+                            var entry = string.IsNullOrEmpty(job.FederationKey)
+                                ? null
+                                : _federationManager.Cache.GetEntryByKey(job.FederationKey);
+                            var source = entry?.GetSourcesSnapshot()
+                                .FirstOrDefault(s => string.Equals(s.ServerId, job.ServerId, StringComparison.OrdinalIgnoreCase))
+                                ?? entry?.GetPrimarySource();
+                            if (entry == null || source == null)
+                            {
+                                PauseJob(job, "Paused — the catalog entry is missing; it will retry after the next sync.");
+                                return;
+                            }
+
+                            await RunDownloadAsync(job, itemGuid, entry, source, cancellationToken).ConfigureAwait(false);
+                            return;
+                        }
+                }
+            }
+            finally
+            {
+                ReleaseOwnedCts(job.OperationId, ownedCts);
+            }
+        }
+
+        private void ReleaseOwnedCts(string operationId, CancellationTokenSource? ownedCts)
+        {
+            if (ownedCts == null)
+            {
+                return;
+            }
+
+            if (_cancellationSources.TryGetValue(operationId, out var current)
+                && ReferenceEquals(current, ownedCts)
+                && _cancellationSources.TryRemove(operationId, out var removed))
+            {
+                removed.Dispose();
+                if (_resumeWhenPaused.TryRemove(operationId, out _))
+                {
+                    var job = _queue.Get(operationId);
+                    if (job != null)
+                    {
+                        ResumeJob(job);
+                    }
+                }
+            }
+        }
+
+        private async Task TransferJobAsync(
+            DownloadJob job,
+            RemoteServer server,
+            string remoteId,
+            bool bulk,
+            string status,
+            CancellationToken cancellationToken)
+        {
+            var partialPath = job.PartialPath ?? throw new InvalidOperationException("Download path was not allocated.");
+            var resumeFrom = File.Exists(partialPath) ? new FileInfo(partialPath).Length : 0;
+            if (resumeFrom > 0)
+            {
+                DownloadProgressTracker.UpdateBytes(job.OperationId, resumeFrom, job.TotalBytes, status);
+            }
+            else
+            {
+                DownloadProgressTracker.Update(job.OperationId, status);
+            }
+
+            var progress = new ImmediateProgress<(long BytesRead, long? TotalBytes)>(p =>
+            {
+                DownloadProgressTracker.UpdateBytes(job.OperationId, p.BytesRead, p.TotalBytes, status);
+                job.BytesDownloaded = p.BytesRead;
+                job.TotalBytes = p.TotalBytes;
+                PersistJobProgress(job);
+            });
+
+            if (_qualityDownloadOverride != null)
+            {
+                await _qualityDownloadOverride(server, remoteId, partialPath, progress, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (server.Kind == ServerKind.Jellyfin)
+            {
+                var client = _clientFactory.GetClient(server) ?? _federationManager.GetClient(server.Id);
+                if (client == null)
+                {
+                    throw new InvalidOperationException("Source server is not configured.");
+                }
+
+                await client.DownloadToFileAsync(remoteId, partialPath, progress, cancellationToken, bulk, resumeFrom).ConfigureAwait(false);
+                return;
+            }
+
+            var provider = _externalCatalogs.For(server);
+            var url = provider == null
+                ? null
+                : await provider.ResolveStreamUrlAsync(server, remoteId, cancellationToken).ConfigureAwait(false);
+            if (url == null)
+            {
+                throw new InvalidOperationException("Could not resolve a download URL from the remote server.");
+            }
+
+            await DownloadUrlToFileAsync(MarkExternalDownload(url, bulk), partialPath, progress, cancellationToken, resumeFrom).ConfigureAwait(false);
+        }
+
+        private bool ShouldHoldForOfflineServer(RemoteServer server, DownloadJob job)
+        {
+            if (!IsServerOffline(server.Id))
+            {
+                return false;
+            }
+
+            PauseJob(job, "Paused — waiting for " + server.Name + " to come back");
+            return true;
+        }
+
+        private static bool IsServerOffline(string? serverId)
+        {
+            return !string.IsNullOrEmpty(serverId)
+                && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(serverId) == true;
+        }
+
+        private void PersistJob(DownloadJob job)
+        {
+            job.LastPersistUtc = DateTime.UtcNow;
+            _queue.Upsert(job);
+        }
+
+        private void PersistJobProgress(DownloadJob job)
+        {
+            if (DateTime.UtcNow - job.LastPersistUtc < TimeSpan.FromSeconds(1))
+            {
+                return;
+            }
+
+            PersistJob(job);
+        }
+
+        private void SucceedJob(DownloadJob job, string message)
+        {
+            _queue.Remove(job.OperationId);
+            DownloadProgressTracker.Complete(job.OperationId, true, message);
+        }
+
+        private void FailPermanently(DownloadJob job, string message)
+        {
+            _queue.Remove(job.OperationId);
+            DownloadProgressTracker.Complete(job.OperationId, false, message);
+        }
+
+        private void PauseJob(DownloadJob job, string reason)
+        {
+            job.State = DownloadJob.StatePaused;
+            job.PauseReason = reason;
+            if (job.PartialPath != null && File.Exists(job.PartialPath))
+            {
+                job.BytesDownloaded = new FileInfo(job.PartialPath).Length;
+            }
+
+            PersistJob(job);
+            DownloadProgressTracker.Restore(ToProgress(job));
+            DownloadProgressTracker.Pause(job.OperationId, reason);
+        }
+
+        private void HandleTransferFailure(
+            DownloadJob job,
+            string itemName,
+            Exception ex,
+            CancellationToken cancellationToken,
+            string? partialPath,
+            string? cancelledMessage = null)
+        {
+            if (ex is OperationCanceledException
+                && (_pauseRequested.TryRemove(job.OperationId, out _) || !cancellationToken.IsCancellationRequested))
+            {
+                var reason = cancellationToken.IsCancellationRequested
+                    ? "Paused — the source server is unreachable"
+                    : "Paused after a transfer interruption — will retry automatically";
+                _logger.LogInformation("[Federation] Download paused for {Name}: {Reason}", itemName, reason);
+                PauseJob(job, reason);
+                return;
+            }
+
+            if (ex is OperationCanceledException)
+            {
+                _logger.LogInformation("[Federation] Download cancelled for {Name}", itemName);
+                FailPermanently(job, cancelledMessage ?? "Cancelled.");
+                DeletePartialFile(partialPath);
+                return;
+            }
+
+            if (IsTransientDownloadFailure(ex))
+            {
+                _logger.LogWarning(ex, "[Federation] Download paused for {Name} after a transfer error", itemName);
+                PauseJob(job, "Paused after a transfer error — will retry automatically. " + ex.Message);
+                return;
+            }
+
+            _logger.LogError(ex, "[Federation] Download failed for {Name}", itemName);
+            FailPermanently(job, "Download failed: " + ex.Message);
+            DeletePartialFile(partialPath);
+        }
+
+        private static bool IsTransientDownloadFailure(Exception ex)
+        {
+            return ex is HttpRequestException
+                or IOException
+                or TaskCanceledException
+                or TimeoutException;
+        }
+
+        private static DownloadProgress ToProgress(DownloadJob job)
+        {
+            var paused = string.Equals(job.State, DownloadJob.StatePaused, StringComparison.OrdinalIgnoreCase);
+            double percent = 0;
+            if (job.TotalBytes is > 0)
+            {
+                percent = Math.Min(100.0, job.BytesDownloaded * 100.0 / job.TotalBytes.Value);
+            }
+
+            return new DownloadProgress
+            {
+                OperationId = job.OperationId,
+                LocalItemId = job.DedupeKey,
+                ItemName = job.ItemName,
+                DestinationPath = job.DestinationPath,
+                PercentComplete = percent,
+                Status = paused ? (job.PauseReason ?? "Paused") : "Downloading...",
+                IsComplete = false,
+                Paused = paused,
+                Success = false,
+                StartTime = job.StartedUtc,
+                LastUpdate = DateTime.UtcNow,
+                BytesDownloaded = job.BytesDownloaded,
+                TotalBytes = job.TotalBytes,
+                BytesPerSecond = paused ? 0 : null
+            };
         }
 
         internal static string MarkExternalDownload(string url, bool bulk)

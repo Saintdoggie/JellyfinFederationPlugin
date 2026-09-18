@@ -45,6 +45,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
         private readonly FederationArtworkService? _artworkService;
+        private readonly SemaphoreSlim _reconcileGate = new(1, 1);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationItemPersistenceService"/> class.
@@ -98,6 +99,9 @@ namespace Jellyfin.Plugin.Federation.Services
             bool sweepSyntheticSeasons = false,
             bool forceRecreateAll = false)
         {
+            await _reconcileGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
             try
             {
                 var root = _libraryManager.GetUserRootFolder();
@@ -308,10 +312,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 var hiddenKeys = new HashSet<string>(config?.HiddenFederatedItemIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}, hiddenKeys={HiddenKeyCount}",
+                    "[Federation] Debug {Name}: localProviderIds collected={LocalProviderIdCount}, hiddenKeys={HiddenKeyCount}, offlineServers={OfflineCount} [{OfflineIds}]",
                     mapping.LocalLibraryName,
                     localProviderIds.Count,
-                    hiddenKeys.Count);
+                    hiddenKeys.Count,
+                    offlineServerIds.Count,
+                    string.Join(",", offlineServerIds));
 
                 // Seasons/Episodes nest under a Series entry via ParentKey instead of
                 // itemParent directly (see IsEntryValid). An entry is only safe to
@@ -342,7 +348,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                if (hideOffline && IsEntryOffline(e, offlineServerIds))
+                    if (hideOffline && IsEntryOffline(e, offlineServerIds))
                     {
                         skipOffline++;
                         continue;
@@ -419,12 +425,16 @@ namespace Jellyfin.Plugin.Federation.Services
                         || forcedRecreateKeys.Contains(x.Key!))
                     .Select(x => x.Item)
                     .ToList();
+                var hideExisting = hideOffline
+                    ? existing.Count(x => IsEntryOffline(_federationManager.Cache.GetEntryByKey(x.Key!), offlineServerIds))
+                    : 0;
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: existing(federated)={ExistingCount}, toDelete={ToDeleteCount}",
+                    "[Federation] Debug {Name}: existing(federated)={ExistingCount}, toDelete={ToDeleteCount}, hideExisting={HideExisting} (already-materialized offline titles; skipOffline only counts not-yet-created)",
                     mapping.LocalLibraryName,
                     existing.Count,
-                    toDelete.Count);
+                    toDelete.Count,
+                    hideExisting);
 
                 foreach (var stale in toDelete)
                 {
@@ -482,7 +492,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // playable elsewhere, breaking exactly the redundancy dedup exists
                     // to provide. The dynamic provider already picks the first enabled
                     // source this way; this keeps the stamped path consistent with it.
-                    var playable = FirstEnabledSource(entry, config);
+                    var playable = FirstEnabledSource(entry, config, offlineServerIds);
                     var changed = sourceMetadataChanged;
 
                     // The duration/container shown on an item (grid badge, detail page,
@@ -792,6 +802,11 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Failed to reconcile library items for {Name}", mapping.LocalLibraryName);
             }
+            }
+            finally
+            {
+                _reconcileGate.Release();
+            }
         }
 
         /// <summary>
@@ -807,15 +822,26 @@ namespace Jellyfin.Plugin.Federation.Services
         /// exact redundancy dedup exists to provide.
         /// </para>
         /// </summary>
-        internal static FederatedSource? FirstEnabledSource(FederatedCacheEntry entry, PluginConfiguration? config)
+        internal static FederatedSource? FirstEnabledSource(
+            FederatedCacheEntry entry,
+            PluginConfiguration? config,
+            HashSet<string>? offlineServerIds = null)
         {
             foreach (var candidate in entry.GetSourcesSnapshot())
             {
-                var candidateServer = config?.RemoteServers?.FirstOrDefault(s => s.Id == candidate.ServerId);
-                if (candidateServer != null && candidateServer.Enabled)
+                var candidateServer = config?.RemoteServers?.FirstOrDefault(s =>
+                    string.Equals(s.Id, candidate.ServerId, StringComparison.OrdinalIgnoreCase));
+                if (candidateServer == null || !candidateServer.Enabled)
                 {
-                    return candidate;
+                    continue;
                 }
+
+                if (offlineServerIds != null && offlineServerIds.Contains(candidate.ServerId))
+                {
+                    continue;
+                }
+
+                return candidate;
             }
 
             return null;
@@ -1077,18 +1103,9 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// True when every source backing <paramref name="entry"/> (and, for a
-        /// nested entry, every source backing each ancestor up the ParentKey
-        /// chain - checked by the caller via <see cref="IsEntryValid"/>) sits on
-        /// a currently-offline server. A deduped entry with at least one
-        /// reachable source stays visible.
-        /// </summary>
-        /// <summary>
-        /// True when every source backing <paramref name="entry"/> (and, for a
-        /// nested entry, every source backing each ancestor up the ParentKey
-        /// chain - checked by the caller via <see cref="IsEntryValid"/>) sits on
-        /// a currently-offline server. A deduped entry with at least one
-        /// reachable source stays visible.
+        /// True when every source backing <paramref name="entry"/> sits on a
+        /// currently-offline server. A deduped entry with at least one reachable
+        /// source stays visible.
         /// </summary>
         internal static bool IsEntryOffline(FederatedCacheEntry? entry, HashSet<string> offlineServerIds)
         {

@@ -45,9 +45,13 @@ namespace Jellyfin.Plugin.Federation.Services
             FederatedCacheEntry entry,
             CancellationToken cancellationToken)
         {
-            var source = entry.GetPrimarySource();
-            var tag = source?.PrimaryImageTag ?? entry.Metadata.PrimaryImageTag;
-            if (string.IsNullOrWhiteSpace(tag) || source == null)
+            // Deduped titles often have a Jellyfin primary and a Plex sibling.
+            // The Plex thumb is the one this plugin can copy locally; using only
+            // GetPrimarySource() skipped every mixed item whose primary was not
+            // Plex, and skipped Plex-only items whose catalog snapshot never
+            // stored a thumb tag.
+            var source = FindExternalArtworkSource(entry);
+            if (source == null)
             {
                 return false;
             }
@@ -60,6 +64,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
+            var tag = source.PrimaryImageTag
+                ?? entry.Metadata.PrimaryImageTag
+                ?? $"native:{nativeId}";
             var savedTag = item.GetProviderId(PrimaryImageTagProviderId);
             if (item.HasImage(ImageType.Primary, 0)
                 && string.Equals(savedTag, tag, StringComparison.Ordinal))
@@ -103,6 +110,29 @@ namespace Jellyfin.Plugin.Federation.Services
                     server.Name);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// First enabled non-Jellyfin source that can identify a native item,
+        /// regardless of which source is currently Primary.
+        /// </summary>
+        internal FederatedSource? FindExternalArtworkSource(FederatedCacheEntry entry)
+        {
+            foreach (var source in entry.GetSourcesSnapshot())
+            {
+                var server = _federationManager.GetServer(source.ServerId);
+                if (server == null || !server.Enabled || _externalCatalogs.For(server) == null)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(entry.GetNativeId(source)))
+                {
+                    return source;
+                }
+            }
+
+            return null;
         }
     }
 }

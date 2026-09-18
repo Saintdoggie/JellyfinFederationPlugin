@@ -74,7 +74,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<IStartupFilter, ConfigurationPageCompressionFixStartupFilter>();
 
             serviceCollection.AddHostedService<FederationEntryPoint>();
-            serviceCollection.AddHostedService<FederationAvailabilityService>();
+            // Must be the same singleton EntryPoint/persistence consult: AddHostedService<T>()
+            // would construct a second instance whose probes never reach IsOffline().
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederationAvailabilityService>());
         }
     }
 }

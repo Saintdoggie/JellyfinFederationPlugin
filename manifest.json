@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.166",
+        "changelog": "Unreachable friends' titles now hide and return: the availability pinger and the hide/restore path share one service instance, so Plex-only (or any single-server) items leave the library while that friend is down and are recreated from cache when it answers again. Server-to-server downloads survive a restart: partial files resume via HTTP Range, pause when the source is unreachable, and keep showing size and speed. Plex posters are copied into Jellyfin's local image store by native id even when the catalog snapshot has no thumb tag.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-18T15:00:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.166/Jellyfin.Federation.zip",
+        "checksum": "b994415fcf52819355eb37178ea551f9"
+      },
+      {
         "version": "0.0.165",
         "changelog": "Fix federated playback when Auto fails over to a duplicate in a different container: ffmpeg was launched with the primary's -f (Matroska) while Auto served MP4 bytes, which exited 183. Mixed-container Auto items no longer stamp a single container, Auto prefers a live sibling the advertised demuxer can parse, and a failed live preflight no longer leaves a title with zero playable sources.",
         "targetAbi": "12.0.0.0",
