@@ -84,6 +84,16 @@
       '.federation-actionsheet-item:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:-2px;}',
       '@media(forced-colors:active){.federation-badge-corner{background:Canvas;color:CanvasText;border:1px solid CanvasText;}}',
 
+      // Library origin tabs: All / this server / each federated friend.
+      '.federation-origin-filter{display:flex;flex-wrap:wrap;align-items:center;gap:.35em;width:100%;padding:.15em 0 .7em;margin:0;}',
+      '.federation-origin-filter[data-empty="1"]{display:none;}',
+      '.federation-origin-tab{border:0;background:transparent;color:inherit;opacity:.72;font:inherit;line-height:1.2;padding:.45em .9em;border-radius:.45em;cursor:pointer;}',
+      '.federation-origin-tab[aria-selected="true"]{opacity:1;color:var(--theme-primary-color,#00a4dc);background:rgba(0,164,220,.14);}',
+      '.federation-origin-tab:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:2px;}',
+      '.card.federation-origin-hidden,.listItem.federation-origin-hidden{display:none!important;}',
+      '.federation-origin-empty{display:none;padding:1.4em .2em;opacity:.7;}',
+      '.federation-origin-empty[data-show="1"]{display:block;}',
+
       // Download/Hide entries injected into the native "..." action sheet
       // (.actionSheetMenuItem) - no rules of our own needed beyond a disabled
       // look while busy, since every other visual (icon, label, hover, focus)
@@ -1047,6 +1057,300 @@
     '.listItem[data-id]:not([data-federation-badge])'
   ].join(',');
 
+  var ORIGIN_STORAGE_KEY = 'federation-origin-filter';
+  var ORIGIN_OTHER = 'Other servers';
+
+  function getOriginFilter() {
+    try {
+      return sessionStorage.getItem(ORIGIN_STORAGE_KEY) || 'all';
+    } catch (e) {
+      return 'all';
+    }
+  }
+
+  function setOriginFilter(mode) {
+    try {
+      sessionStorage.setItem(ORIGIN_STORAGE_KEY, mode);
+    } catch (e) { /* sessionStorage unavailable */ }
+  }
+
+  function uniqueFriendNames() {
+    var names = [];
+    var seen = {};
+    federatedIds.forEach(function (name) {
+      var label = (name || '').trim() || ORIGIN_OTHER;
+      if (!seen[label]) {
+        seen[label] = true;
+        names.push(label);
+      }
+    });
+    names.sort(function (a, b) { return a.localeCompare(b); });
+    return names;
+  }
+
+  function originModeForCard(id) {
+    if (!federatedIds.has(id)) {
+      return 'local';
+    }
+
+    var name = (federatedIds.get(id) || '').trim() || ORIGIN_OTHER;
+    return 'friend:' + name;
+  }
+
+  function cardMatchesOrigin(el) {
+    var mode = getOriginFilter();
+    if (mode === 'all') {
+      return true;
+    }
+
+    var id = normalizeId(el.getAttribute('data-id'));
+    var cardMode = originModeForCard(id);
+    if (mode === 'local') {
+      return cardMode === 'local';
+    }
+
+    return cardMode === mode;
+  }
+
+  function applyOriginVisibility() {
+    var mode = getOriginFilter();
+    document.querySelectorAll('.card[data-id], .listItem[data-id]').forEach(function (el) {
+      el.classList.toggle('federation-origin-hidden', !cardMatchesOrigin(el));
+    });
+
+    document.querySelectorAll('.itemsContainer').forEach(function (container) {
+      var empty = container.querySelector(':scope > .federation-origin-empty');
+      if (mode === 'all') {
+        if (empty) {
+          empty.setAttribute('data-show', '0');
+        }
+
+        return;
+      }
+
+      var visibleCards = container.querySelectorAll(':scope > .card[data-id]:not(.federation-origin-hidden), :scope > .listItem[data-id]:not(.federation-origin-hidden)');
+      if (!empty) {
+        empty = document.createElement('p');
+        empty.className = 'federation-origin-empty';
+        container.appendChild(empty);
+      }
+
+      empty.textContent = 'No titles from this source in the current view.';
+      empty.setAttribute('data-show', visibleCards.length === 0 ? '1' : '0');
+    });
+  }
+
+  function joinQueryTag(existing, tag) {
+    if (!tag) {
+      return existing;
+    }
+
+    if (Array.isArray(existing)) {
+      return existing.indexOf(tag) >= 0 ? existing : existing.concat([tag]);
+    }
+
+    var current = existing ? String(existing) : '';
+    if (!current) {
+      return tag;
+    }
+
+    var parts = current.split(',');
+    if (parts.indexOf(tag) >= 0) {
+      return current;
+    }
+
+    return current + ',' + tag;
+  }
+
+  function applyOriginToOptions(options) {
+    var mode = getOriginFilter();
+    if (!options || mode === 'all') {
+      return;
+    }
+
+    if (mode === 'local') {
+      options.ExcludeItemTags = joinQueryTag(options.ExcludeItemTags, 'Federated');
+      return;
+    }
+
+    if (mode.indexOf('friend:') === 0) {
+      options.Tags = joinQueryTag(options.Tags, '🌐 ' + mode.slice(7));
+    }
+  }
+
+  function isItemsListUrl(url) {
+    if (!url || url.indexOf('/Plugins/') !== -1) {
+      return false;
+    }
+
+    var path = String(url).split('?')[0];
+    return /\/Items\/?$/.test(path) || /\/Users\/[^/]+\/Items\/?$/.test(path);
+  }
+
+  function applyOriginToUrl(url) {
+    var mode = getOriginFilter();
+    if (mode === 'all' || !isItemsListUrl(url)) {
+      return url;
+    }
+
+    try {
+      var parsed = new URL(url, window.location.origin);
+      if (mode === 'local') {
+        parsed.searchParams.set('ExcludeItemTags', joinQueryTag(parsed.searchParams.get('ExcludeItemTags'), 'Federated'));
+      } else if (mode.indexOf('friend:') === 0) {
+        parsed.searchParams.set('Tags', joinQueryTag(parsed.searchParams.get('Tags'), '🌐 ' + mode.slice(7)));
+      }
+
+      return parsed.pathname + parsed.search + parsed.hash;
+    } catch (e) {
+      return url;
+    }
+  }
+
+  function hookOriginQueries() {
+    if (!window.__federationOriginFetchHook) {
+      window.__federationOriginFetchHook = true;
+      var origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        try {
+          var url = typeof input === 'string' ? input : (input && input.url);
+          var next = url ? applyOriginToUrl(url) : url;
+          if (next && next !== url) {
+            input = typeof input === 'string' ? next : new Request(next, input);
+          }
+        } catch (e) { /* leave the request unchanged */ }
+
+        return origFetch.call(this, input, init);
+      };
+    }
+
+    if (!window.ApiClient || window.ApiClient.__federationOriginHook) {
+      return;
+    }
+
+    window.ApiClient.__federationOriginHook = true;
+    if (typeof window.ApiClient.getItems === 'function') {
+      var origGetItems = window.ApiClient.getItems.bind(window.ApiClient);
+      window.ApiClient.getItems = function (userId, options) {
+        options = Object.assign({}, options || {});
+        applyOriginToOptions(options);
+        return origGetItems(userId, options);
+      };
+    }
+  }
+
+  function reloadLibraryItems() {
+    document.querySelectorAll('.itemsContainer').forEach(function (container) {
+      try {
+        if (typeof container.notifyRefreshNeeded === 'function') {
+          container.notifyRefreshNeeded(true);
+        }
+      } catch (e) { /* visibility filter still applies */ }
+    });
+  }
+
+  function originHostPage() {
+    var page = document.querySelector('.page:not(.hide)');
+    if (!page) {
+      return null;
+    }
+
+    if (page.classList.contains('type-interior') || page.id === 'federationConfigPage' || page.classList.contains('itemDetailPage')) {
+      return null;
+    }
+
+    if (/#!\/details/i.test(location.hash || location.href || '')) {
+      return null;
+    }
+
+    if (page.classList.contains('libraryPage') || page.classList.contains('homePage') || page.classList.contains('searchPage')) {
+      return page;
+    }
+
+    return null;
+  }
+
+  function originToolbar(page) {
+    return page.querySelector('.itemsViewSettingsContainer')
+      || page.querySelector('.btnFilter-wrapper')
+      || (page.querySelector('.btnFilter') && page.querySelector('.btnFilter').parentElement)
+      || page.querySelector('.padded-left.padded-right.padded-top')
+      || page.querySelector('.padded-left.padded-right');
+  }
+
+  function renderOriginFilter() {
+    hookOriginQueries();
+    var page = originHostPage();
+    document.querySelectorAll('.federation-origin-filter').forEach(function (bar) {
+      if (!page || !page.contains(bar)) {
+        bar.remove();
+      }
+    });
+
+    if (!page) {
+      applyOriginVisibility();
+      return;
+    }
+
+    var friends = uniqueFriendNames();
+    var mode = getOriginFilter();
+    var signature = friends.join('\t') + '|' + mode;
+    var bar = page.querySelector(':scope .federation-origin-filter');
+    if (!bar) {
+      var toolbar = originToolbar(page);
+      if (!toolbar || !toolbar.parentNode) {
+        applyOriginVisibility();
+        return;
+      }
+
+      bar = document.createElement('div');
+      bar.className = 'federation-origin-filter padded-left padded-right';
+      bar.setAttribute('role', 'tablist');
+      bar.setAttribute('aria-label', 'Library source');
+      toolbar.parentNode.insertBefore(bar, toolbar.nextSibling);
+      bar.addEventListener('click', function (event) {
+        var tab = event.target.closest('.federation-origin-tab');
+        if (!tab) {
+          return;
+        }
+
+        event.preventDefault();
+        var next = tab.getAttribute('data-origin') || 'all';
+        if (next.indexOf('friend:') === 0) {
+          try {
+            next = 'friend:' + decodeURIComponent(next.slice(7));
+          } catch (e) { /* keep encoded value */ }
+        }
+
+        setOriginFilter(next);
+        renderOriginFilter();
+        reloadLibraryItems();
+      });
+    }
+
+    if (bar.getAttribute('data-signature') === signature) {
+      applyOriginVisibility();
+      return;
+    }
+
+    var tabs = [{ origin: 'all', label: 'All' }, { origin: 'local', label: 'This server' }];
+    friends.forEach(function (name) {
+      tabs.push({ origin: 'friend:' + encodeURIComponent(name), label: name });
+    });
+
+    bar.setAttribute('data-signature', signature);
+    bar.setAttribute('data-empty', friends.length === 0 ? '1' : '0');
+    bar.innerHTML = tabs.map(function (tab) {
+      var selected = tab.origin === 'all' ? mode === 'all'
+        : tab.origin === 'local' ? mode === 'local'
+          : mode === 'friend:' + decodeURIComponent(tab.origin.slice(7));
+      return '<button type="button" class="federation-origin-tab" role="tab" data-origin="'
+        + tab.origin + '" aria-selected="' + (selected ? 'true' : 'false') + '">'
+        + tab.label.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</button>';
+    }).join('');
+    applyOriginVisibility();
+  }
+
   function scan() {
     if (!clientSettingsLoaded) {
       return;
@@ -1057,6 +1361,7 @@
     badgeDetailPage();
     refreshDownloadRingsOnCards();
     updateDetailPageRing();
+    renderOriginFilter();
   }
 
   var scheduled = false;
