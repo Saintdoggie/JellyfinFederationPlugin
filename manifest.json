@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.168",
+        "changelog": "Fix federated 4K HDR playback failures caused by WAN-capped remote transcoding. Static Direct streams now serve the original file they advertise, avoiding upstream HTTP 500 errors and MKV/MP4 format mismatches. Log upstream stream failures without exposing playback tokens.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-24T13:33:10Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.168/Jellyfin.Federation.zip",
+        "checksum": "47ebd1563c90b1b8f559ba4b944d2c3f"
+      },
+      {
         "version": "0.0.167",
         "changelog": "Movies, Shows, Home and Search get an injected source tab strip: All, This server, and one tab per federated friend. Choosing a source filters both the on-screen cards and Jellyfin item queries so paging stays filled.",
         "targetAbi": "12.0.0.0",
