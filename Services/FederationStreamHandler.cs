@@ -178,8 +178,14 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var audioFlag = isAudio ? "&audio=true" : string.Empty;
-            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, isAudio);
-            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}{capQuery}";
+            // This URL feeds the item's static Path (including Auto/fallback).
+            // Jellyfin advertises that source with the original container and
+            // media streams. A WAN cap would make DirectStream return an MP4
+            // H.264/AAC transcode instead, while local ffmpeg still opens it as
+            // the original MKV/HEVC/HDR file. Keep the static relay raw; the
+            // per-request provider source can advertise and request a capped
+            // representation with matching metadata.
+            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
         }
 
         /// <summary>
@@ -540,7 +546,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
                 // a Direct-mode Jellyfin peer: real-world audio bitrates are already
                 // far below anything worth throttling.
-                var capMbps = isAudio ? null : _bandwidthMonitor.GetEffectiveCapMbps(server);
+                // Throttling the unchanged original file below its encoded
+                // bitrate only starves local ffmpeg. Direct-mode static paths
+                // serve raw bytes so their persisted media description stays
+                // accurate; Proxy/external relays retain their configured cap.
+                var capMbps = isAudio || server.StreamingMode == StreamingMode.Direct && server.Kind == ServerKind.Jellyfin
+                    ? null
+                    : _bandwidthMonitor.GetEffectiveCapMbps(server);
                 var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps).ConfigureAwait(false);
 
                 // A rejected token is almost always the remote having restarted:
@@ -712,6 +724,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                         if (!remoteResp.IsSuccessStatusCode && remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent)
                         {
+                            if ((int)remoteResp.StatusCode >= 500)
+                            {
+                                _logger.LogWarning(
+                                    "[Federation] Upstream stream at {UpstreamHost} returned HTTP {StatusCode}",
+                                    GetSafeUpstreamHost(url),
+                                    (int)remoteResp.StatusCode);
+                            }
+
                             if (!headersSent)
                             {
                                 response.StatusCode = (int)remoteResp.StatusCode;

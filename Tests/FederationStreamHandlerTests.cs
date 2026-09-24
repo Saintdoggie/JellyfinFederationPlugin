@@ -84,6 +84,23 @@ public class FederationStreamHandlerTests : IDisposable
         _plugin.Dispose();
     }
 
+    [Fact]
+    public async Task StaticDirectRelay_UsesOriginalBytesEvenWithWanCap()
+    {
+        var server = _plugin.Configuration.RemoteServers.Single();
+        server.StreamingMode = StreamingMode.Direct;
+        server.WanCapMode = WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 12;
+        server.WanMaxHeight = 1080;
+
+        var url = await _handler.BuildDirectStreamUrlAsync(
+            server.Id, Guid.NewGuid().ToString("N"), false, CancellationToken.None);
+
+        Assert.Contains("/Plugins/Federation/DirectStream/", url);
+        Assert.DoesNotContain("capMbps=", url);
+        Assert.DoesNotContain("maxHeight=", url);
+    }
+
     [Theory]
     [InlineData("https://user:password@friend.example:8096/Plugins/Federation/DirectStream/item?token=super-secret#fragment", "friend.example")]
     [InlineData("http://192.0.2.10/video?X-Plex-Token=plex-secret", "192.0.2.10")]
@@ -709,13 +726,11 @@ public class FederationStreamHandlerTests : IDisposable
     [Fact]
     public async Task ManualWanCap_ThrottlesRelayToTheConfiguredRate()
     {
-        // A Manual WAN cap must be enforced as an actual byte-rate throttle for a
-        // proxied source: unlike a Direct-mode Jellyfin peer (which gets asked to
-        // transcode down to a lower bitrate via a querystring - see
-        // FederationLibraryManager.BuildPlaybackUrl), a proxied relay has no
-        // remote transcode endpoint to negotiate with, so RelayAsync itself has
-        // to pace writes to stay under the configured rate.
+        // A Manual WAN cap must be enforced as an actual byte-rate throttle for
+        // a Proxy-mode source. The static Direct-mode relay serves raw bytes
+        // without a cap so its persisted format remains accurate.
         var server = _plugin.Configuration.RemoteServers.Single(s => s.Id == "serverA");
+        server.StreamingMode = StreamingMode.Proxy;
         server.WanCapMode = WanCapMode.Manual;
         server.WanMaxBitrateMbps = 1; // 125,000 bytes/sec
 
