@@ -171,12 +171,10 @@ namespace Jellyfin.Plugin.Federation.Services
             // EnableRemoteContentProbe pass described above instead.
             //
             // Deliberately independent of whether streamUrl above is non-null, and
-            // no longer WAN-cap aware: the capped Direct-mode transcode URL that
-            // used to force Container="mp4" here is internal-only (never served to
-            // any client - see BuildStaticPath/BuildPlaybackPathAsync), while every
-            // URL a client actually receives - the stamped proxy-gateway Path and
-            // the provider's token-gated DirectStream URL alike - serves the raw
-            // source file. The remote's real container describes those bytes.
+            // no longer WAN-cap aware: the stamped proxy-gateway Path always
+            // serves the raw source file. Per-request provider URLs may request
+            // a WAN-capped transcode and advertise its converted format
+            // separately. The remote's real container describes this static Path.
             //
             // Deduped Auto paths are the exception: ffmpeg is launched against the
             // shared Path with `-f` taken from this stamped Container, then Auto
@@ -927,10 +925,10 @@ namespace Jellyfin.Plugin.Federation.Services
         /// already exists (created before this was tracked, or synced before the
         /// remote reported any) - the reconciliation loop's equivalent of the save in
         /// <see cref="MaterializeItem"/>, for items that path doesn't run for since
-        /// they already exist. No WAN-capped exclusion any more: the capped
-        /// transcode URL is internal-only, while every client-facing URL serves the
-        /// raw source file, so the remote's real stream data describes the bytes
-        /// clients actually get. Returns true when it actually saved anything.
+        /// they already exist. The static Path serves the original file, so the
+        /// remote's real stream data describes its bytes. Per-request provider
+        /// sources describe a capped transcode separately when needed. Returns
+        /// true when it actually saved anything.
         /// </summary>
         public bool TryPersistMediaStreams(BaseItem item, FederatedCacheEntry entry)
         {

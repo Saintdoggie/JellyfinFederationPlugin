@@ -894,13 +894,11 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void RemoteMediaStreams_ArePersistedEvenWhenWanCapped_BecauseClientUrlsServeTheRawFile()
+    public void RemoteMediaStreams_ArePersistedEvenWhenWanCapped_BecauseStaticPathServesTheRawFile()
     {
-        // The WAN-capped Direct URL (a forced h264/aac/mp4 transcode) is
-        // internal-only - never served to any client. Every client-facing URL -
-        // the stamped proxy-gateway Path and the provider's token-gated
-        // DirectStream URL alike - serves the raw source file, so the remote's
-        // real stream data correctly describes the bytes clients actually get.
+        // The static Path serves the original file, even if a WAN cap is
+        // configured. Provider sources can separately advertise a capped
+        // H.264/AAC representation. Persisted streams describe the static Path.
         var server = AddServer();
         server.WanCapMode = Configuration.WanCapMode.Manual;
         server.WanMaxBitrateMbps = 12;
