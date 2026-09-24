@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.167",
-  "changelog": "Movies, Shows, Home and Search get an injected source tab strip: All, This server, and one tab per federated friend. Choosing a source filters both the on-screen cards and Jellyfin item queries so paging stays filled.",
+  "version": "0.0.168",
+  "changelog": "Fix federated 4K HDR playback failures caused by WAN-capped remote transcoding. Static Direct streams now serve the original file they advertise, avoiding upstream HTTP 500 errors and MKV/MP4 format mismatches. Log upstream stream failures without exposing playback tokens.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-18T17:05:00Z",
+  "timestamp": "2026-09-24T13:33:10Z",
   "imageUrl": "thumb.png"
 }
