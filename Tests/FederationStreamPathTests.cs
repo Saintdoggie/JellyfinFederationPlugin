@@ -76,6 +76,41 @@ public class FederationStreamPathTests : IDisposable
 
     public void Dispose() => _plugin.Dispose();
 
+    [Fact]
+    public void OfflinePrimary_BindsStaticTracksAndLabelToOnlineSibling_AndRestoresOnRecovery()
+    {
+        var primary = AddServer();
+        var sibling = new RemoteServer { Id = "serverB", Name = "Online copy", Url = "https://online.example", ApiKey = "key", Enabled = true };
+        _plugin.Configuration.RemoteServers.Add(sibling);
+        var oldId = Guid.NewGuid();
+        var liveId = Guid.NewGuid();
+        var oldStreams = new[] { new MediaStream { Type = MediaStreamType.Audio, Index = 6, Codec = "truehd" } };
+        var liveStreams = new[] { new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac" } };
+        var entry = _cache.UpsertByProviderId("Movies", "imdb", "tt-offline", new BaseItemDto { Name = "Movie", Container = "mkv", MediaStreams = oldStreams, RunTimeTicks = 100 }, primary.Id, oldId, 0, "Movie");
+        _cache.UpsertByProviderId("Movies", "imdb", "tt-offline", new BaseItemDto { Name = "Movie", Container = "mkv", MediaStreams = liveStreams, RunTimeTicks = 200 }, sibling.Id, liveId, 1, "Movie");
+        var persistence = new FederationItemPersistenceService(Mock.Of<ILibraryManager>(), NullLogger<FederationItemPersistenceService>.Instance, _manager, Mock.Of<MediaBrowser.Controller.Persistence.IItemPersistenceService>());
+        using var availability = new FederationAvailabilityService(NullLogger<FederationAvailabilityService>.Instance, Mock.Of<IRemoteServerClientFactory>(), new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()), persistence);
+        availability.RecordResult(primary, false, "offline");
+        availability.RecordResult(primary, false, "offline");
+        FederationItemPersistenceService.AvailabilityOverride = availability;
+        try
+        {
+            var item = _manager.MaterializeItem(entry);
+            _manager.TryPersistMediaStreams(item, entry);
+            Assert.Contains($"serverId=serverB&itemId={liveId:N}", item.Path);
+            Assert.DoesNotContain("auto=true", item.Path);
+            Assert.Equal(200, item.RunTimeTicks);
+            Assert.Equal("serverB", item.GetProviderId("FederationSource"));
+            Assert.Equal("Online copy", FederationLibraryManager.GetServerNameFromTags(item.Tags));
+            _mediaStreamRepository.Verify(r => r.SaveMediaStreams(item.Id, It.Is<IReadOnlyList<MediaStream>>(streams => streams.Single().Index == 1 && streams.Single().Codec == "aac"), It.IsAny<CancellationToken>()), Times.Once);
+            availability.RecordResult(primary, true, null);
+            var recovered = _manager.MaterializeItem(entry);
+            Assert.Contains($"serverId=serverA&itemId={oldId:N}", recovered.Path);
+            Assert.Equal(100, recovered.RunTimeTicks);
+        }
+        finally { FederationItemPersistenceService.AvailabilityOverride = null; }
+    }
+
     private RemoteServer AddServer(StreamingMode mode = StreamingMode.Direct)
     {
         var server = new RemoteServer
@@ -471,7 +506,7 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void MixedContainerSiblings_DoNotStampASingleContainerOnTheItem()
+    public void MixedContainerSiblings_BindStaticPathToItsOwnContainer()
     {
         var mkv = new RemoteServer
         {
@@ -515,8 +550,9 @@ public class FederationStreamPathTests : IDisposable
 
         Assert.True(FederationLibraryManager.SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot()));
         var item = _manager.MaterializeItem(entry);
-        Assert.True(string.IsNullOrEmpty(item.Container));
-        Assert.Contains("&auto=true", item.Path);
+        Assert.Equal("mkv", item.Container);
+        Assert.Contains("serverId=mkv-friend", item.Path);
+        Assert.DoesNotContain("&auto=true", item.Path);
     }
 
     [Fact]
@@ -1187,7 +1223,7 @@ public class FederationStreamPathTests : IDisposable
 
         var item = _manager.MaterializeItem(entry);
         var stableItemId = item.Id;
-        Assert.Contains("&auto=true", item.Path);
+        Assert.DoesNotContain("&auto=true", item.Path);
         item.Path = "stale-path-so-both-live-sources-are-preflighted";
 
         var failedClient = new RemoteServerClient(

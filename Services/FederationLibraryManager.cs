@@ -176,20 +176,13 @@ namespace Jellyfin.Plugin.Federation.Services
             // a WAN-capped transcode and advertise its converted format
             // separately. The remote's real container describes this static Path.
             //
-            // Deduped Auto paths are the exception: ffmpeg is launched against the
-            // shared Path with `-f` taken from this stamped Container, then Auto
-            // may relay a sibling whose bytes are a different family (live:
-            // Matroska `-f` over an MP4 Auto failover → ffmpeg exit 183). Leave
-            // Container unset there so ffmpeg probes the live bytes instead.
-            //
-            // Gated on the server being resolvable and enabled, mirroring
-            // BuildPlaybackUrl's own "no server, no URL" guard.
-            if (IsStreamableType(entry.ItemType) && entry.GetPrimarySource() is { } primaryForContainer
+            // Static paths identify one exact source. A sibling's tracks/container
+            // must never describe its bytes, even when both files are Matroska.
+            if (IsStreamableType(entry.ItemType) && GetPlaybackSource(entry) is { } primaryForContainer
                 && GetServer(primaryForContainer.ServerId) is { Enabled: true }
-                && !SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot())
-                && !string.IsNullOrEmpty(entry.Metadata.Container))
+                && !string.IsNullOrEmpty(primaryForContainer.Container ?? entry.Metadata.Container))
             {
-                item.Container = entry.Metadata.Container;
+                item.Container = primaryForContainer.Container ?? entry.Metadata.Container;
             }
 
             item.Overview = entry.Metadata.Overview;
@@ -197,7 +190,7 @@ namespace Jellyfin.Plugin.Federation.Services
             item.PremiereDate = entry.Metadata.PremiereDate;
             item.CommunityRating = entry.Metadata.CommunityRating;
             item.OfficialRating = entry.Metadata.OfficialRating;
-            item.RunTimeTicks = entry.Metadata.RunTimeTicks;
+            item.RunTimeTicks = GetPlaybackSource(entry)?.RunTimeTicks ?? entry.Metadata.RunTimeTicks;
             item.Studios = entry.Metadata.Studios ?? Array.Empty<string>();
             item.Genres = entry.Metadata.Genres ?? Array.Empty<string>();
 
@@ -211,7 +204,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string? sourceServerName = null;
             try
             {
-                sourceServerName = entry.GetPrimarySource() is { } primarySource
+                sourceServerName = GetPlaybackSource(entry) is { } primarySource
                     ? GetServer(primarySource.ServerId)?.Name
                     : null;
             }
@@ -316,7 +309,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // providers, and FederationItemPersistenceService's dedup check).
             item.ProviderIds["FederationKey"] = entry.Key;
 
-            var primary = entry.GetPrimarySource();
+            var primary = GetPlaybackSource(entry);
             if (primary != null)
             {
                 item.ProviderIds["FederationSource"] = primary.ServerId;
@@ -403,6 +396,13 @@ namespace Jellyfin.Plugin.Federation.Services
             return Plugin.Instance?.Configuration?.RemoteServers?.Find(s => s.Id == serverId);
         }
 
+        /// <summary>Source whose bytes and persisted playback metadata must agree.</summary>
+        internal FederatedSource? GetPlaybackSource(FederatedCacheEntry entry)
+            => FederationItemPersistenceService.FirstEnabledSource(
+                entry,
+                Plugin.Instance?.Configuration,
+                FederationItemPersistenceService.ResolveOfflineServerIds(Plugin.Instance?.Configuration));
+
         /// <summary>
         /// Resolves the stream URL for an entry's primary source, or null when the
         /// entry isn't streamable media (a Series/Season folder), has no source, or
@@ -421,7 +421,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var primary = entry.GetPrimarySource();
+                var primary = GetPlaybackSource(entry);
                 return primary == null ? null : BuildStaticPath(entry, primary);
             }
             catch (Exception ex)
@@ -494,15 +494,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            // A deduplicated item needs one stable Play-button path, but its
-            // preferred source is a runtime decision: health and measured WAN
-            // capacity can change without recreating the Jellyfin item. Mark the
-            // shared path as Auto so the relay preflights and ranks all siblings.
+            // Bind the static source to the file its persisted tracks describe.
+            // Reconciliation changes both together when reachability changes.
             return BuildProxyStreamUrl(
                 entry.ItemType,
                 src,
                 download: download,
-                autoSelect: !download && entry.GetSourcesSnapshot().Length > 1);
+                autoSelect: false);
         }
 
         /// <summary>
@@ -932,16 +930,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool TryPersistMediaStreams(BaseItem item, FederatedCacheEntry entry)
         {
-            if (SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot()))
+            var selected = GetPlaybackSource(entry);
+            var streams = selected?.MediaStreams
+                ?? (ReferenceEquals(selected, entry.GetPrimarySource()) ? entry.Metadata.MediaStreams : null);
+            if (streams is not { Length: > 0 })
             {
-                // Primary-only streams would make StreamBuilder emit `-f`/HDR
-                // filters for a sibling Auto may not deliver. Probe the live Path.
                 return ClearPersistedMediaStreams(item);
-            }
-
-            if (entry.Metadata.MediaStreams is not { Length: > 0 } streams)
-            {
-                return false;
             }
 
             try

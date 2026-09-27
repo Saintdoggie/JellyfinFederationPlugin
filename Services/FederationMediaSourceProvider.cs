@@ -119,7 +119,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var entrySources = entry.GetSourcesSnapshot();
-                var primaryIndex = Math.Min(entry.PrimarySourceIndex, entrySources.Length - 1);
+                var selectedStaticSource = _federationManager.GetPlaybackSource(entry);
+                var primaryIndex = Array.IndexOf(entrySources, selectedStaticSource);
                 var localUserId = await ResolveLocalUserId().ConfigureAwait(false);
 
                 _logger.LogInformation(
