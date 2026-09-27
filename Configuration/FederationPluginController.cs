@@ -557,6 +557,18 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize]
         [Produces("application/json")]
         public ActionResult<object> GetFederatedIds()
+            => Ok(BuildClientCatalog().Items);
+
+        [HttpGet("ClientCatalog")]
+        [Authorize]
+        [Produces("application/json")]
+        public ActionResult<object> GetClientCatalog()
+        {
+            var catalog = BuildClientCatalog();
+            return Ok(new { items = catalog.Items, unavailableIds = catalog.UnavailableIds });
+        }
+
+        private (Dictionary<string, string> Items, List<string> UnavailableIds) BuildClientCatalog()
         {
             var config = Plugin.Instance?.Configuration;
 
@@ -565,6 +577,7 @@ namespace Jellyfin.Plugin.Federation.Api
             // only that it is "from somewhere else" - that is the useful half of the
             // information and what makes showing a badge worth the pixels.
             var items = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var unavailableIds = new List<string>();
             foreach (var entry in _federationManager.GetAllEntries())
             {
                 var id = _federationManager.ComputeItemId(entry).ToString("N");
@@ -573,14 +586,21 @@ namespace Jellyfin.Plugin.Federation.Api
                     continue;
                 }
 
-                var primary = entry.GetPrimarySource();
+                var primary = entry.GetSourcesSnapshot().FirstOrDefault(source =>
+                    config?.RemoteServers?.Any(server => server.Id == source.ServerId && server.Enabled) == true
+                    && _availability.GetAvailability(source.ServerId)?.Reachability == ServerReachability.Online);
+                if (primary == null)
+                {
+                    unavailableIds.Add(id);
+                    continue;
+                }
                 var server = primary == null
                     ? null
                     : config?.RemoteServers?.FirstOrDefault(s => s.Id == primary.ServerId);
                 items[id] = server?.Name ?? string.Empty;
             }
 
-            return Ok(items);
+            return (items, unavailableIds);
         }
 
         /// <summary>
@@ -3786,7 +3806,7 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> RescanAvailability(CancellationToken cancellationToken)
         {
-            await _availability.ProbeAllAsync(cancellationToken).ConfigureAwait(false);
+            await _availability.EnsureProbedAsync(cancellationToken).ConfigureAwait(false);
             var config = Plugin.Instance?.Configuration;
             foreach (var mapping in config?.LibraryMappings ?? new List<LibraryMapping>())
             {

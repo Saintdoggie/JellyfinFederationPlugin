@@ -147,6 +147,7 @@
   // id -> source server name ('' when unknown). A map rather than a set so the
   // badge can name the server instead of just asserting "not local".
   var federatedIds = new Map();
+  var unavailableIds = new Set();
   var currentUserIsAdmin = false;
   var showFederatedCloudBadges = false;
   var clientSettingsLoaded = false;
@@ -167,11 +168,13 @@
   }
 
   function refreshFederatedIds() {
-    return federationFetch('/Plugins/Federation/FederatedIds', { credentials: 'same-origin' })
+    return federationFetch('/Plugins/Federation/ClientCatalog', { credentials: 'same-origin' })
       .then(function (res) {
-        return res.ok ? res.json() : {};
+        if (!res.ok) { throw new Error('Catalog unavailable'); }
+        return res.json();
       })
-      .then(function (data) {
+      .then(function (catalog) {
+        var data = catalog.items || {};
         var next = new Map();
         if (Array.isArray(data)) {
           // Older servers returned a bare id list; still honour it so a
@@ -183,7 +186,16 @@
           });
         }
 
+        document.querySelectorAll('.card[data-id], .listItem[data-id]').forEach(function (card) {
+          var id = normalizeId(card.getAttribute('data-id'));
+          if (federatedIds.get(id) !== next.get(id)) {
+            card.removeAttribute('data-federation-badge');
+            card.querySelectorAll('.federation-badge-corner').forEach(function (badge) { badge.remove(); });
+          }
+        });
         federatedIds = next;
+        unavailableIds = new Set((catalog.unavailableIds || []).map(normalizeId));
+        scheduleScan();
       })
       .catch(function () {
         // Leave the previous set in place; try again on the next interval.
@@ -1222,6 +1234,13 @@
       return;
     }
 
+    if (unavailableIds.has(id)) {
+      currentItemId = null;
+      document.querySelectorAll('.federation-source-tag').forEach(function (tag) { tag.remove(); });
+      removeServerPicker();
+      return;
+    }
+
     if (!federatedIds.has(id)) {
       removeServerPicker();
     }
@@ -1302,6 +1321,9 @@
   }
 
   function cardMatchesOrigin(el) {
+    if (unavailableIds.has(normalizeId(el.getAttribute('data-id')))) {
+      return false;
+    }
     var mode = getOriginFilter();
     if (mode === 'all') {
       return true;
@@ -1498,6 +1520,11 @@
 
     var friends = uniqueFriendNames();
     var mode = getOriginFilter();
+    if (mode.indexOf('friend:') === 0 && friends.indexOf(mode.slice(7)) < 0) {
+      setOriginFilter('all');
+      mode = 'all';
+      reloadLibraryItems();
+    }
     var signature = friends.join('\t') + '|' + mode;
     var bar = page.querySelector(':scope .federation-origin-filter');
     if (!bar) {
@@ -1821,7 +1848,7 @@
 
     scheduleScan();
   });
-  setInterval(refreshFederatedIds, 5 * 60 * 1000);
+  setInterval(refreshFederatedIds, 30 * 1000);
   setInterval(refreshClientSettings, 5 * 60 * 1000);
   setInterval(refreshSharingDisabledIds, 5 * 60 * 1000);
 
