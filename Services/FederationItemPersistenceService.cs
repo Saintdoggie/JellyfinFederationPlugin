@@ -468,7 +468,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     var entry = _federationManager.Cache.GetEntryByKey(x.Key!);
                     if (entry == null) continue;
                     artworkCandidates.Add((x.Item, entry));
-                    var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata);
+                    var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata, includeRuntime: !FederationLibraryManager.IsStreamableType(entry.ItemType));
                     if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
                         if (sourceMetadataChanged) restamped.Add(x.Item);
@@ -509,9 +509,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     // time. Comparing and restamping it here, the same way Path already
                     // self-heals below, fixes it going forward without a full
                     // delete/recreate - so watch progress on the item is preserved.
-                    if (entry.Metadata.RunTimeTicks.HasValue && x.Item.RunTimeTicks != entry.Metadata.RunTimeTicks)
+                    var playbackRuntime = playable?.RunTimeTicks ?? entry.Metadata.RunTimeTicks;
+                    if (playbackRuntime.HasValue && x.Item.RunTimeTicks != playbackRuntime)
                     {
-                        x.Item.RunTimeTicks = entry.Metadata.RunTimeTicks;
+                        x.Item.RunTimeTicks = playbackRuntime;
                         changed = true;
                     }
 
@@ -564,37 +565,33 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Only when actually missing something the cache now has, so
                     // this doesn't re-save on every sync once it's already caught up.
                     var storedStreams = x.Item.GetMediaStreams();
-                    var mixedContainers = FederationLibraryManager.SourcesHaveMixedContainerFamilies(entry.GetSourcesSnapshot());
-                    if (mixedContainers)
+                    var cachedStreams = playable?.MediaStreams
+                        ?? (ReferenceEquals(playable, entry.GetPrimarySource()) ? entry.Metadata.MediaStreams : null)
+                        ?? Array.Empty<MediaBrowser.Model.Entities.MediaStream>();
+                    if (!System.Text.Json.JsonSerializer.Serialize(storedStreams)
+                        .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
                     {
-                        // Auto Path can deliver a sibling whose demuxer is not the
-                        // primary's. Stamping the primary's Container/streams makes
-                        // ffmpeg open that Path with the wrong `-f` (mkv over mp4
-                        // was exit 183). Clear both so the live bytes are probed.
-                        if (!string.IsNullOrEmpty(x.Item.Container))
-                        {
-                            x.Item.Container = null;
-                            changed = true;
-                        }
-
-                        if (storedStreams.Count > 0)
-                        {
-                            _federationManager.ClearPersistedMediaStreams(x.Item);
-                        }
+                        _federationManager.TryPersistMediaStreams(x.Item, entry);
                     }
-                    else
-                    {
-                        var cachedStreams = entry.Metadata.MediaStreams;
-                        if (cachedStreams is { Length: > 0 }
-                            && !System.Text.Json.JsonSerializer.Serialize(storedStreams)
-                                .Equals(System.Text.Json.JsonSerializer.Serialize(cachedStreams), StringComparison.Ordinal))
-                        {
-                            _federationManager.TryPersistMediaStreams(x.Item, entry);
-                        }
 
-                        if (!string.IsNullOrEmpty(entry.Metadata.Container) && x.Item.Container != entry.Metadata.Container)
+                    var playbackContainer = playable?.Container
+                        ?? (ReferenceEquals(playable, entry.GetPrimarySource()) ? entry.Metadata.Container : null);
+                    if (x.Item.Container != playbackContainer)
+                    {
+                        x.Item.Container = playbackContainer;
+                        changed = true;
+                    }
+
+                    if (playable != null)
+                    {
+                        var remoteId = playable.RemoteItemId.ToString();
+                        if (x.Item.GetProviderId("FederationSource") != playable.ServerId
+                            || x.Item.GetProviderId("FederationRemoteId") != remoteId)
                         {
-                            x.Item.Container = entry.Metadata.Container;
+                            x.Item.SetProviderId("FederationSource", playable.ServerId);
+                            x.Item.SetProviderId("FederationRemoteId", remoteId);
+                            var tags = x.Item.Tags ?? Array.Empty<string>();
+                            x.Item.Tags = FederationLibraryManager.AppendServerTag(tags, _federationManager.GetServer(playable.ServerId)?.Name);
                             changed = true;
                         }
                     }
@@ -1082,7 +1079,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal static FederationAvailabilityService? AvailabilityOverride { get; set; }
 
-        private static HashSet<string> ResolveOfflineServerIds(PluginConfiguration? config)
+        internal static HashSet<string> ResolveOfflineServerIds(PluginConfiguration? config)
         {
             var offline = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var availability = AvailabilityOverride;
@@ -1149,7 +1146,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// missing remote field preserves the last known value. Local-only
         /// restamp of what the cache already holds - no network, no credentials.
         /// </summary>
-        internal static bool ApplySourceMetadata(BaseItem item, FederatedItemMetadata metadata)
+        internal static bool ApplySourceMetadata(BaseItem item, FederatedItemMetadata metadata, bool includeRuntime = true)
         {
             var before = System.Text.Json.JsonSerializer.Serialize(new
             {
@@ -1163,7 +1160,8 @@ namespace Jellyfin.Plugin.Federation.Services
             item.PremiereDate = metadata.PremiereDate ?? item.PremiereDate;
             item.CommunityRating = metadata.CommunityRating ?? item.CommunityRating;
             item.OfficialRating = metadata.OfficialRating ?? item.OfficialRating;
-            item.RunTimeTicks = metadata.RunTimeTicks ?? item.RunTimeTicks;
+            if (includeRuntime)
+                item.RunTimeTicks = metadata.RunTimeTicks ?? item.RunTimeTicks;
             item.Genres = metadata.Genres ?? item.Genres;
             item.Studios = metadata.Studios ?? item.Studios;
             var after = System.Text.Json.JsonSerializer.Serialize(new

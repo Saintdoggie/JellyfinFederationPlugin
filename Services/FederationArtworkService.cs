@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities;
@@ -16,6 +17,8 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationArtworkService
     {
+        private static readonly HttpClient ImageHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+
         internal const string PrimaryImageTagProviderId = "FederationPrimaryImageTag";
 
         private readonly ILogger<FederationArtworkService> _logger;
@@ -59,7 +62,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var server = _federationManager.GetServer(source.ServerId);
             var provider = server == null ? null : _externalCatalogs.For(server);
             var nativeId = entry.GetNativeId(source);
-            if (server == null || !server.Enabled || provider == null || string.IsNullOrWhiteSpace(nativeId))
+            if (server == null || !server.Enabled || provider != null && string.IsNullOrWhiteSpace(nativeId))
             {
                 return false;
             }
@@ -67,6 +70,10 @@ namespace Jellyfin.Plugin.Federation.Services
             var tag = source.PrimaryImageTag
                 ?? entry.Metadata.PrimaryImageTag
                 ?? $"native:{nativeId}";
+            if (provider == null)
+            {
+                tag = $"{source.ServerId}:{source.RemoteItemId:N}:{tag}";
+            }
             var savedTag = item.GetProviderId(PrimaryImageTagProviderId);
             if (item.HasImage(ImageType.Primary, 0)
                 && string.Equals(savedTag, tag, StringComparison.Ordinal))
@@ -76,7 +83,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                using var response = await provider.GetPrimaryImageResponseAsync(server, nativeId, cancellationToken).ConfigureAwait(false);
+                using var response = provider != null
+                    ? await provider.GetPrimaryImageResponseAsync(server, nativeId!, cancellationToken).ConfigureAwait(false)
+                    : await GetJellyfinPosterAsync(source, server.Url, cancellationToken).ConfigureAwait(false);
                 if (response == null)
                 {
                     return false;
@@ -97,19 +106,32 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.SetProviderId(PrimaryImageTagProviderId, tag);
                 return true;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 _logger.LogWarning(
-                    ex,
                     "[Federation] Could not refresh source poster for {ItemName} from {ServerName}",
                     item.Name,
                     server.Name);
                 return false;
             }
+        }
+
+        private async Task<HttpResponseMessage?> GetJellyfinPosterAsync(
+            FederatedSource source, string serverUrl, CancellationToken cancellationToken)
+        {
+            var client = _federationManager.GetClient(source.ServerId);
+            if (client == null) return null;
+            var (token, _) = await client.GetImageTokenAsync(source.RemoteItemId.ToString("N"), cancellationToken).ConfigureAwait(false);
+            if (token == null) return null;
+            var url = $"{serverUrl.TrimEnd('/')}/Plugins/Federation/Peer/Images/{source.RemoteItemId:N}/Primary?token={Uri.EscapeDataString(token)}";
+            var response = await ImageHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode) return response;
+            response.Dispose();
+            return null;
         }
 
         /// <summary>
@@ -121,12 +143,15 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var source in entry.GetSourcesSnapshot())
             {
                 var server = _federationManager.GetServer(source.ServerId);
-                if (server == null || !server.Enabled || _externalCatalogs.For(server) == null)
+                if (server == null || !server.Enabled
+                    || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true)
                 {
                     continue;
                 }
 
-                if (!string.IsNullOrWhiteSpace(entry.GetNativeId(source)))
+                if (_externalCatalogs.For(server) != null
+                    ? !string.IsNullOrWhiteSpace(entry.GetNativeId(source))
+                    : !string.IsNullOrWhiteSpace(source.PrimaryImageTag))
                 {
                     return source;
                 }

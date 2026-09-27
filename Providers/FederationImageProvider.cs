@@ -109,7 +109,9 @@ namespace Jellyfin.Plugin.Federation.Providers
             {
                 var key = Services.FederationLibraryManager.GetFederationKey(item);
                 var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
-                var primary = entry?.GetPrimarySource();
+                var primary = entry?.GetSourcesSnapshot().FirstOrDefault(source =>
+                    _federationManager.GetServer(source.ServerId) is { Enabled: true }
+                    && Services.FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) != true);
                 if (entry == null || primary == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();

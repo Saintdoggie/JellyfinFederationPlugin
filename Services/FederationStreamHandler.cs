@@ -307,7 +307,8 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var candidates = entry.GetSourcesSnapshot()
                 .Select(src => (Source: src, Server: _federationManager.GetServer(src.ServerId)))
-                .Where(candidate => candidate.Server is { Enabled: true })
+                .Where(candidate => candidate.Server is { Enabled: true }
+                    && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(candidate.Source.ServerId) != true)
                 .Select(candidate => (candidate.Source, Server: candidate.Server!))
                 // ffmpeg already chose `-f` from the stamped Path's container.
                 // Prefer a live sibling that demuxer can parse; only then a
@@ -515,30 +516,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
                 else
                 {
-                    try
+                    // A source-bound URL must never silently deliver another file:
+                    // identical containers can still have different track indexes,
+                    // HDR formats and bitrates. Clients can select a fresh sibling.
+                    if (FederationItemPersistenceService.AvailabilityOverride?.IsOffline(serverId) == true)
                     {
-                        url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
+                        response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                        return;
                     }
-                    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
-                    {
-                        // The requested source cannot serve this item right now
-                        // (token mint refused - content unshared/deleted on the
-                        // friend, or the friend is down). Before giving up, try the
-                        // same cache entry's OTHER sources: on a deduped item that
-                        // is exactly the redundancy dedup exists to provide, and
-                        // without this the client sees "Playback Error" while an
-                        // identical copy sits on a second server.
-                        var fallbackUrl = await BuildFallbackSiblingUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserGuid, mappingName).ConfigureAwait(false);
-                        if (fallbackUrl == null)
-                        {
-                            throw;
-                        }
 
-                        url = fallbackUrl;
-                        _logger.LogInformation(
-                            "[Federation] Primary source refused item {ItemId}; serving from a sibling source instead",
-                            remoteItemId);
-                    }
+                    url = await BuildDirectStreamUrlAsync(serverId, remoteItemId, isAudio, cancellationToken, requestingUserId).ConfigureAwait(false);
                 }
 
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", activeItemId, server.Name);
