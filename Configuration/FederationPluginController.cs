@@ -3009,15 +3009,9 @@ namespace Jellyfin.Plugin.Federation.Api
             var queryParams = new List<string>
             {
                 "Recursive=true",
-                // MediaSources deliberately excluded: nothing on the sync path ever
-                // reads it (playback fetches media sources separately, per-item, from
-                // PlaybackInfo - see FederationMediaSourceProvider.FetchRemoteSourceAsync).
-                // It was pure dead weight on every page of every sync: on top of forcing
-                // Jellyfin to load one more related collection per item, requesting it
-                // alongside MediaStreams/People/Genres/Tags/Studios triggers EF Core's
-                // "multiple collection Include" query-splitting warning (no
-                // QuerySplittingBehavior configured), which is a real slow-query hit
-                // repeated on every 200-item page across every mapping, every sync.
+                // Full sync callers request MediaSources to retain the container:
+                // Jellyfin 12 does not always emit it at the DTO's top level.
+                // Keep this collection optional for older and slim callers.
                 // Slim mode (the Browse/Downloads grid) goes further and drops every
                 // heavy field outright: card rendering only needs identity, card
                 // text, dedup provider ids, and image tags. Slim payloads stay the

@@ -187,6 +187,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     queryParams.Add("slim=true");
                 }
+                else
+                {
+                    // Jellyfin 12 exposes the file container on MediaSources,
+                    // not necessarily on the catalog item's top-level DTO.
+                    queryParams.Add("includeMediaSources=true");
+                }
 
                 var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
 
@@ -1365,6 +1371,15 @@ namespace Jellyfin.Plugin.Federation.Services
             if (itemElement.TryGetProperty("Container", out var containerProp) && containerProp.ValueKind == JsonValueKind.String)
             {
                 item.Container = containerProp.GetString();
+            }
+            if (string.IsNullOrWhiteSpace(item.Container)
+                && itemElement.TryGetProperty("MediaSources", out var sourceArray)
+                && sourceArray.ValueKind == JsonValueKind.Array
+                && sourceArray.GetArrayLength() > 0
+                && sourceArray[0].TryGetProperty("Container", out var sourceContainer)
+                && sourceContainer.ValueKind == JsonValueKind.String)
+            {
+                item.Container = sourceContainer.GetString();
             }
 
             // The single biggest lever for federated playback actually direct-playing
