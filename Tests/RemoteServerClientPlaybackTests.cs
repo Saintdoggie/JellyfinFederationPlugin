@@ -542,6 +542,30 @@ public class RemoteServerClientPlaybackTests
         Assert.DoesNotContain("slim=true", handler.LastRequestedQuery);
     }
 
+    [Theory]
+    [InlineData(null, "mkv", "mkv")]
+    [InlineData("", "mp4", "mp4")]
+    [InlineData("webm", "mkv", "webm")]
+    public async Task GetItemsAsync_PreservesContainerFromMediaSource(string? topLevel, string sourceContainer, string expected)
+    {
+        var json = JsonSerializer.Serialize(new { Items = new[] { new
+        {
+            Id = Guid.NewGuid(), Name = "Catalog movie", Container = topLevel,
+            MediaSources = new[] { new { Container = sourceContainer } }
+        } } });
+        var handler = new FakeHttpMessageHandler(itemsJson: json);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        using var client = new RemoteServerClient(new RemoteServer { Id = "container-peer", Url = "http://fake.local", Enabled = true }, NullLogger.Instance, http);
+
+        var items = await client.GetItemsAsync();
+
+        Assert.Equal(expected, Assert.Single(items!).Container);
+        Assert.Contains("includeMediaSources=true", handler.LastRequestedQuery);
+        await client.GetItemsAsync(slim: true);
+        Assert.Contains("slim=true", handler.LastRequestedQuery);
+        Assert.DoesNotContain("includeMediaSources", handler.LastRequestedQuery);
+    }
+
     [Fact]
     public async Task GetItemsAsync_SlimMode_RequestsSlimPeerPayload()
     {
