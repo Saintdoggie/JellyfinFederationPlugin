@@ -469,6 +469,21 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (entry == null) continue;
                     artworkCandidates.Add((x.Item, entry));
                     var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata, includeRuntime: !FederationLibraryManager.IsStreamableType(entry.ItemType));
+                    var playable = FirstEnabledSource(entry, config, offlineServerIds);
+                    if (playable != null)
+                    {
+                        var remoteId = playable.RemoteItemId.ToString();
+                        var tags = FederationLibraryManager.AppendServerTag(x.Item.Tags ?? Array.Empty<string>(), _federationManager.GetServer(playable.ServerId)?.Name);
+                        if (x.Item.GetProviderId("FederationSource") != playable.ServerId
+                            || x.Item.GetProviderId("FederationRemoteId") != remoteId
+                            || !(x.Item.Tags ?? Array.Empty<string>()).SequenceEqual(tags))
+                        {
+                            x.Item.SetProviderId("FederationSource", playable.ServerId);
+                            x.Item.SetProviderId("FederationRemoteId", remoteId);
+                            x.Item.Tags = tags;
+                            sourceMetadataChanged = true;
+                        }
+                    }
                     if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
                         if (sourceMetadataChanged) restamped.Add(x.Item);
@@ -492,7 +507,6 @@ namespace Jellyfin.Plugin.Federation.Services
                     // playable elsewhere, breaking exactly the redundancy dedup exists
                     // to provide. The dynamic provider already picks the first enabled
                     // source this way; this keeps the stamped path consistent with it.
-                    var playable = FirstEnabledSource(entry, config, offlineServerIds);
                     var changed = sourceMetadataChanged;
                     if (x.Item.Size != playable?.Size)
                     {
@@ -585,20 +599,6 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         x.Item.Container = playbackContainer;
                         changed = true;
-                    }
-
-                    if (playable != null)
-                    {
-                        var remoteId = playable.RemoteItemId.ToString();
-                        if (x.Item.GetProviderId("FederationSource") != playable.ServerId
-                            || x.Item.GetProviderId("FederationRemoteId") != remoteId)
-                        {
-                            x.Item.SetProviderId("FederationSource", playable.ServerId);
-                            x.Item.SetProviderId("FederationRemoteId", remoteId);
-                            var tags = x.Item.Tags ?? Array.Empty<string>();
-                            x.Item.Tags = FederationLibraryManager.AppendServerTag(tags, _federationManager.GetServer(playable.ServerId)?.Name);
-                            changed = true;
-                        }
                     }
 
                     // Only when no source has an enabled home does the title genuinely

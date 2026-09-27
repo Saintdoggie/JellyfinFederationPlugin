@@ -36,7 +36,7 @@ function makeWindow(isAdmin, showCloudBadge = true, serverAddress = null) {
     requests.push({ url: String(url), options });
     calls.push(String(url));
     let data = {};
-    if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
+    if (String(url).includes('ClientCatalog')) data = { items: { [itemId]: 'Friend' }, unavailableIds: [] };
     if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: badgeEnabled };
     if (String(url).includes('DisabledIds') || String(url).endsWith('/Downloads')) data = [];
     return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
@@ -87,7 +87,7 @@ function makeLibraryWindow() {
     requests.push({ url: String(url), options });
     calls.push(String(url));
     let data = {};
-    if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
+    if (String(url).includes('ClientCatalog')) data = { items: { [itemId]: 'Friend' }, unavailableIds: [] };
     if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: true };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
   };
@@ -178,7 +178,7 @@ test('ordinary viewers never poll admin-only download or sharing state', async (
   await settle();
   assert.equal(calls.some((url) => url.endsWith('/Downloads')), false);
   assert.equal(calls.some((url) => url.includes('Sharing/DisabledIds')), false);
-  const federated = requests.find((r) => String(r.url).includes('/FederatedIds'));
+  const federated = requests.find((r) => String(r.url).includes('/ClientCatalog'));
   assert.ok(federated);
   assert.equal(federated.options.headers.Authorization, 'MediaBrowser Token="test-token"');
   dom.window.close();
@@ -191,6 +191,11 @@ test('inventory map endpoints require a Jellyfin login', () => {
   assert.match(federated[0], /\[Authorize\]/);
   assert.doesNotMatch(federated[0], /AllowAnonymous/);
   assert.doesNotMatch(federated[0], /RequiresElevation/);
+
+  const catalog = controller.match(/\[HttpGet\("ClientCatalog"\)\][\s\S]*?public ActionResult<object> GetClientCatalog\(/);
+  assert.ok(catalog, 'GetClientCatalog not found');
+  assert.match(catalog[0], /\[Authorize\]/);
+  assert.doesNotMatch(catalog[0], /AllowAnonymous/);
 
   const disabled = controller.match(/\[HttpGet\("Sharing\/DisabledIds"\)\][\s\S]*?public ActionResult<object> GetGloballyDisabledIds\(/);
   assert.ok(disabled, 'GetGloballyDisabledIds not found');
@@ -1279,7 +1284,7 @@ function makeLoadingWindow(options = {}) {
     const u = String(url);
     fetched.push(u);
     let data = {};
-    if (u.includes('FederatedIds')) data = opts.federatedIds;
+    if (u.includes('ClientCatalog')) data = { items: opts.federatedIds, unavailableIds: [] };
     if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false, loadingOverlay: opts.overlay };
     if (u.includes('StartEstimate')) data = opts.estimate;
     if (u.includes('FunFact')) data = opts.fact;
@@ -1526,7 +1531,7 @@ function makeServerPickerWindow(optionHtml) {
   };
   dom.window.fetch = (url) => {
     let data = {};
-    if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
+    if (String(url).includes('ClientCatalog')) data = { items: { [itemId]: 'Friend' }, unavailableIds: [] };
     if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: false };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
   };

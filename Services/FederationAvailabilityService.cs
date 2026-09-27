@@ -226,12 +226,28 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Probes every enabled server once. Public for the manual "rescan now"
-        /// endpoint and for tests; the background loop calls the same method.
+        /// Classifies initially unknown friends before cached items are reconciled.
+        /// A first failure gets a confirmation round after the normal grace period.
         /// </summary>
-        public async Task ProbeAllAsync(CancellationToken cancellationToken = default, bool force = true)
+        public async Task EnsureProbedAsync(CancellationToken cancellationToken)
         {
-            if (!await _probeGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            await ProbeAllAsync(cancellationToken, waitForCurrentRound: true).ConfigureAwait(false);
+            if (Plugin.Instance?.Configuration?.RemoteServers?.Any(server => server.Enabled
+                && GetAvailability(server.Id)?.Reachability == ServerReachability.Unknown) == true)
+            {
+                await Task.Delay(ConfirmInterval, cancellationToken).ConfigureAwait(false);
+                await ProbeAllAsync(cancellationToken, waitForCurrentRound: true).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Probes every enabled server once (only those due unless <paramref name="force"/>), optionally waiting for an ongoing round.</summary>
+        public async Task ProbeAllAsync(CancellationToken cancellationToken = default, bool force = true, bool waitForCurrentRound = false)
+        {
+            if (waitForCurrentRound)
+            {
+                await _probeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (!await _probeGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             {
                 _logger.LogDebug("[Federation] Availability probe already running; skipping this round");
                 return;

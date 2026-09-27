@@ -35,6 +35,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly AvailabilityScheduleStore _availabilitySchedule;
         private readonly SemaphoreSlim _reachabilityRescanGate = new(1, 1);
         private int _reachabilityRescanEpoch;
+        private volatile bool _startupAvailabilityReady;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationEntryPoint"/> class.
@@ -213,6 +214,10 @@ namespace Jellyfin.Plugin.Federation
                 // do not run overlapping full-library reconciles.
                 _availability.OnReachabilityChangedAsync = async (serverId, online, ct) =>
                 {
+                    // The initial sync reconciles once all startup probes finish.
+                    // An early Online callback must not resurrect another friend's
+                    // cached titles while that friend's first failure is unconfirmed.
+                    if (!_startupAvailabilityReady) return;
                     if (online)
                     {
                         _downloads.ResumePausedForServer(serverId);
@@ -248,6 +253,14 @@ namespace Jellyfin.Plugin.Federation
                         // and touch disposed DI-scoped services.
                         var shutdownToken = _appLifetime.ApplicationStopping;
                         await Task.Delay(TimeSpan.FromSeconds(5), shutdownToken).ConfigureAwait(false);
+                        try
+                        {
+                            await _availability.EnsureProbedAsync(shutdownToken).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            _startupAvailabilityReady = true;
+                        }
                         await _downloads.ResumeIncompleteDownloadsAsync(shutdownToken).ConfigureAwait(false);
                         _logger.LogInformation("[Federation] Starting background startup sync");
                         var result = await _syncService.SyncAllAsync(shutdownToken).ConfigureAwait(false);
