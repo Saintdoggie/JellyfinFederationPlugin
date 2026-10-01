@@ -1,6 +1,6 @@
 # Jellyfin Federation — bug tracker
 
-Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master` at **0.0.136**.
+Source: the repository checkout at **0.0.136**.
 Reviewed 2026-09-08. Status is updated as fixes land. Do not treat this file as a release note.
 
 Status: `open` | `in_progress` | `fixed` | `wontfix`

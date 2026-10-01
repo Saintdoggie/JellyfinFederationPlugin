@@ -57,7 +57,7 @@ def wait_for(fn, label, seconds=150):
     raise RuntimeError(label)
 
 
-def smoke():
+def smoke(companion_files=False):
     global FFMPEG_PREFIX
     work = Path(tempfile.mkdtemp(prefix='federation-metadata-qa-'))
     os.chmod(work, 0o700)
@@ -90,7 +90,9 @@ def smoke():
             poster = work / (color + '.jpg')
             run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'color={color}:s=300x450', '-frames:v', '1', '-y', poster])
             posters.append(poster)
-        run(['podman', 'pod', 'create', '--name', network, '-p', '127.0.0.1::32400', '-p', '127.0.0.1::8096'])
+        pod_ports = ['-p', '127.0.0.1::32400', '-p', '127.0.0.1::8096']
+        if companion_files: pod_ports += ['-p', '127.0.0.1::5000', '-p', '127.0.0.1::5001']
+        run(['podman', 'pod', 'create', '--name', network] + pod_ports)
         infra = json.loads(run(['podman', 'pod', 'inspect', network]))[0]['InfraContainerID']
 
         def container(name, image, port, args, entry=None):
@@ -102,14 +104,21 @@ def smoke():
             return 'http://' + run(['podman', 'port', infra, f'{port}/tcp'])
 
         plex_config = work / 'plex'; plex_config.mkdir()
+        plex_args = ['-v', f'{plex_config}:/config', '-v', f'{media}:/media:ro']
+        if companion_files:
+            # The public image installs the current Plex binary during its normal initialization.
+            plex_args += ['-e', 'PLEX_UID=0', '-e', 'PLEX_GID=0', '-e', 'TZ=UTC']
+            plex_entry = None
+        else:
+            plex_args += ['-e', 'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config', '-e', 'LD_LIBRARY_PATH=/usr/lib/plexmediaserver']
+            plex_entry = '/usr/lib/plexmediaserver/Plex Media Server'
         plex = container(plex_name, os.environ.get('PLEX_TEST_IMAGE', 'docker.io/plexinc/pms-docker:latest'), 32400,
-                         ['-v', f'{plex_config}:/config', '-v', f'{media}:/media:ro',
-                          '-e', 'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config', '-e', 'LD_LIBRARY_PATH=/usr/lib/plexmediaserver'],
-                         '/usr/lib/plexmediaserver/Plex Media Server')
+                         plex_args, plex_entry)
         token = secrets.token_urlsafe(32)
         plex_headers = {'Accept': 'application/json', 'X-Plex-Token': token}
         stage = 'Plex startup and real analysis'
-        wait_for(lambda: request(plex, '/identity', plex_headers), 'Plex startup failed')
+        identity = wait_for(lambda: request(plex, '/identity', plex_headers), 'Plex startup failed')['MediaContainer']
+        print(f"LIVE: Plex {identity.get('version', 'unknown')}, claimed={identity.get('claimed', 'unknown')} (not an account entitlement test)", flush=True)
         sections = []
         for name, kind, path, scanner in [('QA Movies', 'movie', '/media/Movies', 'Plex Movie'),
                                           ('QA Shows', 'show', '/media/Shows', 'Plex TV Series')]:
@@ -137,6 +146,14 @@ def smoke():
         rating = plex_movie['ratingKey']
         request(plex, f'/library/metadata/{rating}/posters', {**plex_headers, 'Content-Type': 'image/jpeg'}, posters[0].read_bytes(), expected=200, raw=True)
 
+        file_fixture = None
+        source_url, source_token = 'http://127.0.0.1:32400', token
+        if companion_files:
+            from companion_file_fixture import CompanionFileFixture
+            file_fixture = CompanionFileFixture(REPO, work, network, created, JELLYFIN_IMAGE, media, request, wait_for, run)
+            file_fixture.enable(token, plex_movies, sections)
+            source_url, source_token = file_fixture.source, file_fixture.token
+
         config = work / 'jellyfin'
         plugin = config / 'plugins/Federation'; plugin.mkdir(parents=True)
         shutil.copy(REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
@@ -156,7 +173,7 @@ def smoke():
         viewer_headers = {'Authorization': 'MediaBrowser Token="' + viewer_auth['AccessToken'] + '"'}
         check(not viewer_auth['User']['Policy']['IsAdministrator'], 'Viewer is unexpectedly elevated')
         server = request(jf, '/Plugins/Federation/ExternalServers', admin,
-                         {'Name': 'Real QA Plex', 'Url': 'http://127.0.0.1:32400', 'Token': token})['server']
+                         {'Name': 'Real QA Plex', 'Url': source_url, 'Token': source_token})['server']
         server_id = server.get('Id') or server['id']
         settings = request(jf, '/Plugins/Federation/Configuration', admin)
         settings['ServerUrl'] = jf
@@ -263,8 +280,22 @@ def smoke():
         check(len(recovered) == 2 and any(i['Id'] == item_id for i in recovered), 'Recovery lost titles or stable identity')
         check(request(jf, stream_path, viewer_headers, raw=True)[1] == payload, 'Recovery playback bytes differ')
         print('LIVE PASS: offline titles hidden for admin/viewer, catalog retained, stable IDs and playback restored', flush=True)
-        print('LIVE SUCCESS: real Plex -> Jellyfin sandbox complete', flush=True)
+        if file_fixture: file_fixture.verify(plex_movie)
+        print('LIVE SUCCESS: real Plex -> Jellyfin sandbox complete' + (' with Companion original-file relay' if companion_files else ''), flush=True)
     except Exception as e:
+        import traceback
+        trace_path = work / 'failure.private.log'
+        trace_path.write_text(traceback.format_exc())
+        trace_path.chmod(0o600)
+        for name in created:
+            logs = subprocess.run(['podman', 'logs', name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            log_path = work / (name + '.private.log')
+            log_path.write_bytes(logs.stdout)
+            log_path.chmod(0o600)
+        if isinstance(e, subprocess.CalledProcessError):
+            error_log = work / 'private-command-error.log'
+            error_log.write_bytes(e.stderr or b'')
+            error_log.chmod(0o600)
         detail = str(e) if isinstance(e, RuntimeError) else type(e).__name__
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish runtime logs.') from None
     finally:
@@ -276,4 +307,7 @@ def smoke():
 
 
 if __name__ == '__main__':
-    smoke()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--companion-files', action='store_true', help='Prove Companion video playback works with Plex video APIs deliberately blocked')
+    smoke(parser.parse_args().companion_files)

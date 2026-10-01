@@ -976,14 +976,14 @@ public class FederationFriendServiceTests : IDisposable
     public void ReceivePlexOffer_StoresPendingShare_WithoutConnectingYet()
     {
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true}"""));
+            """{"url":"https://example-peer.tail123456.ts.net","token":"claim-token","name":"example-peer","claim":true}"""));
 
         var (success, message) = _service.ReceivePlexOffer(payload);
 
         Assert.True(success, message);
         var offer = Assert.Single(_plugin.Configuration.IncomingPlexOffers);
-        Assert.Equal("freakbob", offer.ServerName);
-        Assert.Equal("https://freakbob.tail4e0b6f.ts.net", offer.CompanionUrl);
+        Assert.Equal("example-peer", offer.ServerName);
+        Assert.Equal("https://example-peer.tail123456.ts.net", offer.CompanionUrl);
         Assert.Empty(_plugin.Configuration.RemoteServers);
     }
 
@@ -1024,7 +1024,7 @@ public class FederationFriendServiceTests : IDisposable
                 new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
 
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true,"fallbackUrl":"https://relay.plex.direct:443","fallbackToken":"plex-token","libraries":[{"sectionKey":"1","title":"Movies","type":"movie"}]}"""));
+            """{"url":"https://example-peer.tail123456.ts.net","token":"claim-token","name":"example-peer","claim":true,"fallbackUrl":"https://relay.plex.direct:443","fallbackToken":"plex-token","libraries":[{"sectionKey":"1","title":"Movies","type":"movie"}]}"""));
 
         var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
 
@@ -1042,13 +1042,13 @@ public class FederationFriendServiceTests : IDisposable
                 new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
 
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true}"""));
+            """{"url":"https://example-peer.tail123456.ts.net","token":"claim-token","name":"example-peer","claim":true}"""));
 
         var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
 
         Assert.False(success);
         Assert.Null(server);
-        Assert.Contains("freakbob.tail4e0b6f.ts.net", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("example-peer.tail123456.ts.net", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("TLS", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Plex Remote Access", message, StringComparison.OrdinalIgnoreCase);
         Assert.True(FederationFriendService.IsTlsHandshakeFailure(
@@ -1065,7 +1065,7 @@ public class FederationFriendServiceTests : IDisposable
             }));
 
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-            """{"url":"https://freakbob.tail4e0b6f.ts.net","token":"claim-token","name":"freakbob","claim":true}"""));
+            """{"url":"https://example-peer.tail123456.ts.net","token":"claim-token","name":"example-peer","claim":true}"""));
 
         var (success, message, server) = await _service.ConnectPlexCompanionAsync(payload, CancellationToken.None);
 

@@ -1,11 +1,18 @@
 # Federation Companion — active Plex repair handoff
 
-Updated 2026-09-06. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`. The Plex ownership/playback repair is published in plugin 0.0.133. Read root `AGENTS.md` and `TODO.md` before continuing.
+Updated 2026-10-01. Source: the repository checkout. The Plex ownership/playback repair is published in plugin 0.0.133. Read root `AGENTS.md` and `TODO.md` before continuing.
 
 > Desktop app work (Windows tray/WinExe, Linux XDG autostart, single-instance,
 > RAM tuning, platform validation) moved to
 > [`DESKTOP-APP-TODO.md`](DESKTOP-APP-TODO.md). Keep this file focused on the
 > Plex federation repair.
+
+## Private sharing preview
+
+- [x] Integrate private Tailscale Serve setup/stop into the owner dashboard using the existing scoped Companion relay. Discover executable, runtime port and HTTPS machine name; preserve other services, serialize changes and verify listener state.
+- [x] Restore the owned listener after a runtime port change. Avoid Plex cloud Remote Access discovery for verified Companion relay links; retain explicit legacy direct choice.
+- [x] Add unit/DOM checks and a disposable real-Companion HTTP/process test with an isolated simulated network CLI. Include it in the automated push gate; it never changes the host network.
+- [ ] Before stable promotion, complete the real two-account HTTPS/catalog/range/decode/revocation/restart checks in root `TODO.md`. A simulated CLI and Windows cross-build do not prove real Tailscale connectivity or Windows runtime behavior.
 
 ## User clarification and root causes
 

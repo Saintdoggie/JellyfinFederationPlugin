@@ -104,3 +104,34 @@ It checks viewer-specific access revocation, old playback URL rejection, server
 disablement, outage hiding, cache preservation and stable-ID playback recovery.
 These are API/ffmpeg checks; physical TV/Xbox clients and Windows/Funnel remain
 separate validation.
+
+## Private sharing integration
+
+The automated gate also runs `private_sharing_smoke.py` on Linux against the
+published Companion. It injects an isolated CLI executable through the test
+process's PATH, without accessing the host's Tailscale daemon. It checks HTTP
+owner authorization, failed login, discovered port/address, concurrent setup,
+restart rebinding, refusal to switch an active private listener to public, and
+verified removal of only Companion's owned listener. Runtime state is private
+and removed afterward. Unit and DOM tests cover malformed configuration and
+error recovery. This is simulated network CLI integration; it does not establish
+a real two-account tailnet, issue HTTPS certificates or measure NAT/DERP bandwidth.
+Those are required before promoting the private-sharing preview to stable.
+
+## Original-file relay integration
+
+After publishing the current Companion to `artifacts/qa/companion` and building
+the plugin in Release mode, run `python3 scripts/federation_metadata_smoke.py
+--companion-files`. It adds a real Companion and a disposable Plex API proxy
+to the metadata fixture. The proxy forwards real catalog/artwork but returns
+HTTP 402 for all media/transcode requests. The fixture maps discovered Plex
+folders to read-only original files and checks the same Jellyfin playback,
+transcode, Range stress and outage matrix, followed by peer revocation.
+No video API calls may occur after original-file mode is enabled.
+
+`DOTNET` selects an SDK with the .NET 9 ASP.NET runtime. The Companion-file
+fixture uses the Plex image's normal initialization; `pms-docker:public` can
+download the current server binary at startup. Other fixtures require an image
+with the server binary already installed. Record the actual PMS version when
+testing the public image. No Plex sign-in or account claim is performed; this
+test does not establish paid-playback policy for a claimed account.
