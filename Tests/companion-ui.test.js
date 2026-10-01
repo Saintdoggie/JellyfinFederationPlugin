@@ -11,6 +11,67 @@ function page(fetch, url = 'http://localhost:7890/') {
 }
 const json = data => ({ ok: true, json: async () => data });
 
+test('original-file sharing discovers folders, saves owner mappings and escapes paths', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    if (url === '/api/local-file-relay') return json(opts.method === 'POST'
+      ? { enabled: true, message: 'Original files enabled.' }
+      : { enabled: false, supported: true, roots: [{ plexRoot: '/plex/movies', available: false }], mappings: [] });
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    await dom.window.loadLocalFileRelay();
+    const d = dom.window.document;
+    assert.match(d.getElementById('plexFileRoot').textContent, /needs mapping/);
+    d.getElementById('companionFileRoot').value = '/owned/<img src=x>';
+    d.getElementById('addLocalFileMappingBtn').click();
+    assert.equal(d.getElementById('localFileMappings').querySelector('img'), null);
+    d.getElementById('enableLocalFileRelayBtn').click(); await tick();
+    const call = requests.find(([url, opts]) => url === '/api/local-file-relay' && opts.method === 'POST');
+    assert.equal(header(call[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.deepEqual(JSON.parse(call[1].body), { enabled: true, mappings: [{ plexRoot: '/plex/movies', localRoot: '/owned/<img src=x>' }] });
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+  } finally { dom.window.close(); }
+});
+
+test('failed original-file changes retain mode and safely show errors', async () => {
+  const dom = page(async (url, opts) => url === '/api/local-file-relay'
+    ? opts.method === 'POST'
+      ? { ok: false, json: async () => ({ error: '<img src=x> cannot read folder' }) }
+      : json({ enabled: true, supported: true, roots: [], mappings: [] })
+    : json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {}), 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    await dom.window.loadLocalFileRelay(); const d = dom.window.document;
+    d.getElementById('disableLocalFileRelayBtn').click(); await tick();
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+    assert.equal(d.getElementById('localFileRelayStatus').querySelector('img'), null);
+    assert.match(d.getElementById('localFileRelayStatus').textContent, /cannot read/);
+    assert.equal(d.getElementById('enableLocalFileRelayBtn').disabled, false);
+  } finally { dom.window.close(); }
+});
+
+test('a stale file-mode response cannot overwrite completed owner changes', async () => {
+  let completeStatus;
+  const dom = page(async (url, opts) => {
+    if (url === '/api/local-file-relay') return opts.method === 'POST'
+      ? json({ enabled: true, message: 'Enabled.' })
+      : { ok: true, json: () => new Promise(resolve => { completeStatus = resolve; }) };
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    const pending = dom.window.loadLocalFileRelay(); await tick();
+    const d = dom.window.document;
+    d.getElementById('enableLocalFileRelayBtn').click(); await tick();
+    completeStatus({ enabled: false, supported: true, roots: [], mappings: [] }); await pending;
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+    assert.equal(d.getElementById('localFileRelayStatus').textContent, 'Enabled.');
+  } finally { dom.window.close(); }
+});
+
 test('private sharing uses owner authorization, discovers its URL and stops explicitly', async () => {
   const requests = [];
   const dom = page(async (url, opts) => {

@@ -110,7 +110,7 @@ def smoke(dotnet, published):
         log = (work / 'private-runtime.log').open('ab')
         os.chmod(work / 'private-runtime.log', 0o600)
         environment = {**os.environ, 'PATH': str(binary) + os.pathsep + os.environ.get('PATH', ''),
-                       'FED_NETWORK_SANDBOX': str(work)}
+                       'FED_NETWORK_SANDBOX': str(work), 'XDG_DATA_HOME': str(work / 'user-data')}
         process = subprocess.Popen([str(dotnet), str(app / 'FederationCompanion.dll'), '--urls', base],
             cwd=app, env=environment, stdout=log, stderr=subprocess.STDOUT)
         wait(lambda: request('/api/app/info'), 'Sandbox Companion did not start')

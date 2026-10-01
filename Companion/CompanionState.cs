@@ -74,6 +74,12 @@ public sealed class CompanionState
     /// </summary>
     public string? PublicUrl { get; set; }
 
+    /// <summary>Explicit owner choice: serve original files instead of using Plex's media API.</summary>
+    public bool LocalFileRelayEnabled { get; set; }
+
+    /// <summary>Optional owner mappings when Plex and Companion use different filesystem namespaces.</summary>
+    public List<LocalFileRootMapping> LocalFileRootMappings { get; set; } = new();
+
     /// <summary>Only the private HTTPS listener this installation configured.</summary>
     public int? PrivateSharingPort { get; set; }
 
@@ -143,6 +149,12 @@ public sealed class CompanionState
                 if (loaded != null)
                 {
                     var migrated = false;
+                    if (loaded.LocalFileRootMappings == null)
+                    {
+                        loaded.LocalFileRootMappings = new();
+                        loaded.LocalFileRelayEnabled = false;
+                        migrated = true;
+                    }
                     if (!CompanionSecrets.IsValid(loaded.AdminAccessKey))
                     {
                         loaded.AdminAccessKey = CompanionSecrets.Create();

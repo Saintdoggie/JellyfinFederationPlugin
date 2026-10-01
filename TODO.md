@@ -67,7 +67,9 @@ remaining live Windows/Funnel/client checks.
 ## Companion sharing and public portability
 
 - [x] Implement a preview of an integrated free sharing option using Companion's authenticated local-media relay rather than depending on Plex Remote Access or a Plex-facing Funnel. Support a private network when public ingress is unavailable; discover the runtime listener, installed network helper and machine address automatically.
-- [x] Keep native Plex app subscription requirements distinct from Companion transport. Do not promise that changing a tunnel provider removes Plex's remote-video requirements.
+- [x] Research September 2026 enforcement extending Plex paid remote playback to third-party apps. Do not promise that changing a tunnel provider removes Plex's remote-video requirements; see the Companion guide for sources.
+- [x] Implement opt-in original-file sharing on Windows/Linux: discover Plex library folders, support explicit container/drive mappings, recheck the exact part and consent, preserve HEAD/Range seeking, and let receiving Jellyfin transcode. Never fall back to Plex video APIs on a file error; reject imported media and links below approved roots.
+- [ ] Validate original-file mode with a claimed free Plex account and on Windows, including ordinary-user file permissions, mapped drives and cancellation. The blocked-video-API sandbox proves independence from Plex streaming, not actual account entitlement or private-network reachability.
 - [ ] Prefer configurable/discovered paths, ports and addresses across Windows/Linux/macOS and containers. Never bake a developer's username, home directory, server address or credentials into shipped code or setup instructions.
 
 - [ ] Before promoting private sharing to stable, verify two separately approved Tailscale server computers: real HTTPS certificates, cross-account access, catalog/HEAD/Range/decoded media, access revocation, restart, direct/DERP behavior and receiving-side imports. Current sandbox uses a simulated network CLI; do not claim real private-network playback yet.

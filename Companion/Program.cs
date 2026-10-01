@@ -386,11 +386,16 @@ app.MapPost("/api/diagnostics", async (CompanionState s, HttpClient http, Cancel
     var library = s.Libraries.FirstOrDefault(l => CompanionLibraryPolicy.IsShared(s, l));
     if (library == null || s.ServerBaseUrl == null || s.ServerAccessToken == null)
         return Results.Ok(new[] { new ConnectionCheck("Plex", false, "Connect Plex and select a local library to share first.") });
-    var checks = new List<ConnectionCheck>
-    {
-        await ConnectionDiagnostics.ProbeAsync(http, s.ServerBaseUrl, s.ServerAccessToken, library.SectionKey, library.Type, "Local Plex media", ct)
-    };
+    var checks = new List<ConnectionCheck>();
     var peer = s.Peers.FirstOrDefault();
+    if (s.LocalFileRelayEnabled)
+    {
+        if (peer != null && CompanionListen.Port.HasValue)
+            checks.Add(await ConnectionDiagnostics.ProbeAsync(http, $"http://127.0.0.1:{CompanionListen.Port}/plex/{peer.Id}", peer.AccessToken,
+                library.SectionKey, library.Type, "Companion original-file media", ct));
+        else checks.Add(new("Companion original-file media", false, "Connect a Jellyfin friend to verify real bytes from the original-file relay."));
+    }
+    else checks.Add(await ConnectionDiagnostics.ProbeAsync(http, s.ServerBaseUrl, s.ServerAccessToken, library.SectionKey, library.Type, "Local Plex media", ct));
     if (peer != null && PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl))
         checks.Add(await ConnectionDiagnostics.ProbeAsync(http, s.PublicUrl + "/plex/" + peer.Id, peer.AccessToken, library.SectionKey, library.Type, "Public media path", ct));
     else
@@ -578,9 +583,52 @@ app.MapPost("/api/libraries/toggle", async (ToggleLibraryRequest body, Companion
 
     if (body.Shared && CompanionLibraryPolicy.IsImported(s, library))
         return Results.BadRequest(new { error = "Imported libraries belong to a friend and cannot be shared onward." });
+    if (body.Shared && s.LocalFileRelayEnabled && (library.Locations.Count == 0
+        || library.Locations.Any(root => !LocalPlexFileRelay.RootAvailable(LocalPlexFileRelay.LocalRoot(s, root)))))
+        return Results.BadRequest(new { error = "Map this library's unavailable media folders before sharing it in original-file mode." });
     library.Shared = body.Shared;
     await s.SaveAsync().ConfigureAwait(false);
     return Results.Ok(library);
+});
+
+app.MapGet("/api/local-file-relay", (CompanionState s) => Results.Ok(new {
+    enabled = s.LocalFileRelayEnabled,
+    supported = LocalPlexFileRelay.Supported,
+    roots = LocalPlexFileRelay.CandidateRoots(s).Select(root => new {
+        plexRoot = root, localRoot = LocalPlexFileRelay.LocalRoot(s, root),
+        available = LocalPlexFileRelay.RootAvailable(LocalPlexFileRelay.LocalRoot(s, root))
+    }),
+    mappings = s.LocalFileRootMappings
+}));
+
+app.MapPost("/api/local-file-relay", async (SetLocalFileRelayRequest body, CompanionState s) =>
+{
+    if (!body.Enabled)
+    {
+        // Removed libraries or unavailable drives must not prevent disabling the mode.
+        s.LocalFileRelayEnabled = false;
+        await s.SaveAsync().ConfigureAwait(false);
+        return Results.Ok(new { enabled = false, message = "Original-file relay disabled. Media requests use the Plex API again." });
+    }
+    if (body.Enabled && !LocalPlexFileRelay.Supported)
+        return Results.BadRequest(new { error = "Original-file relay is currently supported on Windows and Linux." });
+    var roots = LocalPlexFileRelay.CandidateRoots(s).ToArray();
+    var mappings = body.Mappings ?? s.LocalFileRootMappings;
+    if (mappings.Count > 64 || mappings.Any(m => m == null || !roots.Contains(m.PlexRoot, StringComparer.Ordinal)
+        || !LocalPlexFileRelay.IsSafeLocalRoot(m.LocalRoot))
+        || mappings.Select(m => m.PlexRoot).Distinct(StringComparer.Ordinal).Count() != mappings.Count)
+        return Results.BadRequest(new { error = "Select a Plex media folder and a full Companion media-folder path. Filesystem roots and duplicate mappings are not allowed." });
+    var shared = LocalPlexFileRelay.SharedRoots(s).ToArray();
+    if (body.Enabled && (shared.Length == 0 || s.Libraries.Any(l => CompanionLibraryPolicy.IsShared(s, l)
+        && (l.Locations.Count == 0 || l.Locations.Any(root => !LocalPlexFileRelay.IsSafeSourcePath(root))))
+        || shared.Any(root => !LocalPlexFileRelay.RootAvailable(
+        mappings.FirstOrDefault(m => m.PlexRoot == root)?.LocalRoot ?? root))))
+        return Results.BadRequest(new { error = "Every shared media folder must be available on this computer. Refresh libraries, then map any unavailable Plex folders or run Companion alongside the original files. Companion also needs read permission for each file." });
+    s.LocalFileRootMappings = mappings.Select(m => new LocalFileRootMapping { PlexRoot = m.PlexRoot, LocalRoot = m.LocalRoot }).ToList();
+    s.LocalFileRelayEnabled = body.Enabled;
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { enabled = s.LocalFileRelayEnabled,
+        message = "Original-file relay enabled. Companion serves approved files; Jellyfin handles any required transcoding. Plex supplies catalog metadata." });
 });
 
 app.MapGet("/api/tailscale/status", async (CancellationToken ct) =>
@@ -609,7 +657,7 @@ app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s
 
     if (!PlexRemoteEndpoint.IsPublicHttpsUrl(body.Url))
     {
-        return Results.BadRequest(new { error = "Enter a public https:// address your Jellyfin friend can reach without joining your Tailscale, or leave this blank to use Plex Remote Access/Relay only. A Tailscale Funnel URL (https://name.ts.net) works; a 100.x or LAN address does not." });
+        return Results.BadRequest(new { error = "Enter a reachable HTTPS Companion address (private Tailscale Serve, public Funnel or your own HTTPS proxy). A private address requires your friend's server to have network access. Leave blank only to explicitly use Plex Remote Access." });
     }
 
     var previousUrl = s.PublicUrl;
@@ -1542,6 +1590,8 @@ internal sealed class PendingPin
 {
     public int? Id { get; set; }
 }
+
+internal sealed record SetLocalFileRelayRequest(bool Enabled, List<LocalFileRootMapping>? Mappings = null);
 
 internal sealed record ToggleLibraryRequest(string SectionKey, bool Shared);
 
