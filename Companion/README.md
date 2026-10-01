@@ -8,7 +8,7 @@ mount repair. See [TODO.md](TODO.md) for remaining Windows/Funnel/client checks.
 ## Plex → Jellyfin
 
 1. Run Companion on the Plex owner's computer and unlock it with the owner key shown at startup.
-2. Sign into Plex and select a server you own, or enter its local address and token. Companion uses a tested local upstream connection; a remote friend connects through the public Companion relay.
+2. Sign into Plex and select a server you own, or enter its local address and token. Companion uses a tested local upstream connection; a remote friend connects through your configured Companion address.
 3. Select your local libraries to share. Imported libraries cannot be selected for onward sharing.
 4. Choose **Set up private sharing** to use Tailscale Serve, or configure a public HTTPS Companion address through Funnel or your own reverse proxy. Every address must point to Companion, rather than Plex. Private sharing needs Tailscale on the server computers and permission to reach the shared device; public sharing does not require your friend to join Tailscale.
 5. Send a share request to the friend's Jellyfin address or generate a connect code. A Companion relay code contains a short-lived claim token; after claiming, each friend gets a separate revocable relay credential.
@@ -43,12 +43,49 @@ Setup is an owner action; there is no recurring uptime polling. A direct private
 connection is preferred by Tailscale, but relayed connections can be slower and
 cannot guarantee buffer-free playback.
 
-This mode does not require a paid public tunnel. It requires an installed,
-signed-in Tailscale helper and is subject to its plan/network limits. Companion's
-own relay and receiving Jellyfin clients are distinct from native Plex app remote
-video playback: [Plex's subscription requirements](https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/)
-are not removed by changing a tunnel. Public sharing remains available through
-your own HTTPS ingress; there is no bundled unlimited free public relay.
+This transport does not require a paid public tunnel. It requires an installed,
+signed-in Tailscale helper and is subject to its plan/network limits.
+[Plex's remote-playback requirements](https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/)
+can apply when Companion fetches video through Plex. On September 21, 2026,
+[Infuse's developer reported enforcement extending to third-party apps](https://community.firecore.com/t/changes-to-plex-remote-streaming-requirements/60825).
+Changing a tunnel alone does not guarantee subscription-free Plex API playback.
+Public sharing remains available through your own HTTPS ingress; there is no
+bundled unlimited free public relay.
+
+### Original-file sharing (preview)
+
+For Plex → Jellyfin sharing that does not depend on Plex's video API, run
+Companion on a Windows or Linux computer that can read your original media.
+Select the native libraries you own, then choose **Enable / save original-file
+sharing** in Libraries. Companion discovers media folders from the selected
+Plex server. No developer-specific paths or fixed media folders are required.
+
+If Plex runs in a container or uses a different drive namespace, expand the
+folder settings, select a discovered Plex folder and enter that folder's path
+as Companion sees it. Add the mapping and save. All shared media folders must
+be available. The setting is opt-in; switching Plex servers resets it and its
+folder mappings. macOS original-file serving is not supported in this preview.
+
+Plex still supplies catalog metadata and posters. For each media request,
+Companion fetches fresh metadata, verifies the exact part and current library
+consent, then serves its approved original file with HEAD/Range seeking.
+Jellyfin handles client compatibility and any necessary transcoding; Plex's
+video/transcode endpoint is not used. Missing files, stale sizes or denied
+permissions return an error without falling back to Plex streaming. Embedded
+tracks travel with the original container; separate subtitle files are not
+served by this mode. Imported media and links below approved roots are denied.
+
+Connect your friend's Jellyfin server through private sharing or your own
+reachable HTTPS Companion address. Original-file mode does not change native
+Plex client subscription requirements or provide access to another person's
+unavailable files. **Use Plex streaming again** explicitly restores the old
+Plex API route.
+
+The disposable integration test deliberately returns HTTP 402 for every Plex
+video endpoint while checking real Jellyfin playback, seeking and transcoding.
+That establishes video-API independence. It does not substitute for a claimed
+free-account test, real cross-account Tailscale HTTPS or Windows runtime checks;
+these remain required before stable promotion.
 
 Switching Plex servers resets library sharing choices because different servers can reuse the same section IDs. Removing a friend revokes its Companion relay credential. Direct Plex connections created by older versions have different credential/consent boundaries; reconnect through Companion to use its current sharing controls.
 

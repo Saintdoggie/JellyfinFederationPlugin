@@ -355,6 +355,16 @@
   <div class="card hidden" id="librariesCard">
     <h2><span class="step-num">4</span> Libraries to share</h2>
     <div id="libraryList"></div>
+    <h3>Original-file sharing (preview)</h3>
+    <p class="status-line">Companion can serve your approved original video files without using Plex's video-streaming service. It finds Plex's media folders automatically. Run Companion where those files are readable; the receiving Jellyfin server handles any required transcoding. Plex still supplies catalog metadata.</p>
+    <div class="btn-row"><button id="enableLocalFileRelayBtn">Enable / save original-file sharing</button><button class="secondary" id="disableLocalFileRelayBtn" hidden>Use Plex streaming again</button></div>
+    <p id="localFileRelayStatus" class="status-line" role="status" aria-live="polite"></p>
+    <details><summary>Different media-folder paths</summary>
+      <p class="status-line">If Plex runs in a container or uses different folder names, map its media folder to the same original files as seen by Companion. No files are moved. Only selected libraries are shared.</p>
+      <label for="plexFileRoot">Plex media folder</label><select id="plexFileRoot"></select>
+      <label for="companionFileRoot">Same folder as seen by Companion</label><input id="companionFileRoot" type="text" placeholder="Full path to your media folder">
+      <button class="secondary" id="addLocalFileMappingBtn">Add folder mapping</button><div id="localFileMappings"></div>
+    </details>
   </div>
 
   <div class="card hidden" id="shareCard">
@@ -563,10 +573,44 @@ async function loadPublicUrl() {
   }
 }
 
+let localFileMappings = [];
+let localFileRevision = 0;
+async function loadLocalFileRelay() {
+  const revision = localFileRevision;
+  const res = await apiFetch('/api/local-file-relay');
+  if (!res.ok) return;
+  const data = await res.json();
+  if (revision !== localFileRevision) return;
+  localFileMappings = Array.isArray(data.mappings) ? data.mappings : [];
+  const picker = document.getElementById('plexFileRoot'); picker.replaceChildren();
+  for (const root of data.roots || []) {
+    const option = document.createElement('option'); option.value = root.plexRoot;
+    option.textContent = root.plexRoot + (root.available ? ' — available' : ' — needs mapping'); picker.appendChild(option);
+  }
+  document.getElementById('enableLocalFileRelayBtn').disabled = data.supported === false;
+  document.getElementById('disableLocalFileRelayBtn').hidden = !data.enabled;
+  document.getElementById('localFileRelayStatus').textContent = data.supported === false
+    ? 'Original-file sharing currently supports Windows and Linux.'
+    : data.enabled ? 'Original-file sharing enabled. Video bytes come from approved local files.' : 'Video requests currently use the Plex streaming API.';
+  renderLocalFileMappings();
+}
+function renderLocalFileMappings() {
+  const list = document.getElementById('localFileMappings'); list.replaceChildren();
+  localFileMappings.forEach((mapping, index) => {
+    const row = document.createElement('div');
+    const label = document.createElement('span'); label.textContent = mapping.plexRoot + ' → ' + mapping.localRoot;
+    const remove = document.createElement('button'); remove.className = 'secondary'; remove.textContent = 'Remove';
+    remove.addEventListener('click', () => { localFileRevision++; localFileMappings.splice(index, 1); renderLocalFileMappings();
+      document.getElementById('localFileRelayStatus').textContent = 'Folder mappings changed. Enable / save to apply.'; });
+    row.append(label, remove); list.appendChild(row);
+  });
+}
+
 async function loadStatus() {
   const res = await apiFetch('/api/status');
   const data = await res.json();
   knownPlexLibraries = data.libraries || [];
+  await loadLocalFileRelay();
   if (data.plexVisibleImportRoot) {
     plexVisibleRootInput.value = data.plexVisibleImportRoot;
   }
@@ -952,6 +996,30 @@ savePublicUrlBtn.addEventListener('click', async () => {
   document.getElementById('publicUrlCard').classList.toggle('done', res.ok);
   savePublicUrlBtn.disabled = false;
 });
+
+document.getElementById('addLocalFileMappingBtn').addEventListener('click', () => {
+  const plexRoot = document.getElementById('plexFileRoot').value;
+  const localRoot = document.getElementById('companionFileRoot').value.trim();
+  if (!plexRoot || !localRoot) { document.getElementById('localFileRelayStatus').textContent = 'Select a Plex folder and enter its full path on this computer.'; return; }
+  localFileRevision++;
+  localFileMappings = localFileMappings.filter(m => m.plexRoot !== plexRoot);
+  localFileMappings.push({ plexRoot, localRoot }); renderLocalFileMappings();
+  document.getElementById('localFileRelayStatus').textContent = 'Folder mapping added. Enable / save to apply.';
+});
+async function saveLocalFileRelay(enabled) {
+  localFileRevision++;
+  const enable = document.getElementById('enableLocalFileRelayBtn'), disable = document.getElementById('disableLocalFileRelayBtn');
+  const status = document.getElementById('localFileRelayStatus'); enable.disabled = disable.disabled = true;
+  try {
+    const res = await apiFetch('/api/local-file-relay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled, mappings: localFileMappings }) });
+    const data = await res.json(); status.textContent = data.message || data.error || 'Could not change original-file sharing.';
+    if (res.ok) { localFileRevision++; disable.hidden = !data.enabled; }
+  } catch (e) { status.textContent = 'Could not change original-file sharing: ' + e.message; }
+  finally { enable.disabled = disable.disabled = false; }
+}
+document.getElementById('enableLocalFileRelayBtn').addEventListener('click', () => saveLocalFileRelay(true));
+document.getElementById('disableLocalFileRelayBtn').addEventListener('click', () => saveLocalFileRelay(false));
 
 enablePrivateShareBtn.addEventListener('click', async () => {
   publicUrlRevision++;
