@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -564,6 +565,30 @@ public class RemoteServerClientPlaybackTests
         await client.GetItemsAsync(slim: true);
         Assert.Contains("slim=true", handler.LastRequestedQuery);
         Assert.DoesNotContain("includeMediaSources", handler.LastRequestedQuery);
+    }
+
+    [Fact]
+    public async Task GetItemsAsync_PreservesFileSizeAndBitrateWithoutUpstreamCredentials()
+    {
+        var json = JsonSerializer.Serialize(new { Items = new[] { new
+        {
+            Id = Guid.NewGuid(), Name = "Movie",
+            MediaSources = new[] { new
+            {
+                Container = "mkv", Size = 9_000_000_000L, Bitrate = 42_000_000, RunTimeTicks = 900_000_000L,
+                Path = "https://friend.example/file?api_key=private",
+                RequiredHttpHeaders = new Dictionary<string, string> { ["X-Emby-Token"] = "private" }
+            } }
+        } } });
+        var handler = new FakeHttpMessageHandler(itemsJson: json);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        using var client = new RemoteServerClient(new RemoteServer { Id = "file-peer", Url = "http://fake.local", Enabled = true }, NullLogger.Instance, http);
+        var source = Assert.Single(Assert.Single((await client.GetItemsAsync())!).MediaSources!);
+        Assert.Equal(9_000_000_000L, source.Size);
+        Assert.Equal(42_000_000, source.Bitrate);
+        Assert.Equal(900_000_000L, source.RunTimeTicks);
+        Assert.Null(source.Path);
+        Assert.Empty(source.RequiredHttpHeaders);
     }
 
     [Fact]

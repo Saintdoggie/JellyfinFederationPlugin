@@ -167,6 +167,14 @@ namespace Jellyfin.Plugin.Federation.Services
             return partKey == null ? null : client.BuildStreamUrl(partKey);
         }
 
+        public Task<MediaBrowser.Model.Dto.MediaSourceInfo?> GetMediaSourceAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            return client == null
+                ? Task.FromResult<MediaBrowser.Model.Dto.MediaSourceInfo?>(null)
+                : client.GetMediaSourceAsync(nativeId, cancellationToken);
+        }
+
         /// <inheritdoc />
         public async Task<ExternalImageSet?> GetImagesAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
         {

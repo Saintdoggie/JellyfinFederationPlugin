@@ -32,8 +32,10 @@ public sealed class FederationArtworkServiceTests : IDisposable
 
     public void Dispose() => _plugin.Dispose();
 
-    [Fact]
-    public async Task ChangedPlexPoster_ReplacesPrimaryImage_AndRecordsSourceTag()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ChangedPlexPoster_ReplacesPrimaryImage_AndRecordsSourceTag(bool identicalTagFromOtherServer)
     {
         var server = new RemoteServer
         {
@@ -84,12 +86,14 @@ public sealed class FederationArtworkServiceTests : IDisposable
                 FullName = "/old/poster.jpg",
                 LastWriteTimeUtc = DateTime.UtcNow
             });
-        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, "/library/metadata/500/thumb/old");
+        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, identicalTagFromOtherServer
+            ? $"different-plex:{remoteId:N}:{entry.Metadata.PrimaryImageTag}"
+            : "/library/metadata/500/thumb/old");
 
         var changed = await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None);
 
         Assert.True(changed);
-        Assert.Equal(entry.Metadata.PrimaryImageTag, item.GetProviderId(FederationArtworkService.PrimaryImageTagProviderId));
+        Assert.Equal($"{server.Id}:{remoteId:N}:{entry.Metadata.PrimaryImageTag}", item.GetProviderId(FederationArtworkService.PrimaryImageTagProviderId));
         Assert.Equal("500", external.LastNativeId);
         providerManager.Verify(p => p.SaveImage(
             item,
@@ -134,7 +138,7 @@ public sealed class FederationArtworkServiceTests : IDisposable
                 FullName = "/cached/poster.jpg",
                 LastWriteTimeUtc = DateTime.UtcNow
             });
-        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, "same-tag");
+        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, $"{server.Id}:{entry.GetPrimarySource()!.RemoteItemId:N}:same-tag");
 
         Assert.False(await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None));
         Assert.Null(external.LastNativeId);
@@ -177,9 +181,12 @@ public sealed class FederationArtworkServiceTests : IDisposable
             providerManager.Object);
 
         var item = new Movie { Name = "Movie" };
+        MediaBrowser.Controller.Entities.BaseItemExtensions.SetImagePath(item, ImageType.Primary,
+            new MediaBrowser.Model.IO.FileSystemMetadata { FullName = "/cached/old.jpg", LastWriteTimeUtc = DateTime.UtcNow });
+        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, $"{server.Id}:{remoteId:N}:native:9626");
         Assert.True(await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None));
         Assert.Equal("9626", external.LastNativeId);
-        Assert.Equal("native:9626", item.GetProviderId(FederationArtworkService.PrimaryImageTagProviderId));
+        Assert.Equal($"{server.Id}:{remoteId:N}:native:9626", item.GetProviderId(FederationArtworkService.PrimaryImageTagProviderId));
         providerManager.Verify(p => p.SaveImage(
             item,
             It.IsAny<Stream>(),
@@ -250,7 +257,11 @@ public sealed class FederationArtworkServiceTests : IDisposable
             new ExternalCatalogRegistry(new[] { external }),
             providerManager.Object);
 
+        entry.Metadata.PrimaryImageTag = "jellyfin-primary-tag";
         var item = new Movie { Name = "Shared" };
+        MediaBrowser.Controller.Entities.BaseItemExtensions.SetImagePath(item, ImageType.Primary,
+            new MediaBrowser.Model.IO.FileSystemMetadata { FullName = "/cached/old.jpg", LastWriteTimeUtc = DateTime.UtcNow });
+        item.SetProviderId(FederationArtworkService.PrimaryImageTagProviderId, $"{plex.Id}:{plexId:N}:jellyfin-primary-tag");
         Assert.True(await service.SyncPrimaryImageAsync(item, entry, CancellationToken.None));
         Assert.Equal("9111", external.LastNativeId);
         providerManager.Verify(p => p.SaveImage(

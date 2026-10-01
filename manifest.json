@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.170",
+        "changelog": "Read Plex file size, container, bitrate, codecs, HDR data and actual stream indexes from the same playable file. Retain Jellyfin peer file sizes and bitrates without retaining upstream paths or headers. Refresh current Plex media information during playback and persist corrected sizes without replacing item IDs. Track source-specific poster selections and episode poster fallbacks. Keep offline/recovery notifications ordered, hide titles whose remaining sources are disabled, preserve known durations when peers report zero, and accept authenticated HEAD requests on the media relay. Reconcile playback paths immediately when a friend changes per-user access so permitted users keep playing while revoked URLs are denied.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-01T13:42:06Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.170/Jellyfin.Federation.zip",
+        "checksum": "04535a6a554a5df8d463b43d3e1fd0c0"
+      },
+      {
         "version": "0.0.169",
         "changelog": "Bind federated playback paths, container, runtime, and audio tracks to the same reachable source. Exclude offline sources from legacy Auto selection and prevent exact-source streams from switching silently to incompatible files. Fetch posters from reachable Jellyfin or Plex sources so an offline catalog primary does not block artwork. Retain Jellyfin 12 media-source container metadata during full catalog sync so compatible clients can direct-play.",
         "targetAbi": "12.0.0.0",

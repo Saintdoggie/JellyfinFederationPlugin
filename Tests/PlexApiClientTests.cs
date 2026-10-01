@@ -19,6 +19,67 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// </summary>
 public class PlexApiClientTests
 {
+    [Fact]
+    public async Task MediaVersionWithoutAFile_CannotDescribeTheLaterPlayablePart()
+    {
+        const string body = """
+            {"MediaContainer":{"Metadata":[{"ratingKey":"703","title":"Movie","type":"movie","Media":[
+            {"container":"mp4","videoCodec":"h264"},
+            {"container":"mkv","videoCodec":"hevc","Part":[{"key":"/library/parts/2/file.mkv","size":999}]}]}]}}
+            """;
+        var dto = Assert.Single(await BuildClient(new ScriptedSectionAndDetailHandler(body, body))
+            .GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None)).Dto;
+        Assert.Equal("mkv", dto.Container);
+        Assert.Equal(999, Assert.Single(dto.MediaSources!).Size);
+        Assert.Equal("hevc", Assert.Single(dto.MediaStreams!).Codec);
+    }
+
+    [Fact]
+    public async Task DetailedPart_ControlsContainerSizeCodecsAndStreamIndicesTogether()
+    {
+        const string listing = """
+            {"MediaContainer":{"Metadata":[{"ratingKey":"700","title":"Changed file","type":"movie",
+            "Media":[{"container":"mp4","videoCodec":"h264","Part":[{"key":"/library/parts/old/file.mp4","size":123}]}]}]}}
+            """;
+        const string detail = """
+            {"MediaContainer":{"Metadata":[{"ratingKey":"700","Media":[{"container":"mkv","bitrate":42000,"duration":90000,
+            "Part":[{"key":"/library/parts/new/file.mkv","size":"9000000000","container":"mkv","Stream":[
+            {"streamType":1,"index":0,"codec":"hevc","width":3840,"height":2160},
+            {"streamType":3,"index":1,"codec":"srt","languageTag":"en"},
+            {"streamType":2,"index":2,"codec":"ac3","channels":6}]}]}]}]}}
+            """;
+        var client = BuildClient(new ScriptedSectionAndDetailHandler(listing, detail));
+        var dto = Assert.Single(await client.GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None)).Dto;
+        Assert.Equal("mkv", dto.Container);
+        var source = Assert.Single(dto.MediaSources!);
+        Assert.Equal(9_000_000_000L, source.Size);
+        Assert.Equal(42_000_000, source.Bitrate);
+        Assert.Equal(90 * TimeSpan.TicksPerSecond, source.RunTimeTicks);
+        Assert.Equal("hevc", Assert.Single(dto.MediaStreams!, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video).Codec);
+        Assert.Equal(2, Assert.Single(dto.MediaStreams!, s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio).Index);
+    }
+
+    [Fact]
+    public async Task ListingWithoutMedia_StillGetsDetailedFileInformation()
+    {
+        const string listing = """{"MediaContainer":{"Metadata":[{"ratingKey":"701","title":"Movie","type":"movie"}]}}""";
+        const string detail = """{"MediaContainer":{"Metadata":[{"ratingKey":"701","Media":[{"container":"mp4","videoCodec":"h264","Part":[{"key":"/library/parts/1/file.mp4","size":456}]}]}]}}""";
+        var dto = Assert.Single(await BuildClient(new ScriptedSectionAndDetailHandler(listing, detail))
+            .GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None)).Dto;
+        Assert.Equal("mp4", dto.Container);
+        Assert.Equal(456, Assert.Single(dto.MediaSources!).Size);
+        Assert.Equal("h264", Assert.Single(dto.MediaStreams!).Codec);
+    }
+
+    [Fact]
+    public async Task EpisodeWithoutOwnThumb_TracksParentPosterChangesInCatalog()
+    {
+        const string listing = """{"MediaContainer":{"Metadata":[{"ratingKey":"702","title":"Episode","type":"episode","grandparentRatingKey":"70","parentIndex":1,"thumb":"","parentThumb":"/library/metadata/71/thumb/new"}]}}""";
+        var dto = Assert.Single(await BuildClient(new ScriptedSectionHandler(listing))
+            .GetSectionItemsAsync(new PlexSection("1", "Movies", "movie"), CancellationToken.None)).Dto;
+        Assert.Equal("/library/metadata/71/thumb/new", dto.ImageTags![MediaBrowser.Model.Entities.ImageType.Primary]);
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"MediaContainer\":{}}")]

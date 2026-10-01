@@ -494,6 +494,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     // source this way; this keeps the stamped path consistent with it.
                     var playable = FirstEnabledSource(entry, config, offlineServerIds);
                     var changed = sourceMetadataChanged;
+                    if (x.Item.Size != playable?.Size)
+                    {
+                        x.Item.Size = playable?.Size;
+                        changed = true;
+                    }
 
                     // The duration/container shown on an item (grid badge, detail page,
                     // and - via item.RunTimeTicks as GetMediaSources' last-resort
@@ -1083,14 +1088,14 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var offline = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var availability = AvailabilityOverride;
-            if (availability == null || config?.RemoteServers == null)
+            if (config?.RemoteServers == null)
             {
                 return offline;
             }
 
             foreach (var server in config.RemoteServers)
             {
-                if (server.Enabled && availability.IsOffline(server.Id))
+                if (!server.Enabled || availability?.IsOffline(server.Id) == true)
                 {
                     offline.Add(server.Id);
                 }

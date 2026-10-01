@@ -286,8 +286,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     // thumb is whatever Plex is actually showing - including a
                     // custom uploaded poster. Fall back to parent/show art for
                     // episodes/seasons that have no still of their own.
-                    var thumb = GetString(m, "thumb") ?? GetString(m, "parentThumb") ?? GetString(m, "grandparentThumb");
-                    var art = GetString(m, "art") ?? GetString(m, "parentArt") ?? GetString(m, "grandparentArt");
+                    var thumb = FirstNonEmptyString(m, "thumb", "parentThumb", "grandparentThumb");
+                    var art = FirstNonEmptyString(m, "art", "parentArt", "grandparentArt");
                     return (thumb, art);
                 }
             }
@@ -438,7 +438,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // selects or uploads a different poster. Reconciliation uses that
             // tag to fetch the exact Plex image once and to replace it only when
             // Plex reports a newer selection.
-            var thumb = GetString(m, "thumb");
+            var thumb = FirstNonEmptyString(m, "thumb", "parentThumb", "grandparentThumb");
             if (!string.IsNullOrWhiteSpace(thumb))
             {
                 dto.ImageTags = new Dictionary<ImageType, string>
@@ -533,26 +533,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         private async Task ApplyMediaDetailsAsync(string ratingKey, JsonElement m, BaseItemDto dto, CancellationToken cancellationToken)
         {
-            if (!m.TryGetProperty("Media", out var media)
-                || media.ValueKind != JsonValueKind.Array)
+            var summary = ReadMediaSource(m);
+            var detailed = await GetMediaSourceAsync(ratingKey, cancellationToken).ConfigureAwait(false);
+            var source = detailed ?? summary;
+            if (source == null) return;
+
+            // Older PMS responses sometimes omit container on the detail endpoint.
+            // Only borrow the listing's container when it identifies the same part.
+            if (detailed != null && summary != null && detailed.Id == summary.Id)
             {
-                return;
+                source.Container ??= summary.Container;
             }
 
-            foreach (var med in media.EnumerateArray())
-            {
-                dto.Container = GetString(med, "container");
-
-                var streams = await FetchDetailedStreamsAsync(ratingKey, cancellationToken).ConfigureAwait(false)
-                    ?? BuildSummaryStreams(med);
-
-                if (streams.Count > 0)
-                {
-                    dto.MediaStreams = streams.ToArray();
-                }
-
-                return;
-            }
+            dto.Container = source.Container;
+            dto.MediaStreams = source.MediaStreams.ToArray();
+            dto.MediaSources = new[] { source };
+            if (source.RunTimeTicks is > 0) dto.RunTimeTicks = source.RunTimeTicks;
         }
 
         /// <summary>
@@ -602,90 +598,105 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Fetches the item's own detail endpoint and extracts a full
-        /// per-stream breakdown (every video and audio track, with real
-        /// color/HDR/Dolby Vision data on the video track) from its first
-        /// media part. Returns null - distinct from an empty list - when the
-        /// fetch failed or the response didn't have the expected shape, so
-        /// the caller falls back to the coarser section-listing summary
-        /// instead of leaving the item with no stream data at all.
+        /// Reads the current first playable part's size, container, runtime,
+        /// bitrate and stream details together. Returns null when the item or
+        /// its media information could not be read, allowing catalog sync to
+        /// fall back to the section listing.
         /// </summary>
-        private async Task<List<MediaStream>?> FetchDetailedStreamsAsync(string ratingKey, CancellationToken cancellationToken)
+        public async Task<MediaSourceInfo?> GetMediaSourceAsync(string ratingKey, CancellationToken cancellationToken)
         {
-            var doc = await GetJsonAsync($"/library/metadata/{ratingKey}", cancellationToken).ConfigureAwait(false);
-            if (doc == null)
+            using var doc = await GetJsonAsync($"/library/metadata/{ratingKey}", cancellationToken).ConfigureAwait(false);
+            if (doc == null || !doc.RootElement.TryGetProperty("MediaContainer", out var container)
+                || !container.TryGetProperty("Metadata", out var metadata)
+                || metadata.ValueKind != JsonValueKind.Array) return null;
+
+            foreach (var item in metadata.EnumerateArray())
             {
-                return null;
+                if (GetString(item, "ratingKey") == ratingKey) return ReadMediaSource(item);
             }
+            return null;
+        }
 
-            using (doc)
+        private static MediaSourceInfo? ReadMediaSource(JsonElement item)
+        {
+            if (!item.TryGetProperty("Media", out var media) || media.ValueKind != JsonValueKind.Array) return null;
+            var hasPlayablePart = media.EnumerateArray().Any(m => m.TryGetProperty("Part", out var parts)
+                && parts.ValueKind == JsonValueKind.Array
+                && parts.EnumerateArray().Any(p => !string.IsNullOrWhiteSpace(GetString(p, "key"))));
+            foreach (var med in media.EnumerateArray())
             {
-                if (!doc.RootElement.TryGetProperty("MediaContainer", out var container)
-                    || !container.TryGetProperty("Metadata", out var metadataArr)
-                    || metadataArr.ValueKind != JsonValueKind.Array)
+                JsonElement? chosenPart = null;
+                if (med.TryGetProperty("Part", out var parts) && parts.ValueKind == JsonValueKind.Array)
                 {
-                    return null;
-                }
-
-                foreach (var meta in metadataArr.EnumerateArray())
-                {
-                    if (!meta.TryGetProperty("Media", out var mediaArr) || mediaArr.ValueKind != JsonValueKind.Array)
+                    foreach (var part in parts.EnumerateArray())
                     {
-                        continue;
-                    }
-
-                    foreach (var med in mediaArr.EnumerateArray())
-                    {
-                        if (!med.TryGetProperty("Part", out var parts) || parts.ValueKind != JsonValueKind.Array)
+                        if (!string.IsNullOrWhiteSpace(GetString(part, "key")))
                         {
-                            continue;
-                        }
-
-                        foreach (var part in parts.EnumerateArray())
-                        {
-                            if (!part.TryGetProperty("Stream", out var streamsJson) || streamsJson.ValueKind != JsonValueKind.Array)
-                            {
-                                continue;
-                            }
-
-                            var streams = new List<MediaStream>();
-                            var index = 0;
-                            var sawDefaultAudio = false;
-                            foreach (var s in streamsJson.EnumerateArray())
-                            {
-                                var streamType = GetInt(s, "streamType");
-                                if (streamType == 1)
-                                {
-                                    streams.Add(BuildVideoStream(s, index++));
-                                }
-                                else if (streamType == 2)
-                                {
-                                    var audio = BuildAudioStream(s, index++);
-                                    sawDefaultAudio |= audio.IsDefault;
-                                    streams.Add(audio);
-                                }
-                            }
-
-                            if (!sawDefaultAudio)
-                            {
-                                // Neither Plex's own "default" (the file's embedded
-                                // flag) nor "selected" (this server's own current
-                                // choice) was set on any track - certifying zero
-                                // audio streams as default would leave clients with
-                                // no track to fall back to.
-                                var firstAudio = streams.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
-                                if (firstAudio != null)
-                                {
-                                    firstAudio.IsDefault = true;
-                                }
-                            }
-
-                            return streams;
+                            chosenPart = part;
+                            break;
                         }
                     }
                 }
-            }
 
+                // Match FirstPartKey: a media version without a usable part cannot
+                // describe a later version's bytes. Summary-only entries remain a
+                // fallback for old peers, but never override a playable version.
+                if (chosenPart == null && (hasPlayablePart || med.TryGetProperty("Part", out _))) continue;
+                var streams = new List<MediaStream>();
+                if (chosenPart is JsonElement selected && selected.TryGetProperty("Stream", out var streamJson)
+                    && streamJson.ValueKind == JsonValueKind.Array)
+                {
+                    var ordinal = 0;
+                    foreach (var stream in streamJson.EnumerateArray())
+                    {
+                        // Plex's id identifies a database row; index identifies the
+                        // stream inside the file. Keep gaps made by subtitle/data tracks.
+                        var index = GetInt(stream, "index") ?? ordinal;
+                        ordinal++;
+                        switch (GetInt(stream, "streamType"))
+                        {
+                            case 1: streams.Add(BuildVideoStream(stream, index)); break;
+                            case 2: streams.Add(BuildAudioStream(stream, index)); break;
+                            case 3:
+                                // Sidecar subtitles require a separate authenticated
+                                // relay; don't claim they are embedded in the media.
+                                if (GetString(stream, "key") != null) break;
+                                streams.Add(new MediaStream
+                                {
+                                    Type = MediaStreamType.Subtitle, Index = index,
+                                    Codec = GetString(stream, "codec") == "srt" ? "subrip" : GetString(stream, "codec"),
+                                    Language = GetString(stream, "languageTag") ?? GetString(stream, "languageCode"),
+                                    Title = GetString(stream, "title"),
+                                    IsDefault = GetBool(stream, "default") == true,
+                                    IsForced = GetBool(stream, "forced") == true
+                                });
+                                break;
+                        }
+                    }
+                }
+                if (streams.Count == 0) streams = BuildSummaryStreams(med);
+                if (!streams.Any(s => s.Type == MediaStreamType.Audio && s.IsDefault))
+                {
+                    var audio = streams.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
+                    if (audio != null) audio.IsDefault = true;
+                }
+                var partKey = chosenPart is JsonElement p ? GetString(p, "key") : null;
+                var size = chosenPart is JsonElement sizePart ? GetLong(sizePart, "size") : null;
+                var duration = chosenPart is JsonElement durationPart ? GetLong(durationPart, "duration") : null;
+                duration ??= GetLong(med, "duration") ?? GetLong(item, "duration");
+                return new MediaSourceInfo
+                {
+                    Id = partKey ?? GetString(med, "id"),
+                    Container = chosenPart is JsonElement containerPart
+                        ? FirstNonEmptyString(containerPart, "container") ?? FirstNonEmptyString(med, "container")
+                        : FirstNonEmptyString(med, "container"),
+                    Size = size is > 0 ? size : null,
+                    Bitrate = GetInt(med, "bitrate") is > 0 and var kbps ? (int)Math.Min((long)kbps * 1000, int.MaxValue) : null,
+                    RunTimeTicks = duration is > 0 && duration <= long.MaxValue / TimeSpan.TicksPerMillisecond
+                        ? duration * TimeSpan.TicksPerMillisecond : null,
+                    MediaStreams = streams
+                };
+            }
             return null;
         }
 
@@ -749,7 +760,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 SampleRate = GetInt(s, "samplingRate"),
                 BitDepth = GetInt(s, "bitDepth"),
                 Profile = GetString(s, "profile"),
-                Language = GetString(s, "languageTag"),
+                Language = GetString(s, "languageTag") ?? GetString(s, "languageCode"),
                 Title = GetString(s, "title"),
                 ChannelLayout = GetString(s, "audioChannelLayout"),
                 Index = index,
@@ -882,6 +893,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            return null;
+        }
+
+        private static string? FirstNonEmptyString(JsonElement item, params string[] fields)
+        {
+            foreach (var field in fields)
+            {
+                var value = GetString(item, field);
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
             return null;
         }
 

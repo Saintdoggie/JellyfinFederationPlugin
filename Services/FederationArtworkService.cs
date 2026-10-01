@@ -67,15 +67,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            var tag = source.PrimaryImageTag
-                ?? entry.Metadata.PrimaryImageTag
-                ?? $"native:{nativeId}";
-            if (provider == null)
-            {
-                tag = $"{source.ServerId}:{source.RemoteItemId:N}:{tag}";
-            }
+            var sourceTag = source.PrimaryImageTag
+                ?? (ReferenceEquals(source, entry.GetPrimarySource()) ? entry.Metadata.PrimaryImageTag : null);
+            var tag = $"{source.ServerId}:{source.RemoteItemId:N}:{sourceTag ?? $"native:{nativeId}"}";
             var savedTag = item.GetProviderId(PrimaryImageTagProviderId);
             if (item.HasImage(ImageType.Primary, 0)
+                && !string.IsNullOrWhiteSpace(sourceTag)
                 && string.Equals(savedTag, tag, StringComparison.Ordinal))
             {
                 return false;

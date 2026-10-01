@@ -86,6 +86,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         Task<string?> ResolveStreamUrlAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
 
+        /// <summary>Current file information, kept server-side and bound to the same
+        /// part selected by ResolveStreamUrlAsync. Null when not supported.</summary>
+        Task<MediaSourceInfo?> GetMediaSourceAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+            => Task.FromResult<MediaSourceInfo?>(null);
+
         /// <summary>
         /// Resolves cover art / backdrop URLs for an item, or null when the item
         /// has none or couldn't be fetched. Like <see cref="ResolveStreamUrlAsync"/>,

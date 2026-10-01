@@ -364,7 +364,7 @@ namespace Jellyfin.Plugin.Federation.Services
                                 Container = src.Container ?? entry.Metadata.Container,
                                 Size = src.Size,
                                 Bitrate = src.Bitrate,
-                                RunTimeTicks = src.RunTimeTicks ?? entry.Metadata.RunTimeTicks,
+                                RunTimeTicks = FirstPositiveRuntime(src.RunTimeTicks, entry.Metadata.RunTimeTicks, item.RunTimeTicks),
                                 MediaStreams = cachedStreams
                             },
                             path));
@@ -426,7 +426,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         RequiresOpening = false,
                         RequiresClosing = false,
 
-                        RunTimeTicks = remote.RunTimeTicks ?? entry.Metadata.RunTimeTicks ?? item.RunTimeTicks,
+                        RunTimeTicks = FirstPositiveRuntime(remote.RunTimeTicks, candidate.Src.RunTimeTicks, entry.Metadata.RunTimeTicks, item.RunTimeTicks),
                         Type = position == 0 ? MediaSourceType.Default : MediaSourceType.Grouping
                     });
                 }
@@ -470,6 +470,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     return null;
                 }
+
+                var currentSource = await external.GetMediaSourceAsync(server, nativeId, cancellationToken).ConfigureAwait(false);
+                if (currentSource != null) return currentSource;
 
                 return new MediaSourceInfo
                 {
@@ -555,6 +558,9 @@ namespace Jellyfin.Plugin.Federation.Services
             => source.Bitrate.GetValueOrDefault() > 0
                 ? source.Bitrate.GetValueOrDefault()
                 : source.MediaStreams?.Where(s => s.BitRate.HasValue).Sum(s => (long)s.BitRate!.Value) ?? 0;
+
+        private static long? FirstPositiveRuntime(params long?[] values)
+            => values.FirstOrDefault(value => value is > 0);
 
         private static int SourceHeight(MediaSourceInfo source)
             => source.MediaStreams?

@@ -78,6 +78,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly SemaphoreSlim _probeGate = new(1, 1);
         private CancellationTokenSource? _cts;
         private Task? _loop;
+        private readonly object _notificationGate = new();
+        private Task _notifications = Task.CompletedTask;
 
         /// <summary>
         /// Fires after a server's reachability flips (online to offline or back).
@@ -365,17 +367,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 var handler = OnReachabilityChangedAsync;
                 if (handler != null)
                 {
-                    _ = Task.Run(async () =>
+                    // Capture the transition now. Reading the mutable state in a
+                    // background task can turn an offline notification into online
+                    // if the server recovers before the task starts. Dispatch in
+                    // order so an older pause cannot run after the recovery resume.
+                    var becameOnline = state.Reachability == ServerReachability.Online;
+                    lock (_notificationGate)
                     {
-                        try
+                        _notifications = _notifications.ContinueWith(async _ =>
                         {
-                            await handler(server.Id, state.Reachability == ServerReachability.Online, CancellationToken.None).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug(ex, "[Federation] Reachability-change rescan failed for {ServerName}", server.Name);
-                        }
-                    });
+                            try
+                            {
+                                await handler(server.Id, becameOnline, _cts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "[Federation] Reachability-change rescan failed for {ServerName}", server.Name);
+                            }
+                        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
+                    }
                 }
             }
         }

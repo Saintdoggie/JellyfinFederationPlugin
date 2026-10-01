@@ -19,6 +19,20 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// </summary>
 public sealed class FederationOfflineHideTests
 {
+    [Fact]
+    public void DisabledSource_CannotKeepAnOtherwiseOfflineTitleVisible()
+    {
+        var entry = EntryFrom("down");
+        entry.AddSource("disabled", Guid.NewGuid(), 1);
+        var config = new PluginConfiguration
+        {
+            RemoteServers = { new RemoteServer { Id = "disabled", Enabled = false } }
+        };
+        var unavailable = FederationItemPersistenceService.ResolveOfflineServerIds(config);
+        unavailable.Add("down");
+        Assert.True(FederationItemPersistenceService.IsEntryOffline(entry, unavailable));
+    }
+
     private static FederatedCacheEntry EntryFrom(string serverId)
     {
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);

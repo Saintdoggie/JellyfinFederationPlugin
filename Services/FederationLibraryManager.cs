@@ -191,6 +191,7 @@ namespace Jellyfin.Plugin.Federation.Services
             item.CommunityRating = entry.Metadata.CommunityRating;
             item.OfficialRating = entry.Metadata.OfficialRating;
             item.RunTimeTicks = GetPlaybackSource(entry)?.RunTimeTicks ?? entry.Metadata.RunTimeTicks;
+            item.Size = GetPlaybackSource(entry)?.Size;
             item.Studios = entry.Metadata.Studios ?? Array.Empty<string>();
             item.Genres = entry.Metadata.Genres ?? Array.Empty<string>();
 

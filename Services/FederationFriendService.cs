@@ -2124,21 +2124,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Applied to <paramref name="caller"/> (the token), not whoever
         /// <c>payload.FromFederationId</c> names.
         /// </summary>
-        public void ReceiveRemoteUserAccessRules(RemoteServer caller, RemoteUserAccessRulesPayload payload)
+        public bool ReceiveRemoteUserAccessRules(RemoteServer caller, RemoteUserAccessRulesPayload payload)
         {
             if (caller == null || payload == null)
             {
-                return;
+                return false;
             }
 
             if (!ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "remote-user access rules"))
             {
-                return;
+                return false;
             }
 
             caller.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
             Plugin.Instance!.SaveConfiguration();
             _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", caller.Name, caller.FriendUserAccessRules.Count);
+            return true;
         }
 
         /// <summary>

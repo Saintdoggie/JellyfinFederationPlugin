@@ -19,6 +19,31 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// </summary>
 public sealed class FederationAvailabilityServiceTests
 {
+    [Fact]
+    public async Task RapidDisconnectReconnect_NotifiesInOrder_WithCapturedTransition()
+    {
+        using var service = Service();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = new List<bool>();
+        service.OnReachabilityChangedAsync = async (_, online, _) =>
+        {
+            calls.Add(online);
+            if (calls.Count == 1) { entered.SetResult(); await release.Task; }
+            if (calls.Count == 3) finished.SetResult();
+        };
+        var server = Server("rapid");
+        service.RecordResult(server, true, null);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        service.RecordResult(server, false, "down");
+        service.RecordResult(server, false, "down");
+        service.RecordResult(server, true, null);
+        release.SetResult();
+        await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { true, false, true }, calls);
+    }
+
     private static RemoteServer Server(string id)
         => new() { Id = id, Name = id, Url = "http://example.local", Enabled = true };
 
