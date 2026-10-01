@@ -239,9 +239,9 @@ public class FederationPoolTests : IDisposable
         {
             Id = "plex-1",
             Kind = ServerKind.Plex,
-            Name = "plexpal",
-            Url = "https://plexpal.tail123456.ts.net/plex/peer-1",
-            CompanionUrl = "https://plexpal.tail123456.ts.net",
+            Name = "example-peer",
+            Url = "https://example-peer.tail123456.ts.net/plex/peer-1",
+            CompanionUrl = "https://example-peer.tail123456.ts.net",
             ApiKey = "companion-peer-token",
             FederationId = "plex-fed"
         });
@@ -256,7 +256,7 @@ public class FederationPoolTests : IDisposable
         var (success, message) = await _service.AddFriendToPoolAsync(pool.Id, "plex-1", CancellationToken.None);
 
         Assert.True(success, message);
-        Assert.Equal("https://plexpal.tail123456.ts.net/api/pools/invite", seenUrl);
+        Assert.Equal("https://example-peer.tail123456.ts.net/api/pools/invite", seenUrl);
         Assert.DoesNotContain("/Plugins/Federation/", seenUrl, StringComparison.Ordinal);
         Assert.Single(_plugin.Configuration.OutgoingPoolInvites);
     }
@@ -269,7 +269,7 @@ public class FederationPoolTests : IDisposable
         {
             Id = "plex-1",
             Kind = ServerKind.Plex,
-            Name = "plexpal",
+            Name = "example-peer",
             Url = "https://1-2-3.hash.plex.direct:32400",
             ApiKey = "plex-token"
         });

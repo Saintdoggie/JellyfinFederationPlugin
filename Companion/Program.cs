@@ -100,8 +100,11 @@ builder.Services.AddSingleton(sp => new WinFspInstaller(sp.GetRequiredService<Ht
 builder.Services.AddHostedService<ImportSyncBackgroundService>();
 builder.Services.AddSingleton<LocalMediaMountService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalMediaMountService>());
+builder.Services.AddSingleton(TailscaleHelper.Network);
+builder.Services.AddHostedService<PrivateSharingRestoreService>();
 
 var app = builder.Build();
+var sharingSetupGate = TailscaleHelper.Network.StateGate;
 
 // Funnel exposes this listener publicly so peers can claim one-time links and
 // Plex can fetch item-bound streams. All owner/admin APIs use a separate local
@@ -121,6 +124,21 @@ app.Use(async (context, next) =>
         }
     }
 
+    if (!HttpMethods.IsGet(context.Request.Method)
+        && (context.Request.Path.Equals("/api/tailscale/private-share", StringComparison.OrdinalIgnoreCase)
+            || context.Request.Path.Equals("/api/tailscale/funnel", StringComparison.OrdinalIgnoreCase)
+            || context.Request.Path.Equals("/api/public-url", StringComparison.OrdinalIgnoreCase)))
+    {
+        if (!await sharingSetupGate.WaitAsync(0, context.RequestAborted).ConfigureAwait(false))
+        {
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            await context.Response.WriteAsJsonAsync(new { error = "Another sharing setup is running. Wait for it to finish." }).ConfigureAwait(false);
+            return;
+        }
+        try { await next().ConfigureAwait(false); }
+        finally { sharingSetupGate.Release(); }
+        return;
+    }
     await next().ConfigureAwait(false);
 });
 
@@ -376,7 +394,7 @@ app.MapPost("/api/diagnostics", async (CompanionState s, HttpClient http, Cancel
     if (peer != null && PlexRemoteEndpoint.IsPublicHttpsUrl(s.PublicUrl))
         checks.Add(await ConnectionDiagnostics.ProbeAsync(http, s.PublicUrl + "/plex/" + peer.Id, peer.AccessToken, library.SectionKey, library.Type, "Public media path", ct));
     else
-        checks.Add(new("Public media path", false, "Connect a Jellyfin friend through Funnel to test the complete public media path."));
+        checks.Add(new("Public media path", false, "Connect a Jellyfin friend through your sharing address to test the complete media path."));
     return Results.Ok(checks);
 });
 
@@ -571,16 +589,20 @@ app.MapGet("/api/tailscale/status", async (CancellationToken ct) =>
     return Results.Ok(status);
 });
 
-app.MapGet("/api/public-url", (CompanionState s) => Results.Ok(new { publicUrl = s.PublicUrl }));
+app.MapGet("/api/public-url", (CompanionState s) => Results.Ok(new { publicUrl = s.PublicUrl, privateSharing = s.PrivateSharingPort.HasValue }));
 
 app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s) =>
 {
+    if (s.PrivateSharingPort.HasValue && !string.Equals(body.Url?.Trim().TrimEnd('/'), s.PublicUrl, StringComparison.OrdinalIgnoreCase))
+        return Results.Conflict(new { error = "Stop private sharing before changing its address. Existing services were preserved." });
     // Empty is allowed: Funnel is optional when Plex Remote Access / Relay
     // already gives friends a public path. Once a Funnel URL is saved, generate
     // used to prefer claim codes forever because this endpoint rejected blank.
     if (string.IsNullOrWhiteSpace(body.Url))
     {
         s.PublicUrl = null;
+        s.PrivateSharingPort = null;
+        s.PrivateSharingLocalPort = null;
         await s.SaveAsync().ConfigureAwait(false);
         return Results.Ok(new { publicUrl = (string?)null });
     }
@@ -592,6 +614,11 @@ app.MapPost("/api/public-url", async (SetPublicUrlRequest body, CompanionState s
 
     var previousUrl = s.PublicUrl;
     s.PublicUrl = body.Url.Trim().TrimEnd('/');
+    if (!string.Equals(s.PublicUrl, previousUrl, StringComparison.OrdinalIgnoreCase))
+    {
+        s.PrivateSharingPort = null;
+        s.PrivateSharingLocalPort = null;
+    }
     foreach (var peer in s.ImportPeers.Where(p => string.IsNullOrWhiteSpace(p.PlaybackBaseUrl)
         || string.Equals(p.PlaybackBaseUrl, previousUrl, StringComparison.OrdinalIgnoreCase)))
     {
@@ -608,8 +635,12 @@ app.MapPost("/api/connect/generate", async (CompanionState s, PlexAuth auth, Htt
         return Results.BadRequest(new { error = "Connect to Plex first." });
     }
 
-    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
     var companionUrl = await CompanionFunnelIfReachableAsync(http, s, ct).ConfigureAwait(false);
+    // A verified Companion relay uses only the local PMS connection. Private
+    // sharing must not depend on Plex cloud Remote Access discovery.
+    var remotePlexUrl = companionUrl == null
+        ? await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false)
+        : null;
     if (!ConnectCodeFactory.TryGenerate(
             companionUrl,
             remotePlexUrl,
@@ -673,8 +704,12 @@ app.MapPost("/api/connect/invite", async (InviteFriendRequest body, CompanionSta
         return Results.BadRequest(new { error = "Enter your friend's Jellyfin address, like https://their-server.ts.net or https://jellyfin.example.com:8096." });
     }
 
-    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
     var companionUrl = await CompanionFunnelIfReachableAsync(http, s, ct).ConfigureAwait(false);
+    // A verified Companion relay uses only the local PMS connection. Private
+    // sharing must not depend on Plex cloud Remote Access discovery.
+    var remotePlexUrl = companionUrl == null
+        ? await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false)
+        : null;
     if (!ConnectCodeFactory.TryGenerate(
             companionUrl,
             remotePlexUrl,
@@ -775,8 +810,41 @@ app.MapPost("/api/update/apply", async (CompanionUpdater updater, IHostApplicati
     return Results.Ok(new { message });
 });
 
+app.MapPost("/api/tailscale/private-share", async (CompanionState s, CancellationToken ct) =>
+{
+    var port = CompanionListen.Port.GetValueOrDefault();
+    var result = await TailscaleHelper.SetUpPrivateAsync(port, s.PrivateSharingPort, s.PrivateSharingLocalPort, ct).ConfigureAwait(false);
+    if (!result.Success || string.IsNullOrWhiteSpace(result.Url))
+        return Results.BadRequest(new { error = result.Message });
+
+    var previousUrl = s.PublicUrl;
+    s.PublicUrl = result.Url;
+    s.PrivateSharingPort = result.Port;
+    s.PrivateSharingLocalPort = port;
+    foreach (var peer in s.ImportPeers.Where(p => string.IsNullOrWhiteSpace(p.PlaybackBaseUrl)
+        || string.Equals(p.PlaybackBaseUrl, previousUrl, StringComparison.OrdinalIgnoreCase)))
+        peer.PlaybackBaseUrl = s.PublicUrl;
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { sharingUrl = s.PublicUrl, privateSharing = true, message = result.Message });
+});
+
+app.MapDelete("/api/tailscale/private-share", async (CompanionState s, TailscaleNetworkService network, CancellationToken ct) =>
+{
+    if (!s.PrivateSharingPort.HasValue || !s.PrivateSharingLocalPort.HasValue)
+        return Results.Ok(new { message = "Private sharing is already stopped." });
+    var result = await network.StopPrivateAsync(s.PrivateSharingPort.Value, s.PrivateSharingLocalPort.Value, ct).ConfigureAwait(false);
+    if (!result.Success) return Results.BadRequest(new { error = result.Message });
+    s.PublicUrl = null;
+    s.PrivateSharingPort = null;
+    s.PrivateSharingLocalPort = null;
+    await s.SaveAsync().ConfigureAwait(false);
+    return Results.Ok(new { message = result.Message });
+});
+
 app.MapPost("/api/tailscale/funnel", async (CompanionState s, CancellationToken ct) =>
 {
+    if (s.PrivateSharingPort.HasValue)
+        return Results.Conflict(new { error = "Stop private sharing before switching to public Funnel." });
     var port = CompanionListen.Port.GetValueOrDefault();
     if (port <= 0)
     {
@@ -790,6 +858,8 @@ app.MapPost("/api/tailscale/funnel", async (CompanionState s, CancellationToken 
     }
 
     s.PublicUrl = result.FunnelUrl.TrimEnd('/');
+    s.PrivateSharingPort = null;
+    s.PrivateSharingLocalPort = null;
     await s.SaveAsync().ConfigureAwait(false);
     return Results.Ok(new { funnelUrl = s.PublicUrl, message = result.Message });
 });
@@ -805,7 +875,7 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
         || string.IsNullOrWhiteSpace(s.ServerBaseUrl)
         || string.IsNullOrWhiteSpace(s.ServerAccessToken))
     {
-        return Results.Conflict(new { error = "Companion is not ready to share a Plex server yet. Set a public Funnel URL, or generate a direct Plex Remote Access/Relay code instead." });
+        return Results.Conflict(new { error = "Companion is not ready to share a Plex server yet. Set up private sharing or a reachable Companion HTTPS address first." });
     }
 
     var requesterName = body.RequesterName?.Trim();
@@ -818,9 +888,8 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
     s.Peers.Add(peer);
     await s.SaveAsync().ConfigureAwait(false);
 
-    var remotePlexUrl = await ResolveFriendFacingPlexUrlAsync(s, auth, ct).ConfigureAwait(false);
     var share = ConnectCodeFactory.FriendFacingShare(
-        remotePlexUrl,
+        remotePlexUrl: null,
         s.ServerAccessToken,
         s.PublicUrl,
         peer.Id,

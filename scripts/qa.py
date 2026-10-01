@@ -110,6 +110,9 @@ def validate(*, full=False, reuse=False):
     if app.exists():
         shutil.rmtree(app)
     run([dotnet, 'publish', 'Companion', '-c', 'Release', '-f', 'net9.0', '-o', app, '--nologo', '-v', 'quiet'])
+    if sys.platform == 'linux':
+        from private_sharing_smoke import smoke as sharing_smoke
+        sharing_smoke(dotnet, app)
     for number in [1, 2]:
         print(f'Automated suite {number}/2', flush=True)
         run([dotnet, 'test', 'Tests', '--nologo', '-v', 'quiet'])
