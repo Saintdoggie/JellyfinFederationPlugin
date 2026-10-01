@@ -104,3 +104,16 @@ It checks viewer-specific access revocation, old playback URL rejection, server
 disablement, outage hiding, cache preservation and stable-ID playback recovery.
 These are API/ffmpeg checks; physical TV/Xbox clients and Windows/Funnel remain
 separate validation.
+
+## Private sharing integration
+
+The automated gate also runs `private_sharing_smoke.py` on Linux against the
+published Companion. It injects an isolated CLI executable through the test
+process's PATH, without accessing the host's Tailscale daemon. It checks HTTP
+owner authorization, failed login, discovered port/address, concurrent setup,
+restart rebinding, refusal to switch an active private listener to public, and
+verified removal of only Companion's owned listener. Runtime state is private
+and removed afterward. Unit and DOM tests cover malformed configuration and
+error recovery. This is simulated network CLI integration; it does not establish
+a real two-account tailnet, issue HTTPS certificates or measure NAT/DERP bandwidth.
+Those are required before promoting the private-sharing preview to stable.

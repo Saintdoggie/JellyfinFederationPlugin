@@ -1,6 +1,6 @@
 # Companion desktop app — handoff TODO
 
-Status as of 2026-09-10. Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`.
+Status as of 2026-09-10. Source: the repository checkout.
 Read root `AGENTS.md`, `TODO.md`, and `Companion/TODO.md` first. This file tracks the
 "real app" work: tray/background behavior, RAM tuning, autostart, and platform support.
 
@@ -80,10 +80,7 @@ The Companion download should behave like a normal desktop app on Windows and Li
   -p:PublishSingleFile=true` succeeds; the produced exe is PE subsystem 2
   (GUI/WinExe, no console window) with `companion.ico` embedded and is a single
   self-contained ~62 MB file.
-- [x] Local gotcha: this workstation's NuGet cache symlinks
-  `microsoft.netcore.app.host.win-x64/.../apphost.exe` and `singlefilehost.exe`
-  to `/var/mnt/hdd1/...`. Container builds must mount that path or the publish
-  fails with `MSB4018 / FileNotFoundException`. Host/CI restores are unaffected.
+- [x] Container builds must have access to every symlink target in the selected NuGet cache. Prefer an isolated cache/restore instead of assuming a developer-specific mount layout.
 
 ## Remaining — Windows
 

@@ -73,7 +73,7 @@ public class FederationMetadataProviderTests : IDisposable
         _plugin.Configuration.RemoteServers.Add(new RemoteServer
         {
             Id = "plex1",
-            Name = "freakbob",
+            Name = "example-peer",
             Url = "https://plex.example:32400",
             ApiKey = "token",
             Kind = ServerKind.Plex,

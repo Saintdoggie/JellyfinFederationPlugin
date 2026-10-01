@@ -1,7 +1,7 @@
 # Jellyfin Federation project context
 
 Read this file first, then `TODO.md`. The source repository is
-`/var/home/cranky/Documents/JellyfinFederationPlugin-master`; deployed plugin
+the repository checkout (use `git rev-parse --show-toplevel`); deployed plugin
 folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
 
 ## Product and repository
@@ -213,7 +213,7 @@ Tests and project history:
 - On 2026-09-04 local Playwright smoke fixtures passed at laptop, TV, and mobile
   widths; temporary harnesses/screenshots live under `/tmp` and are not release
   assets. See the dated validation record in `TODO.md` for the exact scope.
-- A local Jellyfin test data tree exists at `/var/home/cranky/jellyfin-test`.
-  Determine whether it is active before treating old logs or databases as live.
+- Locate test data through the configured test instance or disposable QA fixture.
+  Determine whether an instance is active before treating old logs or databases as live.
   Never modify production/test data merely to make a test pass without first
   resolving which instance is in scope.

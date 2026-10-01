@@ -27,10 +27,10 @@ public class PlexCompanionEndpointTests
         var friend = new RemoteServer
         {
             Kind = ServerKind.Plex,
-            Url = "https://freakbob.tail4e0b6f.ts.net/plex/abc"
+            Url = "https://example-peer.tail123456.ts.net/plex/abc"
         };
 
-        Assert.Equal("https://freakbob.tail4e0b6f.ts.net", PlexCompanionEndpoint.TryGetBaseUrl(friend));
+        Assert.Equal("https://example-peer.tail123456.ts.net", PlexCompanionEndpoint.TryGetBaseUrl(friend));
     }
 
     [Fact]
@@ -52,10 +52,10 @@ public class PlexCompanionEndpointTests
         var friend = new RemoteServer
         {
             Kind = ServerKind.Plex,
-            Url = "https://freakbob.tail4e0b6f.ts.net"
+            Url = "https://example-peer.tail123456.ts.net"
         };
 
-        Assert.Equal("https://freakbob.tail4e0b6f.ts.net", PlexCompanionEndpoint.TryGetBaseUrl(friend));
+        Assert.Equal("https://example-peer.tail123456.ts.net", PlexCompanionEndpoint.TryGetBaseUrl(friend));
     }
 
     [Fact]

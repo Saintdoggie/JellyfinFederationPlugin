@@ -10,9 +10,45 @@ mount repair. See [TODO.md](TODO.md) for remaining Windows/Funnel/client checks.
 1. Run Companion on the Plex owner's computer and unlock it with the owner key shown at startup.
 2. Sign into Plex and select a server you own, or enter its local address and token. Companion uses a tested local upstream connection; a remote friend connects through the public Companion relay.
 3. Select your local libraries to share. Imported libraries cannot be selected for onward sharing.
-4. Configure a public HTTPS Companion address, usually Tailscale Funnel. Funnel must point to Companion's listening port, not directly to Plex. Your friend does not need to join your tailnet.
-5. Send a share request to the friend's Jellyfin address or generate a connect code. A Funnel code contains a short-lived claim token; after claiming, each friend gets a separate revocable relay credential.
-6. Use **Test playback connection**. It reads actual video bytes and checks Range seeking, separately from listing the catalog. A successful local check does not prove the friend's network can reach the Funnel.
+4. Choose **Set up private sharing** to use Tailscale Serve, or configure a public HTTPS Companion address through Funnel or your own reverse proxy. Every address must point to Companion, rather than Plex. Private sharing needs Tailscale on the server computers and permission to reach the shared device; public sharing does not require your friend to join Tailscale.
+5. Send a share request to the friend's Jellyfin address or generate a connect code. A Companion relay code contains a short-lived claim token; after claiming, each friend gets a separate revocable relay credential.
+6. Use **Test playback connection**. It reads actual video bytes and checks Range seeking, separately from listing the catalog. A successful local check does not prove the friend's network can reach your sharing address.
+
+### Free private sharing (preview)
+
+Private sharing is available in the separate preview, not the stable rolling
+Companion release. Real cross-account TLS and media playback remain validation
+items in the root TODO.
+
+Companion integrates [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)
+with its existing authenticated media relay. Install Tailscale, sign in, allow
+HTTPS certificates, then choose **Set up private sharing**. Companion discovers
+the executable, its actual local listening port, and the machine's HTTPS name.
+It selects an unused port, verifies private visibility, and saves the address.
+No Plex Remote Access discovery is needed for a verified Companion relay.
+
+Both server computers must have network access to the shared device. You can use
+[Tailscale device sharing](https://tailscale.com/docs/features/sharing) between
+accounts, or an existing private network with suitable access rules. Approve the
+shared device in Tailscale; Companion does not automatically enroll friends.
+For two-way callbacks, both addresses must be reachable. Tailscale must run on
+the receiving Jellyfin server computer, not only on the viewer's phone or TV.
+Connect codes offer an alternative to a callback-based invite.
+
+**Stop private sharing** removes only the owned HTTPS listener. Setup preserves
+other handlers and services; it does not reset Tailscale. On restart, Companion
+rebinds its managed listener if its local port changed. Existing peers may need
+a new connect code if you intentionally change the sharing hostname or port.
+Setup is an owner action; there is no recurring uptime polling. A direct private
+connection is preferred by Tailscale, but relayed connections can be slower and
+cannot guarantee buffer-free playback.
+
+This mode does not require a paid public tunnel. It requires an installed,
+signed-in Tailscale helper and is subject to its plan/network limits. Companion's
+own relay and receiving Jellyfin clients are distinct from native Plex app remote
+video playback: [Plex's subscription requirements](https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/)
+are not removed by changing a tunnel. Public sharing remains available through
+your own HTTPS ingress; there is no bundled unlimited free public relay.
 
 Switching Plex servers resets library sharing choices because different servers can reuse the same section IDs. Removing a friend revokes its Companion relay credential. Direct Plex connections created by older versions have different credential/consent boundaries; reconnect through Companion to use its current sharing controls.
 
@@ -47,7 +83,7 @@ Download only from this repository's [Companion release](https://github.com/Sain
 | Read-only media folder | After **Set up / start media folder** | Runs rclone; downloads the pinned, checksummed helper from downloads.rclone.org if missing. Windows may ask for UAC to install the pinned WinFsp driver from GitHub. Linux needs FUSE. |
 | Playback cache | While scanning or playing imported media | Writes `media-cache/`. Cleanup targets 2 GB and removes old closed files after one hour; open files can exceed the target. Memory buffering is 4 MB per open file, in addition to process/catalog overhead. |
 | Start at sign-in | Only after you enable the toggle | Windows: current user's HKCU Run entry. Linux desktop: XDG autostart entry. Disable using the same toggle. |
-| Remote access | Only after you configure it | Tailscale Funnel exposes the Companion relay. Owner APIs still require the owner key; friends use their own revocable credentials. |
+| Remote access | Only after you configure it | Private sharing uses Tailscale Serve for approved devices; Funnel or your reverse proxy exposes the relay publicly. Owner APIs require the owner key; friends use their own revocable credentials. |
 | Updates | Dashboard checks; owner requests installation | Contacts GitHub; replaces app binaries and restarts. Installers create shortcuts. No antivirus exclusions or firewall exceptions are added. |
 
 `companion-state.json` and `media-mount.conf` contain credentials **in plaintext**. Companion restricts them to the current Windows user with file ACLs or the Unix owner with mode 0600, before writing secret content. Administrators and software running as your account remain able to read them. Install in a private user folder on a filesystem that supports permissions. Never upload these files, `imported/`, or the media cache to GitHub.

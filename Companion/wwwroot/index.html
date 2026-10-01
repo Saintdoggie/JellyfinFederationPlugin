@@ -295,7 +295,7 @@
         <li><strong>Plex sign-in:</strong> contacts plex.tv and your selected Plex server; saves access tokens and sharing choices privately beside the app. Tokens are sensitive and are not encrypted by Companion.</li>
         <li><strong>Media folder (optional):</strong> Set up media folder enables rclone, downloaded from rclone.org if missing, and a read-only mount. On Windows it can download the pinned WinFsp driver from GitHub and ask for administrator permission. Linux needs FUSE; system permissions are yours to configure.</li>
         <li><strong>Disk and network:</strong> playback uses your connection and a local media-cache folder with a 2 GB cleanup target. Open files can exceed that target. Idle catalog sync runs every 30 minutes.</li>
-        <li><strong>Remote access (optional):</strong> Tailscale Funnel exposes Companion's relay publicly. Owner actions still require the owner key; friends get separate revocable access. Configure Funnel only when you want remote sharing.</li>
+        <li><strong>Remote access (optional):</strong> Private sharing exposes Companion's relay to approved Tailscale computers; Funnel exposes it publicly. Owner actions require the owner key; friends receive separate revocable access. Choose sharing only when you want it.</li>
         <li><strong>Start at sign-in (optional):</strong> writes a startup entry for your user only. You can switch it off below.</li>
         <li><strong>Updates:</strong> checks GitHub when you open the dashboard; installs an update only when you request it. Diagnostics stay in a rotating local log.</li>
       </ul>
@@ -319,11 +319,13 @@
   </div>
 
   <div class="card" id="publicUrlCard">
-    <h2><span class="step-num">2</span> Your public address</h2>
-    <p class="status-line">Needed if friends are outside your house (Starlink, no port forwarding). Funnel publishes this app at <code>https://yourname.tailXXXXX.ts.net</code>. Never paste a 100.x tailnet address. Use Test playback below to check that Funnel reaches this app and can relay video.</p>
+    <h2><span class="step-num">2</span> Sharing connection</h2>
+    <p class="status-line">Private sharing connects your server computers without a public tunnel or port forwarding. Both computers need Tailscale access to the shared machine. Companion discovers its HTTPS address and relays only approved libraries. Public sharing remains available through Funnel or your own HTTPS address.</p>
     <input type="text" id="publicUrlInput" placeholder="https://yourname.tailxxxxx.ts.net">
     <div class="inline-form">
-      <button id="enableFunnelBtn">Turn on Funnel</button>
+      <button id="enablePrivateShareBtn">Set up private sharing (preview)</button>
+      <button class="secondary" id="stopPrivateShareBtn" hidden>Stop private sharing</button>
+      <button class="secondary" id="enableFunnelBtn">Public sharing (Funnel)</button>
       <button class="secondary" id="savePublicUrlBtn">Save URL</button>
     </div>
     <div class="status-line" id="publicUrlStatus"></div>
@@ -357,7 +359,7 @@
 
   <div class="card hidden" id="shareCard">
     <h2><span class="step-num">5</span> Connect a Jellyfin friend</h2>
-    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. Funnel must point at this app. If Funnel is Plex or HTTPS is down, Companion will not put your Plex token in the request; fix Funnel or explicitly choose Plex Remote Access. They do not need a code, and they do not need to join your Tailscale.</p>
+    <p class="status-line">Type their Jellyfin address. Companion sends the share request — they Accept under Federation → Companion. Your sharing address must reach this app. If it is down, Companion will not put your Plex token in the request; repair the connection or explicitly choose Plex Remote Access. Private sharing requires Tailscale access between the server computers; public sharing does not.</p>
     <div class="inline-form">
       <input type="text" id="inviteUrlInput" placeholder="https://their-jellyfin.example:8096" autocomplete="off" autocapitalize="off" spellcheck="false">
       <button id="inviteFriendBtn">Send share request</button>
@@ -458,6 +460,8 @@ const tailscaleContent = document.getElementById('tailscaleContent');
 const tailscaleCard = document.getElementById('tailscaleCard');
 const publicUrlInput = document.getElementById('publicUrlInput');
 const savePublicUrlBtn = document.getElementById('savePublicUrlBtn');
+const enablePrivateShareBtn = document.getElementById('enablePrivateShareBtn');
+const stopPrivateShareBtn = document.getElementById('stopPrivateShareBtn');
 const publicUrlStatus = document.getElementById('publicUrlStatus');
 const notConnected = document.getElementById('notConnected');
 const connected = document.getElementById('connected');
@@ -545,9 +549,14 @@ async function loadTailscale() {
   }
 }
 
+let publicUrlRevision = 0;
 async function loadPublicUrl() {
+  const revision = publicUrlRevision;
   const res = await apiFetch('/api/public-url');
   const data = await res.json();
+  if (revision !== publicUrlRevision) return;
+  stopPrivateShareBtn.hidden = !data.privateSharing;
+  if (data.privateSharing) publicUrlStatus.textContent = 'Private sharing enabled. Both server computers need access to the shared Tailscale machine.';
   if (data.publicUrl) {
     publicUrlInput.value = data.publicUrl;
     document.getElementById('publicUrlCard').classList.add('done');
@@ -944,13 +953,68 @@ savePublicUrlBtn.addEventListener('click', async () => {
   savePublicUrlBtn.disabled = false;
 });
 
-enableFunnelBtn.addEventListener('click', async () => {
+enablePrivateShareBtn.addEventListener('click', async () => {
+  publicUrlRevision++;
+  enablePrivateShareBtn.disabled = true;
+  stopPrivateShareBtn.disabled = true;
   enableFunnelBtn.disabled = true;
+  publicUrlStatus.textContent = 'Finding this Companion and configuring private sharing…';
+  try {
+    const res = await apiFetch('/api/tailscale/private-share', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      publicUrlRevision++;
+      publicUrlInput.value = data.sharingUrl || '';
+      stopPrivateShareBtn.hidden = false;
+      document.getElementById('publicUrlCard').classList.add('done');
+      publicUrlStatus.textContent = data.message || 'Private sharing is ready.';
+    } else {
+      publicUrlStatus.textContent = data.error || 'Could not configure private sharing.';
+    }
+  } catch (e) {
+    publicUrlStatus.textContent = 'Could not configure private sharing: ' + e.message;
+  } finally {
+    enablePrivateShareBtn.disabled = false;
+    stopPrivateShareBtn.disabled = false;
+    enableFunnelBtn.disabled = false;
+  }
+});
+
+stopPrivateShareBtn.addEventListener('click', async () => {
+  publicUrlRevision++;
+  stopPrivateShareBtn.disabled = true;
+  enablePrivateShareBtn.disabled = true;
+  enableFunnelBtn.disabled = true;
+  try {
+    const res = await apiFetch('/api/tailscale/private-share', { method: 'DELETE' });
+    const data = await res.json();
+    publicUrlStatus.textContent = data.message || data.error || 'Could not stop private sharing.';
+    if (res.ok) {
+      publicUrlRevision++;
+      publicUrlInput.value = '';
+      stopPrivateShareBtn.hidden = true;
+      document.getElementById('publicUrlCard').classList.remove('done');
+    }
+  } catch (e) {
+    publicUrlStatus.textContent = 'Could not stop private sharing: ' + e.message;
+  } finally {
+    stopPrivateShareBtn.disabled = false;
+    enablePrivateShareBtn.disabled = false;
+    enableFunnelBtn.disabled = false;
+  }
+});
+
+enableFunnelBtn.addEventListener('click', async () => {
+  publicUrlRevision++;
+  enableFunnelBtn.disabled = true;
+  enablePrivateShareBtn.disabled = true;
+  stopPrivateShareBtn.disabled = true;
   publicUrlStatus.textContent = 'Turning on Funnel and requesting an HTTPS certificate…';
   try {
     const res = await apiFetch('/api/tailscale/funnel', { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
+      publicUrlRevision++;
       publicUrlInput.value = data.funnelUrl || '';
       document.getElementById('publicUrlCard').classList.add('done');
       publicUrlStatus.textContent = data.message || 'Funnel is on.';
@@ -961,6 +1025,8 @@ enableFunnelBtn.addEventListener('click', async () => {
     publicUrlStatus.textContent = 'Could not turn on Funnel: ' + e.message;
   }
   enableFunnelBtn.disabled = false;
+  enablePrivateShareBtn.disabled = false;
+  stopPrivateShareBtn.disabled = false;
 });
 
 inviteFriendBtn.addEventListener('click', async () => {
@@ -1037,7 +1103,7 @@ async function generateConnectCode(usePlexRemoteAccess) {
       connectCodeActions.classList.remove('hidden');
       codeStatus.textContent = data.mode === 'direct'
         ? `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Plex Remote Access/Relay. Revoking a Companion friend does not revoke this Plex token.`
-        : `Optional code, expires in ${data.expiresInMinutes} minutes. This uses Funnel so they can reach you outside your home. Prefer sending a share request with their Jellyfin address instead.`;
+        : `Optional code, expires in ${data.expiresInMinutes} minutes. This uses your Companion sharing address; private sharing requires Tailscale access to this computer. Prefer sending a share request with their Jellyfin address instead.`;
     } else {
       codeStatus.textContent = data.error || 'Could not generate a code.';
     }
@@ -1184,7 +1250,7 @@ document.getElementById('exitCompanionBtn').addEventListener('click', async () =
 
 document.getElementById('diagnoseBtn').addEventListener('click', async event => {
   const output = document.getElementById('diagnoseStatus');
-  event.target.disabled = true; output.textContent = 'Testing source video bytes and the Funnel media path…';
+  event.target.disabled = true; output.textContent = 'Testing source video bytes and the Companion sharing path…';
   try {
     const res = await apiFetch('/api/diagnostics', { method: 'POST' });
     if (!res.ok) throw new Error();
