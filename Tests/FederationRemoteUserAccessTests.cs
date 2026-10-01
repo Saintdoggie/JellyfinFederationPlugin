@@ -483,11 +483,12 @@ public class FederationRemoteUserAccessPushTests : IDisposable
         _plugin.Configuration.RemoteServers.Add(bob);
 
         var newRule = new RemoteUserAccessRule { RemoteUserId = "fresh-user", Mode = RemoteUserAccessMode.CertainItems, ItemIds = new List<string> { "item-1" } };
-        _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
+        var applied = _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
         {
             FromFederationId = "bob-fed-id",
             Rules = new List<RemoteUserAccessRule> { newRule }
         });
+        Assert.True(applied);
 
         var stored = _plugin.Configuration.RemoteServers[0].FriendUserAccessRules;
         Assert.Single(stored);
@@ -500,11 +501,12 @@ public class FederationRemoteUserAccessPushTests : IDisposable
         var bob = new RemoteServer { Id = "friend-1", FederationId = "bob-fed-id" };
         _plugin.Configuration.RemoteServers.Add(bob);
 
-        _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
+        var applied = _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
         {
             FromFederationId = "someone-else",
             Rules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule { RemoteUserId = "x" } }
         });
+        Assert.False(applied);
 
         Assert.Empty(_plugin.Configuration.RemoteServers[0].FriendUserAccessRules);
     }
@@ -538,7 +540,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
         var caller = FederationTokenAuth.ResolveCaller(httpContext.Request);
         Assert.Same(alice, caller);
 
-        _service.ReceiveRemoteUserAccessRules(caller!, new RemoteUserAccessRulesPayload
+        var applied = _service.ReceiveRemoteUserAccessRules(caller!, new RemoteUserAccessRulesPayload
         {
             FromFederationId = "bob-fed-id",
             Rules = new List<RemoteUserAccessRule>
@@ -546,6 +548,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
                 new RemoteUserAccessRule { RemoteUserId = "hijacked", Mode = RemoteUserAccessMode.AllLibraries }
             }
         });
+        Assert.False(applied);
 
         Assert.Empty(alice.FriendUserAccessRules);
         var bobsRules = Assert.Single(bob.FriendUserAccessRules);

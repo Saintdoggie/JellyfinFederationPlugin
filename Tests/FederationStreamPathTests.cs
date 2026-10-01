@@ -77,6 +77,25 @@ public class FederationStreamPathTests : IDisposable
     public void Dispose() => _plugin.Dispose();
 
     [Fact]
+    public void MaterializedSize_DescribesExactSelectedFile_IncludingAfterFailover()
+    {
+        var server = AddServer();
+        var sibling = new RemoteServer { Id = "size-b", Name = "B", Enabled = true, Url = "http://b.example", ApiKey = "key" };
+        _plugin.Configuration.RemoteServers.Add(sibling);
+        var entry = _cache.UpsertByProviderId("Movies", "imdb", "tt-size", new BaseItemDto
+        {
+            Name = "Movie", MediaSources = new[] { new MediaSourceInfo { Size = 9_000_000_000L } }
+        }, server.Id, Guid.NewGuid(), 0, "Movie");
+        _cache.UpsertByProviderId("Movies", "imdb", "tt-size", new BaseItemDto
+        {
+            Name = "Movie", MediaSources = new[] { new MediaSourceInfo { Size = 123 } }
+        }, sibling.Id, Guid.NewGuid(), 1, "Movie");
+        Assert.Equal(9_000_000_000L, _manager.MaterializeItem(entry).Size);
+        server.Enabled = false;
+        Assert.Equal(123, _manager.MaterializeItem(entry).Size);
+    }
+
+    [Fact]
     public void OfflinePrimary_BindsStaticTracksAndLabelToOnlineSibling_AndRestoresOnRecovery()
     {
         var primary = AddServer();
@@ -1168,6 +1187,41 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public async Task GetMediaSources_ZeroLiveRuntime_UsesTheSourceDurationForTheTimeline()
+    {
+        var server = AddServer(StreamingMode.Proxy);
+        var remoteId = Guid.NewGuid();
+        var entry = _cache.UpsertRaw("Movies", server.Id, remoteId,
+            new BaseItemDto
+            {
+                Id = remoteId,
+                Name = "Movie",
+                Type = Jellyfin.Data.Enums.BaseItemKind.Movie,
+                Container = "mkv",
+                RunTimeTicks = 72_000_000_000
+            }, 0, "Movie");
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-path-so-provider-emits-source";
+
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance,
+            new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK,
+                "{\"MediaSources\":[{\"Id\":\"movie\",\"Container\":\"mkv\",\"RunTimeTicks\":0}]}"))
+            { BaseAddress = new Uri(server.Url) });
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(server.Id)).Returns(remoteClient);
+        var manager = new FederationLibraryManager(Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance, factory.Object, _cache,
+            _bandwidthMonitor, _mediaStreamRepository.Object);
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance, manager,
+            Mock.Of<IHttpContextAccessor>(), Mock.Of<IAuthorizationContext>(),
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+        Assert.Equal(72_000_000_000, source.RunTimeTicks);
+    }
+
+    [Fact]
     public async Task GetMediaSources_FailedPrimary_IsRemovedAndHealthySiblingBecomesAutoWithoutChangingItem()
     {
         var failedId = Guid.NewGuid();
@@ -1459,9 +1513,12 @@ public class FederationStreamPathTests : IDisposable
     {
         private readonly HttpStatusCode _status;
 
-        public PlaybackPreflightHandler(HttpStatusCode status)
+        private readonly string? _body;
+
+        public PlaybackPreflightHandler(HttpStatusCode status, string? body = null)
         {
             _status = status;
+            _body = body;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -1474,7 +1531,7 @@ public class FederationStreamPathTests : IDisposable
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    "{\"MediaSources\":[{\"Id\":\"healthy\",\"Container\":\"mkv\",\"Bitrate\":59000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Height\":2160,\"BitRate\":59000000}]}]}",
+                    _body ?? "{\"MediaSources\":[{\"Id\":\"healthy\",\"Container\":\"mkv\",\"Bitrate\":59000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Height\":2160,\"BitRate\":59000000}]}]}",
                     Encoding.UTF8,
                     "application/json")
             });

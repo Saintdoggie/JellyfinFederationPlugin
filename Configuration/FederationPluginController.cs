@@ -1293,7 +1293,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/RemoteUserRules")]
         [AllowAnonymous]
-        public IActionResult ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload)
+        public async Task<IActionResult> ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload, CancellationToken cancellationToken)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -1301,7 +1301,19 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            _friends.ReceiveRemoteUserAccessRules(caller, payload);
+            if (_friends.ReceiveRemoteUserAccessRules(caller, payload))
+            {
+                // A userless static URL stops being valid when any viewer is
+                // restricted. Clear it now so allowed users receive fresh,
+                // user-bound sources instead of Jellyfin preferring the stale
+                // default source and failing playback until the next sync.
+                foreach (var mapping in (Plugin.Instance?.Configuration.LibraryMappings ?? new List<LibraryMapping>())
+                    .Where(m => m.Enabled && m.RemoteLibrarySources?.Any(s =>
+                        string.Equals(s.ServerId, caller.Id, StringComparison.OrdinalIgnoreCase)) == true))
+                {
+                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+                }
+            }
             return Ok();
         }
 
@@ -2309,6 +2321,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// download purpose, and (for per-request paths) local user.
         /// </summary>
         [HttpGet("Stream")]
+        [HttpHead("Stream")]
         [AllowAnonymous]
         public async Task<IActionResult> Stream(
             [FromQuery] string serverId,

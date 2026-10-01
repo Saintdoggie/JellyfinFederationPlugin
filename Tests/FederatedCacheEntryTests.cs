@@ -13,8 +13,46 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 public class FederatedCacheEntryTests
 {
+    [Fact]
+    public void FileSizeAndAggregateBitrate_AreKeptPerSource_AndNotSummedFromSummaryStreams()
+    {
+        var entry = new FederatedCacheEntry();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        foreach (var (id, server, size, bitrate) in new[] { (a, "a", 9_000_000_000L, 42_000_000), (b, "b", 123L, 1000) })
+        {
+            entry.AddSource(server, id, 0);
+            entry.UpdateFromRemote(new BaseItemDto
+            {
+                Name = "Movie", Container = "mkv",
+                MediaSources = new[] { new MediaSourceInfo { Size = size, Bitrate = bitrate } },
+                MediaStreams = new[] { new MediaBrowser.Model.Entities.MediaStream { BitRate = 500 } }
+            }, server, id, 0);
+        }
+        Assert.Equal(9_000_000_000L, entry.GetSourcesSnapshot()[0].Size);
+        Assert.Equal(42_000_000, entry.GetSourcesSnapshot()[0].Bitrate);
+        Assert.Equal(123, entry.GetSourcesSnapshot()[1].Size);
+        Assert.Equal(1000, entry.GetSourcesSnapshot()[1].Bitrate);
+    }
+
     private static FederationItemCache CreateCache()
         => new(NullLogger<FederationItemCache>.Instance);
+
+    [Fact]
+    public void ZeroRuntimeFromLaterSync_DoesNotEraseKnownMovieDuration()
+    {
+        var cache = CreateCache();
+        var remoteId = Guid.NewGuid();
+        var first = new BaseItemDto { Id = remoteId, Name = "Movie", Type = BaseItemKind.Movie, RunTimeTicks = 72_000_000_000 };
+        var entry = cache.UpsertRaw("Movies", "serverA", remoteId, first, 0, "Movie");
+
+        cache.UpsertRaw("Movies", "serverA", remoteId,
+            new BaseItemDto { Id = remoteId, Name = "Movie", Type = BaseItemKind.Movie, RunTimeTicks = 0 },
+            0, "Movie");
+
+        Assert.Equal(72_000_000_000, entry.Metadata.RunTimeTicks);
+        Assert.Equal(72_000_000_000, Assert.Single(entry.GetSourcesSnapshot()).RunTimeTicks);
+    }
 
     [Fact]
     public void DeduplicatedPlexMovie_KeepsNativeIdAndPosterBoundToEachSource()

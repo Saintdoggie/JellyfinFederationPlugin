@@ -70,6 +70,11 @@ def smoke(repo, dotnet, published_app, tools):
 
     def container(name, args, image, entrypoint=None):
         command_args = [engine, 'run', '-d', '--name', name, '--security-opt', 'label=disable']
+        if Path(engine).name == 'podman':
+            # PMS plugins call back over loopback; rootless pasta can map those
+            # requests through the host and prevent agent startup. Use an isolated
+            # bridge so its local agents stay inside the disposable container.
+            command_args += ['--network', 'bridge']
         command_args += args
         if entrypoint:
             command_args += ['--entrypoint', entrypoint]

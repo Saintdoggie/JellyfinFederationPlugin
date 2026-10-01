@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.169",
-  "changelog": "Bind federated playback paths, container, runtime, and audio tracks to the same reachable source. Exclude offline sources from legacy Auto selection and prevent exact-source streams from switching silently to incompatible files. Fetch posters from reachable Jellyfin or Plex sources so an offline catalog primary does not block artwork. Retain Jellyfin 12 media-source container metadata during full catalog sync so compatible clients can direct-play.",
+  "version": "0.0.170",
+  "changelog": "Read Plex file size, container, bitrate, codecs, HDR data and actual stream indexes from the same playable file. Retain Jellyfin peer file sizes and bitrates without retaining upstream paths or headers. Refresh current Plex media information during playback and persist corrected sizes without replacing item IDs. Track source-specific poster selections and episode poster fallbacks. Keep offline/recovery notifications ordered, hide titles whose remaining sources are disabled, preserve known durations when peers report zero, and accept authenticated HEAD requests on the media relay. Reconcile playback paths immediately when a friend changes per-user access so permitted users keep playing while revoked URLs are denied.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-27T17:11:48Z",
+  "timestamp": "2026-10-01T13:42:06Z",
   "imageUrl": "thumb.png"
 }

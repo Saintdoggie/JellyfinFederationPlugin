@@ -882,11 +882,18 @@ namespace Jellyfin.Plugin.Federation.Services
                     // deduplicated title can be a small H.264 copy on one server
                     // and a 4K HEVC remux on another; merged item metadata cannot
                     // safely describe both.
-                    source.Container = remoteItem.Container ?? source.Container;
-                    source.Bitrate = remoteItem.MediaStreams?
+                    var mediaSource = remoteItem.MediaSources?.FirstOrDefault();
+                    source.Container = mediaSource?.Container ?? remoteItem.Container ?? source.Container;
+                    if (mediaSource?.Size is > 0) source.Size = mediaSource.Size;
+                    source.Bitrate = mediaSource?.Bitrate ?? remoteItem.MediaStreams?
                         .Where(stream => stream.BitRate.HasValue)
                         .Sum(stream => stream.BitRate!.Value) ?? source.Bitrate;
-                    source.RunTimeTicks = remoteItem.RunTimeTicks ?? source.RunTimeTicks;
+                    // Zero means the peer could not determine a duration. Keep the
+                    // last known duration for the client's playback timeline.
+                    if (remoteItem.RunTimeTicks is > 0)
+                    {
+                        source.RunTimeTicks = remoteItem.RunTimeTicks;
+                    }
                     source.MediaStreams = remoteItem.MediaStreams?.ToArray() ?? source.MediaStreams;
                 }
 
@@ -906,7 +913,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 Metadata.PremiereDate = remoteItem.PremiereDate ?? Metadata.PremiereDate;
                 Metadata.CommunityRating = remoteItem.CommunityRating ?? Metadata.CommunityRating;
                 Metadata.OfficialRating = remoteItem.OfficialRating ?? Metadata.OfficialRating;
-                Metadata.RunTimeTicks = remoteItem.RunTimeTicks ?? Metadata.RunTimeTicks;
+                if (remoteItem.RunTimeTicks is > 0)
+                {
+                    Metadata.RunTimeTicks = remoteItem.RunTimeTicks;
+                }
                 Metadata.Container = remoteItem.Container ?? Metadata.Container;
                 Metadata.MediaStreams = remoteItem.MediaStreams ?? Metadata.MediaStreams;
                 Metadata.SeriesName = remoteItem.SeriesName ?? Metadata.SeriesName;

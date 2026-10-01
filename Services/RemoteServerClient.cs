@@ -1382,6 +1382,28 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.Container = sourceContainer.GetString();
             }
 
+            if (itemElement.TryGetProperty("MediaSources", out var mediaSources)
+                && mediaSources.ValueKind == JsonValueKind.Array)
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<MediaSourceInfo>>(mediaSources.GetRawText(), JsonOpts);
+                    // Only retain file information. Upstream paths, required HTTP
+                    // headers and playback URLs can contain a friend's credentials.
+                    item.MediaSources = parsed?.Select(source => new MediaSourceInfo
+                    {
+                        Container = source.Container,
+                        Size = source.Size,
+                        Bitrate = source.Bitrate,
+                        RunTimeTicks = source.RunTimeTicks
+                    }).ToArray();
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not parse media source information for {ItemName}", item.Name);
+                }
+            }
+
             // The single biggest lever for federated playback actually direct-playing
             // instead of always transcoding: without real per-stream codec/resolution/
             // audio data, Jellyfin's own client-compatibility check has nothing to

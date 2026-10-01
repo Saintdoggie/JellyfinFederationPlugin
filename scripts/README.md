@@ -75,3 +75,32 @@ and publishes a GitHub **prerelease** attached to that exact commit. It requires
 authentication and includes Windows/Plugin preview ZIPs plus checksums. It does not
 replace `companion-latest`, change the plugin manifest, or publish a stable release.
 Only run it when preview publication is intended; `push.sh` alone never publishes.
+
+## Plex metadata and two-Jellyfin regression fixtures
+
+After building the plugin in Release mode, run:
+
+```sh
+python3 scripts/federation_metadata_smoke.py
+python3 scripts/federation_peer_smoke.py
+```
+
+These additional fixtures require Podman and the installed Jellyfin 12/Plex test
+images above. `JELLYFIN_TEST_IMAGE` and `PLEX_TEST_IMAGE` select pinned local images.
+Encoding/decoding uses Jellyfin's bundled ffmpeg inside a disposable container.
+The fixtures bind fresh loopback ports, generate temporary credentials, and clean
+up only their own containers, pod or network. Private runtime data stays under
+mode-0700 `/tmp/federation-*-qa-*` directories; never publish it.
+
+The Plex fixture verifies real MKV/MP4 sizes, codecs, subtitle/audio indexes,
+series/episode hierarchy, selected-poster changes, raw playback, HEAD, suffix and
+80 concurrent Range requests with eight workers. It asks Jellyfin to transcode
+with audio track 2 and a one-second seek and decodes the result. It also verifies
+admin/viewer outage hiding, cached-catalog preservation and stable-ID recovery.
+
+The peer fixture establishes a real friendship between two Jellyfin servers and
+checks Direct/Proxy playback, HEAD and seek ranges as an admin and ordinary viewer.
+It checks viewer-specific access revocation, old playback URL rejection, server
+disablement, outage hiding, cache preservation and stable-ID playback recovery.
+These are API/ffmpeg checks; physical TV/Xbox clients and Windows/Funnel remain
+separate validation.
