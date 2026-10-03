@@ -843,6 +843,12 @@
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingOverlay" class="emby-checkbox fed-check" /> Show a loading bar while a federated title starts</label>
+                            <p class="fieldDescription">When a federated title is still a black screen 1.5 seconds after pressing play, a simple bar at the bottom shows a projected countdown, why it is taking a while, and a fun fact. It never covers the player controls and disappears as soon as video plays.</p>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingFunFacts" class="emby-checkbox fed-check" /> Fetch fun facts for the loading bar from a public API</label>
+                            <p class="fieldDescription">This server (never the viewer's browser) asks a free public fun-fact service for one short sentence at a time, at most once every few seconds. It sends nothing about you or your media. Turn off to use only a short built-in list.</p>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkFastStart" class="emby-checkbox fed-check" /> Bound how much of a remote file is analysed before playback starts</label>
+                            <p class="fieldDescription">Stops ffmpeg reading up to a gigabyte of a friend's file before the first frame. Only the analysis window changes; the picture and sound delivered are identical. Leave on unless a particular title fails to play.</p>
                             <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
                                 <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
                                 <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
@@ -5665,6 +5671,9 @@
                             q('#fedTxtCachePath').value = currentConfig.CachePath || '';
                             q('#fedChkAutoProvision').checked = currentConfig.AutoProvisionLibraries !== false;
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
+                            q('#fedChkLoadingOverlay').checked = currentConfig.LoadingOverlay !== false;
+                            q('#fedChkLoadingFunFacts').checked = currentConfig.LoadingFunFacts !== false;
+                            q('#fedChkFastStart').checked = currentConfig.FastStartProbing !== false;
                             setCloudBadgeToggle(currentConfig.ShowFederatedCloudBadges === true);
                             q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
                             q('#fedTxtDedupIds').value = (currentConfig.DedupProviderIds || ['imdb', 'tmdb', 'tvdb']).join(',');
@@ -5707,6 +5716,9 @@
                             InternalServerUrl: q('#fedTxtInternalUrl').value.trim(),
                             CachePath: q('#fedTxtCachePath').value.trim(),
                             EnableDedup: q('#fedChkDedup').checked,
+                            LoadingOverlay: q('#fedChkLoadingOverlay').checked,
+                            LoadingFunFacts: q('#fedChkLoadingFunFacts').checked,
+                            FastStartProbing: q('#fedChkFastStart').checked,
                             ShowFederatedCloudBadges: q('#fedCloudBadgeToggle').getAttribute('data-enabled') === 'true',
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
                             AutoProvisionLibraries: q('#fedChkAutoProvision').checked,

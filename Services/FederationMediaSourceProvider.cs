@@ -372,8 +372,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                // Sources that would take longer than the start budget to begin go after
+                // those that would not (and, when every source is slow, the quickest
+                // goes first). A source whose speed is not measured yet is never demoted.
                 var ordered = playable
-                    .OrderBy(p => SourceFitGroup(p.Server, p.Remote))
+                    .OrderBy(p => ProjectedStart(p.Server, p.Remote) is > StartEstimator.StartBudgetSeconds ? 1 : 0)
+                    .ThenBy(p => ProjectedStart(p.Server, p.Remote) is > StartEstimator.StartBudgetSeconds and var slow ? slow : 0)
+                    .ThenBy(p => SourceFitGroup(p.Server, p.Remote))
                     .ThenBy(p => SourceOverageBitrate(p.Server, p.Remote))
                     .ThenByDescending(p => SourceHeight(p.Remote))
                     .ThenByDescending(p => SourceBitrate(p.Remote))
@@ -535,6 +540,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return remote;
         }
+
+        private double? ProjectedStart(RemoteServer server, MediaSourceInfo source)
+            => _federationManager.ProjectedStartSeconds(server, SourceBitrate(source) is > 0 and var bitrate ? bitrate : null);
 
         private int SourceFitGroup(RemoteServer server, MediaSourceInfo source)
         {
