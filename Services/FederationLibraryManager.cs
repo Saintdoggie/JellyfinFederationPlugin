@@ -397,6 +397,13 @@ namespace Jellyfin.Plugin.Federation.Services
             return Plugin.Instance?.Configuration?.RemoteServers?.Find(s => s.Id == serverId);
         }
 
+        /// <summary>
+        /// Projected seconds to start playing a source of this bitrate from this server,
+        /// or null when its connection speed has not been measured yet.
+        /// </summary>
+        public double? ProjectedStartSeconds(RemoteServer server, long? sourceBitrateBps)
+            => _bandwidthMonitor.ProjectedStartSeconds(server, sourceBitrateBps);
+
         /// <summary>Source whose bytes and persisted playback metadata must agree.</summary>
         internal FederatedSource? GetPlaybackSource(FederatedCacheEntry entry)
             => FederationItemPersistenceService.FirstEnabledSource(

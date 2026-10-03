@@ -829,6 +829,7 @@ namespace Jellyfin.Plugin.Federation.Services
             PluginConfiguration? config,
             HashSet<string>? offlineServerIds = null)
         {
+            var playable = new List<(FederatedSource Source, RemoteServer Server)>();
             foreach (var candidate in entry.GetSourcesSnapshot())
             {
                 var candidateServer = config?.RemoteServers?.FirstOrDefault(s =>
@@ -843,10 +844,72 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                return candidate;
+                playable.Add((candidate, candidateServer));
             }
 
-            return null;
+            if (playable.Count == 0)
+            {
+                return null;
+            }
+
+            return PreferFasterStart(playable) ?? playable[0].Source;
+        }
+
+        /// <summary>
+        /// Seam for the speed monitor, so the choice of source can use measured connection
+        /// speeds without every caller carrying the monitor around (same pattern as
+        /// <see cref="AvailabilityOverride"/>). Null leaves the priority order untouched.
+        /// </summary>
+        internal static WanBandwidthMonitor? BandwidthOverride { get; set; }
+
+        /// <summary>
+        /// Sources stay in priority order unless the first would take longer than
+        /// <see cref="StartEstimator.StartBudgetSeconds"/> to start and another online
+        /// source is clearly faster. Only measured sources can win: an unmeasured
+        /// alternative is never preferred on a guess, and an unmeasured first source is
+        /// never demoted.
+        /// </summary>
+        private static FederatedSource? PreferFasterStart(List<(FederatedSource Source, RemoteServer Server)> playable)
+        {
+            var monitor = BandwidthOverride;
+            if (monitor == null || playable.Count < 2)
+            {
+                return null;
+            }
+
+            double? Projected((FederatedSource Source, RemoteServer Server) c)
+                => monitor.ProjectedStartSeconds(c.Server, c.Source.Bitrate);
+
+            var first = Projected(playable[0]);
+            if (first is not > StartEstimator.StartBudgetSeconds)
+            {
+                return null;
+            }
+
+            // Priority order among the sources that start within the budget...
+            foreach (var candidate in playable.Skip(1))
+            {
+                var seconds = Projected(candidate);
+                if (seconds <= StartEstimator.StartBudgetSeconds && seconds <= first * StartEstimator.SwitchImprovement)
+                {
+                    return candidate.Source;
+                }
+            }
+
+            // ...and when none does, the quickest one, if it is clearly quicker.
+            FederatedSource? quickest = null;
+            var quickestSeconds = first.Value * StartEstimator.SwitchImprovement;
+            foreach (var candidate in playable.Skip(1))
+            {
+                var seconds = Projected(candidate);
+                if (seconds < quickestSeconds)
+                {
+                    quickest = candidate.Source;
+                    quickestSeconds = seconds.Value;
+                }
+            }
+
+            return quickest;
         }
 
         /// <summary>

@@ -1474,3 +1474,19 @@ test('a failing estimate or fun-fact request still leaves a working bar', async 
   assert.ok(h.overlay());
   assert.match(h.text('.fl-time'), /^Getting things ready/);
 });
+
+test('settings page exposes the loading bar and fast-start switches and wires them to load and save', () => {
+  for (const [id, property] of [
+    ['fedChkLoadingOverlay', 'LoadingOverlay'],
+    ['fedChkLoadingFunFacts', 'LoadingFunFacts'],
+    ['fedChkFastStart', 'FastStartProbing']
+  ]) {
+    assert.match(configPage, new RegExp('<input type="checkbox" id="' + id + '"'), id + ' checkbox is on the page');
+    assert.match(configPage, new RegExp("q\\('#" + id + "'\\)\\.checked = currentConfig\\." + property + ' !== false'), property + ' is loaded, defaulting on');
+    assert.match(configPage, new RegExp(property + ": q\\('#" + id + "'\\)\\.checked"), property + ' is saved');
+  }
+});
+
+test('the fun-fact setting says plainly that nothing about the viewer or their media is sent', () => {
+  assert.match(configPage, /sends nothing about you or your media/);
+});

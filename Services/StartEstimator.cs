@@ -34,6 +34,31 @@ namespace Jellyfin.Plugin.Federation.Services
         public const int QuickSeconds = 12;
 
         /// <summary>
+        /// The longest start the plugin is happy to give a viewer when a faster source
+        /// exists. A source projected beyond this loses to one within it.
+        /// </summary>
+        public const int StartBudgetSeconds = 30;
+
+        /// <summary>
+        /// A faster source must beat the current one by at least this fraction before the
+        /// plugin switches to it, so a title whose projections hover near the budget does
+        /// not flip between servers every time a speed sample changes.
+        /// </summary>
+        public const double SwitchImprovement = 0.8;
+
+        /// <summary>
+        /// Projected seconds from pressing play to video, or null when the bitrate or the
+        /// connection speed is unknown. Unrounded and unclamped, for comparing sources.
+        /// </summary>
+        /// <param name="bitrateBps">The bitrate that will actually cross the link, in bits per second.</param>
+        /// <param name="linkMbps">The measured speed from the source in Mbps.</param>
+        /// <returns>Seconds, or null.</returns>
+        public static double? ProjectedSeconds(long? bitrateBps, double? linkMbps)
+            => bitrateBps is > 0 && linkMbps is > 0
+                ? (SourceSecondsNeeded * (bitrateBps.Value / 1_000_000.0) / linkMbps.Value) + FixedOverheadSeconds
+                : null;
+
+        /// <summary>
         /// Builds the estimate for one title.
         /// </summary>
         /// <param name="serverName">Display name of the source server.</param>
@@ -62,7 +87,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var transferSeconds = SourceSecondsNeeded * bitrateMbps.Value / link.Value;
-            var total = (int)Math.Clamp(Math.Round(transferSeconds + FixedOverheadSeconds), 3, 900);
+            var total = (int)Math.Clamp(Math.Round(ProjectedSeconds(bitrateBps, link)!.Value), 3, 900);
 
             // A projection above QuickSeconds implies the file's bitrate exceeds the link
             // (transfer time is 6 s x bitrate / link, so > 8 s means bitrate > link).

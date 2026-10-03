@@ -21,12 +21,14 @@ In progress
 Loading experience
 - [x] Start-time estimator and `GET /Plugins/Federation/StartEstimate/{itemId}` with tests. Live check: 93 Mbps title projected 78 s vs 75-85 s measured.
 - [x] Fun-fact service: server-side call to a free fact API, short timeout, built-in fallback list, `LoadingFunFacts` toggle, tests.
-- [x] Settings `LoadingOverlay` / `LoadingFunFacts`; `loadingOverlay` exposed through `ClientSettings`. (Add both to the admin settings page.)
-- [x] jellyfin-web overlay: simple bottom bar, projected countdown, reason text, rotating fun fact; only if still black after ~1.5 s; 15 jsdom tests. Served live; still needs a look in a real browser.
+- [x] Settings `LoadingOverlay` / `LoadingFunFacts` / `FastStartProbing`: on the admin settings page, saved, and `loadingOverlay` exposed through `ClientSettings`.
+- [x] jellyfin-web overlay: simple bottom bar, projected countdown, reason text, rotating fun fact; only if still black after ~1.5 s; 15 jsdom tests. Served live; rendered in headless Firefox at desktop and phone widths and looks as intended.
 - [x] Timing logs: media-source resolution time and slow upstream responses (`[Federation][timing]`). Still wanted: time to first segment.
 
 Real speed-up (fewer bytes from the friend)
 - [x] Probe whether freakbob's Plex allows transcoding (`Diagnostics/PlexTranscodeProbe/{itemId}`). Result 2026-10-03: HTTP 403 with an empty body from BOTH Plex's decision call and the transcode call. Cause: `Companion/PlexFederationRelay.cs` is an allowlist (sections, metadata, parts) and answers everything else 403, so the friend's consent scope blocks transcoding.
+- [x] Prefer the faster source for titles on several servers when the first choice would exceed a 30 s start budget (hysteresis, measured sources only). Simulated on the real catalog: 26 of 104 multi-server movies would move to netflix++ once it is online, saving 28-74 s each.
+- [ ] Owner decision needed: Auto WAN cap floor is 10 Mbps (set at the owner's request) but Inspired measures 2.0 Mbps, so its capped stream is 5x too fast for the link. Consider a floor that follows the link.
 - [ ] Capped Plex stream for link-bound titles. BLOCKED on friend consent: needs an opt-in Companion setting (default off) that lets the relay pass `/video/:/transcode/universal/{decision,start.mkv,stop}` for shared items only, the friend updating Companion and enabling it, then the plugin path (bitrate = min(client max, ~80% of measured link)), original-quality copy kept as a version, seek/resume, audio track and subtitles.
 - [ ] Mid-stream sharpening: multi-level HLS playlist (for example 3 / 8 / original Mbps) so the player starts low and switches up; investigate jellyfin-web / hls.js behaviour and TV native players first.
 - [ ] Optional: warm a title when its detail page opens or the next episode is queued (small capped LRU, no bulk caching).

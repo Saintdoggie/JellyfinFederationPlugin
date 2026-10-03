@@ -104,6 +104,35 @@ namespace Jellyfin.Plugin.Federation.Services
             => _cache.TryGetValue(serverId, out var info) ? info.LinkMbps : null;
 
         /// <summary>
+        /// The bitrate that will actually cross the link for a source: the file's own, or
+        /// the Direct-mode cap when the peer is asked to transcode it down to one.
+        /// </summary>
+        /// <param name="server">The source server.</param>
+        /// <param name="sourceBitrateBps">The file's bitrate in bits per second, if known.</param>
+        /// <returns>Bits per second, or null when unknown.</returns>
+        public long? EffectiveSourceBitrate(RemoteServer server, long? sourceBitrateBps)
+        {
+            if (server.StreamingMode == StreamingMode.Direct
+                && GetEffectiveCapMbps(server) is { } cap
+                && (sourceBitrateBps is not > 0 || sourceBitrateBps.Value > cap * 1_000_000L))
+            {
+                return cap * 1_000_000L;
+            }
+
+            return sourceBitrateBps is > 0 ? sourceBitrateBps : null;
+        }
+
+        /// <summary>
+        /// Projected seconds from pressing play to video for a source on this server, or
+        /// null when the connection speed or the bitrate is not known yet.
+        /// </summary>
+        /// <param name="server">The source server.</param>
+        /// <param name="sourceBitrateBps">The file's bitrate in bits per second, if known.</param>
+        /// <returns>Seconds, or null.</returns>
+        public double? ProjectedStartSeconds(RemoteServer server, long? sourceBitrateBps)
+            => StartEstimator.ProjectedSeconds(EffectiveSourceBitrate(server, sourceBitrateBps), GetMeasuredLinkMbps(server.Id));
+
+        /// <summary>
         /// Marks a server's speed sample stale so the next call to
         /// <see cref="MeasureLinkIfDueAsync"/> measures again - used when a server comes
         /// back online, since its old reading may describe a different connection.

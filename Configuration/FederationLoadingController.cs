@@ -64,9 +64,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
             var bitrate = source.Bitrate is > 0
                 ? source.Bitrate
                 : source.MediaStreams?.Where(s => s.BitRate.HasValue).Sum(s => (long)s.BitRate!.Value);
+            // What will actually cross the link: the file, or the lower Direct-mode cap.
             var estimate = StartEstimator.Estimate(
                 server?.Name ?? string.Empty,
-                bitrate,
+                server == null ? bitrate : _bandwidthMonitor.EffectiveSourceBitrate(server, bitrate),
                 _bandwidthMonitor.GetMeasuredLinkMbps(source.ServerId));
 
             return Ok(new

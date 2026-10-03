@@ -62,6 +62,7 @@ namespace Jellyfin.Plugin.Federation
             _mediaSources = mediaSources;
             _bandwidthMonitor = bandwidthMonitor;
             FederationItemPersistenceService.AvailabilityOverride = availability;
+            FederationItemPersistenceService.BandwidthOverride = bandwidthMonitor;
         }
 
         /// <inheritdoc />
