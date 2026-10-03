@@ -586,7 +586,8 @@ namespace Jellyfin.Plugin.Federation.Api
             var config = Plugin.Instance?.Configuration;
             return Ok(new
             {
-                showFederatedCloudBadges = config?.ShowFederatedCloudBadges == true
+                showFederatedCloudBadges = config?.ShowFederatedCloudBadges == true,
+                loadingOverlay = config?.LoadingOverlay != false
             });
         }
 

@@ -86,6 +86,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         Task<string?> ResolveStreamUrlAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
 
+        /// <summary>
+        /// Measures real download throughput (Mbps) from this server using one of its
+        /// own already-imported files, or returns null when unsupported or the sample
+        /// failed. Used for the loading-time estimate; never reads outside the
+        /// consented catalog because the caller supplies the native id.
+        /// </summary>
+        Task<double?> MeasureBandwidthMbpsAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+            => Task.FromResult<double?>(null);
+
         /// <summary>Current file information, kept server-side and bound to the same
         /// part selected by ResolveStreamUrlAsync. Null when not supported.</summary>
         Task<MediaSourceInfo?> GetMediaSourceAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)

@@ -2,6 +2,40 @@
 
 Completed work is removed from this file. Git history and GitHub releases keep the validation record.
 
+## Fast federated playback start (target: 4-30 s from click)
+
+Findings (measured 2026-10-03, live server): start time is roughly `6 s x file bitrate / link speed`.
+Jellyfin serves the first HLS segment only once the next exists (2 x 3 s of source). freakbob (Plex, Proxy
+mode) delivers ~8 Mbps whatever the connection count, so a 93 Mbps remux takes ~75 s. The transcode broker
+already trims ffmpeg's probe to 1 s / 1 MB on the Windows GPU box, so the analysis-window change is harmless but
+does not help this setup. Fewer bytes from the friend's side is the only fix for link-bound titles.
+
+Done
+- [x] Diagnose why it is slow (link-bound; model predicted 74 s, measured 75-85 s).
+- [x] 0.0.171: bounded ffmpeg analysis window for federated sources (`FastStartProbing`, on by default). Verified in a throwaway Jellyfin 12; no gain behind the transcode broker.
+- [x] Persist stream info when a source reports duplicate stream indexes (avoids Jellyfin's slow first-play probe).
+
+In progress
+- [x] Link-speed measurement: daily, on new server, on reconnect; Jellyfin peers and Plex (consented files only). Live: freakbob measured 7.1-7.6 Mbps automatically.
+
+Loading experience
+- [x] Start-time estimator and `GET /Plugins/Federation/StartEstimate/{itemId}` with tests. Live check: 93 Mbps title projected 78 s vs 75-85 s measured.
+- [x] Fun-fact service: server-side call to a free fact API, short timeout, built-in fallback list, `LoadingFunFacts` toggle, tests.
+- [x] Settings `LoadingOverlay` / `LoadingFunFacts`; `loadingOverlay` exposed through `ClientSettings`. (Add both to the admin settings page.)
+- [x] jellyfin-web overlay: simple bottom bar, projected countdown, reason text, rotating fun fact; only if still black after ~1.5 s; 15 jsdom tests. Served live; still needs a look in a real browser.
+- [x] Timing logs: media-source resolution time and slow upstream responses (`[Federation][timing]`). Still wanted: time to first segment.
+
+Real speed-up (fewer bytes from the friend)
+- [x] Probe whether freakbob's Plex allows transcoding (`Diagnostics/PlexTranscodeProbe/{itemId}`). Result 2026-10-03: HTTP 403 with an empty body from BOTH Plex's decision call and the transcode call. Cause: `Companion/PlexFederationRelay.cs` is an allowlist (sections, metadata, parts) and answers everything else 403, so the friend's consent scope blocks transcoding.
+- [ ] Capped Plex stream for link-bound titles. BLOCKED on friend consent: needs an opt-in Companion setting (default off) that lets the relay pass `/video/:/transcode/universal/{decision,start.mkv,stop}` for shared items only, the friend updating Companion and enabling it, then the plugin path (bitrate = min(client max, ~80% of measured link)), original-quality copy kept as a version, seek/resume, audio track and subtitles.
+- [ ] Mid-stream sharpening: multi-level HLS playlist (for example 3 / 8 / original Mbps) so the player starts low and switches up; investigate jellyfin-web / hls.js behaviour and TV native players first.
+- [ ] Optional: warm a title when its detail page opens or the next episode is queued (small capped LRU, no bulk caching).
+
+Diagnosis and release
+- [ ] Diagnose netflix++ (gigabit peer, still slow) once it is online, using the new stage timings.
+- [ ] Full gate before publishing: commit on `feature/fast-start`, run the suite twice, two-server ordinary-user/admin matrix, update `manifest.json` / `meta.json` / zip checksum, push, GitHub release (needs GitHub login on this machine).
+- [ ] Rollback if needed: previous plugin folder is in `/config/plugin-backups/Jellyfin Federation_0.0.170` inside the `jellyfin` container.
+
 ## Companion desktop app — Windows + Linux
 
 Companion now ships as a real background app: WinExe + tray on Windows, XDG

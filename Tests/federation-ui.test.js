@@ -1227,3 +1227,250 @@ test('badge requests authenticate with the supported Jellyfin 12 header', async 
   }
   dom.window.close();
 });
+
+// ---------------------------------------------------------------------------
+// Loading bar for slow federated starts
+// ---------------------------------------------------------------------------
+
+function makeLoadingWindow(options = {}) {
+  const opts = Object.assign({
+    overlay: true,
+    estimate: { federated: true, seconds: 70, reason: 'This file is 93 Mbps but the connection to Friend runs at about 8 Mbps.', serverName: 'Friend' },
+    fact: { text: 'Peter Falk had a glass eye.' },
+    federatedIds: { [itemId]: 'Friend' }
+  }, options);
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body></body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#!/details?id=' + itemId }
+  );
+  const w = dom.window;
+  let now = 1_000_000;
+  const timeouts = [];
+  const intervals = [];
+  let nextId = 1;
+  const fetched = [];
+  const playbackInfoCalls = [];
+
+  w.Date.now = () => now;
+  w.setTimeout = (fn, ms) => { const id = nextId++; timeouts.push({ id, fn, at: now + (ms || 0) }); return id; };
+  w.clearTimeout = (id) => { const i = timeouts.findIndex((t) => t.id === id); if (i >= 0) timeouts.splice(i, 1); };
+  w.setInterval = (fn) => { const id = nextId++; intervals.push({ id, fn }); return id; };
+  w.clearInterval = (id) => { const i = intervals.findIndex((t) => t.id === id); if (i >= 0) intervals.splice(i, 1); };
+  w.requestAnimationFrame = (cb) => { cb(); return 1; };
+  w.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    accessToken: () => 'test-token',
+    getPlaybackInfo: (...args) => { playbackInfoCalls.push(args); return Promise.resolve({ MediaSources: [] }); }
+  };
+  w.fetch = (url) => {
+    const u = String(url);
+    fetched.push(u);
+    let data = {};
+    if (u.includes('FederatedIds')) data = opts.federatedIds;
+    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false, loadingOverlay: opts.overlay };
+    if (u.includes('StartEstimate')) data = opts.estimate;
+    if (u.includes('FunFact')) data = opts.fact;
+    if (u.includes('DisabledIds') || u.endsWith('/Downloads')) data = [];
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  w.eval(badgeScript);
+
+  // Moves the virtual clock forward one second at a time, running due timers and the
+  // once-a-second tick, exactly as the browser would.
+  function advance(ms) {
+    let left = ms;
+    while (left > 0) {
+      const step = Math.min(1000, left);
+      now += step;
+      left -= step;
+      timeouts.filter((t) => t.at <= now).forEach((t) => {
+        timeouts.splice(timeouts.indexOf(t), 1);
+        t.fn();
+      });
+      intervals.slice().forEach((t) => t.fn());
+    }
+  }
+
+  return {
+    dom,
+    fetched,
+    playbackInfoCalls,
+    advance,
+    overlay: () => w.document.getElementById('federation-loading-overlay'),
+    text: (selector) => { const n = w.document.querySelector('#federation-loading-overlay ' + selector); return n ? n.textContent : null; },
+    press: (id = itemId) => w.ApiClient.getPlaybackInfo(id, { UserId: 'u' }),
+    addVideo: (state = {}) => {
+      const v = w.document.createElement('video');
+      Object.defineProperty(v, 'paused', { value: state.paused !== false, configurable: true });
+      Object.defineProperty(v, 'currentTime', { value: state.currentTime || 0, configurable: true });
+      Object.defineProperty(v, 'readyState', { value: state.readyState || 0, configurable: true });
+      w.document.body.appendChild(v);
+      return v;
+    }
+  };
+}
+
+async function ready(h) {
+  await settle(); await settle(); await settle(); await settle();
+  return h;
+}
+
+test('loading bar stays hidden for the first 1.5 s, then shows the projection, reason and a fun fact', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  await settle(); await settle();
+  assert.equal(h.overlay(), null);
+
+  h.advance(1500);
+  await settle(); await settle();
+
+  assert.ok(h.overlay());
+  assert.match(h.text(".fl-time"), /^Starting in about 1 min \d+ s$/);
+  assert.match(h.text('.fl-reason'), /93 Mbps/);
+  assert.equal(h.text('.fl-fact'), 'Fun fact: Peter Falk had a glass eye.');
+});
+
+test('loading bar counts down, then admits it is taking longer than projected', async () => {
+  const h = await ready(makeLoadingWindow({ estimate: { federated: true, seconds: 30, reason: 'r', serverName: 'Friend' } }));
+  h.press();
+  h.advance(1500); await settle(); await settle();
+  h.addVideo();
+  assert.match(h.text('.fl-time'), /^Starting in about 2\d s$/);
+
+  h.advance(10000);
+  assert.match(h.text('.fl-time'), /^Starting in about 1\d s$/);
+
+  h.advance(25000);
+  assert.match(h.text('.fl-time'), /Almost there/);
+  const fill = h.dom.window.document.querySelector('#federation-loading-overlay .fl-fill');
+  assert.ok(parseFloat(fill.style.width) <= 95);
+});
+
+test('loading bar formats long waits in minutes', async () => {
+  const h = await ready(makeLoadingWindow({ estimate: { federated: true, seconds: 130, reason: 'r', serverName: 'Friend' } }));
+  h.press();
+  h.advance(1500); await settle(); await settle();
+  assert.match(h.text('.fl-time'), /^Starting in about 2 min \d+ s$/);
+});
+
+test('loading bar disappears as soon as the video is actually playing', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  const video = h.addVideo();
+  h.advance(1500); await settle(); await settle();
+  assert.ok(h.overlay());
+
+  video.dispatchEvent(new h.dom.window.Event('playing'));
+
+  assert.equal(h.overlay(), null);
+});
+
+test('loading bar is never shown when video is already playing at the 1.5 s mark', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  h.addVideo({ paused: false, currentTime: 3, readyState: 4 });
+  h.advance(1500); await settle(); await settle();
+  assert.equal(h.overlay(), null);
+});
+
+test('loading bar is removed when the player is closed before playback starts', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  const video = h.addVideo();
+  h.advance(2000); await settle(); await settle();
+  assert.ok(h.overlay());
+
+  video.remove();
+  h.advance(1000);
+
+  assert.equal(h.overlay(), null);
+});
+
+test('loading bar gives up if no player ever appears', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  h.advance(2000); await settle(); await settle();
+  assert.ok(h.overlay());
+
+  h.advance(30000);
+
+  assert.equal(h.overlay(), null);
+});
+
+test('loading bar ignores titles that are not federated, without asking the server for an estimate', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press('22222222222222222222222222222222');
+  h.advance(3000); await settle(); await settle();
+  assert.equal(h.overlay(), null);
+  assert.equal(h.fetched.filter((u) => u.includes('StartEstimate')).length, 0);
+});
+
+test('loading bar can be switched off by the server setting', async () => {
+  const h = await ready(makeLoadingWindow({ overlay: false }));
+  h.press();
+  h.advance(3000); await settle(); await settle();
+  assert.equal(h.overlay(), null);
+  assert.equal(h.fetched.filter((u) => u.includes('StartEstimate')).length, 0);
+});
+
+test('loading bar without a measurement shows an indeterminate bar, not a made-up number', async () => {
+  const h = await ready(makeLoadingWindow({ estimate: { federated: true, seconds: null, reason: 'Speed not measured yet.', serverName: 'Friend' } }));
+  h.press();
+  h.advance(1500); await settle(); await settle();
+  h.addVideo();
+  assert.match(h.text('.fl-time'), /^Getting things ready/);
+  assert.ok(h.dom.window.document.querySelector('#federation-loading-overlay .fl-fill').classList.contains('fl-indeterminate'));
+});
+
+test('loading bar shows server text as text, never as markup', async () => {
+  const hostile = '<img src=x onerror="window.__pwned=1">';
+  const h = await ready(makeLoadingWindow({
+    estimate: { federated: true, seconds: 20, reason: hostile, serverName: 'Friend' },
+    fact: { text: hostile }
+  }));
+  h.press();
+  h.advance(1500); await settle(); await settle();
+  assert.equal(h.dom.window.document.querySelectorAll('#federation-loading-overlay img').length, 0);
+  assert.equal(h.text('.fl-reason'), hostile);
+  assert.equal(h.text('.fl-fact'), 'Fun fact: ' + hostile);
+});
+
+test('repeated playback-info requests for one play keep a single bar and a single estimate request', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press(); h.press(); h.press();
+  h.advance(1500); await settle(); await settle();
+  assert.equal(h.dom.window.document.querySelectorAll('#federation-loading-overlay').length, 1);
+  assert.equal(h.fetched.filter((u) => u.includes('StartEstimate')).length, 1);
+});
+
+test('loading bar rotates the fun fact every 12 seconds', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  h.addVideo();
+  h.advance(1500); await settle(); await settle();
+  const before = h.fetched.filter((u) => u.includes('FunFact')).length;
+  h.advance(12000); await settle();
+  assert.ok(h.fetched.filter((u) => u.includes('FunFact')).length > before);
+});
+
+test('loading bar never blocks the player and leaves the original playback request untouched', async () => {
+  const h = await ready(makeLoadingWindow());
+  const result = h.press();
+  assert.equal(h.playbackInfoCalls.length, 1);
+  assert.equal(h.playbackInfoCalls[0][0], itemId);
+  assert.deepEqual(await result, { MediaSources: [] });
+
+  h.advance(1500); await settle(); await settle();
+  const style = h.dom.window.document.getElementById('federation-loading-style').textContent;
+  assert.match(style, /#federation-loading-overlay\{[^}]*pointer-events:none/);
+});
+
+test('a failing estimate or fun-fact request still leaves a working bar', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.dom.window.fetch = () => Promise.reject(new Error('offline'));
+  h.press();
+  h.addVideo();
+  h.advance(1500); await settle(); await settle();
+  assert.ok(h.overlay());
+  assert.match(h.text('.fl-time'), /^Getting things ready/);
+});

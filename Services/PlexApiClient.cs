@@ -340,6 +340,270 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Measures real download throughput from this Plex server by reading a few
+        /// megabytes from the middle of one file it already shares (the caller picks a
+        /// ratingKey from the consented catalog). Only an HTTP 206 is accepted: a 200
+        /// would mean the server ignored the range and is sending the whole file, so the
+        /// response is dropped unread. Returns null when the sample could not be taken.
+        /// </summary>
+        /// <param name="ratingKey">An item from the already-imported catalog.</param>
+        /// <param name="cancellationToken">Cancellation.</param>
+        /// <returns>Megabits per second, or null.</returns>
+        public async Task<double?> MeasureBandwidthMbpsAsync(string ratingKey, CancellationToken cancellationToken)
+        {
+            const int sampleBytes = 5_000_000;
+            var partKey = await GetPartKeyAsync(ratingKey, cancellationToken).ConfigureAwait(false);
+            if (partKey == null)
+            {
+                return null;
+            }
+
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+            // A little way in, so the sample is real media rather than a container header
+            // the server may have cached; falls back to the start for a very small file.
+            foreach (var offset in new long[] { 20_000_000, 0 })
+            {
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, BuildStreamUrl(partKey));
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, offset + sampleBytes - 1);
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
+                    if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+                    {
+                        continue;
+                    }
+
+                    if (response.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                    {
+                        return null;
+                    }
+
+                    await using var body = await response.Content.ReadAsStreamAsync(linked.Token).ConfigureAwait(false);
+                    var buffer = new byte[81920];
+                    long total = 0;
+                    int read;
+                    while (total < sampleBytes && (read = await body.ReadAsync(buffer, linked.Token).ConfigureAwait(false)) > 0)
+                    {
+                        total += read;
+                    }
+
+                    stopwatch.Stop();
+                    return total == 0 || stopwatch.Elapsed.TotalSeconds <= 0
+                        ? null
+                        : total * 8.0 / stopwatch.Elapsed.TotalSeconds / 1_000_000.0;
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    return null;
+                }
+                catch (HttpRequestException ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Plex bandwidth sample failed");
+                    return null;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>What a short Plex transcode probe observed.</summary>
+        /// <param name="HttpStatus">Plex's response status, or 0 when the request never completed.</param>
+        /// <param name="FirstByteMs">Milliseconds until the first media byte arrived, or null.</param>
+        /// <param name="Bytes">Media bytes received during the sample.</param>
+        /// <param name="SampleSeconds">How long data was read for.</param>
+        /// <param name="Mbps">Observed delivery rate in Mbps, or null when nothing arrived.</param>
+        /// <param name="ContentType">The response content type.</param>
+        /// <param name="Detail">A short human-readable outcome (never contains the token).</param>
+        /// <param name="PlexDecision">What Plex's own transcode decision call said, if it answered.</param>
+        /// <param name="PlexMessage">A short, token-free excerpt of Plex's reply when it refused.</param>
+        public sealed record TranscodeProbeResult(int HttpStatus, long? FirstByteMs, long Bytes, double SampleSeconds, double? Mbps, string? ContentType, string Detail, string? PlexDecision = null, string? PlexMessage = null);
+
+        /// <summary>
+        /// Builds the token-bearing URL that asks Plex to transcode one item to a capped
+        /// H.264/AAC Matroska stream over plain HTTP. Internal use only (see
+        /// <see cref="BuildStreamUrl"/>): the URL carries the server token and must never
+        /// reach a client.
+        /// </summary>
+        /// <param name="ratingKey">The Plex item.</param>
+        /// <param name="maxVideoKbps">Video bitrate ceiling in kilobits per second.</param>
+        /// <param name="session">A unique id so Plex can tell this stream from others and stop it.</param>
+        /// <param name="offsetSeconds">Where in the title to start.</param>
+        /// <returns>An absolute URL.</returns>
+        public string BuildTranscodeUrl(string ratingKey, int maxVideoKbps, string session, int offsetSeconds = 0)
+            => $"{_baseUrl}/video/:/transcode/universal/start.mkv?{BuildTranscodeQuery(ratingKey, maxVideoKbps, session, offsetSeconds)}";
+
+        private string BuildTranscodeQuery(string ratingKey, int maxVideoKbps, string session, int offsetSeconds)
+        {
+            var q = new List<KeyValuePair<string, string>>
+            {
+                new("hasMDE", "1"),
+                new("path", "/library/metadata/" + ratingKey),
+                new("mediaIndex", "0"),
+                new("partIndex", "0"),
+                new("protocol", "http"),
+                new("offset", offsetSeconds.ToString(CultureInfo.InvariantCulture)),
+                new("fastSeek", "1"),
+                new("directPlay", "0"),
+                new("directStream", "0"),
+                new("videoQuality", "100"),
+                new("maxVideoBitrate", maxVideoKbps.ToString(CultureInfo.InvariantCulture)),
+                new("videoBitrate", maxVideoKbps.ToString(CultureInfo.InvariantCulture)),
+                new("audioChannelCount", "2"),
+                new("session", session),
+                new("X-Plex-Session-Identifier", session),
+                new("X-Plex-Client-Identifier", "jellyfin-federation"),
+                new("X-Plex-Product", "Jellyfin Federation"),
+                new("X-Plex-Platform", "Chrome"),
+                new("X-Plex-Device", "Jellyfin Federation"),
+                new("X-Plex-Token", _token),
+            };
+            return string.Join("&", q.Select(p => Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value)));
+        }
+
+        // Plex's own "would you transcode this, and if not why" call. Returns a short,
+        // token-free summary, or null when it did not answer usefully.
+        private async Task<string?> AskTranscodeDecisionAsync(string ratingKey, int maxVideoKbps, string session, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    $"{_baseUrl}/video/:/transcode/universal/decision?{BuildTranscodeQuery(ratingKey, maxVideoKbps, session, 0)}");
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(15));
+                using var response = await _http.SendAsync(request, cts.Token).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+                var parts = new List<string> { "HTTP " + (int)response.StatusCode };
+                foreach (var name in new[] { "generalDecisionCode", "generalDecisionText", "directPlayDecisionText", "mdeDecisionText", "transcodeDecisionCode", "transcodeDecisionText" })
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(body, name + "=\"([^\"]{0,160})\"");
+                    if (match.Success)
+                    {
+                        parts.Add(name + "=" + match.Groups[1].Value);
+                    }
+                }
+
+                return parts.Count > 1 ? Redact(string.Join("; ", parts)) : "HTTP " + (int)response.StatusCode + "; " + Excerpt(body);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
+        // A short plain-text excerpt of a Plex reply, with the token removed.
+        private string Excerpt(string body)
+        {
+            var flat = System.Text.RegularExpressions.Regex.Replace(body ?? string.Empty, "\\s+", " ").Trim();
+            return Redact(flat.Length <= 240 ? flat : flat[..240]);
+        }
+
+        private string Redact(string text)
+            => string.IsNullOrEmpty(_token) ? text : text.Replace(_token, "<token>", StringComparison.Ordinal);
+
+        /// <summary>
+        /// Asks Plex to transcode an item at a capped bitrate for a few seconds and reports
+        /// whether it can, how quickly the first byte arrives and how fast data flows.
+        /// Diagnostic only; the stream is stopped before returning.
+        /// </summary>
+        /// <param name="ratingKey">The Plex item.</param>
+        /// <param name="maxVideoKbps">Video bitrate ceiling in kilobits per second.</param>
+        /// <param name="sampleSeconds">How long to read before stopping.</param>
+        /// <param name="cancellationToken">Cancellation.</param>
+        /// <returns>What was observed.</returns>
+        public async Task<TranscodeProbeResult> ProbeTranscodeAsync(string ratingKey, int maxVideoKbps, int sampleSeconds, CancellationToken cancellationToken)
+        {
+            var session = Guid.NewGuid().ToString("N");
+            var decision = await AskTranscodeDecisionAsync(ratingKey, maxVideoKbps, session, cancellationToken).ConfigureAwait(false);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            long bytes = 0;
+            long? firstByteMs = null;
+            string? contentType = null;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, BuildTranscodeUrl(ratingKey, maxVideoKbps, session));
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                contentType = response.Content.Headers.ContentType?.ToString();
+                if (!response.IsSuccessStatusCode)
+                {
+                    var refusal = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    return new TranscodeProbeResult((int)response.StatusCode, null, 0, 0, null, contentType, "Plex refused to start a transcode.", decision, Excerpt(refusal));
+                }
+
+                await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                var buffer = new byte[65536];
+                using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                window.CancelAfter(TimeSpan.FromSeconds(sampleSeconds + 25));
+                var readUntil = TimeSpan.Zero;
+                while (true)
+                {
+                    var read = await body.ReadAsync(buffer, window.Token).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    if (firstByteMs == null)
+                    {
+                        firstByteMs = watch.ElapsedMilliseconds;
+                        readUntil = watch.Elapsed + TimeSpan.FromSeconds(sampleSeconds);
+                    }
+
+                    bytes += read;
+                    if (watch.Elapsed >= readUntil)
+                    {
+                        break;
+                    }
+                }
+
+                var seconds = firstByteMs == null ? 0 : Math.Max(0.001, (watch.ElapsedMilliseconds - firstByteMs.Value) / 1000.0);
+                return new TranscodeProbeResult(
+                    (int)response.StatusCode,
+                    firstByteMs,
+                    bytes,
+                    seconds,
+                    seconds > 0 && bytes > 0 ? bytes * 8.0 / seconds / 1_000_000.0 : null,
+                    contentType,
+                    firstByteMs == null ? "Plex accepted the request but sent no media." : "Plex produced a transcoded stream.",
+                    decision);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return new TranscodeProbeResult(0, firstByteMs, bytes, 0, null, contentType, "Timed out waiting for Plex to produce data.");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Plex transcode probe failed");
+                return new TranscodeProbeResult(0, firstByteMs, bytes, 0, null, contentType, "Could not reach Plex's transcoder.");
+            }
+            finally
+            {
+                await StopTranscodeAsync(session).ConfigureAwait(false);
+            }
+        }
+
+        // Politely ends the Plex transcode session so it stops using the friend's CPU.
+        private async Task StopTranscodeAsync(string session)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    $"{_baseUrl}/video/:/transcode/universal/stop?session={Uri.EscapeDataString(session)}");
+                request.Headers.TryAddWithoutValidation("X-Plex-Token", _token);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                using var response = await _http.SendAsync(request, cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not stop Plex transcode session");
+            }
+        }
+
+        /// <summary>
         /// Builds the absolute, token-bearing URL for a part or image path.
         /// Internal use only - the token authenticates against the whole Plex
         /// server, so this URL must never be handed to a client (see

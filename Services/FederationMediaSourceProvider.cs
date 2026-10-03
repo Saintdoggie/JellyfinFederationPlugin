@@ -90,6 +90,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public async Task<IEnumerable<MediaSourceInfo>> GetMediaSources(BaseItem item, CancellationToken cancellationToken)
         {
+            var timing = System.Diagnostics.Stopwatch.StartNew();
             if (item == null)
             {
                 return Enumerable.Empty<MediaSourceInfo>();
@@ -439,6 +440,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogWarning("[Federation] No live sources for {Name}", item.Name);
                 }
 
+                _logger.LogInformation(
+                    "[Federation][timing] Media sources for {Name} resolved in {Ms} ms ({Count} source(s))",
+                    item.Name,
+                    timing.ElapsedMilliseconds,
+                    sources.Count);
                 return sources;
             }
             catch (Exception ex)

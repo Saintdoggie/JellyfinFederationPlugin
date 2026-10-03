@@ -167,6 +167,31 @@ namespace Jellyfin.Plugin.Federation.Services
             return partKey == null ? null : client.BuildStreamUrl(partKey);
         }
 
+        /// <summary>
+        /// Diagnostic: asks this Plex server for a short capped transcode of one item and
+        /// reports whether it can produce one and how fast. Null when no client could be
+        /// built for the server.
+        /// </summary>
+        public Task<PlexApiClient.TranscodeProbeResult?> ProbeTranscodeAsync(RemoteServer server, string nativeId, int maxVideoKbps, int sampleSeconds, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            return client == null
+                ? Task.FromResult<PlexApiClient.TranscodeProbeResult?>(null)
+                : ProbeAsync(client);
+
+            async Task<PlexApiClient.TranscodeProbeResult?> ProbeAsync(PlexApiClient c)
+                => await c.ProbeTranscodeAsync(nativeId, maxVideoKbps, sampleSeconds, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public Task<double?> MeasureBandwidthMbpsAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
+        {
+            var client = CreateClient(server);
+            return client == null
+                ? Task.FromResult<double?>(null)
+                : client.MeasureBandwidthMbpsAsync(nativeId, cancellationToken);
+        }
+
         public Task<MediaBrowser.Model.Dto.MediaSourceInfo?> GetMediaSourceAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken)
         {
             var client = CreateClient(server);

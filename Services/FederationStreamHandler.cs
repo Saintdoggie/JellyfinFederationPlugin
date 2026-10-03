@@ -642,6 +642,33 @@ namespace Jellyfin.Plugin.Federation.Services
         /// bitrate instead. Null (the common case) relays at whatever rate the
         /// remote and this connection can sustain, exactly as before this existed.
         /// </param>
+        // How long the friend's server took to answer, and to send the first byte, is the
+        // first thing to check when a title is slow to start. Quiet unless it was slow:
+        // ffmpeg opens many ranges per play, so every one would drown the log.
+        private const long SlowStartLogThresholdMs = 2000;
+
+        private void LogSlowStart(string url, long rangeStart, long headersMs, long firstByteMs)
+        {
+            if (headersMs >= SlowStartLogThresholdMs || firstByteMs >= SlowStartLogThresholdMs)
+            {
+                _logger.LogInformation(
+                    "[Federation][timing] Slow upstream response from {UpstreamHost} at byte {Offset}: headers after {HeadersMs} ms, first data after {FirstByteMs} ms",
+                    GetSafeUpstreamHost(url),
+                    rangeStart,
+                    headersMs,
+                    firstByteMs);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "[Federation][timing] Upstream {UpstreamHost} at byte {Offset}: headers {HeadersMs} ms, first data {FirstByteMs} ms",
+                    GetSafeUpstreamHost(url),
+                    rangeStart,
+                    headersMs,
+                    firstByteMs);
+            }
+        }
+
         private async Task<int?> RelayAsync(
             string url,
             HttpRequest request,
@@ -704,10 +731,13 @@ namespace Jellyfin.Plugin.Federation.Services
                             remoteReq.Headers.TryAddWithoutValidation("Range", requestRange);
                         }
 
+                        var attemptWatch = Stopwatch.StartNew();
                         using var remoteResp = await ProxyHttpClient.SendAsync(
                             remoteReq,
                             HttpCompletionOption.ResponseHeadersRead,
                             cancellationToken).ConfigureAwait(false);
+                        var headersMs = attemptWatch.ElapsedMilliseconds;
+                        var firstByteLogged = false;
 
                         if (!remoteResp.IsSuccessStatusCode && remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent)
                         {
@@ -806,6 +836,12 @@ namespace Jellyfin.Plugin.Federation.Services
                             {
                                 idleCts.CancelAfter(IdleReadTimeout);
                                 read = await remoteStream.ReadAsync(buffer.AsMemory(0, bufferSize), idleCts.Token).ConfigureAwait(false);
+                            }
+
+                            if (!firstByteLogged)
+                            {
+                                firstByteLogged = true;
+                                LogSlowStart(url, rangeStart, headersMs, attemptWatch.ElapsedMilliseconds);
                             }
 
                             if (read == 0)
