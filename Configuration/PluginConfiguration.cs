@@ -75,6 +75,29 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool EnableDedup { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets a value indicating whether federated playback bounds how much
+        /// of the remote file ffmpeg reads while analysing it before a transcode or
+        /// remux starts (see <see cref="Services.FastStartTuning"/>). Only the analysis
+        /// window changes - the delivered video and audio are untouched. Turn off to
+        /// fall back to Jellyfin's server-wide probe defaults.
+        /// </summary>
+        public bool FastStartProbing { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the injected web client shows a simple
+        /// loading bar (projected time, the reason for the wait, a fun fact) while a
+        /// federated title is still starting. Cosmetic only.
+        /// </summary>
+        public bool LoadingOverlay { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the loading bar may fetch fun facts
+        /// from a free public API (done by this server, never by the browser). When off,
+        /// only a short built-in list is used.
+        /// </summary>
+        public bool LoadingFunFacts { get; set; } = true;
+
+        /// <summary>
         /// Gets or sets the provider id keys used for dedup (e.g. imdb, tmdb, tvdb).
         /// </summary>
         public List<string> DedupProviderIds { get; set; } = new List<string> { "imdb", "tmdb", "tvdb" };

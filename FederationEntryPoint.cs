@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -28,6 +29,8 @@ namespace Jellyfin.Plugin.Federation
         private readonly WebClientInjector _webClientInjector;
         private readonly FederationAvailabilityService _availability;
         private readonly IHostApplicationLifetime _appLifetime;
+        private readonly IMediaSourceManager _mediaSources;
+        private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly SemaphoreSlim _reachabilityRescanGate = new(1, 1);
         private int _reachabilityRescanEpoch;
 
@@ -43,7 +46,9 @@ namespace Jellyfin.Plugin.Federation
             FederationDownloadService downloads,
             WebClientInjector webClientInjector,
             FederationAvailabilityService availability,
-            IHostApplicationLifetime appLifetime)
+            IHostApplicationLifetime appLifetime,
+            IMediaSourceManager mediaSources,
+            WanBandwidthMonitor bandwidthMonitor)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -54,6 +59,8 @@ namespace Jellyfin.Plugin.Federation
             _webClientInjector = webClientInjector;
             _availability = availability;
             _appLifetime = appLifetime;
+            _mediaSources = mediaSources;
+            _bandwidthMonitor = bandwidthMonitor;
             FederationItemPersistenceService.AvailabilityOverride = availability;
         }
 
@@ -61,6 +68,11 @@ namespace Jellyfin.Plugin.Federation
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Federation Plugin Entry Point started");
+            _logger.LogInformation(
+                "[Federation] Fast-start probing: {State}",
+                _mediaSources is FederationMediaSourceManager
+                    ? (Plugin.Instance?.Configuration?.FastStartProbing == false ? "installed but disabled in settings" : "active")
+                    : "not installed (unexpected host service layout; playback unaffected)");
 
             try
             {
@@ -188,6 +200,15 @@ namespace Jellyfin.Plugin.Federation
                     if (online)
                     {
                         _downloads.ResumePausedForServer(serverId);
+
+                        // A server that just came back may be on a different connection
+                        // than the one last measured, so refresh the reading the
+                        // loading-time estimate uses.
+                        _bandwidthMonitor.InvalidateMeasurement(serverId);
+                        if (_federationManager.GetServer(serverId) is { } recovered)
+                        {
+                            _ = _bandwidthMonitor.MeasureLinkIfDueAsync(recovered, ct);
+                        }
                     }
                     else
                     {

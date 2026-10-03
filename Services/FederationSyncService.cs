@@ -102,7 +102,9 @@ namespace Jellyfin.Plugin.Federation.Services
             // different servers cannot race each other.
             var refreshes = servers.Where(s => s.Enabled)
                 .Select(server => _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken));
-            return Task.WhenAll(refreshes);
+            var linkSamples = servers.Where(s => s.Enabled)
+                .Select(server => _bandwidthMonitor.MeasureLinkIfDueAsync(server, cancellationToken));
+            return Task.WhenAll(refreshes.Concat(linkSamples));
         }
 
         /// <summary>

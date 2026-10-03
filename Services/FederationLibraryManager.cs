@@ -939,9 +939,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 return ClearPersistedMediaStreams(item);
             }
 
+            // Jellyfin keys a persisted stream by (item, stream index) and its database
+            // layer throws "cannot be tracked because another instance with the same key
+            // value" on a duplicate - which dropped the whole save, left the item with no
+            // stream info, and sent its first play through Jellyfin's slow remote probe of
+            // the file. Some sources (Plex titles with external subtitle files) report two
+            // streams with one index; keep the first of each so the rest still persist.
+            var unique = streams.GroupBy(s => s.Index).Select(g => g.First()).ToArray();
+
             try
             {
-                _mediaStreamRepository.SaveMediaStreams(item.Id, streams, CancellationToken.None);
+                _mediaStreamRepository.SaveMediaStreams(item.Id, unique, CancellationToken.None);
                 return true;
             }
             catch (Exception ex)

@@ -949,6 +949,36 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void RemoteMediaStreams_WithDuplicateIndexes_StillPersist_KeepingTheFirstOfEach()
+    {
+        // Jellyfin's database layer rejects two streams with one (item, index) key, which
+        // used to fail the whole save and send the item's first play through Jellyfin's
+        // slow remote probe. The first stream per index is kept so the rest persist.
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Off;
+        var streams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Codec = "h264", Index = 0 },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Index = 1 },
+            new MediaStream { Type = MediaStreamType.Subtitle, Codec = "srt", Index = 2 },
+            new MediaStream { Type = MediaStreamType.Subtitle, Codec = "ass", Index = 2 }
+        };
+
+        var entry = AddEntry("Movie", Guid.NewGuid(), container: "mkv", mediaStreams: streams);
+        var item = _manager.MaterializeItem(entry);
+
+        Assert.True(_manager.TryPersistMediaStreams(item, entry));
+
+        _mediaStreamRepository.Verify(
+            r => r.SaveMediaStreams(
+                item.Id,
+                It.Is<IReadOnlyList<MediaStream>>(s => s.Select(x => x.Index).SequenceEqual(new[] { 0, 1, 2 })
+                    && s[2].Codec == "srt"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
     public void RemoteMediaStreams_ArePersistedEvenWhenWanCapped_BecauseStaticPathServesTheRawFile()
     {
         // The static Path serves the original file, even if a WAN cap is

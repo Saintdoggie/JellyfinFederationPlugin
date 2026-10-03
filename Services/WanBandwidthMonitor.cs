@@ -64,17 +64,139 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(20);
 
+        // The link-speed sample behind the loading-time estimate. Independent of the
+        // WAN cap above: it is measured for every enabled server (including Plex and
+        // servers whose cap is off) and only needs to be roughly current, so it is a
+        // daily sample plus a fresh one whenever a server appears or comes back online.
+        private static readonly TimeSpan LinkMeasurementInterval = TimeSpan.FromHours(24);
+
+        // After a failed sample, try again soon instead of waiting a whole day.
+        private static readonly TimeSpan LinkMeasurementRetryInterval = TimeSpan.FromMinutes(30);
+
         private readonly ILogger<WanBandwidthMonitor> _logger;
         private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly ExternalCatalogRegistry? _externalCatalogs;
+        private readonly FederationItemCache? _itemCache;
         private readonly ConcurrentDictionary<string, ServerNetworkInfo> _cache = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="WanBandwidthMonitor"/> class.
         /// </summary>
-        public WanBandwidthMonitor(ILogger<WanBandwidthMonitor> logger, IRemoteServerClientFactory clientFactory)
+        public WanBandwidthMonitor(
+            ILogger<WanBandwidthMonitor> logger,
+            IRemoteServerClientFactory clientFactory,
+            ExternalCatalogRegistry? externalCatalogs = null,
+            FederationItemCache? itemCache = null)
         {
             _logger = logger;
             _clientFactory = clientFactory;
+            _externalCatalogs = externalCatalogs;
+            _itemCache = itemCache;
+        }
+
+        /// <summary>
+        /// The most recent measured download speed from a server in Mbps, or null when
+        /// it has not been measured yet. Fast, synchronous and network-free.
+        /// </summary>
+        /// <param name="serverId">The server's configured id.</param>
+        /// <returns>Megabits per second, or null.</returns>
+        public double? GetMeasuredLinkMbps(string serverId)
+            => _cache.TryGetValue(serverId, out var info) ? info.LinkMbps : null;
+
+        /// <summary>
+        /// Marks a server's speed sample stale so the next call to
+        /// <see cref="MeasureLinkIfDueAsync"/> measures again - used when a server comes
+        /// back online, since its old reading may describe a different connection.
+        /// </summary>
+        /// <param name="serverId">The server's configured id.</param>
+        public void InvalidateMeasurement(string serverId)
+        {
+            if (_cache.TryGetValue(serverId, out var info))
+            {
+                info.LinkNextDueUtc = DateTime.MinValue;
+            }
+        }
+
+        /// <summary>
+        /// Measures a server's real download speed if the last sample is older than a
+        /// day (or it has never been sampled, or was just invalidated). Never throws;
+        /// at most one sample per server runs at a time; a failure keeps the previous
+        /// reading and retries in 30 minutes.
+        /// </summary>
+        /// <param name="server">The server to sample.</param>
+        /// <param name="cancellationToken">Cancellation.</param>
+        /// <returns>A task that completes when the sample has been taken or skipped.</returns>
+        public async Task MeasureLinkIfDueAsync(RemoteServer server, CancellationToken cancellationToken = default)
+        {
+            if (!server.Enabled || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(server.Id) == true)
+            {
+                return;
+            }
+
+            var info = _cache.GetOrAdd(server.Id, _ => new ServerNetworkInfo());
+            if (DateTime.UtcNow < info.LinkNextDueUtc || Interlocked.Exchange(ref info.LinkMeasuring, 1) == 1)
+            {
+                return;
+            }
+
+            double? measured = null;
+            try
+            {
+                if (_externalCatalogs?.For(server) is { } provider)
+                {
+                    var nativeId = FindImportedNativeId(server);
+                    if (nativeId != null)
+                    {
+                        measured = await provider.MeasureBandwidthMbpsAsync(server, nativeId, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else if (server.Kind == ServerKind.Jellyfin)
+                {
+                    measured = await _clientFactory.GetClient(server.Id)?.MeasureBandwidthMbpsAsync(cancellationToken)!;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Link-speed sample for {ServerName} failed", server.Name);
+            }
+            finally
+            {
+                if (measured is > 0)
+                {
+                    info.LinkMbps = measured;
+                    info.LinkNextDueUtc = DateTime.UtcNow + LinkMeasurementInterval;
+                    _logger.LogInformation("[Federation] Link speed to {ServerName} measured at {Mbps:F1} Mbps", server.Name, measured.Value);
+                }
+                else
+                {
+                    info.LinkNextDueUtc = DateTime.UtcNow + LinkMeasurementRetryInterval;
+                }
+
+                Interlocked.Exchange(ref info.LinkMeasuring, 0);
+            }
+        }
+
+        // Any title this server already shares with us - the probe only ever reads a
+        // file that is part of the consented catalog.
+        private string? FindImportedNativeId(RemoteServer server)
+        {
+            if (_itemCache == null)
+            {
+                return null;
+            }
+
+            foreach (var entry in _itemCache.GetAllEntries())
+            {
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (source.ServerId == server.Id && entry.GetNativeId(source) is { Length: > 0 } nativeId)
+                    {
+                        return nativeId;
+                    }
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -288,6 +410,14 @@ namespace Jellyfin.Plugin.Federation.Services
             };
         }
 
+        /// <summary>Test-only seam: records a link-speed reading without any network call.</summary>
+        internal void SeedLinkForTests(string serverId, double mbps)
+        {
+            var info = _cache.GetOrAdd(serverId, _ => new ServerNetworkInfo());
+            info.LinkMbps = mbps;
+            info.LinkNextDueUtc = DateTime.UtcNow + LinkMeasurementInterval;
+        }
+
         private class ServerNetworkInfo
         {
             public bool? IsLocalNetwork { get; set; }
@@ -295,6 +425,13 @@ namespace Jellyfin.Plugin.Federation.Services
             public double? MeasuredMbps { get; set; }
 
             public DateTime LastChecked { get; set; }
+
+            public double? LinkMbps { get; set; }
+
+            public DateTime LinkNextDueUtc { get; set; } = DateTime.MinValue;
+
+            // Fields, not properties: Interlocked needs a ref.
+            public int LinkMeasuring;
         }
     }
 }

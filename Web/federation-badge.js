@@ -170,6 +170,10 @@
       });
   }
 
+  // Simple loading bar shown while a federated title is still starting (see the
+  // "Loading bar" section below). Switchable by the server's LoadingOverlay setting.
+  var loadingOverlayEnabled = true;
+
   function refreshClientSettings() {
     return federationFetch('/Plugins/Federation/ClientSettings', { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : {}; })
@@ -177,6 +181,7 @@
         var wasLoaded = clientSettingsLoaded;
         var previousValue = showFederatedCloudBadges;
         showFederatedCloudBadges = settings.showFederatedCloudBadges === true;
+        loadingOverlayEnabled = settings.loadingOverlay !== false;
         clientSettingsLoaded = true;
 
         // Cards are deliberately marked as processed even when the cloud is
@@ -1357,6 +1362,7 @@
     }
 
     injectStyle();
+    hookPlaybackOverlay();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
     refreshDownloadRingsOnCards();
@@ -1375,6 +1381,236 @@
       scheduled = false;
       scan();
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Loading bar
+  //
+  // A federated title can take a while to start because its first seconds have to
+  // cross the friend's connection. A black screen for that long looks broken, so
+  // when playback of a federated title has not started 1.5 s after the viewer
+  // pressed play, a plain bar appears at the bottom with a projected countdown,
+  // the reason for the wait and a fun fact. It never blocks the player controls
+  // and disappears the moment video is actually playing.
+  // ---------------------------------------------------------------------
+  var OVERLAY_ID = 'federation-loading-overlay';
+  var OVERLAY_STYLE_ID = 'federation-loading-style';
+  var OVERLAY_SHOW_DELAY_MS = 1500;
+  var OVERLAY_GIVE_UP_MS = 10 * 60 * 1000;
+  var OVERLAY_NO_VIDEO_GIVE_UP_MS = 25 * 1000;
+  var FACT_ROTATE_SECONDS = 12;
+  var overlayState = null;
+
+  function injectOverlayStyle() {
+    if (document.getElementById(OVERLAY_STYLE_ID)) {
+      return;
+    }
+
+    var style = document.createElement('style');
+    style.id = OVERLAY_STYLE_ID;
+    style.textContent = [
+      '#' + OVERLAY_ID + '{position:fixed;left:0;right:0;bottom:0;z-index:100000;box-sizing:border-box;',
+      'padding:.9em 1.4em 1.1em;background:rgba(0,0,0,.82);color:#fff;font-size:clamp(13px,1.1vw,16px);line-height:1.4;',
+      'pointer-events:none;}',
+      '#' + OVERLAY_ID + ' .fl-bar{height:4px;background:rgba(255,255,255,.22);border-radius:2px;overflow:hidden;margin-bottom:.6em;}',
+      '#' + OVERLAY_ID + ' .fl-fill{height:100%;width:0;background:#fff;transition:width .9s linear;}',
+      '#' + OVERLAY_ID + ' .fl-fill.fl-indeterminate{width:30%;animation:fl-slide 1.4s ease-in-out infinite;}',
+      '#' + OVERLAY_ID + ' .fl-time{font-weight:600;}',
+      '#' + OVERLAY_ID + ' .fl-reason,#' + OVERLAY_ID + ' .fl-fact{opacity:.85;}',
+      '#' + OVERLAY_ID + ' .fl-fact{margin-top:.35em;font-style:italic;}',
+      '@keyframes fl-slide{0%{margin-left:-30%}100%{margin-left:100%}}',
+      '@media (prefers-reduced-motion:reduce){#' + OVERLAY_ID + ' .fl-fill.fl-indeterminate{animation:none;width:100%;opacity:.5}}'
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  function formatWait(seconds) {
+    seconds = Math.max(0, Math.round(seconds));
+    if (seconds < 60) {
+      return seconds + ' s';
+    }
+
+    var minutes = Math.floor(seconds / 60);
+    var rest = seconds % 60;
+    return minutes + ' min' + (rest ? ' ' + rest + ' s' : '');
+  }
+
+  function playingVideoElement() {
+    var video = document.querySelector('video');
+    return !!(video && !video.paused && video.currentTime > 0 && video.readyState >= 3);
+  }
+
+  function stopLoadingOverlay() {
+    var state = overlayState;
+    overlayState = null;
+    if (!state) {
+      return;
+    }
+
+    state.cancelled = true;
+    if (state.showTimer) {
+      clearTimeout(state.showTimer);
+    }
+
+    if (state.tickTimer) {
+      clearInterval(state.tickTimer);
+    }
+
+    var node = document.getElementById(OVERLAY_ID);
+    if (node && node.parentNode) {
+      node.parentNode.removeChild(node);
+    }
+  }
+
+  function renderOverlayFrame(state) {
+    var node = document.getElementById(OVERLAY_ID);
+    if (!node) {
+      return;
+    }
+
+    var elapsed = (Date.now() - state.startedAt) / 1000;
+    var time = node.querySelector('.fl-time');
+    var fill = node.querySelector('.fl-fill');
+    if (state.seconds != null) {
+      var remaining = state.seconds - elapsed;
+      time.textContent = remaining > 0
+        ? 'Starting in about ' + formatWait(remaining)
+        : 'Almost there - this is taking longer than projected';
+      fill.classList.remove('fl-indeterminate');
+      fill.style.width = Math.min(95, Math.max(3, (elapsed / state.seconds) * 100)) + '%';
+    } else {
+      time.textContent = 'Getting things ready... ' + formatWait(elapsed);
+      fill.classList.add('fl-indeterminate');
+    }
+
+    node.querySelector('.fl-reason').textContent = state.reason || '';
+  }
+
+  function loadFunFact(state) {
+    federationFetch('/Plugins/Federation/FunFact', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        var node = document.getElementById(OVERLAY_ID);
+        if (!data || !data.text || !node || overlayState !== state) {
+          return;
+        }
+
+        node.querySelector('.fl-fact').textContent = 'Fun fact: ' + data.text;
+      })
+      .catch(function () { /* the bar simply has no fact line */ });
+  }
+
+  function showLoadingOverlay(state) {
+    if (overlayState !== state || document.getElementById(OVERLAY_ID)) {
+      return;
+    }
+
+    if (playingVideoElement()) {
+      stopLoadingOverlay();
+      return;
+    }
+
+    injectOverlayStyle();
+    var node = document.createElement('div');
+    node.id = OVERLAY_ID;
+    node.innerHTML = '<div class="fl-bar"><div class="fl-fill"></div></div>'
+      + '<div class="fl-time"></div><div class="fl-reason"></div><div class="fl-fact"></div>';
+    document.body.appendChild(node);
+    renderOverlayFrame(state);
+    loadFunFact(state);
+  }
+
+  function tickLoadingOverlay(state) {
+    if (overlayState !== state) {
+      return;
+    }
+
+    var elapsedMs = Date.now() - state.startedAt;
+    var hasVideo = !!document.querySelector('video');
+    if (hasVideo) {
+      state.seenVideo = true;
+    }
+
+    // Playing, abandoned (the player was closed), never started, or simply too long.
+    if (playingVideoElement()
+      || (state.seenVideo && !hasVideo)
+      || (!state.seenVideo && elapsedMs > OVERLAY_NO_VIDEO_GIVE_UP_MS)
+      || elapsedMs > OVERLAY_GIVE_UP_MS) {
+      stopLoadingOverlay();
+      return;
+    }
+
+    renderOverlayFrame(state);
+    var elapsedSeconds = Math.floor(elapsedMs / 1000);
+    if (document.getElementById(OVERLAY_ID) && elapsedSeconds > 0 && elapsedSeconds % FACT_ROTATE_SECONDS === 0) {
+      loadFunFact(state);
+    }
+  }
+
+  function startLoadingOverlay(rawId) {
+    if (!loadingOverlayEnabled) {
+      return;
+    }
+
+    var id = normalizeId(rawId);
+    if (!id || !federatedIds.has(id)) {
+      return;
+    }
+
+    // jellyfin-web asks for playback info more than once per play; keep the bar
+    // (and its countdown) rather than restarting it.
+    if (overlayState && overlayState.id === id) {
+      return;
+    }
+
+    stopLoadingOverlay();
+    var state = { id: id, startedAt: Date.now(), seconds: null, reason: '', cancelled: false, seenVideo: false };
+    overlayState = state;
+    state.showTimer = setTimeout(function () { showLoadingOverlay(state); }, OVERLAY_SHOW_DELAY_MS);
+    state.tickTimer = setInterval(function () { tickLoadingOverlay(state); }, 1000);
+
+    federationFetch('/Plugins/Federation/StartEstimate/' + id, { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || data.federated === false || overlayState !== state) {
+          return;
+        }
+
+        state.seconds = typeof data.seconds === 'number' ? data.seconds : null;
+        state.reason = typeof data.reason === 'string' ? data.reason : '';
+        renderOverlayFrame(state);
+      })
+      .catch(function () { /* the bar still shows, just without a projection */ });
+  }
+
+  function hookPlaybackOverlay() {
+    if (!document.__federationLoadingBound) {
+      document.__federationLoadingBound = true;
+      // `playing` does not bubble, so listen in the capture phase.
+      document.addEventListener('playing', function (event) {
+        if (event.target && event.target.tagName === 'VIDEO') {
+          stopLoadingOverlay();
+        }
+      }, true);
+      document.addEventListener('error', function (event) {
+        if (event.target && event.target.tagName === 'VIDEO') {
+          stopLoadingOverlay();
+        }
+      }, true);
+    }
+
+    if (!window.ApiClient || window.ApiClient.__federationLoadingHook) {
+      return;
+    }
+
+    window.ApiClient.__federationLoadingHook = true;
+    if (typeof window.ApiClient.getPlaybackInfo === 'function') {
+      var origGetPlaybackInfo = window.ApiClient.getPlaybackInfo.bind(window.ApiClient);
+      window.ApiClient.getPlaybackInfo = function (itemId) {
+        try { startLoadingOverlay(itemId); } catch (e) { /* never get in the way of playback */ }
+        return origGetPlaybackInfo.apply(window.ApiClient, arguments);
+      };
+    }
   }
 
   Promise.all([refreshFederatedIds(), refreshClientSettings(), resolveAdminState()]).then(function () {
