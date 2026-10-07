@@ -520,7 +520,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
 
                 using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
-                var js = reader.ReadToEnd();
+                var js = "(function(){function startFederationBadge(){\n" + reader.ReadToEnd()
+                    + "\n}if(document.readyState === 'loading'){document.addEventListener('DOMContentLoaded',startFederationBadge,{once:true});}else{startFederationBadge();}}());";
+                using var adaptive = assembly.GetManifestResourceStream("Jellyfin.Plugin.Federation.Web.federation-adaptive.js");
+                if (adaptive != null)
+                {
+                    using var adaptiveReader = new System.IO.StreamReader(adaptive);
+                    js += "\n" + adaptiveReader.ReadToEnd();
+                }
 
                 // Same reasoning as GetConfigPage's no-store: this is loaded into
                 // every page of jellyfin-web via a plain <script src> with no
@@ -4908,6 +4915,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.LoadingOverlay,
                 config.LoadingFunFacts,
                 config.FastStartProbing,
+                config.EnableAdaptivePlayback,
                 config.PreferHigherQualityRemotes,
                 config.EnableQualityReplacementActions,
                 config.AutoProvisionLibraries,

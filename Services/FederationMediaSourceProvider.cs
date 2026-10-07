@@ -186,7 +186,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
-                    if (staticSourceCoversPrimary && i == primaryIndex)
+                    if (staticSourceCoversPrimary && i == primaryIndex && Plugin.Instance?.Configuration.EnableAdaptivePlayback != true)
                     {
                         // The item's own Path already IS this source (stamped once
                         // at materialization time, outside any request context - see
@@ -587,7 +587,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Deterministic 32-char hex id for a federated source, stable across syncs so
         /// a resumed stream keeps pointing at the same remote.
         /// </summary>
-        private static string BuildSourceId(FederatedSource src)
+        internal static string BuildSourceId(FederatedSource src)
         {
             var bytes = MD5.HashData(Encoding.UTF8.GetBytes($"{src.ServerId}:{src.RemoteItemId:N}"));
             return new Guid(bytes).ToString("N");

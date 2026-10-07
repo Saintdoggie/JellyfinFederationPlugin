@@ -21,7 +21,7 @@ namespace Jellyfin.Plugin.Federation.Middleware
     public class BadgeScriptInjectionMiddleware
     {
         private const string Marker = "<!-- jellyfin-federation-badge -->";
-        private const string ScriptTag = "<script defer src=\"/Plugins/Federation/ClientScript\"></script>" + Marker;
+        private const string ScriptTag = "<script src=\"/Plugins/Federation/ClientScript\"></script>" + Marker;
 
         private readonly RequestDelegate _next;
         private readonly ILogger<BadgeScriptInjectionMiddleware> _logger;
@@ -84,18 +84,7 @@ namespace Jellyfin.Plugin.Federation.Middleware
                 html = await reader.ReadToEndAsync().ConfigureAwait(false);
             }
 
-            if (!html.Contains(Marker, StringComparison.Ordinal))
-            {
-                var bodyCloseIndex = html.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
-                if (bodyCloseIndex >= 0)
-                {
-                    html = html.Insert(bodyCloseIndex, ScriptTag);
-                }
-                else
-                {
-                    _logger.LogDebug("[Federation] index.html response has no </body> tag; leaving response unmodified");
-                }
-            }
+            html = Services.FederationClientScriptHtml.Inject(html, Plugin.Instance?.Configuration.EnableAdaptivePlayback == true);
 
             var bytes = Encoding.UTF8.GetBytes(html);
             context.Response.ContentLength = bytes.Length;

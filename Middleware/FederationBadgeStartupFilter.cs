@@ -18,6 +18,7 @@ namespace Jellyfin.Plugin.Federation.Middleware
         {
             return app =>
             {
+                app.UseMiddleware<AdaptiveWebConfigMiddleware>();
                 app.UseMiddleware<BadgeScriptInjectionMiddleware>();
                 next(app);
             };

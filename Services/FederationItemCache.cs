@@ -883,6 +883,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // and a 4K HEVC remux on another; merged item metadata cannot
                     // safely describe both.
                     var mediaSource = remoteItem.MediaSources?.FirstOrDefault();
+                    source.TimelineName = remoteItem.Name ?? remoteItem.OriginalTitle;
                     source.Container = mediaSource?.Container ?? remoteItem.Container ?? source.Container;
                     if (mediaSource?.Size is > 0) source.Size = mediaSource.Size;
                     source.Bitrate = mediaSource?.Bitrate ?? remoteItem.MediaStreams?
@@ -979,6 +980,8 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederatedSource
     {
+        /// <summary>Exact source title used with duration and tracks to reject differing cuts.</summary>
+        public string? TimelineName { get; set; }
         /// <summary>Gets or sets this exact external source's native item id.</summary>
         public string? NativeId { get; set; }
 
