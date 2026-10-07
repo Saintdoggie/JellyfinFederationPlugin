@@ -53,3 +53,26 @@ public sealed class BrowseExternalSourceFailureTests
         Assert.DoesNotContain("secret-peer", message);
     }
 }
+
+public sealed class BrowseExternalItemsCacheTests
+{
+    [Fact]
+    public async Task SecondPage_ReusesOneLibraryFetch_AndFailuresAreNotCached()
+    {
+        FederationController.ClearBrowseExternalItemsCache();
+        var server = new RemoteServer { Id = "plex-cache-test", Name = "Plex", Kind = ServerKind.Plex };
+        var items = new System.Collections.Generic.List<Jellyfin.Plugin.Federation.Services.ExternalItem>();
+        var calls = 0;
+        var fail = true;
+        var provider = new Moq.Mock<Jellyfin.Plugin.Federation.Services.IExternalCatalogProvider>();
+        provider.Setup(p => p.GetAllItemsAsync(server, "1", Moq.It.IsAny<CancellationToken>()))
+            .Returns(() => { calls++; return Task.FromResult<System.Collections.Generic.IReadOnlyList<Jellyfin.Plugin.Federation.Services.ExternalItem>?>(fail ? null : items); });
+
+        Assert.Null(await FederationController.GetBrowseExternalItemsAsync(provider.Object, server, "1", CancellationToken.None));
+        fail = false;
+        Assert.Same(items, await FederationController.GetBrowseExternalItemsAsync(provider.Object, server, "1", CancellationToken.None));
+        Assert.Same(items, await FederationController.GetBrowseExternalItemsAsync(provider.Object, server, "1", CancellationToken.None));
+        Assert.Equal(2, calls);
+        FederationController.ClearBrowseExternalItemsCache();
+    }
+}
