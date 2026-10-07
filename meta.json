@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.173",
-  "changelog": "Downloads from a Plex source that is offline no longer break the Downloads tab: it now says the server can't be reached, offline servers are marked in the picker, and downloads queued from them wait until it is back. Adds an opt-in adaptive player (Advanced → off by default) that can switch a movie to another friend's copy mid-play when that copy is clearly more reliable, preparing the new source first and showing a brief 'Switched to <server>' notice. Detail pages show which servers have a title and let you pick one instead of Auto. Learns when each friend's server is usually online and shows a forecast; adds a Log tab with this plugin's recent messages. Includes the Companion private file-sharing preview. UI uses solid colours throughout.",
+  "version": "0.0.174",
+  "changelog": "Settings page polish: the tab row stays on one line and scrolls sideways instead of wrapping, the active tab stays in view, buttons and toggles get larger tap targets and clear focus rings on small screens, and the remaining hard-coded blue tints now follow your theme. Browsing a Plex library is much faster: one library fetch is reused while you scroll instead of refetching the whole library for every page. Companion dashboard (also shown in the new Windows app window) gets a cleaner, flatter app layout with solid colours, clearer buttons and form controls, and more readable status badges.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-07T14:37:03Z",
+  "timestamp": "2026-10-07T14:44:03Z",
   "imageUrl": "thumb.png"
 }
