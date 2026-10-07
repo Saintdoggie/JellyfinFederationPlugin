@@ -342,3 +342,16 @@ test('Companion hides the sign-in setting on platforms that do not support it', 
     assert.equal(d.getElementById('autostartToggle').disabled, true);
   } finally { dom.window.close(); }
 });
+
+test('inside the Windows app window the redundant open button is hidden', async () => {
+  const fetch = async (url) => json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  const inApp = new JSDOM(html, { url: 'http://localhost:7890/', runScripts: 'dangerously', beforeParse(w) {
+    w.Headers = Headers; w.fetch = fetch; w.confirm = () => true; w.__federationCompanionApp = true;
+  } });
+  const inBrowser = page(fetch);
+  try {
+    await tick();
+    assert.ok(inApp.window.document.getElementById('openDashboardBtn').classList.contains('hidden'));
+    assert.ok(!inBrowser.window.document.getElementById('openDashboardBtn').classList.contains('hidden'));
+  } finally { inApp.window.close(); inBrowser.window.close(); }
+});

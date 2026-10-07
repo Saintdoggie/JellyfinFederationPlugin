@@ -440,7 +440,7 @@
     <div id="appInfo" class="status-line">Checking…</div>
     <label class="checkbox-line" id="autostartRow"><input type="checkbox" id="autostartToggle"> Start Companion when I sign in</label>
     <div class="app-actions">
-      <button class="secondary" id="openDashboardBtn">Open dashboard in browser</button>
+      <button class="secondary" id="openDashboardBtn">Open Companion window</button>
       <button class="secondary" id="stopMountBtn">Stop media folder</button>
       <button class="danger" id="exitCompanionBtn">Exit Companion</button>
     </div>
@@ -1286,12 +1286,18 @@ autostartToggle.addEventListener('change', async () => {
   }
 });
 
+// Inside the Windows app window this page is already the app: the "open"
+// button would only re-focus itself, so hide it.
+if (window.__federationCompanionApp === true) {
+  document.getElementById('openDashboardBtn').classList.add('hidden');
+}
+
 document.getElementById('openDashboardBtn').addEventListener('click', async () => {
   appStatus.textContent = 'Opening the dashboard…';
   try {
     const res = await apiFetch('/api/app/open-dashboard', { method: 'POST' });
     const data = await res.json();
-    appStatus.textContent = res.ok ? 'Opened in your default browser.' : (data.error || 'Could not open a browser.');
+    appStatus.textContent = res.ok ? 'Opened.' : (data.error || 'Could not open the Companion window.');
   } catch { appStatus.textContent = 'Could not open a browser.'; }
 });
 
