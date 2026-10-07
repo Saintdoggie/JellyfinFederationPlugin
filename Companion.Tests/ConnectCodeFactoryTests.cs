@@ -14,10 +14,10 @@ public class ConnectCodeFactoryTests
         };
 
         var ok = ConnectCodeFactory.TryGenerate(
-            publicUrl: "https://freakbob.tail4e0b6f.ts.net",
+            publicUrl: "https://example-peer.tail123456.ts.net",
             remotePlexUrl: "https://relay.plex.direct:443",
             serverAccessToken: "plex-token",
-            serverName: "freakbob",
+            serverName: "example-peer",
             libraries,
             createClaimToken: () => "claim-token",
             out var code,
@@ -27,7 +27,7 @@ public class ConnectCodeFactoryTests
         Assert.NotNull(code);
         Assert.Equal("claim", code!.Mode);
         Assert.True(code.Claim);
-        Assert.Equal("https://freakbob.tail4e0b6f.ts.net", code.Url);
+        Assert.Equal("https://example-peer.tail123456.ts.net", code.Url);
         Assert.Equal("claim-token", code.Token);
         Assert.Null(code.FallbackUrl);
         Assert.Null(code.FallbackToken);

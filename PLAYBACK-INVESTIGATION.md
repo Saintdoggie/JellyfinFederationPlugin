@@ -3,7 +3,7 @@
 ## Baseline and boundaries
 
 - User requested investigation, fixes, codec/device coverage and stress testing; subsequently requested notes sufficient for review and rollback.
-- Source: `/var/home/cranky/Documents/JellyfinFederationPlugin-master`, branch `master`.
+- Source: the repository checkout, branch `master`.
 - Baseline commit: `7a104359a8a899268fbe660ae21af56d336ed5c3`. Initial `git status --short` was empty.
 - No deployment, production configuration changes, commits, pushes or releases authorized/performed.
 - Physical Android/Opera GX testing is not available yet. Synthetic profiles and in-process relay benchmarks cannot establish hardware decoder performance.
@@ -35,7 +35,7 @@
 
 ### Commands/results so far
 
-All commands run from the source directory; `dotnet` below means `/var/home/cranky/.dotnet/dotnet`. Build outputs are generated locally only.
+All commands run from the source directory; `dotnet` below means the SDK executable discovered on `PATH` (or selected with `DOTNET`). Build outputs are generated locally only.
 
 - `dotnet build JellyfinFederationPlugin.csproj --no-restore`: passed, zero warnings/errors.
 - `dotnet test Tests/Jellyfin.Plugin.Federation.Tests.csproj --no-restore --filter FullyQualifiedName~FederationStreamHandlerTests --logger "console;verbosity=detailed"`, same command without logger, and `--filter FederationStreamHandlerTests --logger "console;verbosity=detailed"`: each passed 22/22.

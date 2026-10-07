@@ -93,7 +93,8 @@ def smoke(repo, dotnet, published_app, tools):
         log = (work / 'private-companion.log').open('ab')
         os.chmod(work / 'private-companion.log', 0o600)
         process = subprocess.Popen([dotnet, str(app / 'FederationCompanion.dll'), '--urls', f'http://127.0.0.1:{port}'],
-                                   cwd=app, stdout=log, stderr=subprocess.STDOUT)
+                                   cwd=app, env={**os.environ, 'XDG_DATA_HOME': str(work / 'user-data')},
+                                   stdout=log, stderr=subprocess.STDOUT)
         base = f'http://127.0.0.1:{port}'
         wait_for(lambda: request(base, '/', raw=True)[1], 'Companion did not start')
         state = json.loads((app / 'companion-state.json').read_text())

@@ -40,7 +40,11 @@ public sealed class SingleInstance : IDisposable
     /// </summary>
     internal static string LockDirectory()
     {
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FederationCompanion");
+        var userData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData,
+            Environment.SpecialFolderOption.DoNotVerify);
+        if (string.IsNullOrWhiteSpace(userData) || !Path.IsPathFullyQualified(userData))
+            throw new IOException("The current user's application-data directory is unavailable. Configure a user home or XDG_DATA_HOME before starting Companion.");
+        var directory = Path.Combine(userData, "FederationCompanion");
         Directory.CreateDirectory(directory);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
