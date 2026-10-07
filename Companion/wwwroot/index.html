@@ -30,7 +30,7 @@
     min-height: 100vh;
   }
   header {
-    padding: 28px max(28px, calc((100vw - 1040px) / 2)) 24px;
+    padding: 28px max(28px, calc((100vw - 1040px) / 2 + 28px)) 24px;
     border-bottom: 1px solid var(--border);
     background: #0c1118;
   }
@@ -85,7 +85,7 @@
   }
   .direction-heading h2 { margin: 6px 0 4px; font-size: 20px; letter-spacing: -.02em; }
   .direction-heading p { margin: 0; color: var(--muted); line-height: 1.5; max-width: 760px; }
-  #shareCard, #importCard, #connectCard { grid-column: 1 / -1; }
+  #shareCard, #importCard, #connectCard, #permissionsCard { grid-column: 1 / -1; }
   #accessCard { grid-column: 1 / -1; border-color: var(--border-strong); }
   body.owner-locked main > :not(#accessCard):not(#permissionsCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
   #importCard { border-color: rgba(102, 217, 154, .28); }
@@ -273,7 +273,7 @@
   @media (max-width: 760px) {
     header { padding: 30px 20px; }
     main { grid-template-columns: 1fr; padding: 24px 16px 60px; }
-    .direction-heading, #shareCard, #importCard, #connectCard, #appCard { grid-column: 1; }
+    .direction-heading, #shareCard, #importCard, #connectCard, #appCard, #permissionsCard { grid-column: 1; }
     .card { padding: 20px; border-radius: 14px; }
     .inline-form { grid-template-columns: 1fr; }
     .app-actions { flex-direction: column; }
