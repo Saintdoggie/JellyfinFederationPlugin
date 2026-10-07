@@ -84,7 +84,7 @@
     font-weight: 800;
   }
   .direction-heading h2 { margin: 6px 0 4px; font-size: 20px; letter-spacing: -.02em; }
-  .direction-heading p { margin: 0; color: var(--muted); line-height: 1.5; max-width: 760px; }
+  .direction-heading p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 760px; }
   #shareCard, #importCard, #connectCard, #permissionsCard { grid-column: 1 / -1; }
   #accessCard { grid-column: 1 / -1; border-color: var(--border-strong); }
   body.owner-locked main > :not(#accessCard):not(#permissionsCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
@@ -230,13 +230,12 @@
     color: var(--text);
     font: inherit;
     font-size: 14px;
+    margin-bottom: 10px;
     transition: border-color .12s;
   }
   input[type=text]:hover, select:hover { border-color: rgba(151,174,209,.42); }
   input[type=text]:focus, select:focus { border-color: var(--blue); }
-  input[type=text]:disabled, select:disabled { opacity: .55; cursor: not-allowed;
-    margin-bottom: 10px;
-  }
+  input[type=text]:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
   .badge {
     display: inline-block;
     padding: 2px 9px;
@@ -250,6 +249,7 @@
   .code-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
   .inline-form input { margin: 0; }
+  #publicUrlCard .inline-form { display: flex; flex-wrap: wrap; gap: 8px; }
   .checkbox-line {
     display: flex;
     align-items: center;
