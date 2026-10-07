@@ -3898,6 +3898,37 @@ namespace Jellyfin.Plugin.Federation.Api
         // A Plex/external source that is offline throws from its client. Answer
         // with a readable 503 instead of Jellyfin's bare 500 so the Downloads tab
         // can say which server is unreachable rather than breaking.
+        // Plex has no paged "all items" call, so every Browse page used to refetch
+        // the whole library. Scrolling a big library now reuses one fetch for a
+        // minute. Failures are never cached; the map is small and self-bounding.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime FetchedUtc, IReadOnlyList<ExternalItem> Items)> BrowseExternalItemsCache = new(StringComparer.Ordinal);
+        internal static readonly TimeSpan BrowseExternalItemsTtl = TimeSpan.FromSeconds(60);
+
+        internal static async Task<IReadOnlyList<ExternalItem>?> GetBrowseExternalItemsAsync(
+            IExternalCatalogProvider provider, RemoteServer server, string libraryId, CancellationToken cancellationToken)
+        {
+            var key = server.Id + "\n" + libraryId;
+            if (BrowseExternalItemsCache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.FetchedUtc < BrowseExternalItemsTtl)
+            {
+                return hit.Items;
+            }
+
+            var items = await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+            if (items != null)
+            {
+                if (BrowseExternalItemsCache.Count >= 32)
+                {
+                    BrowseExternalItemsCache.Clear();
+                }
+
+                BrowseExternalItemsCache[key] = (DateTime.UtcNow, items);
+            }
+
+            return items;
+        }
+
+        internal static void ClearBrowseExternalItemsCache() => BrowseExternalItemsCache.Clear();
+
         internal static bool IsExternalSourceFailure(Exception ex, CancellationToken cancellationToken)
             => !cancellationToken.IsCancellationRequested
                 && ex is InvalidOperationException or HttpRequestException or TaskCanceledException or System.IO.IOException;
@@ -4025,7 +4056,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     items = provider == null
                         ? null
-                        : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                        : await GetBrowseExternalItemsAsync(provider, server, libraryId, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (IsExternalSourceFailure(ex, cancellationToken))
                 {
@@ -4131,7 +4162,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     items = provider == null
                         ? null
-                        : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                        : await GetBrowseExternalItemsAsync(provider, server, libraryId, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (IsExternalSourceFailure(ex, cancellationToken))
                 {
