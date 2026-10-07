@@ -46,14 +46,17 @@
                    (muted labels, accent underline on the active tab) without wiring
                    into its SPA view router, which a single static plugin page has no
                    clean way to hook into. */
-                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.5em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
+                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.35em; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scroll-padding-inline:.5em; scrollbar-width:none; -webkit-overflow-scrolling:touch; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.4em; padding:.3em; background:var(--theme-background-color, rgba(20,20,20,.96)); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
+                #federationConfigPage .fed-tabs::-webkit-scrollbar { display:none; }
                 #federationConfigPage .fed-tab-btn {
-                    background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-                    color: inherit; opacity: 0.62; font-family: inherit; font-size: inherit; font-weight: 600;
-                    margin: 0 0 -1px; padding: 0.65em 0.95em; cursor: pointer;
+                    flex:0 0 auto; white-space:nowrap; background:transparent; border:0; border-radius:.55em;
+                    color:inherit; opacity:.68; font-family:inherit; font-size:inherit; font-weight:600;
+                    margin:0; min-height:2.75em; padding:.58em .95em; cursor:pointer;
+                    transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease;
                 }
-                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent); }
+                #federationConfigPage .fed-tab-btn:hover { opacity:1; background:rgba(128,128,128,.14); }
+                #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:-2px; opacity:1; }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity:1; color:var(--fed-accent); background:rgba(128,128,128,.18); box-shadow:inset 0 -2px 0 var(--fed-accent); }
                 #federationConfigPage .fed-tabpanel { display: none; }
                 #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
 
@@ -143,7 +146,7 @@
                 #federationConfigPage .fed-server-url { overflow-wrap:anywhere; min-width:0; }
                 #federationConfigPage button:focus-visible, #federationConfigPage input:focus-visible, #federationConfigPage select:focus-visible, #federationConfigPage summary:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
                 #federationConfigPage .fed-offnote { margin-top: 0.5em; font-size: 0.9em; color: var(--fed-warn-text); }
-                #federationConfigPage .fed-pill { font-size: 0.85em; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
+                #federationConfigPage .fed-pill { font-size: 0.85em; line-height: 1.4; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
                 #federationConfigPage .fed-pill-off { color: var(--fed-warn-text); opacity: 1; }
                 #federationConfigPage .fed-pill-pool { margin: 0 0.7em 0.3em 0; display: inline-block; }
 
@@ -276,7 +279,7 @@
                 #federationConfigPage .fed-quality-confirm { margin-top:.75em; padding:.85em; border:1px solid var(--fed-warn-text); border-radius:.6em; background:rgba(224,160,74,.08); }
                 #federationConfigPage .fed-subtabs { display:inline-flex; gap:.3em; padding:.25em; margin:.2em 0 1.2em; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); }
                 #federationConfigPage .fed-subtab { border:0; border-radius:.45em; background:transparent; color:inherit; padding:.55em .9em; font:inherit; cursor:pointer; }
-                #federationConfigPage .fed-subtab-active { color:var(--fed-accent); background:rgba(0,164,220,.14); }
+                #federationConfigPage .fed-subtab-active { color:var(--fed-accent); background:rgba(128,128,128,.18); }
                 #federationConfigPage .fed-download-selectionbar { position:sticky; bottom:.7em; z-index:12; display:flex; align-items:center; flex-wrap:wrap; gap:.6em 1em; margin:1em 0 0; padding:.8em 1em; border:1px solid var(--fed-border); border-radius:.7em; background:rgba(24,24,26,.96); box-shadow:0 .5em 1.7em rgba(0,0,0,.28); }
                 #federationConfigPage .fed-season-folder, #federationConfigPage .fed-show-folder { margin:.7em 0; border:1px solid var(--fed-border-soft); border-radius:.65em; background:var(--fed-surface); overflow:hidden; }
                 #federationConfigPage .fed-season-folder > summary, #federationConfigPage .fed-show-folder > summary { display:flex; align-items:center; gap:.7em; cursor:pointer; padding:.8em 1em; font-weight:650; list-style:none; }
@@ -294,13 +297,13 @@
                 #federationConfigPage .fed-episode-row input.fed-check { margin-top:0; }
 
                 /* Storage review: compact artwork, readable source comparisons, clear selection. */
-                #federationConfigPage .fed-storage-intro { padding:1.3em; border:1px solid var(--fed-border-soft); border-radius:1em; background:rgba(0,164,220,.09); }
+                #federationConfigPage .fed-storage-intro { padding:1.3em; border:1px solid var(--fed-border-soft); border-radius:1em; background:rgba(128,128,128,.08); }
                 #federationConfigPage .fed-lazy-sentinel { width:100%; height:1px; min-height:1px; }
                 #federationConfigPage .fed-storage-intro .sectionTitle { margin-top:0; }
                 #federationConfigPage .fed-storage-note { border-left:3px solid var(--fed-warn-text); padding:.65em 1em; margin:1em 0; line-height:1.6; }
                 #fedPanelStorage .fed-quality-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,22em),1fr)); gap:.85em; }
                 #fedPanelStorage .fed-quality-cardwrap { padding:1em; border:1px solid var(--fed-border-soft); border-radius:.85em; background:var(--fed-surface); min-width:0; }
-                #fedPanelStorage .fed-quality-cardwrap:has(input:checked) { border-color:var(--fed-accent); background:rgba(0,164,220,.08); }
+                #fedPanelStorage .fed-quality-cardwrap:has(input:checked) { border-color:var(--fed-accent); background:rgba(128,128,128,.12); }
                 #fedPanelStorage .fed-quality-cardwrap:focus-within { outline:2px solid var(--fed-accent); outline-offset:2px; }
                 #fedPanelStorage .fed-quality-pick { display:grid; grid-template-columns:1.3em 3.6em 1fr; align-items:center; gap:.8em; }
                 #fedPanelStorage .fed-poster-check { position:static; }
@@ -320,7 +323,7 @@
                 #fedPanelStorage .fed-episode-row .fed-download-info { min-width:min(100%,12em); }
 
                 /* Downloads */
-                #federationConfigPage .fed-download-live { margin: 0 0 1em; padding: .85em 1em; border: 1px solid var(--fed-accent); border-radius: .7em; background: rgba(0,164,220,.08); }
+                #federationConfigPage .fed-download-live { margin: 0 0 1em; padding: .85em 1em; border: 1px solid var(--fed-accent); border-radius: .7em; background: rgba(128,128,128,.08); }
                 #federationConfigPage .fed-download-live .fed-download-row:first-child { border-top: none; }
                 #federationConfigPage .fed-download-row { display: flex; align-items: center; gap: 0.9em; padding: 0.7em 0; border-top: 1px solid var(--fed-border-soft); }
                 #federationConfigPage .fed-download-row:first-child { border-top: none; }
@@ -375,18 +378,13 @@
                 #federationConfigPage .fed-stat strong { font-size:1.2em; line-height:1.2; font-weight:700; }
                 #federationConfigPage .fed-stat span { opacity:.65; font-size:.86em; }
                 #federationConfigPage .fed-statusstrip > .emby-button { align-self:center; white-space:nowrap; }
-                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.5em; overflow-x:auto; scrollbar-width:thin; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.2em; padding:.3em; background:rgba(20,20,20,.92); backdrop-filter:blur(14px); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
-                #federationConfigPage .fed-tab-btn { flex:0 0 auto; border:0; border-radius:.55em; margin:0; min-height:2.65em; padding:.58em .9em; transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease; }
-                #federationConfigPage .fed-tab-btn:hover { opacity:.95; background:var(--fed-surface-raised); }
-                #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:2px; }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity:1; color:var(--fed-accent); border-bottom-color:transparent; background:rgba(0,164,220,.14); }
                 #federationConfigPage .fed-tabpanel.fed-tabpanel-active { animation:fed-panel-in 180ms ease-out; }
                 #federationConfigPage .fed-server { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:.85em; margin:.65em 0; background:var(--fed-surface); transition:border-color 150ms ease,background-color 150ms ease; }
                 #federationConfigPage .fed-server:hover { border-color:var(--fed-border); background:var(--fed-surface-raised); }
                 #federationConfigPage .fed-toggle-row { display:flex; align-items:center; flex-wrap:wrap; gap:.6em; margin:.6em 0; }
                 #federationConfigPage .fed-toggle-label { margin:0; }
                 #federationConfigPage .fed-btn-group { display:inline-flex; gap:.3em; }
-                #federationConfigPage .fed-toggle-btn.fed-toggle-btn-active { opacity:1; color:var(--fed-accent); background:rgba(0,164,220,.14); }
+                #federationConfigPage .fed-toggle-btn.fed-toggle-btn-active { opacity:1; color:var(--fed-accent); background:rgba(128,128,128,.18); box-shadow:inset 0 0 0 1px var(--fed-border); }
                 #federationConfigPage .fed-catalog-card { border-radius:.55em; padding:.35em; transition:transform 150ms ease,background-color 150ms ease; }
                 #federationConfigPage .fed-catalog-card:hover { transform:translateY(-2px); background:var(--fed-surface); }
                 #federationConfigPage .fed-catalog-card:focus-within { outline:2px solid var(--fed-accent); outline-offset:2px; }
@@ -400,7 +398,13 @@
                     #federationConfigPage .fed-inline > .fed-grow { flex:none; width:100%; }
                     #federationConfigPage .fed-inline > .emby-button { width:100%; }
                     #federationConfigPage .fed-storage-summary { grid-template-columns:1fr; }
+                    #federationConfigPage .emby-button,
+                    #federationConfigPage .fed-toggle-btn,
+                    #federationConfigPage .fed-tab-btn { min-height:2.75em; }
+                    #federationConfigPage .fed-tabpanel > .verticalSection { margin-bottom:1.5em; }
                 }
+                #federationConfigPage .fed-tabpanel .sectionTitle { margin-bottom:.55em; line-height:1.25; }
+                #federationConfigPage .emby-button:focus-visible { outline:2px solid var(--fed-accent); outline-offset:2px; }
                 @media (max-width:62em) {
                     #federationConfigPage .fed-catalog-toolbar,
                     #federationConfigPage .fed-download-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -5989,6 +5993,10 @@
                             btn.setAttribute('aria-selected', active ? 'true' : 'false');
                             btn.setAttribute('tabindex', active ? '0' : '-1');
                         });
+                        var activeBtn = q('.fed-tab-btn-active');
+                        if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+                            activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                        }
 
                         // Lazy: the catalog can be a large fetch, so it's only loaded
                         // the first time an admin actually opens this tab, not on
