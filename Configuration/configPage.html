@@ -2141,6 +2141,7 @@
                                 if (row && row.serverId) { availabilityState[row.serverId] = row.reachability; }
                             });
                             renderFriendHealth();
+                            loadBrowseServers();
                         })
                         .catch(function () { /* badges keep their one-off state */ });
                     }
@@ -3380,6 +3381,12 @@
                     // their own here - they pull from us, not the other way
                     // around - so they're excluded the same way renderFriends
                     // excludes them from the Friends roster.
+                    // Last background-pinger verdict for a server. Guarded so the
+                    // browse code also runs where the availability block is absent.
+                    function browseServerOffline(serverId) {
+                        return typeof availabilityState !== 'undefined' && availabilityState[serverId] === 'Offline';
+                    }
+
                     function loadBrowseServers() {
                         var sel = q('#fedBrowseServer');
                         if (!sel) {
@@ -3400,7 +3407,11 @@
                         var servers = (currentConfig.RemoteServers || []).filter(function (s) { return s.Kind !== 2 && s.Enabled !== false; });
                         var html = '<option value="">Select a server…</option>';
                         servers.forEach(function (s) {
-                            html += '<option value="' + escapeHtml(s.Id) + '">' + escapeHtml(s.Name || s.Url) + '</option>';
+                            // Still selectable: the pinger can be up to a few minutes
+                            // stale, and a download queued now waits for the server.
+                            var offline = browseServerOffline(s.Id);
+                            html += '<option value="' + escapeHtml(s.Id) + '"' + (offline ? ' data-offline="1"' : '') + '>'
+                                + escapeHtml(s.Name || s.Url) + (offline ? ' — offline' : '') + '</option>';
                         });
                         sel.innerHTML = html;
 
@@ -3446,6 +3457,9 @@
 
                         libSel.disabled = true;
                         libSel.innerHTML = '<option value="">Loading…</option>';
+                        if (browseServerOffline(serverId)) {
+                            setBrowseStatus('This server was offline at the last check. Trying anyway…', 'info');
+                        }
                         fedFetch('/Plugins/Federation/Browse/' + encodeURIComponent(serverId) + '/Libraries')
                         .then(function (r) { return readJson(r); })
                         .then(function (libs) {
@@ -3465,7 +3479,7 @@
                         })
                         .catch(function (e) {
                             if (requestEpoch !== browseRequestEpoch) { return; }
-                            libSel.innerHTML = '<option value="">Error loading libraries</option>';
+                            libSel.innerHTML = '<option value="">Server unavailable — try again later</option>';
                             setBrowseStatus('Error: ' + e.message, 'err');
                         });
                     }
