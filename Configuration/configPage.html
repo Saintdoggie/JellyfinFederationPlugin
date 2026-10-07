@@ -96,6 +96,23 @@
                    status lines - plain coloured text, the same feedback convention
                    Jellyfin's own plugin pages use, not boxed callouts. */
                 #federationConfigPage .fed-error { color: var(--fed-err-text); white-space: pre-wrap; line-height: 1.5; margin: 0.9em 0; }
+                #federationConfigPage .fed-notice { color: var(--fed-warn-text); white-space: pre-wrap; line-height: 1.5; margin: 0.9em 0; opacity: 0.95; }
+                #federationConfigPage .fed-notice a, #federationConfigPage .fed-error a { color: inherit; text-decoration: underline; cursor: pointer; }
+                #federationConfigPage .fed-log-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:.5em .8em; margin:0 0 1em; }
+                #federationConfigPage .fed-log-list { font-size:.9em; }
+                #federationConfigPage .fed-log-row { display:grid; grid-template-columns: 8.2em 5.2em minmax(0,1fr); gap:.55em .8em; padding:.5em 0; border-bottom:1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-log-time { opacity:.55; font-variant-numeric:tabular-nums; white-space:nowrap; }
+                #federationConfigPage .fed-log-level { font-weight:600; font-size:.75em; letter-spacing:.04em; text-transform:uppercase; padding-top:.15em; }
+                #federationConfigPage .fed-log-body { min-width:0; overflow-wrap:anywhere; line-height:1.45; }
+                #federationConfigPage .fed-log-cat { opacity:.55; font-size:.85em; margin-right:.4em; }
+                #federationConfigPage .fed-log-detail { opacity:.7; font-size:.85em; margin:.25em 0 0; white-space:pre-wrap; }
+                #federationConfigPage .fed-log-debug .fed-log-level { opacity:.55; }
+                #federationConfigPage .fed-log-information .fed-log-level { color:var(--fed-accent); }
+                #federationConfigPage .fed-log-warning .fed-log-level { color:var(--fed-warn-text); }
+                #federationConfigPage .fed-log-error .fed-log-level { color:var(--fed-err-text); }
+                #federationConfigPage .fed-log-badge { display:none; margin-left:.35em; min-width:1.2em; padding:0 .35em; border-radius:1em; background:var(--fed-warn-text); color:#1a1a1a; font-size:.75em; font-weight:700; }
+                #federationConfigPage .fed-tab-btn-active .fed-log-badge { display:none !important; }
+                #federationConfigPage .fed-synchealth-warn { color: var(--fed-warn-text); }
                 #federationConfigPage .fed-warnbar { color: var(--fed-warn-text); line-height: 1.5; margin: 0 0 1em; }
                 #federationConfigPage .fed-synchealth { margin: 0 0 1em; font-size: 0.94em; line-height: 1.5; }
                 #federationConfigPage .fed-synchealth-ok { color: var(--fed-ok-text); }
@@ -451,6 +468,7 @@
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
                 <button id="fedTabStorage" aria-controls="fedPanelStorage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="storage" role="tab" aria-selected="false">Storage</button>
                 <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
+                <button id="fedTabLog" aria-controls="fedPanelLog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="log" role="tab" aria-selected="false">Log <span id="fedLogBadge" class="fed-log-badge"></span></button>
             </div>
 
             <div id="fedPanelFriends" aria-labelledby="fedTabFriends" class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
@@ -932,6 +950,24 @@
                 </div>
             </form>
 
+            <div id="fedPanelLog" aria-labelledby="fedTabLog" class="fed-tabpanel" data-tab-panel="log" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Federation log</h3>
+                    <p class="fieldDescription">Live plugin messages: information, warnings, and errors. Routine things like a friend being unreachable stay here instead of lighting up the rest of the page.</p>
+                    <div class="fed-log-toolbar">
+                        <div class="fed-btn-group" role="group" aria-label="Log level">
+                            <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" data-fed-action="log-level" data-level="Debug">Debug</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" data-fed-action="log-level" data-level="Information">Info</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" data-fed-action="log-level" data-level="Warning">Warnings</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" data-fed-action="log-level" data-level="Error">Errors</button>
+                        </div>
+                        <span class="fed-spacer"></span>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="clear-log">Clear</button>
+                    </div>
+                    <div id="fedLogList" class="fed-log-list"><p class="fed-muted">Waiting for plugin messages…</p></div>
+                </div>
+            </div>
+
             <script type="text/javascript">
                 (function () {
                     'use strict';
@@ -1146,17 +1182,86 @@
                         return (pageEl ? pageEl : document).querySelectorAll(selector);
                     }
 
-                    function showError(msg) {
-                        var el = q('#fedErrorContainer');
-                        if (el) {
-                            el.innerHTML = '<div class="fed-error">' + escapeHtml(msg) + '</div>';
+                    function isRoutineNotice(msg) {
+                        var m = String(msg || '').toLowerCase();
+                        return /timeout|timed out|unreachable|offline|network|failed to fetch|econnrefused|temporarily|taking unusually long|could not fetch|could not reach|load failed|connection refused|name or service not known|no such host/.test(m);
+                    }
+
+                    var clientLogEntries = [];
+                    var logUnseen = 0;
+                    var logMinLevel = 'Information';
+                    var logSeenIds = {};
+
+                    function recordClientLog(level, message) {
+                        clientLogEntries.push({
+                            id: 'c' + Date.now() + '-' + clientLogEntries.length,
+                            timestampUtc: new Date().toISOString(),
+                            level: level,
+                            category: 'Dashboard',
+                            message: String(message || ''),
+                            detail: null
+                        });
+                        if (clientLogEntries.length > 200) {
+                            clientLogEntries = clientLogEntries.slice(-200);
                         }
+                    }
+
+                    function showError(msg) {
+                        var routine = isRoutineNotice(msg);
+                        recordClientLog(routine ? 'Warning' : 'Error', msg);
+                        bumpLogBadge(routine ? 'Warning' : 'Error');
+                        var el = q('#fedErrorContainer');
+                        if (!el) {
+                            return;
+                        }
+
+                        if (routine) {
+                            el.innerHTML = '<div class="fed-notice">' + escapeHtml(msg)
+                                + ' <a data-fed-action="open-log">See log</a></div>';
+                            window.clearTimeout(el._fedNoticeTimer);
+                            el._fedNoticeTimer = window.setTimeout(function () {
+                                if (el && el.querySelector('.fed-notice')) {
+                                    el.innerHTML = '';
+                                }
+                            }, 8000);
+                            return;
+                        }
+
+                        el.innerHTML = '<div class="fed-error">' + escapeHtml(msg)
+                            + ' <a data-fed-action="open-log">See log</a></div>';
                     }
 
                     function clearError() {
                         var el = q('#fedErrorContainer');
                         if (el) {
                             el.innerHTML = '';
+                        }
+                    }
+
+                    function bumpLogBadge(level) {
+                        if (activeTab === 'log') {
+                            return;
+                        }
+
+                        var rank = { Debug: 0, Information: 1, Warning: 2, Error: 3 };
+                        if ((rank[level] || 0) < 2) {
+                            return;
+                        }
+
+                        logUnseen++;
+                        var badge = q('#fedLogBadge');
+                        if (badge) {
+                            badge.textContent = logUnseen > 9 ? '9+' : String(logUnseen);
+                            badge.style.display = 'inline-block';
+                        }
+                    }
+
+                    function clearLogBadge() {
+                        logUnseen = 0;
+                        var badge = q('#fedLogBadge');
+                        if (badge) {
+                            badge.textContent = '';
+                            badge.style.display = 'none';
                         }
                     }
 
@@ -4647,7 +4752,7 @@
                                 : 'No libraries found on the connected servers.';
                             hint.style.display = 'block';
                             list.innerHTML = (errors && errors.length)
-                                ? '<div class="fed-error" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>'
+                                ? '<div class="fed-notice" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>'
                                 : '';
                             return;
                         }
@@ -4655,7 +4760,7 @@
                         hint.style.display = 'none';
                         var html = '';
                         if (errors && errors.length) {
-                            html += '<div class="fed-error" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>';
+                            html += '<div class="fed-notice" style="margin:0 0 0.8em;">' + errors.map(escapeHtml).join('<br/>') + '</div>';
                         }
 
                         html += '<div class="fed-picker-actions"><a data-fed-action="picker-all">Select all</a><a data-fed-action="picker-none">Clear</a></div>';
@@ -5346,15 +5451,20 @@
                             return;
                         }
 
-                        el.innerHTML = '<div class="fed-synchealth fed-synchealth-bad">'
-                            + '<strong>Last sync had problems</strong> · ' + escapeHtml(ago) + '<br>'
+                        var routine = isRoutineNotice(sync.message) || !!sync.failedSources;
+                        el.innerHTML = '<div class="fed-synchealth ' + (routine ? 'fed-synchealth-warn' : 'fed-synchealth-bad') + '">'
+                            + '<strong>' + (routine ? 'Last sync skipped an unreachable friend' : 'Last sync had problems') + '</strong> · ' + escapeHtml(ago) + '<br>'
                             + escapeHtml(sync.message)
                             + (sync.failedSources
-                                ? '<br><span class="fed-hint">Content already synced from the affected server'
-                                  + (sync.failedSources === 1 ? '' : 's')
-                                  + ' was kept, not deleted. Use <em>Test</em> on the friend below to see why it could not be reached.</span>'
+                                ? '<br><span class="fed-hint">Cached titles were kept. See the Log tab for details, or Test the friend when you want to retry.</span>'
                                 : '')
                             + '</div>';
+                        if (routine) {
+                            recordClientLog('Warning', 'Sync: ' + (sync.message || 'unreachable friend'));
+                        } else {
+                            recordClientLog('Error', 'Sync: ' + (sync.message || 'failed'));
+                            bumpLogBadge('Error');
+                        }
                     }
 
                     function loadStatus() {
@@ -5770,9 +5880,74 @@
                         });
                     }
 
+                    /* ---------------- Log tab ---------------- */
+
+                    var serverLogEntries = [];
+                    var logPrimed = false;
+
+                    function logRank(level) {
+                        return ({ Debug: 0, Information: 1, Warning: 2, Error: 3 })[level] || 1;
+                    }
+
+                    function renderLogList() {
+                        var list = q('#fedLogList');
+                        if (!list) {
+                            return;
+                        }
+
+                        qa('[data-fed-action="log-level"]').forEach(function (btn) {
+                            btn.classList.toggle('fed-toggle-btn-active', btn.getAttribute('data-level') === logMinLevel);
+                        });
+
+                        var min = logRank(logMinLevel);
+                        var merged = serverLogEntries.concat(clientLogEntries).sort(function (a, b) {
+                            return new Date(b.timestampUtc).getTime() - new Date(a.timestampUtc).getTime();
+                        }).filter(function (e) {
+                            return logRank(e.level) >= min;
+                        });
+
+                        if (merged.length === 0) {
+                            list.innerHTML = '<p class="fed-muted">No messages at this level yet.</p>';
+                            return;
+                        }
+
+                        list.innerHTML = merged.slice(0, 300).map(function (e) {
+                            var level = e.level || 'Information';
+                            var time = e.timestampUtc ? new Date(e.timestampUtc).toLocaleString() : '';
+                            var detail = e.detail
+                                ? '<div class="fed-log-detail">' + escapeHtml(e.detail) + '</div>'
+                                : '';
+                            return '<div class="fed-log-row fed-log-' + escapeHtml(String(level).toLowerCase()) + '">'
+                                + '<div class="fed-log-time">' + escapeHtml(time) + '</div>'
+                                + '<div class="fed-log-level">' + escapeHtml(level) + '</div>'
+                                + '<div class="fed-log-body"><span class="fed-log-cat">' + escapeHtml(e.category || '') + '</span>'
+                                + escapeHtml(e.message) + detail + '</div></div>';
+                        }).join('');
+                    }
+
+                    function loadLogs() {
+                        return fedFetch('/Plugins/Federation/Logs?minLevel=Debug&limit=400')
+                            .then(function (r) { return readJson(r); })
+                            .then(function (d) {
+                                var incoming = (d && d.entries) || [];
+                                incoming.forEach(function (e) {
+                                    if (logPrimed && e.id && !logSeenIds[e.id] && logRank(e.level) >= 2) {
+                                        bumpLogBadge(e.level);
+                                    }
+                                    if (e.id) {
+                                        logSeenIds[e.id] = true;
+                                    }
+                                });
+                                logPrimed = true;
+                                serverLogEntries = incoming;
+                                renderLogList();
+                            })
+                            .catch(function () { /* keep the last snapshot */ });
+                    }
+
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'advanced'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'log'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
                     var activeTab = 'friends';
 
@@ -5824,6 +5999,11 @@
                         armBrowseSentinel(browseState.lastBatchFull);
                         if (tab === 'storage') {
                             loadQualityUpgrades();
+                        }
+
+                        if (tab === 'log') {
+                            clearLogBadge();
+                            loadLogs();
                         }
 
                         try {
@@ -6190,6 +6370,21 @@
                                     })
                                     .catch(function (err) { showError('Refresh failed: ' + err.message); setSaveMsg('Refresh failed', true); });
                                     break;
+                                case 'open-log':
+                                    switchTab('log');
+                                    break;
+                                case 'log-level':
+                                    logMinLevel = t.getAttribute('data-level') || 'Information';
+                                    renderLogList();
+                                    break;
+                                case 'clear-log':
+                                    clientLogEntries = [];
+                                    logSeenIds = {};
+                                    logPrimed = true;
+                                    fedFetch('/Plugins/Federation/Logs/Clear', { method: 'POST' })
+                                        .then(function () { loadLogs(); })
+                                        .catch(function () { loadLogs(); });
+                                    break;
                                 case 'cancel-download':
                                     var cancelOpId = t.getAttribute('data-op-id');
                                     if (cancelOpId) {
@@ -6433,6 +6628,7 @@
                     var downloadsPollInterval = null;
                     var watchingPollInterval = null;
                     var healthPollInterval = null;
+                    var logPollInterval = null;
                     var activePage = null;
 
                     function stopPagePolling() {
@@ -6445,7 +6641,8 @@
                         clearInterval(downloadsPollInterval);
                         clearInterval(watchingPollInterval);
                         clearInterval(healthPollInterval);
-                        downloadsPollInterval = watchingPollInterval = healthPollInterval = null;
+                        clearInterval(logPollInterval);
+                        downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = null;
                         activePage = null;
                         stopWatchdog();
                     }
@@ -6491,6 +6688,8 @@
 
                         watchingPollInterval = setInterval(function () { if (pageIsVisible()) { loadWatching(); } }, 5000);
                         healthPollInterval = setInterval(function () { if (pageIsVisible()) { loadFriendHealth(false); } }, 60000);
+                        loadLogs();
+                        logPollInterval = setInterval(function () { if (pageIsVisible()) { loadLogs(); } }, 10000);
                     }
 
                     function onPageShow(e) {

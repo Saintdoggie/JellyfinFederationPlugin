@@ -141,6 +141,20 @@ public sealed class FederationAvailabilityServiceTests
         Assert.Equal(FederationAvailabilityService.ProbeInterval, FederationAvailabilityService.DelayAfterRound(new[] { 0 }));
         Assert.Equal(FederationAvailabilityService.ProbeInterval, FederationAvailabilityService.DelayAfterRound(new[] { 2 }));
         Assert.Equal(FederationAvailabilityService.ConfirmInterval, FederationAvailabilityService.DelayAfterRound(new[] { 0, 1, 2 }));
+        Assert.Equal(FederationAvailabilityService.ExpectedOfflineInterval, FederationAvailabilityService.DelayAfterRound(new[] { 0 }, stretchIdle: true));
+        Assert.Equal(FederationAvailabilityService.ConfirmInterval, FederationAvailabilityService.DelayAfterRound(new[] { 1 }, stretchIdle: true));
+    }
+
+    [Fact]
+    public void Forecast_DoesNotChangeIsOffline()
+    {
+        var service = Service();
+        Assert.False(service.IsOffline("a"));
+        service.RecordResult(Server("a"), true, null);
+        Assert.False(service.IsOffline("a"));
+        var (forecast, _) = service.GetForecast("a");
+        Assert.Equal(AvailabilityForecast.Unknown, forecast);
+        Assert.False(service.IsOffline("a"));
     }
 
     [Fact]

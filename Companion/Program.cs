@@ -102,6 +102,8 @@ builder.Services.AddSingleton<LocalMediaMountService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalMediaMountService>());
 builder.Services.AddSingleton(TailscaleHelper.Network);
 builder.Services.AddHostedService<PrivateSharingRestoreService>();
+builder.Services.AddSingleton<AvailabilityScheduleService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AvailabilityScheduleService>());
 
 var app = builder.Build();
 var sharingSetupGate = TailscaleHelper.Network.StateGate;
@@ -262,6 +264,25 @@ app.MapGet("/api/federation/info", () => Results.Ok(new
     federationPluginVersion = CompanionVersion.FederationPluginVersion(),
     companionRevision = CompanionVersion.LocalRevision()
 }));
+
+// Token-gated self-blob exchange. Skips the owner-key middleware the same way
+// as pool invites; FindPeerByFederationToken is the actual gate.
+app.MapPost("/api/federation/schedule", async (
+    HttpRequest request,
+    AvailabilityScheduleBlob? body,
+    CompanionState s,
+    AvailabilityScheduleService schedules,
+    CancellationToken ct) =>
+{
+    var peer = FindPeerByFederationToken(request, s);
+    if (peer == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var ours = await schedules.ExchangeAsync(body, peer.Id, ct).ConfigureAwait(false);
+    return Results.Ok(ours);
+});
 
 app.MapPost("/api/pools/invite", async (HttpRequest request, CompanionPoolInviteRequest body, CompanionState s) =>
 {
@@ -912,7 +933,7 @@ app.MapPost("/api/tailscale/funnel", async (CompanionState s, CancellationToken 
     return Results.Ok(new { funnelUrl = s.PublicUrl, message = result.Message });
 });
 
-app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s, PlexAuth auth, CancellationToken ct) =>
+app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionState s, PlexAuth auth, AvailabilityScheduleService schedules, CancellationToken ct) =>
 {
     if (!pendingLinks.TryRemove(body.Token, out var expiry) || expiry < DateTime.UtcNow)
     {
@@ -949,7 +970,8 @@ app.MapPost("/api/link/complete", async (LinkCompleteRequest body, CompanionStat
         plexUrl = share.PlexUrl,
         plexToken = share.PlexToken,
         serverName = s.ServerName,
-        libraries = s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)).Select(l => new { l.SectionKey, l.Title, l.Type })
+        libraries = s.Libraries.Where(l => CompanionLibraryPolicy.IsShared(s, l)).Select(l => new { l.SectionKey, l.Title, l.Type }),
+        schedule = schedules.GetSelfBlob()
     });
 });
 
@@ -1509,6 +1531,7 @@ static bool IsSafePeerUrl(string candidate, out string normalized)
 static bool IsPublicCompanionApi(PathString path)
     => path.Equals("/api/link/complete", StringComparison.OrdinalIgnoreCase)
         || path.Equals("/api/federation/info", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/api/federation/schedule", StringComparison.OrdinalIgnoreCase)
         || path.Equals("/api/pools/invite", StringComparison.OrdinalIgnoreCase);
 
 static CompanionPeer? FindPeerByFederationToken(HttpRequest request, CompanionState s)

@@ -64,6 +64,7 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static readonly TimeSpan ConfirmInterval = TimeSpan.FromSeconds(15);
         internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
         internal const int OfflineThreshold = 2;
+        internal static readonly TimeSpan ExpectedOfflineInterval = TimeSpan.FromMinutes(10);
 
         private static readonly HttpClient ProbeHttpClient = new HttpClient
         {
@@ -74,6 +75,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly FederationItemPersistenceService _persistence;
+        private readonly AvailabilityScheduleStore _schedule;
         private readonly ConcurrentDictionary<string, ServerAvailability> _states = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new(StringComparer.OrdinalIgnoreCase);
         private readonly AdaptiveSourceRanking _ranking;
@@ -94,12 +96,15 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationAvailabilityService> logger,
             IRemoteServerClientFactory clientFactory,
             ExternalCatalogRegistry externalCatalogs,
-            FederationItemPersistenceService persistence, AdaptiveSourceRanking? ranking = null)
+            FederationItemPersistenceService persistence,
+            AvailabilityScheduleStore? schedule = null,
+            AdaptiveSourceRanking? ranking = null)
         {
             _logger = logger;
             _clientFactory = clientFactory;
             _externalCatalogs = externalCatalogs;
             _persistence = persistence;
+            _schedule = schedule ?? new AvailabilityScheduleStore();
             _ranking = ranking ?? new AdaptiveSourceRanking();
         }
 
@@ -159,6 +164,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogDebug(ex, "[Federation] Availability pinger stopped with an error");
                 }
             }
+
+            _schedule.SaveIfDue(force: true);
+            await _notifications.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -206,7 +214,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 try
                 {
-                    await Task.Delay(DelayAfterRound(_consecutiveFailures.Values), cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(DelayAfterRound(_consecutiveFailures.Values, ShouldStretchIdle()), cancellationToken).ConfigureAwait(false);
+                    _schedule.RecordSelf(DateTime.UtcNow);
+                    _schedule.SaveIfDue();
                 }
                 catch (OperationCanceledException)
                 {
@@ -362,6 +372,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            _schedule.RecordObservation(server.Id, online, DateTime.UtcNow);
+            _schedule.RememberReachability(server.Id, state);
+
             var failuresNow = _consecutiveFailures.GetValueOrDefault(server.Id);
             var seconds = online ? ProbeInterval.TotalSeconds : failuresNow == 1 ? ConfirmInterval.TotalSeconds
                 : Math.Min(480, ProbeInterval.TotalSeconds * Math.Pow(2, Math.Min(failuresNow - 2, 2)));
@@ -370,11 +383,21 @@ namespace Jellyfin.Plugin.Federation.Services
             if (previous != state.Reachability
                 && (state.Reachability == ServerReachability.Offline || state.Reachability == ServerReachability.Online))
             {
-                _logger.LogInformation(
-                    "[Federation] Server {ServerName} is now {State} (previous: {Previous}); cached items are preserved, library visibility will update on rescan",
-                    server.Name,
-                    state.Reachability,
-                    previous);
+                var (forecast, _) = _schedule.Forecast(server.Id, DateTime.UtcNow);
+                if (state.Reachability == ServerReachability.Offline && forecast == AvailabilityForecast.LikelyOnline)
+                {
+                    _logger.LogInformation(
+                        "[Federation] Server {ServerName} went offline unexpectedly (usually up at this hour); cached items are preserved",
+                        server.Name);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "[Federation] Server {ServerName} is now {State} (previous: {Previous}); cached items are preserved, library visibility will update on rescan",
+                        server.Name,
+                        state.Reachability,
+                        previous);
+                }
                 var handler = OnReachabilityChangedAsync;
                 if (handler != null)
                 {
@@ -406,10 +429,70 @@ namespace Jellyfin.Plugin.Federation.Services
         /// waiting the full two-minute idle interval, so hide/unhide is not
         /// delayed by a whole extra cycle.
         /// </summary>
-        internal static TimeSpan DelayAfterRound(IEnumerable<int> consecutiveFailures)
+        internal static TimeSpan DelayAfterRound(IEnumerable<int> consecutiveFailures, bool stretchIdle = false)
         {
             var confirming = consecutiveFailures.Any(count => count > 0 && count < OfflineThreshold);
-            return confirming ? ConfirmInterval : ProbeInterval;
+            if (confirming)
+            {
+                return ConfirmInterval;
+            }
+
+            return stretchIdle ? ExpectedOfflineInterval : ProbeInterval;
+        }
+
+        /// <summary>
+        /// Reloads last live Offline snapshots when the hour-of-week forecast
+        /// also says the friend is usually down, so a restart does not flash
+        /// those libraries back as Unknown.
+        /// </summary>
+        public void RestorePersistedReachability()
+        {
+            foreach (var (id, row) in _schedule.Snapshot().Friends)
+            {
+                if (row.LastReachability != ServerReachability.Offline)
+                {
+                    continue;
+                }
+
+                var (forecast, _) = _schedule.Forecast(id, DateTime.UtcNow);
+                if (forecast != AvailabilityForecast.LikelyOffline)
+                {
+                    continue;
+                }
+
+                _states[id] = new ServerAvailability
+                {
+                    Reachability = ServerReachability.Offline,
+                    LastCheckedUtc = row.LastCheckedUtc,
+                    LastOnlineUtc = row.LastOnlineUtc
+                };
+                _consecutiveFailures[id] = OfflineThreshold;
+            }
+        }
+
+        public (AvailabilityForecast Forecast, int Confidence) GetForecast(string serverId)
+            => _schedule.Forecast(serverId, DateTime.UtcNow);
+
+        public AvailabilityScheduleStore Schedule => _schedule;
+
+        private bool ShouldStretchIdle()
+        {
+            var offline = false;
+            foreach (var pair in _states)
+            {
+                if (pair.Value.Reachability != ServerReachability.Offline)
+                {
+                    continue;
+                }
+
+                offline = true;
+                if (_schedule.Forecast(pair.Key, DateTime.UtcNow).Forecast != AvailabilityForecast.LikelyOffline)
+                {
+                    return false;
+                }
+            }
+
+            return offline;
         }
 
         /// <summary>
@@ -427,6 +510,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _consecutiveFailures.TryRemove(serverId, out _);
             _nextProbe.TryRemove(serverId, out _);
             _ranking.Forget(serverId);
+            _schedule.Forget(serverId);
         }
     }
 }

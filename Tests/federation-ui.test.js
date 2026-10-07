@@ -302,6 +302,19 @@ test('admin sessions initialize admin-only download and sharing state', async ()
   dom.window.close();
 });
 
+test('log tab is routable and routine errors use a quiet notice', () => {
+  assert.match(configPage, /data-tab="log"/);
+  assert.match(configPage, /id="fedPanelLog"/);
+  assert.match(configPage, /id="fedLogList"/);
+  assert.match(configPage, /function isRoutineNotice/);
+  assert.match(configPage, /class="fed-notice"/);
+  assert.match(configPage, /\/Plugins\/Federation\/Logs/);
+  assert.match(configPage, /loadLogs\(\); \} \}, 10000\)/);
+  assert.match(configPage, /fed-log-warning/);
+  assert.match(configPage, /fed-log-information/);
+  assert.equal(configPage.includes("Last sync skipped an unreachable friend"), true);
+});
+
 test('all rendered tabs are routable and the inline configuration script parses', () => {
   const tabNames = [...configPage.matchAll(/data-tab="([a-z]+)"/g)].map((match) => match[1]);
   const routerMatch = configPage.match(/var TAB_NAMES = \[([^\]]+)\]/);
@@ -597,9 +610,9 @@ function pagingHarness(kind, { fallback = false } = {}) {
     var browseRequestEpoch = 0, browseLoading = false, browseSelected = {}, browseSentinelObserver = null, browseFailed = false;
     var activeTab = kind, downloadView = 'select', document = {hidden:false};
     var activePage = {isConnected:true,classList:{contains:()=>false}};
-    var downloadsPollInterval, watchingPollInterval, healthPollInterval;
+    var downloadsPollInterval, watchingPollInterval, healthPollInterval, logPollInterval;
     var TAB_NAMES = ['friends','catalog','browse'], TAB_STORAGE_KEY = 'test', localStorage = {setItem:()=>{}};
-    function qa() {return [];} function stopWatchdog() {} function loadDownloads() {}
+    function qa() {return [];} function stopWatchdog() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
     function loadBrowseServers() {} function populateCatalogFriendPick() {}
     function renderCatalogGrid() {} function setCatalogStatus(msg) {q('#fedCatalogStatus').textContent = msg;}
     function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus(msg) {q('#fedBrowseStatus').textContent = msg;}
@@ -1489,4 +1502,84 @@ test('settings page exposes the loading bar and fast-start switches and wires th
 
 test('the fun-fact setting says plainly that nothing about the viewer or their media is sent', () => {
   assert.match(configPage, /sends nothing about you or your media/);
+});
+
+function makeServerPickerWindow(optionHtml) {
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div class="itemMiscInfo-primary"></div>'
+      + '<div class="mainDetailButtons"><button class="btnPlay">Play</button></div>'
+      + '<select class="selectSource">' + optionHtml + '</select>'
+      + '</body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#!/details?id=' + itemId }
+  );
+  dom.window.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    getCurrentUserId: () => 'user',
+    getItem: () => Promise.resolve({
+      MediaSources: [
+        { Id: 'aaa', Bitrate: 8000000, Container: 'mkv', MediaStreams: [{ Type: 'Video', Height: 1080 }] },
+        { Id: 'bbb', Bitrate: 3000000, Container: 'mp4', MediaStreams: [{ Type: 'Video', Height: 720 }] }
+      ]
+    }),
+    accessToken: () => 'test-token'
+  };
+  dom.window.fetch = (url) => {
+    let data = {};
+    if (String(url).includes('FederatedIds')) data = { [itemId]: 'Friend' };
+    if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: false };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  return dom;
+}
+
+test('detail page lists every server and clicking one overrides Auto', async () => {
+  const dom = makeServerPickerWindow('<option value="aaa">Friend (Auto)</option><option value="bbb">Other (primary)</option>');
+  for (let i = 0; i < 4; i++) await settle();
+  const doc = dom.window.document;
+  const chips = [...doc.querySelectorAll('.federation-server-chip')];
+  assert.equal(chips.length, 2);
+  assert.equal(doc.querySelector('.mainDetailButtons').nextElementSibling.className, 'federation-server-picker');
+  assert.match(chips[0].textContent, /Friend/);
+  assert.match(chips[0].textContent, /Auto/);
+  assert.match(chips[0].textContent, /1080p/);
+  assert.match(chips[1].textContent, /^Other/);
+  assert.equal(chips[0].getAttribute('aria-pressed'), 'true');
+
+  let changes = 0;
+  const select = doc.querySelector('select.selectSource');
+  select.addEventListener('change', () => { changes++; });
+  chips[1].click();
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(select.value, 'bbb');
+  assert.equal(changes, 1);
+  const after = [...doc.querySelectorAll('.federation-server-chip')];
+  assert.equal(after[1].getAttribute('aria-pressed'), 'true');
+  assert.equal(after[0].getAttribute('aria-pressed'), 'false');
+  assert.match(doc.querySelector('.federation-server-hint').textContent, /instead of Auto/);
+
+  doc.querySelector('.federation-server-reset').click();
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(select.value, 'aaa');
+  assert.equal(doc.querySelectorAll('.federation-server-picker').length, 1);
+  dom.window.close();
+});
+
+test('single-server titles name the server without offering a choice', async () => {
+  const dom = makeServerPickerWindow('<option value="aaa">Friend</option>');
+  for (let i = 0; i < 4; i++) await settle();
+  const chips = dom.window.document.querySelectorAll('.federation-server-chip');
+  assert.equal(chips.length, 1);
+  assert.equal(chips[0].getAttribute('data-single'), '1');
+  assert.match(chips[0].textContent, /Friend/);
+  dom.window.close();
+});
+
+test('server picker uses theme variables and no hard-coded palette', () => {
+  const block = badgeScript.slice(badgeScript.indexOf('.federation-server-picker{'), badgeScript.indexOf('.federation-server-reset'));
+  assert.match(block, /var\(--theme-primary-color/);
+  assert.equal(/#(?!00a4dc)[0-9a-f]{3,6}\b/i.test(block), false);
 });

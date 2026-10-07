@@ -31,6 +31,8 @@ namespace Jellyfin.Plugin.Federation
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly IMediaSourceManager _mediaSources;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
+        private readonly FederationLogBuffer _logBuffer;
+        private readonly AvailabilityScheduleStore _availabilitySchedule;
         private readonly SemaphoreSlim _reachabilityRescanGate = new(1, 1);
         private int _reachabilityRescanEpoch;
 
@@ -48,7 +50,10 @@ namespace Jellyfin.Plugin.Federation
             FederationAvailabilityService availability,
             IHostApplicationLifetime appLifetime,
             IMediaSourceManager mediaSources,
-            WanBandwidthMonitor bandwidthMonitor)
+            WanBandwidthMonitor bandwidthMonitor,
+            FederationLogBuffer logBuffer,
+            AvailabilityScheduleStore availabilitySchedule,
+            Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -61,8 +66,15 @@ namespace Jellyfin.Plugin.Federation
             _appLifetime = appLifetime;
             _mediaSources = mediaSources;
             _bandwidthMonitor = bandwidthMonitor;
+            _logBuffer = logBuffer;
+            _availabilitySchedule = availabilitySchedule;
             FederationItemPersistenceService.AvailabilityOverride = availability;
             FederationItemPersistenceService.BandwidthOverride = bandwidthMonitor;
+            if (!_logBuffer.ProviderAttached)
+            {
+                loggerFactory.AddProvider(new FederationLoggerProvider(_logBuffer));
+                _logBuffer.ProviderAttached = true;
+            }
         }
 
         /// <inheritdoc />
@@ -128,6 +140,9 @@ namespace Jellyfin.Plugin.Federation
                     : Plugin.Instance?.GetDefaultCachePath() ?? Path.Combine(Path.GetTempPath(), "federation-cache.json");
 
                 _federationManager.Initialize(cachePath);
+                var schedulePath = Path.Combine(Plugin.Instance?.DataFolderPath ?? Path.GetDirectoryName(cachePath) ?? Path.GetTempPath(), "federation-availability.json");
+                _availabilitySchedule.Initialize(schedulePath);
+                _availability.RestorePersistedReachability();
 
                 try
                 {

@@ -76,6 +76,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationQualityAdvisorService _qualityAdvisor;
         private readonly FederationAvailabilityService _availability;
         private readonly IAuthorizationContext _authorizationContext;
+        private readonly FederationLogBuffer _logBuffer;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -101,7 +102,8 @@ namespace Jellyfin.Plugin.Federation.Api
             ITaskManager taskManager,
             FederationQualityAdvisorService qualityAdvisor,
             FederationAvailabilityService availability,
-            IAuthorizationContext authorizationContext)
+            IAuthorizationContext authorizationContext,
+            FederationLogBuffer logBuffer)
         {
             _logger = logger;
             _syncService = syncService;
@@ -127,6 +129,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _qualityAdvisor = qualityAdvisor;
             _availability = availability;
             _authorizationContext = authorizationContext;
+            _logBuffer = logBuffer;
         }
 
         /// <summary>
@@ -1301,7 +1304,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/RemoteUserRules")]
         [AllowAnonymous]
-        public async Task<IActionResult> ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload, CancellationToken cancellationToken)
+        public IActionResult ReceiveRemoteUserAccessRules([FromBody] RemoteUserAccessRulesPayload payload)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -1309,19 +1312,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            if (_friends.ReceiveRemoteUserAccessRules(caller, payload))
-            {
-                // A userless static URL stops being valid when any viewer is
-                // restricted. Clear it now so allowed users receive fresh,
-                // user-bound sources instead of Jellyfin preferring the stale
-                // default source and failing playback until the next sync.
-                foreach (var mapping in (Plugin.Instance?.Configuration.LibraryMappings ?? new List<LibraryMapping>())
-                    .Where(m => m.Enabled && m.RemoteLibrarySources?.Any(s =>
-                        string.Equals(s.ServerId, caller.Id, StringComparison.OrdinalIgnoreCase)) == true))
-                {
-                    await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
-                }
-            }
+            _friends.ReceiveRemoteUserAccessRules(caller, payload);
             return Ok();
         }
 
@@ -3343,6 +3334,29 @@ namespace Jellyfin.Plugin.Federation.Api
             });
         }
 
+        /// <summary>
+        /// Exchange this server's compact self-uptime blob for the caller's.
+        /// Token-gated; no URLs or credentials in the payload.
+        /// </summary>
+        [HttpPost("Peer/AvailabilitySchedule")]
+        [AllowAnonymous]
+        public IActionResult ExchangeAvailabilitySchedule([FromBody] AvailabilityScheduleBlob? body)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (body != null && body.Version == AvailabilitySchedule.Version && !string.IsNullOrEmpty(caller.Id))
+            {
+                _availability.Schedule.AcceptReceivedSelf(caller.Id, caller.FederationId, body);
+            }
+
+            var selfId = Plugin.Instance?.Configuration?.LocalFederationId ?? string.Empty;
+            return Ok(_availability.Schedule.EncodeSelf(selfId, DateTime.UtcNow));
+        }
+
         #endregion
 
         #region Incoming content filters (Catalog)
@@ -3692,9 +3706,46 @@ namespace Jellyfin.Plugin.Federation.Api
                     reachability = (_availability.GetAvailability(s.Id)?.Reachability ?? ServerReachability.Unknown).ToString(),
                     lastCheckedUtc = _availability.GetAvailability(s.Id)?.LastCheckedUtc,
                     lastOnlineUtc = _availability.GetAvailability(s.Id)?.LastOnlineUtc,
-                    lastError = _availability.GetAvailability(s.Id)?.LastError
+                    lastError = _availability.GetAvailability(s.Id)?.LastError,
+                    forecast = _availability.GetForecast(s.Id).Forecast.ToString(),
+                    forecastConfidence = _availability.GetForecast(s.Id).Confidence
                 }).ToList()
             });
+        }
+
+        /// <summary>
+        /// Recent plugin log lines for the dashboard Log tab. Information,
+        /// warnings, and errors from this plugin only — not the whole Jellyfin
+        /// server log.
+        /// </summary>
+        [HttpGet("Logs")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLogs(
+            [FromQuery] string? minLevel,
+            [FromQuery] long afterId = 0,
+            [FromQuery] int limit = 200)
+        {
+            var entries = _logBuffer.Snapshot(minLevel, afterId, limit);
+            return Ok(new
+            {
+                entries = entries.Select(e => new
+                {
+                    id = e.Id,
+                    timestampUtc = e.TimestampUtc,
+                    level = e.Level,
+                    category = e.Category,
+                    message = e.Message,
+                    detail = e.Detail
+                }).ToList()
+            });
+        }
+
+        [HttpPost("Logs/Clear")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ClearLogs()
+        {
+            _logBuffer.Clear();
+            return Ok(new { success = true });
         }
 
         /// <summary>
