@@ -2,9 +2,15 @@ using System.Diagnostics;
 
 namespace FederationCompanion;
 
-/// <summary>Opens the owner dashboard in the default browser, cross-platform.</summary>
+/// <summary>Opens the owner dashboard: the native app window when one is
+/// registered (Windows), otherwise the default browser.</summary>
 public static class CompanionShell
 {
+    /// <summary>Set by the Windows desktop shell. Returns false when the app
+    /// window cannot be shown (for example, no WebView2 runtime), in which case
+    /// the dashboard falls back to the default browser.</summary>
+    internal static Func<string, bool>? WindowOpener { get; set; }
+
     public static bool OpenDashboard(CompanionRuntime runtime, string adminAccessKey)
     {
         if (runtime.Port <= 0 || string.IsNullOrWhiteSpace(adminAccessKey))
@@ -12,7 +18,8 @@ public static class CompanionShell
             return false;
         }
 
-        return OpenUrl(runtime.DashboardUrl(adminAccessKey));
+        var url = runtime.DashboardUrl(adminAccessKey);
+        return WindowOpener?.Invoke(url) == true || OpenUrl(url);
     }
 
     public static bool OpenFolder(string path)
