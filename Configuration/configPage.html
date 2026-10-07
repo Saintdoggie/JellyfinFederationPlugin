@@ -46,14 +46,17 @@
                    (muted labels, accent underline on the active tab) without wiring
                    into its SPA view router, which a single static plugin page has no
                    clean way to hook into. */
-                #federationConfigPage .fed-tabs { display: flex; flex-wrap: wrap; gap: 0.5em; border-bottom: 1px solid var(--fed-border); margin: 0 0 1.6em; }
+                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.35em; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scroll-padding-inline:.5em; scrollbar-width:none; -webkit-overflow-scrolling:touch; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.4em; padding:.3em; background:var(--theme-background-color, rgba(128,128,128,.08)); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
+                #federationConfigPage .fed-tabs::-webkit-scrollbar { display:none; }
                 #federationConfigPage .fed-tab-btn {
-                    background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-                    color: inherit; opacity: 0.62; font-family: inherit; font-size: inherit; font-weight: 600;
-                    margin: 0 0 -1px; padding: 0.65em 0.95em; cursor: pointer;
+                    flex:0 0 auto; white-space:nowrap; background:transparent; border:0; border-radius:.55em;
+                    color:inherit; opacity:.68; font-family:inherit; font-size:inherit; font-weight:600;
+                    margin:0; min-height:2.75em; padding:.58em .95em; cursor:pointer;
+                    transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease;
                 }
-                #federationConfigPage .fed-tab-btn:hover { opacity: 0.9; }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity: 1; color: var(--fed-accent); border-bottom-color: var(--fed-accent); }
+                #federationConfigPage .fed-tab-btn:hover { opacity:1; background:rgba(128,128,128,.14); }
+                #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:-2px; opacity:1; }
+                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity:1; color:var(--fed-accent); background:rgba(128,128,128,.18); box-shadow:inset 0 -2px 0 var(--fed-accent); }
                 #federationConfigPage .fed-tabpanel { display: none; }
                 #federationConfigPage .fed-tabpanel.fed-tabpanel-active { display: block; }
 
@@ -375,11 +378,6 @@
                 #federationConfigPage .fed-stat strong { font-size:1.2em; line-height:1.2; font-weight:700; }
                 #federationConfigPage .fed-stat span { opacity:.65; font-size:.86em; }
                 #federationConfigPage .fed-statusstrip > .emby-button { align-self:center; white-space:nowrap; }
-                #federationConfigPage .fed-tabs { position:sticky; top:0; z-index:20; display:flex; flex-wrap:nowrap; gap:.5em; overflow-x:auto; scrollbar-width:thin; border:1px solid var(--fed-border-soft); border-radius:.8em; margin:0 0 1.2em; padding:.3em; background:rgba(20,20,20,.92); backdrop-filter:blur(14px); box-shadow:0 .35em 1.2em rgba(0,0,0,.12); }
-                #federationConfigPage .fed-tab-btn { flex:0 0 auto; border:0; border-radius:.55em; margin:0; min-height:2.65em; padding:.58em .9em; transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease; }
-                #federationConfigPage .fed-tab-btn:hover { opacity:.95; background:var(--fed-surface-raised); }
-                #federationConfigPage .fed-tab-btn:focus-visible { outline:2px solid var(--fed-accent); outline-offset:2px; }
-                #federationConfigPage .fed-tab-btn.fed-tab-btn-active { opacity:1; color:var(--fed-accent); border-bottom-color:transparent; background:rgba(0,164,220,.14); }
                 #federationConfigPage .fed-tabpanel.fed-tabpanel-active { animation:fed-panel-in 180ms ease-out; }
                 #federationConfigPage .fed-server { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:.85em; margin:.65em 0; background:var(--fed-surface); transition:border-color 150ms ease,background-color 150ms ease; }
                 #federationConfigPage .fed-server:hover { border-color:var(--fed-border); background:var(--fed-surface-raised); }
@@ -5989,6 +5987,10 @@
                             btn.setAttribute('aria-selected', active ? 'true' : 'false');
                             btn.setAttribute('tabindex', active ? '0' : '-1');
                         });
+                        var activeBtn = q('.fed-tab-btn-active');
+                        if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+                            activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                        }
 
                         // Lazy: the catalog can be a large fetch, so it's only loaded
                         // the first time an admin actually opens this tab, not on

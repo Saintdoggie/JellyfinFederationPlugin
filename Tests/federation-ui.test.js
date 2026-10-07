@@ -1588,3 +1588,37 @@ test('admin page and web scripts use solid colours only (owner preference: no gr
   assert.doesNotMatch(configPage, /gradient\(/i);
   assert.doesNotMatch(badgeScript, /gradient\(/i);
 });
+
+test('admin tab row is one scrollable row and switchTab keeps the active tab in view', () => {
+  const tabRules = configPage.match(/#federationConfigPage \.fed-tabs \{[^}]*\}/g);
+  assert.equal(tabRules.length, 1, 'exactly one .fed-tabs rule');
+  assert.match(tabRules[0], /flex-wrap:\s*nowrap/);
+  assert.match(tabRules[0], /overflow-x:\s*auto/);
+  assert.equal((configPage.match(/\.fed-tab-btn\.fed-tab-btn-active \{ opacity/g) || []).length, 1, 'one active-tab rule outside forced-colors');
+  assert.ok(!configPage.includes('gradient('));
+
+  const start = configPage.indexOf('                    function switchTab(');
+  const end = configPage.indexOf('\n                    }', start) + '\n                    }'.length;
+  const dom = new JSDOM('<div id="p"><button class="fed-tab-btn fed-tab-btn-active" data-tab="friends"></button>' +
+    '<button class="fed-tab-btn" data-tab="log"></button><div class="fed-tabpanel" data-tab-panel="log"></div></div>');
+  const doc = dom.window.document;
+  const calls = [];
+  doc.querySelectorAll('.fed-tab-btn').forEach(btn => {
+    btn.scrollIntoView = function (opts) { calls.push([this.getAttribute('data-tab'), opts]); };
+  });
+  const switchTab = new Function('document', `
+    var TAB_NAMES = ['friends','log'], activeTab = 'friends', catalogLoaded = true, catalogLoading = false, catalogFailed = false;
+    var downloadView = 'select', TAB_STORAGE_KEY = 'k', localStorage = {setItem(){}};
+    function q(s) { return document.querySelector(s); }
+    function qa(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
+    function armCatalogSentinel() {} function armBrowseSentinel() {} function noop() {}
+    var loadDownloads = noop, loadLogs = noop, clearLogBadge = noop, loadBrowseServers = noop, populateCatalogFriendPick = noop,
+      loadCatalog = noop, stopWatchdog = noop, setDownloadView = noop, loadBrowseItems = noop;
+    ${configPage.slice(start, end)}
+    return switchTab;
+  `)(doc);
+  try { switchTab('log'); } catch (e) { /* later lazy-load steps may need more globals */ }
+  assert.equal(doc.querySelector('.fed-tab-btn-active').getAttribute('data-tab'), 'log');
+  assert.deepEqual(calls, [['log', { block: 'nearest', inline: 'nearest' }]]);
+  dom.window.close();
+});
