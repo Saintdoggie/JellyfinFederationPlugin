@@ -13,13 +13,13 @@
     --border: rgba(151, 174, 209, .16);
     --border-strong: rgba(110, 168, 255, .38);
     --text: #f3f7fc;
-    --muted: #a5b2c4;
+    --muted: #aab6c7;
     --blue: #67a4ff;
     --blue-strong: #397ee8;
     --green: #66d99a;
     --amber: #f2c96f;
     --danger: #ef7777;
-    --shadow: 0 22px 70px rgba(0, 0, 0, .34);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .28);
   }
   * { box-sizing: border-box; }
   body {
@@ -30,21 +30,20 @@
     min-height: 100vh;
   }
   header {
-    padding: 42px max(28px, calc((100vw - 1080px) / 2));
+    padding: 28px max(28px, calc((100vw - 1040px) / 2 + 28px)) 24px;
     border-bottom: 1px solid var(--border);
-    background: rgba(8, 11, 16, .68);
-    backdrop-filter: blur(18px);
+    background: #0c1118;
   }
   header h1 {
     margin: 0;
-    font-size: clamp(28px, 4vw, 46px);
-    letter-spacing: -.035em;
-    font-weight: 750;
+    font-size: clamp(24px, 3vw, 32px);
+    letter-spacing: -.02em;
+    font-weight: 700;
   }
   header p {
     margin: 10px 0 0;
     color: var(--muted);
-    font-size: 16px;
+    font-size: 15px;
     max-width: 720px;
     line-height: 1.55;
   }
@@ -57,24 +56,24 @@
   .update-banner button { margin: 0; }
   .brand-line { display: flex; align-items: center; gap: 12px; }
   .brand-mark {
-    width: 42px; height: 42px; display: grid; place-items: center;
-    border-radius: 13px;
+    width: 38px; height: 38px; display: grid; place-items: center;
+    border-radius: 10px;
     background: var(--blue-strong);
-    box-shadow: 0 10px 34px rgba(57, 126, 232, .35);
     font-weight: 900; font-size: 22px;
   }
   main {
-    max-width: 1080px;
+    max-width: 1040px;
     margin: 0 auto;
-    padding: 38px 28px 80px;
+    padding: 28px 28px 64px;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 18px;
+    gap: 16px;
+    align-items: start;
   }
   .direction-heading {
     grid-column: 1 / -1;
-    margin-top: 20px;
-    padding: 8px 2px 2px;
+    margin-top: 16px;
+    padding: 4px 2px 0;
   }
   .direction-heading:first-child { margin-top: 0; }
   .direction-kicker {
@@ -84,9 +83,9 @@
     font-size: 11px;
     font-weight: 800;
   }
-  .direction-heading h2 { margin: 7px 0 5px; font-size: 24px; letter-spacing: -.02em; }
-  .direction-heading p { margin: 0; color: var(--muted); line-height: 1.5; max-width: 760px; }
-  #shareCard, #importCard, #connectCard { grid-column: 1 / -1; }
+  .direction-heading h2 { margin: 6px 0 4px; font-size: 20px; letter-spacing: -.02em; }
+  .direction-heading p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 760px; }
+  #shareCard, #importCard, #connectCard, #permissionsCard { grid-column: 1 / -1; }
   #accessCard { grid-column: 1 / -1; border-color: var(--border-strong); }
   body.owner-locked main > :not(#accessCard):not(#permissionsCard) { opacity: .18; pointer-events: none; filter: saturate(.4); }
   #importCard { border-color: rgba(102, 217, 154, .28); }
@@ -99,8 +98,8 @@
   .card {
     background: var(--surface-strong);
     border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 24px;
+    border-radius: 12px;
+    padding: 22px 24px;
     box-shadow: var(--shadow);
     min-width: 0;
   }
@@ -108,6 +107,8 @@
   .card h2 {
     margin: 0 0 14px;
     font-size: 15px;
+    font-weight: 650;
+    line-height: 25px;
     letter-spacing: .01em;
     color: var(--text);
     display: flex;
@@ -125,29 +126,38 @@
     color: var(--text);
     font-size: 12px;
     font-weight: 700;
+    flex-shrink: 0;
   }
   .card.done .step-num { background: #2f9860; color: #fff; }
   button {
-    min-height: 44px;
+    min-height: 38px;
     background: var(--blue-strong);
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, .09);
-    border-radius: 9px;
-    padding: 10px 17px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font: inherit;
     font-size: 14px;
     font-weight: 600;
+    line-height: 1.3;
     cursor: pointer;
+    transition: background-color .12s, border-color .12s, color .12s;
   }
-  button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
-  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(103, 164, 255, .42); outline-offset: 2px; }
-  button:disabled { opacity: .5; cursor: default; }
+  button:hover:not(:disabled) { background: #4a8cf0; }
+  button:active:not(:disabled) { background: #2f6fd3; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
   button.secondary {
-    background: rgba(255,255,255,.035);
-    border: 1px solid var(--border-strong);
+    background: #1c2532;
+    border: 1px solid rgba(151, 174, 209, .26);
     color: var(--text);
   }
-  button.danger { background: rgba(199, 73, 73, .18); border-color: rgba(239,119,119,.32); color: #ffaaaa; }
-  .status-line { color: var(--muted); font-size: 13px; margin-top: 10px; line-height: 1.5; }
+  button.secondary:hover:not(:disabled) { background: #243042; border-color: rgba(151, 174, 209, .4); }
+  button.secondary:active:not(:disabled) { background: #1a222e; }
+  button.danger { background: #3a1d22; border-color: rgba(239,119,119,.38); color: #ffb3b3; }
+  button.danger:hover:not(:disabled) { background: #4a2228; border-color: rgba(239,119,119,.55); }
+  button.danger:active:not(:disabled) { background: #331a1e; }
+  .status-line { color: var(--muted); font-size: 13px; margin-top: 10px; line-height: 1.5; overflow-wrap: anywhere; }
   .status-line.error { color: #ffaaaa; }
   .library-row, .peer-row {
     display: flex;
@@ -212,27 +222,34 @@
   }
   input[type=text], select {
     width: 100%;
-    min-height: 46px;
+    min-height: 38px;
     background: #0b1017;
     border: 1px solid rgba(151,174,209,.28);
-    border-radius: 9px;
-    padding: 11px 12px;
+    border-radius: 8px;
+    padding: 8px 12px;
     color: var(--text);
-    font-size: 16px;
+    font: inherit;
+    font-size: 14px;
     margin-bottom: 10px;
+    transition: border-color .12s;
   }
+  input[type=text]:hover, select:hover { border-color: rgba(151,174,209,.42); }
+  input[type=text]:focus, select:focus { border-color: var(--blue); }
+  input[type=text]:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
   .badge {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 2px 9px;
     border-radius: 999px;
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.5;
   }
-  .badge.ok { background: #2f8f4e33; color: #88edb3; }
-  .badge.warn { background: #8f6e2f33; color: var(--amber); }
+  .badge.ok { background: #173825; color: #8ff0b9; border: 1px solid #2a5c3e; }
+  .badge.warn { background: #3a2f17; color: #f6d48a; border: 1px solid #5e4b22; }
   .code-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
   .inline-form input { margin: 0; }
+  #publicUrlCard .inline-form { display: flex; flex-wrap: wrap; gap: 8px; }
   .checkbox-line {
     display: flex;
     align-items: center;
@@ -256,7 +273,7 @@
   @media (max-width: 760px) {
     header { padding: 30px 20px; }
     main { grid-template-columns: 1fr; padding: 24px 16px 60px; }
-    .direction-heading, #shareCard, #importCard, #connectCard, #appCard { grid-column: 1; }
+    .direction-heading, #shareCard, #importCard, #connectCard, #appCard, #permissionsCard { grid-column: 1; }
     .card { padding: 20px; border-radius: 14px; }
     .inline-form { grid-template-columns: 1fr; }
     .app-actions { flex-direction: column; }
@@ -269,7 +286,12 @@
     main { max-width: 1240px; gap: 24px; }
     header { padding-left: max(36px, calc((100vw - 1240px) / 2)); padding-right: max(36px, calc((100vw - 1240px) / 2)); }
     .card { padding: 30px; }
-    button { min-height: 50px; font-size: 16px; }
+    button { min-height: 42px; font-size: 15px; }
+  }
+  html.companion-app header { padding-top: 22px; padding-bottom: 20px; }
+  html.companion-app main { padding-top: 22px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
   }
 </style>
 </head>
@@ -1287,6 +1309,7 @@ autostartToggle.addEventListener('change', async () => {
 // button would only re-focus itself, so hide it.
 if (window.__federationCompanionApp === true) {
   document.getElementById('openDashboardBtn').classList.add('hidden');
+  document.documentElement.classList.add('companion-app');
 }
 
 document.getElementById('openDashboardBtn').addEventListener('click', async () => {
