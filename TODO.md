@@ -88,6 +88,28 @@ remaining live Windows/Funnel/client checks.
 - [ ] Preserve watch progress when a federated item must be deleted and recreated.
 - [ ] Reduce the extra local relay hop used by Direct mode while retaining scoped authorization and never exposing a long-lived credential.
 
+## Adaptive source ranking and prepared handoff — requested after reliability fixes
+
+- [ ] Design continuous ranking for a movie available on two, three or more authorized servers. Combine recent uptime/failure history, sustainable throughput, latency, buffer health, this movie's bitrate/quality, client codec/HDR compatibility and transcode capacity. Keep lower-quality copies eligible when they offer more reliable playback; do not select on resolution alone.
+- [ ] Reuse passive playback measurements and shared cached health snapshots. Bound probe concurrency, add jitter, timeouts, failure backoff and minimum refresh intervals, and avoid one uptime probe per viewer. Measure the overhead with large peer/catalog counts.
+- [ ] Use score hysteresis, minimum dwell time and switching cooldowns to prevent oscillation. React quickly to actual source failure; upgrade to a newly online or better-performing source only when the improvement is sustained.
+- [ ] Verify equivalent movie edition, timeline, duration and selected audio/subtitles before handing off. Provider-ID equality alone does not establish compatible cuts or seek positions.
+- [ ] Prepare one replacement source before a voluntary switch: authorize it, seek to the projected presentation time, start any required transcode and fill a bounded buffer. Keep the current source playing until the candidate is ready; cap speculative bandwidth/CPU and dispose abandoned work.
+- [ ] Implement a client/session-aware handoff at a compatible keyframe/segment boundary, preserving audio/subtitles, resume position and watch progress. Never splice different source-file bytes into one HTTP Range response. Determine which Jellyfin clients can support seamless switching; retain a truthful fallback for incompatible/native clients and sudden failures without enough buffered media.
+- [ ] Roll back failed preparations and handle source disappearance, server disablement, access revocation and cancellation during handoff. Aim for minimal interruption; measure stall time rather than promising zero buffering under all network conditions.
+- [ ] Show a brief, accessible top-corner notice such as “Switched to Server 2” only after a successful handoff. Keep secrets and internal addresses out of the notice; provide an optional explanation/disable control.
+- [ ] Stress-test 2/3/N servers, competing viewers, bandwidth changes, flapping availability, mixed containers/codecs/editions, subtitle/audio switching, transcode exhaustion and cancellation. Record continuity, quality, startup/seek latency, speculative traffic and probe load.
+
+## Companion sharing and public portability
+
+- [x] Implement a preview of an integrated free sharing option using Companion's authenticated local-media relay rather than depending on Plex Remote Access or a Plex-facing Funnel. Support a private network when public ingress is unavailable; discover the runtime listener, installed network helper and machine address automatically.
+- [x] Research September 2026 enforcement extending Plex paid remote playback to third-party apps. Do not promise that changing a tunnel provider removes Plex's remote-video requirements; see the Companion guide for sources.
+- [x] Implement opt-in original-file sharing on Windows/Linux: discover Plex library folders, support explicit container/drive mappings, recheck the exact part and consent, preserve HEAD/Range seeking, and let receiving Jellyfin transcode. Never fall back to Plex video APIs on a file error; reject imported media and links below approved roots.
+- [ ] Validate original-file mode with a claimed free Plex account and on Windows, including ordinary-user file permissions, mapped drives and cancellation. The blocked-video-API sandbox proves independence from Plex streaming, not actual account entitlement or private-network reachability.
+- [ ] Prefer configurable/discovered paths, ports and addresses across Windows/Linux/macOS and containers. Never bake a developer's username, home directory, server address or credentials into shipped code or setup instructions.
+
+- [ ] Before promoting private sharing to stable, verify two separately approved Tailscale server computers: real HTTPS certificates, cross-account access, catalog/HEAD/Range/decoded media, access revocation, restart, direct/DERP behavior and receiving-side imports. Current sandbox uses a simulated network CLI; do not claim real private-network playback yet.
+
 ## Federation state and security
 
 - [ ] Make leaving a pool durable so a later stale pool notice cannot silently rejoin it.

@@ -21,6 +21,8 @@ public static class CompanionLibraryPolicy
         // Section keys are only unique within a Plex server. Never reuse consent
         // or library attachment keys just because the new server also has "1".
         state.Libraries.Clear();
+        state.LocalFileRelayEnabled = false;
+        state.LocalFileRootMappings.Clear();
         foreach (var peer in state.ImportPeers)
         {
             peer.PlexMovieSectionKey = null;

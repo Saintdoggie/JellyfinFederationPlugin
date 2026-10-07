@@ -11,6 +11,127 @@ function page(fetch, url = 'http://localhost:7890/') {
 }
 const json = data => ({ ok: true, json: async () => data });
 
+test('original-file sharing discovers folders, saves owner mappings and escapes paths', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    if (url === '/api/local-file-relay') return json(opts.method === 'POST'
+      ? { enabled: true, message: 'Original files enabled.' }
+      : { enabled: false, supported: true, roots: [{ plexRoot: '/plex/movies', available: false }], mappings: [] });
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    await dom.window.loadLocalFileRelay();
+    const d = dom.window.document;
+    assert.match(d.getElementById('plexFileRoot').textContent, /needs mapping/);
+    d.getElementById('companionFileRoot').value = '/owned/<img src=x>';
+    d.getElementById('addLocalFileMappingBtn').click();
+    assert.equal(d.getElementById('localFileMappings').querySelector('img'), null);
+    d.getElementById('enableLocalFileRelayBtn').click(); await tick();
+    const call = requests.find(([url, opts]) => url === '/api/local-file-relay' && opts.method === 'POST');
+    assert.equal(header(call[1], 'X-Companion-Admin'), 'owner-test-key');
+    assert.deepEqual(JSON.parse(call[1].body), { enabled: true, mappings: [{ plexRoot: '/plex/movies', localRoot: '/owned/<img src=x>' }] });
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+  } finally { dom.window.close(); }
+});
+
+test('failed original-file changes retain mode and safely show errors', async () => {
+  const dom = page(async (url, opts) => url === '/api/local-file-relay'
+    ? opts.method === 'POST'
+      ? { ok: false, json: async () => ({ error: '<img src=x> cannot read folder' }) }
+      : json({ enabled: true, supported: true, roots: [], mappings: [] })
+    : json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {}), 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    await dom.window.loadLocalFileRelay(); const d = dom.window.document;
+    d.getElementById('disableLocalFileRelayBtn').click(); await tick();
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+    assert.equal(d.getElementById('localFileRelayStatus').querySelector('img'), null);
+    assert.match(d.getElementById('localFileRelayStatus').textContent, /cannot read/);
+    assert.equal(d.getElementById('enableLocalFileRelayBtn').disabled, false);
+  } finally { dom.window.close(); }
+});
+
+test('a stale file-mode response cannot overwrite completed owner changes', async () => {
+  let completeStatus;
+  const dom = page(async (url, opts) => {
+    if (url === '/api/local-file-relay') return opts.method === 'POST'
+      ? json({ enabled: true, message: 'Enabled.' })
+      : { ok: true, json: () => new Promise(resolve => { completeStatus = resolve; }) };
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    const pending = dom.window.loadLocalFileRelay(); await tick();
+    const d = dom.window.document;
+    d.getElementById('enableLocalFileRelayBtn').click(); await tick();
+    completeStatus({ enabled: false, supported: true, roots: [], mappings: [] }); await pending;
+    assert.equal(d.getElementById('disableLocalFileRelayBtn').hidden, false);
+    assert.equal(d.getElementById('localFileRelayStatus').textContent, 'Enabled.');
+  } finally { dom.window.close(); }
+});
+
+test('private sharing uses owner authorization, discovers its URL and stops explicitly', async () => {
+  const requests = [];
+  const dom = page(async (url, opts) => {
+    requests.push([url, opts]);
+    if (url === '/api/tailscale/private-share') return json(opts.method === 'DELETE'
+      ? { message: 'Private sharing stopped.' }
+      : { sharingUrl: 'https://peer.tail123456.ts.net:8443', message: 'Private sharing ready.' });
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    const d = dom.window.document;
+    d.getElementById('enablePrivateShareBtn').click(); await tick();
+    assert.equal(d.getElementById('publicUrlInput').value, 'https://peer.tail123456.ts.net:8443');
+    assert.equal(d.getElementById('stopPrivateShareBtn').hidden, false);
+    d.getElementById('stopPrivateShareBtn').click(); await tick();
+    assert.equal(d.getElementById('publicUrlInput').value, '');
+    assert.equal(d.getElementById('stopPrivateShareBtn').hidden, true);
+    const calls = requests.filter(([url]) => url === '/api/tailscale/private-share');
+    assert.deepEqual(calls.map(([, opts]) => opts.method), ['POST', 'DELETE']);
+    for (const [, opts] of calls) assert.equal(header(opts, 'X-Companion-Admin'), 'owner-test-key');
+  } finally { dom.window.close(); }
+});
+
+test('a stale sharing-status response cannot overwrite completed private setup', async () => {
+  let completeStatus;
+  const dom = page(async (url, opts) => {
+    if (url === '/api/public-url') return { ok: true, json: () => new Promise(resolve => { completeStatus = resolve; }) };
+    if (url === '/api/tailscale/private-share') return json({ sharingUrl: 'https://peer.tail123456.ts.net:8443' });
+    return json(String(url).includes('/peers') || String(url).includes('/invites') ? [] : {});
+  }, 'http://localhost:7890/#access=owner-test-key');
+  try {
+    await tick();
+    const d = dom.window.document;
+    d.getElementById('enablePrivateShareBtn').click(); await tick();
+    completeStatus({ publicUrl: 'https://old.example.com', privateSharing: false }); await tick();
+    assert.equal(d.getElementById('stopPrivateShareBtn').hidden, false);
+    assert.equal(d.getElementById('publicUrlInput').value, 'https://peer.tail123456.ts.net:8443');
+  } finally { dom.window.close(); }
+});
+
+test('private sharing failure preserves the address, escapes messages and restores buttons', async () => {
+  const dom = page(async url => url === '/api/tailscale/private-share'
+    ? { ok: false, json: async () => ({ error: '<img src=x onerror=alert(1)> permission denied' }) }
+    : json({}));
+  try {
+    const d = dom.window.document;
+    d.getElementById('publicUrlInput').value = 'https://existing.example.com';
+    d.getElementById('enablePrivateShareBtn').click(); await tick();
+    assert.equal(d.getElementById('publicUrlInput').value, 'https://existing.example.com');
+    assert.equal(d.getElementById('publicUrlStatus').querySelector('img'), null);
+    for (const id of ['enablePrivateShareBtn', 'stopPrivateShareBtn', 'enableFunnelBtn'])
+      assert.equal(d.getElementById(id).disabled, false);
+    d.getElementById('stopPrivateShareBtn').hidden = false;
+    d.getElementById('stopPrivateShareBtn').click(); await tick();
+    assert.equal(d.getElementById('publicUrlInput').value, 'https://existing.example.com');
+    assert.equal(d.getElementById('stopPrivateShareBtn').hidden, false);
+  } finally { dom.window.close(); }
+});
+
 test('Companion shows pool invites so Plex owners can join a Federation pool', () => {
   assert.match(html, /id="poolInviteList"/);
   assert.match(html, /\/api\/pools\/invites/);

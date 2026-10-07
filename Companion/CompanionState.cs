@@ -64,8 +64,8 @@ public sealed class CompanionState
     public string? ServerMachineIdentifier { get; set; }
 
     /// <summary>
-    /// This app's own externally-reachable address (a Tailscale Funnel
-    /// hostname in the common case) - what a Jellyfin Federation server
+    /// This app's own peer-reachable address (private Serve, public Funnel,
+    /// or an owner-provided HTTPS reverse proxy) - what a Jellyfin Federation server
     /// calls to complete a connect-code exchange. Set once, during the
     /// Tailscale setup step; unrelated to <see cref="ServerBaseUrl"/>, which
     /// is Plex's own address and may differ (its own Funnel port, or a
@@ -73,6 +73,18 @@ public sealed class CompanionState
     /// user's tailnet).
     /// </summary>
     public string? PublicUrl { get; set; }
+
+    /// <summary>Explicit owner choice: serve original files instead of using Plex's media API.</summary>
+    public bool LocalFileRelayEnabled { get; set; }
+
+    /// <summary>Optional owner mappings when Plex and Companion use different filesystem namespaces.</summary>
+    public List<LocalFileRootMapping> LocalFileRootMappings { get; set; } = new();
+
+    /// <summary>Only the private HTTPS listener this installation configured.</summary>
+    public int? PrivateSharingPort { get; set; }
+
+    /// <summary>Previous runtime port, used to recognize our handler after a restart.</summary>
+    public int? PrivateSharingLocalPort { get; set; }
 
     /// <summary>
     /// Optional URL Plex itself should use to fetch imported <c>.strm</c>
@@ -137,6 +149,12 @@ public sealed class CompanionState
                 if (loaded != null)
                 {
                     var migrated = false;
+                    if (loaded.LocalFileRootMappings == null)
+                    {
+                        loaded.LocalFileRootMappings = new();
+                        loaded.LocalFileRelayEnabled = false;
+                        migrated = true;
+                    }
                     if (!CompanionSecrets.IsValid(loaded.AdminAccessKey))
                     {
                         loaded.AdminAccessKey = CompanionSecrets.Create();

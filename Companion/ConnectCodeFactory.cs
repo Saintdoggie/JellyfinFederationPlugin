@@ -12,7 +12,7 @@ namespace FederationCompanion;
 public static class ConnectCodeFactory
 {
     public const string FunnelMissRequiresExplicitChoice =
-        "Funnel is set but it is not this Companion (it may be Plex, or HTTPS is down). Fix Funnel so it points at Companion, or explicitly choose Plex Remote Access. Companion will not put your Plex token in a connect code while Funnel is expected.";
+        "The sharing address is set but it is not reachable as this Companion (it may point at Plex, or HTTPS is down). Check private-network access or the public HTTPS relay, or explicitly choose Plex Remote Access. Companion will not put your Plex token in a connect code while its relay is expected.";
 
     public sealed record SharedLibraryView(string SectionKey, string Title, string Type);
 
@@ -101,7 +101,7 @@ public static class ConnectCodeFactory
         }
 
         code = null;
-        error = "Friends outside your home need a public path. Turn on Tailscale Funnel for this app (Starlink, no port forwarding), or enable Plex Remote Access / Plex Relay.";
+        error = "Friends need a reachable sharing address. Set up private sharing in Companion, use public Tailscale Funnel or your own HTTPS address, or explicitly choose Plex Remote Access (subject to Plex playback requirements).";
         return false;
     }
 

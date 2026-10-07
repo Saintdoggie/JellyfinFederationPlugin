@@ -34,7 +34,7 @@ public class CompanionVersionTests
 
     [Fact]
     public void ReadDnsName_TrimsTrailingDot()
-        => Assert.Equal("plexpal.tail123456.ts.net", TailscaleHelper.ReadDnsName("{\"Self\":{\"DNSName\":\"plexpal.tail123456.ts.net.\"}}"));
+        => Assert.Equal("example-peer.tail123456.ts.net", TailscaleHelper.ReadDnsName("{\"Self\":{\"DNSName\":\"example-peer.tail123456.ts.net.\"}}"));
 
     [Fact]
     public void RestartScript_LeavesProcessCleanupToHostAndStopsOnCopyFailure()

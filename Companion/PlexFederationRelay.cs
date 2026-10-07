@@ -124,7 +124,10 @@ public sealed class PlexFederationRelay
                 outgoing.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
-            await RelayRawAsync(path, incoming, outgoing, cancellationToken).ConfigureAwait(false);
+            if (_state.LocalFileRelayEnabled)
+                await LocalPlexFileRelay.RelayAsync(_state, current.Body, path, incoming.HttpContext, cancellationToken).ConfigureAwait(false);
+            else
+                await RelayRawAsync(path, incoming, outgoing, cancellationToken).ConfigureAwait(false);
             return;
         }
 

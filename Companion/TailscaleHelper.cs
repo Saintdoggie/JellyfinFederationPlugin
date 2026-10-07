@@ -1,90 +1,22 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace FederationCompanion;
 
-/// <summary>
-/// Detects whether Tailscale is installed and signed in on this machine, and
-/// gives OS-specific guidance for whichever step is missing. A federated
-/// Plex server needs to be reachable from the internet without exposing the
-/// user's home network directly - Tailscale (with Funnel for the actual
-/// public HTTPS ingress) is the path this whole plugin was designed around,
-/// so getting a non-technical user through that setup correctly matters as
-/// much as the Plex sign-in step does.
-/// <para>
-/// Install/sign-in stay copy-paste guidance. Funnel is an explicit UI
-/// button: Starlink/CGNAT friends have no port-forward, and Funnel HTTPS
-/// certificates must be requested or TLS dies while DNS still looks live.
-/// </para>
-/// </summary>
+/// <summary>Discovers the installed network helper and offers explicit private or public relay setup.</summary>
 public static class TailscaleHelper
 {
-    public static async Task<TailscaleStatus> CheckAsync(CancellationToken cancellationToken)
-    {
-        var binaryPath = FindBinary();
-        if (binaryPath == null)
-        {
-            return new TailscaleStatus(Installed: false, SignedIn: false, InstallCommand: GetInstallCommand(), DnsName: null);
-        }
+    internal static readonly TailscaleNetworkService Network = new();
 
-        try
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo(binaryPath, "status --json")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                }
-            };
+    public static Task<TailscaleShareResult> SetUpPrivateAsync(int localPort, int? previousPort, int? previousLocalPort, CancellationToken cancellationToken)
+        => Network.SetUpPrivateAsync(localPort, previousPort, previousLocalPort, cancellationToken);
 
-            process.Start();
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+    public static Task<TailscaleStatus> CheckAsync(CancellationToken cancellationToken)
+        => Network.CheckAsync(cancellationToken);
 
-            // Exit code 0 with actual JSON back means signed in and running;
-            // anything else (including "not logged in" and "not running")
-            // exits non-zero, which is all this needs to distinguish -
-            // parsing the JSON further would only matter for showing which
-            // tailnet, and this app doesn't need that.
-            var signedIn = process.ExitCode == 0 && !string.IsNullOrWhiteSpace(stdout);
-            var dnsName = signedIn ? ReadDnsName(stdout) : null;
-            return new TailscaleStatus(Installed: true, SignedIn: signedIn, InstallCommand: null, DnsName: dnsName);
-        }
-        catch (Exception)
-        {
-            // Binary found on disk but couldn't actually run it (permissions,
-            // daemon not started, etc.) - treat the same as "needs sign-in",
-            // since the fix (run `tailscale up`) is the same either way.
-            return new TailscaleStatus(Installed: true, SignedIn: false, InstallCommand: null, DnsName: null);
-        }
-    }
+    private static string? FindBinary() => TailscaleCommandRunner.FindBinary();
 
-    private static string? FindBinary()
-    {
-        var candidates = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? new[] { @"C:\Program Files\Tailscale\tailscale.exe", @"C:\Program Files (x86)\Tailscale\tailscale.exe" }
-            : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-                ? new[] { "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale" }
-                : new[] { "/usr/bin/tailscale", "/usr/sbin/tailscale", "/usr/local/bin/tailscale" };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        // Fall back to PATH lookup - covers the common case where it's
-        // installed somewhere not in the fixed list above but still callable
-        // by name.
-        return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "tailscale.exe" : "tailscale";
-    }
-
-    private static string GetInstallCommand()
+    internal static string InstallCommand()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -111,9 +43,11 @@ public static class TailscaleHelper
             }
 
             var name = dns.GetString()?.Trim().TrimEnd('.');
-            return string.IsNullOrWhiteSpace(name) ? null : name;
+            return !string.IsNullOrWhiteSpace(name) && name.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase)
+                && Uri.CheckHostName(name) == UriHostNameType.Dns && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')
+                ? name : null;
         }
-        catch (JsonException)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
             return null;
         }
@@ -161,46 +95,12 @@ public static class TailscaleHelper
     }
 
     private static async Task<(bool Ok, string Output, string Error)> RunAsync(
-        string binary,
-        string arguments,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
+        string binary, string arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        try
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo(binary, arguments)
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                }
-            };
-            process.Start();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(timeout);
-            try
-            {
-                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                return (false, string.Empty, "Timed out talking to Tailscale.");
-            }
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            return (process.ExitCode == 0, stdout, string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            return (false, string.Empty, ex.Message);
-        }
+        var result = await new TailscaleCommandRunner().RunAsync(arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries), timeout, cancellationToken).ConfigureAwait(false);
+        return (result.Success, result.Output, result.Error);
     }
+
 }
 
 public sealed record TailscaleStatus(bool Installed, bool SignedIn, string? InstallCommand, string? DnsName = null);
