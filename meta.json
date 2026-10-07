@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.172",
-  "changelog": "Adds a loading bar for slow federated starts: when a federated title is still black 1.5 seconds after play, a simple bar at the bottom shows a projected countdown, why it is taking a while, and a fun fact (admin switches for the bar, the fun-fact lookup and the fast-start analysis window; facts are fetched by the server, with a built-in fallback). Measures each friend's connection speed daily, when a server is added, and when one comes back online (Jellyfin peers and Plex), and uses it to project start times. When a title is on several friends' servers and the first choice would take over 30 seconds to start, prefers a clearly faster online source (only measured sources are ever preferred; otherwise your priority order stands). Adds timing logs for slow upstream responses and media-source resolution, and an admin diagnostic for Plex transcoding. Bounds how much of a remote file ffmpeg analyses before starting (quality is unchanged). Titles whose source reports two streams with the same index now keep their stream info instead of triggering a slow first-play probe.",
+  "version": "0.0.173",
+  "changelog": "Downloads from a Plex source that is offline no longer break the Downloads tab: it now says the server can't be reached, offline servers are marked in the picker, and downloads queued from them wait until it is back. Adds an opt-in adaptive player (Advanced → off by default) that can switch a movie to another friend's copy mid-play when that copy is clearly more reliable, preparing the new source first and showing a brief 'Switched to <server>' notice. Detail pages show which servers have a title and let you pick one instead of Auto. Learns when each friend's server is usually online and shows a forecast; adds a Log tab with this plugin's recent messages. Includes the Companion private file-sharing preview. UI uses solid colours throughout.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-03T22:16:16Z",
+  "timestamp": "2026-10-07T14:37:03Z",
   "imageUrl": "thumb.png"
 }
