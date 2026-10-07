@@ -396,6 +396,34 @@ public class FederationStreamHandlerTests : IDisposable
         return (context.Request, context.Response, body);
     }
 
+    [Fact]
+    public async Task ProxyHead_ProbesTheRemoteAndReturnsRangeMetadataWithoutABody()
+    {
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            Assert.Equal(HttpMethod.Head, req.Method);
+            Assert.Equal("bytes=100-199", req.Headers.Range?.ToString());
+            var upstream = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(Array.Empty<byte>())
+            };
+            upstream.Headers.TryAddWithoutValidation("Accept-Ranges", "bytes");
+            upstream.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(100, 199, 1000);
+            upstream.Content.Headers.ContentLength = 100;
+            return upstream;
+        }));
+
+        var (request, response, body) = MakeContext("bytes=100-199");
+        request.Method = HttpMethods.Head;
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status206PartialContent, response.StatusCode);
+        Assert.Equal(100, response.ContentLength);
+        Assert.Equal("bytes 100-199/1000", response.Headers["Content-Range"].ToString());
+        Assert.Equal("bytes", response.Headers["Accept-Ranges"].ToString());
+        Assert.Equal(0, body.Length);
+    }
+
     [Theory]
     [InlineData("GET")]
     [InlineData("HEAD")]

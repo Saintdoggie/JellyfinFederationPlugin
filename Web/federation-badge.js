@@ -94,6 +94,26 @@
       '.federation-origin-empty{display:none;padding:1.4em .2em;opacity:.7;}',
       '.federation-origin-empty[data-show="1"]{display:block;}',
 
+      // Detail-page server picker: one chip per server that can play this
+      // title. Chips drive jellyfin-web's own version <select>, so choosing one
+      // overrides Auto exactly like picking it from that dropdown. Colours come
+      // from the active theme (currentColor / --theme-primary-color).
+      '.federation-server-picker{margin:.4em 0 1em;}',
+      '.federation-server-heading{display:flex;align-items:center;gap:.4em;margin:0 0 .5em;opacity:.75;font-size:.95em;}',
+      '.federation-server-heading svg{display:block;width:1.1em;height:1.1em;flex-shrink:0;}',
+      '.federation-server-chips{display:flex;flex-wrap:wrap;gap:.5em;}',
+      '.federation-server-chip{display:flex;flex-direction:column;align-items:flex-start;gap:.15em;min-width:7em;max-width:100%;text-align:start;font:inherit;color:inherit;line-height:1.25;',
+      'background:rgba(128,128,128,.12);border:1px solid rgba(128,128,128,.4);border-radius:.5em;padding:.5em .9em;cursor:pointer;}',
+      '.federation-server-chip:hover{background:rgba(128,128,128,.2);}',
+      '.federation-server-chip[aria-pressed="true"]{border-color:var(--theme-primary-color,#00a4dc);background:rgba(0,164,220,.14);}',
+      '.federation-server-chip:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:2px;}',
+      '.federation-server-chip[data-single="1"]{cursor:default;}',
+      '.federation-server-chip-name{display:flex;align-items:center;gap:.5em;font-weight:600;}',
+      '.federation-server-chip-pill{font-size:.75em;font-weight:500;line-height:1.4;padding:0 .55em;border-radius:1em;border:1px solid currentColor;opacity:.75;}',
+      '.federation-server-chip-meta{font-size:.82em;opacity:.7;}',
+      '.federation-server-hint{margin:.55em 0 0;font-size:.88em;opacity:.7;}',
+      '.federation-server-reset{border:0;background:transparent;color:var(--theme-primary-color,#00a4dc);font:inherit;padding:0;margin-inline-start:.4em;cursor:pointer;text-decoration:underline;}',
+
       // Download/Hide entries injected into the native "..." action sheet
       // (.actionSheetMenuItem) - no rules of our own needed beyond a disabled
       // look while busy, since every other visual (icon, label, hover, focus)
@@ -876,6 +896,179 @@
     info.appendChild(tag);
   }
 
+  // -------------------------------------------------------------------------
+  // Detail page server picker
+  //
+  // The plugin already returns one media source per server that can play a
+  // title (the best-ranked one is named "<server> (Auto)"), and jellyfin-web
+  // exposes them in its own version <select class="selectSource"> - but only as
+  // a small dropdown that is easy to miss. This renders those same sources as
+  // chips and writes the choice back into that select, so playback uses the
+  // exact source the viewer picked instead of the Auto ranking. The select
+  // stays the single source of truth; chips only mirror and drive it.
+  // -------------------------------------------------------------------------
+
+  // normalized item id -> { mediaSourceId: { height, bitrate, container } }
+  var sourceDetailsByItem = {};
+  var sourceDetailFetches = {};
+
+  function cleanSourceName(name) {
+    var out = String(name || '').trim();
+    var next;
+    do {
+      next = out.replace(/\s*\((?:Auto|primary)\)\s*$/i, '');
+      var changed = next !== out;
+      out = next;
+    } while (changed);
+    return out || 'Server';
+  }
+
+  function loadSourceDetails(rawId) {
+    var key = normalizeId(rawId);
+    if (sourceDetailsByItem[key] || sourceDetailFetches[key]) {
+      return;
+    }
+
+    var api = window.ApiClient;
+    if (!api || typeof api.getItem !== 'function' || typeof api.getCurrentUserId !== 'function') {
+      return;
+    }
+
+    sourceDetailFetches[key] = true;
+    var map = {};
+    Promise.resolve()
+      .then(function () { return api.getItem(api.getCurrentUserId(), rawId); })
+      .then(function (item) {
+        ((item && item.MediaSources) || []).forEach(function (src) {
+          var video = (src.MediaStreams || []).filter(function (t) { return t.Type === 'Video'; })[0];
+          map[src.Id] = {
+            height: (video && video.Height) || 0,
+            bitrate: src.Bitrate || 0,
+            container: src.Container || ''
+          };
+        });
+      })
+      .catch(function () { /* chips still render from the dropdown's own names */ })
+      .then(function () {
+        sourceDetailsByItem[key] = map;
+        delete sourceDetailFetches[key];
+        scheduleScan();
+      });
+  }
+
+  function describeSource(detail) {
+    if (!detail) {
+      return '';
+    }
+
+    var parts = [];
+    if (detail.height > 0) { parts.push(detail.height + 'p'); }
+    if (detail.bitrate > 0) { parts.push((detail.bitrate / 1000000).toFixed(1) + ' Mbps'); }
+    if (detail.container) { parts.push(String(detail.container).split(',')[0].toUpperCase()); }
+    return parts.join(' · ');
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function selectNativeSource(select, sourceId) {
+    if (!select || select.value === sourceId) {
+      return;
+    }
+
+    select.value = sourceId;
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    scheduleScan();
+  }
+
+  function removeServerPicker() {
+    document.querySelectorAll('.federation-server-picker').forEach(function (el) { el.remove(); });
+  }
+
+  function renderServerPicker(rawId) {
+    var id = normalizeId(rawId);
+    var anchor = document.querySelector('.mainDetailButtons');
+    if (!anchor || !anchor.parentNode) {
+      removeServerPicker();
+      return;
+    }
+
+    var select = document.querySelector('select.selectSource');
+    var sources = select ? Array.prototype.map.call(select.options, function (opt) {
+      return { id: opt.value, name: opt.textContent };
+    }) : [];
+
+    var single = sources.length < 2;
+    if (single) {
+      // One server (or the dropdown isn't populated yet): still name it, there
+      // is just nothing to choose between.
+      sources = [{ id: '', name: federatedIds.get(id) || 'Another server' }];
+    } else {
+      loadSourceDetails(rawId);
+    }
+
+    var details = sourceDetailsByItem[id] || {};
+    var selectedId = single ? '' : select.value;
+    var signature = [id, single ? 'single' : 'multi', selectedId].concat(sources.map(function (src) {
+      return src.id + '=' + src.name + '=' + describeSource(details[src.id]);
+    })).join('|');
+
+    var picker = document.querySelector('.federation-server-picker');
+    if (picker && picker.getAttribute('data-signature') === signature && picker.previousElementSibling === anchor) {
+      return;
+    }
+
+    if (!picker) {
+      picker = document.createElement('div');
+      picker.className = 'federation-server-picker';
+      picker.addEventListener('click', function (event) {
+        var target = event.target.closest ? event.target.closest('[data-source-id]') : null;
+        if (!target || target.getAttribute('data-single') === '1') {
+          return;
+        }
+
+        event.preventDefault();
+        selectNativeSource(document.querySelector('select.selectSource'), target.getAttribute('data-source-id'));
+      });
+    }
+
+    var autoId = sources[0].id;
+    var chips = sources.map(function (src, index) {
+      var isSelected = single || src.id === selectedId;
+      var meta = describeSource(details[src.id]);
+      return '<button type="button" class="federation-server-chip" aria-pressed="' + (isSelected ? 'true' : 'false') + '"'
+        + ' data-source-id="' + escapeHtml(src.id) + '"' + (single ? ' data-single="1"' : '') + '>'
+        + '<span class="federation-server-chip-name"><span>' + escapeHtml(cleanSourceName(src.name)) + '</span>'
+        + (!single && index === 0 ? '<span class="federation-server-chip-pill">Auto</span>' : '')
+        + '</span>'
+        + (meta ? '<span class="federation-server-chip-meta">' + escapeHtml(meta) + '</span>' : '')
+        + '</button>';
+    }).join('');
+
+    var hint = '';
+    if (!single) {
+      var current = sources.filter(function (src) { return src.id === selectedId; })[0] || sources[0];
+      hint = selectedId === autoId
+        ? 'Auto plays from the best available server. Pick a server to override.'
+        : 'Playing from ' + escapeHtml(cleanSourceName(current.name)) + ' instead of Auto.'
+          + '<button type="button" class="federation-server-reset" data-source-id="' + escapeHtml(autoId) + '">Reset to Auto</button>';
+    }
+
+    picker.setAttribute('data-signature', signature);
+    picker.innerHTML = '<div class="federation-server-heading">' + ICON_SVG
+      + '<span>' + (single ? 'Streaming from' : 'Available on ' + sources.length + ' servers') + '</span></div>'
+      + '<div class="federation-server-chips" role="group" aria-label="Server">' + chips + '</div>'
+      + (hint ? '<p class="federation-server-hint">' + hint + '</p>' : '');
+
+    anchor.parentNode.insertBefore(picker, anchor.nextSibling);
+
+    if (select && !select.getAttribute('data-federation-bound')) {
+      select.setAttribute('data-federation-bound', 'true');
+      select.addEventListener('change', scheduleScan);
+    }
+  }
+
   // Builds one entry for jellyfin-web's own "..." action sheet, matching the
   // exact markup its actionsheet component renders for its own commands
   // (Refresh metadata, Delete, ...) - see actionSheetMenuItem/listItemBody/
@@ -1025,13 +1218,19 @@
 
     if (!id) {
       currentItemId = null;
+      removeServerPicker();
       return;
+    }
+
+    if (!federatedIds.has(id)) {
+      removeServerPicker();
     }
 
     if (federatedIds.has(id)) {
       currentItemId = rawId;
       currentItemIsFederated = true;
       injectSourceTag(rawId, federatedIds.get(id));
+      renderServerPicker(rawId);
       bindMoreCommandsMenu();
       return;
     }

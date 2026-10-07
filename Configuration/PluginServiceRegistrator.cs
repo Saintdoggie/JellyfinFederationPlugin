@@ -36,6 +36,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
             serviceCollection.AddSingleton<FederationAvailabilityService>();
+            serviceCollection.AddSingleton<FederationLogBuffer>();
+            serviceCollection.AddSingleton<AvailabilityScheduleStore>();
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
             serviceCollection.AddSingleton<FederationDownloadService>();
