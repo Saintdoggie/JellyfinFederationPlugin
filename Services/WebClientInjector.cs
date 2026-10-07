@@ -19,8 +19,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class WebClientInjector
     {
-        private const string Marker = "<!-- jellyfin-federation-badge -->";
-        private const string ScriptTag = "<script defer src=\"/Plugins/Federation/ClientScript\"></script>" + Marker;
+        private const string Marker = FederationClientScriptHtml.Marker;
 
         private readonly IApplicationPaths _applicationPaths;
         private readonly ILogger<WebClientInjector> _logger;
@@ -60,21 +59,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var html = File.ReadAllText(indexPath);
-                if (html.Contains(Marker, StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                var bodyCloseIndex = html.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
-                if (bodyCloseIndex < 0)
-                {
-                    _logger.LogWarning("[Federation] index.html has no </body> tag; skipping badge script injection");
-                    return;
-                }
-
-                var updated = html.Insert(bodyCloseIndex, ScriptTag);
+                var updated = FederationClientScriptHtml.Inject(html, Plugin.Instance?.Configuration.EnableAdaptivePlayback == true);
+                if (html == updated) return;
                 File.WriteAllText(indexPath, updated);
-                _logger.LogInformation("[Federation] Injected badge script tag into {Path}", indexPath);
+
             }
             catch (Exception ex)
             {
@@ -113,7 +101,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var updated = html.Replace(ScriptTag, string.Empty, StringComparison.Ordinal);
+                var updated = html.Replace(FederationClientScriptHtml.Early, string.Empty, StringComparison.Ordinal)
+                    .Replace(FederationClientScriptHtml.Deferred, string.Empty, StringComparison.Ordinal);
                 File.WriteAllText(indexPath, updated);
                 _logger.LogInformation("[Federation] Removed badge script tag from {Path}", indexPath);
             }

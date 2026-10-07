@@ -842,6 +842,8 @@
                                 <input type="text" id="fedTxtCachePath" class="emby-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkAdaptivePlayback" class="emby-checkbox fed-check" /> Adaptive movie playback (web preview)</label>
+                            <p class="fieldDescription">Prepare and switch between matching friends' copies during playback. Uses a web player with native controls; requires additional bandwidth and sometimes a second transcode. Reload the web client after saving. Other clients keep their normal player.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingOverlay" class="emby-checkbox fed-check" /> Show a loading bar while a federated title starts</label>
                             <p class="fieldDescription">When a federated title is still a black screen 1.5 seconds after pressing play, a simple bar at the bottom shows a projected countdown, why it is taking a while, and a fun fact. It never covers the player controls and disappears as soon as video plays.</p>
@@ -5681,6 +5683,7 @@
                             q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
                             q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
+                            q('#fedChkAdaptivePlayback').checked = currentConfig.EnableAdaptivePlayback === true;
 
                             renderFriends();
                             loadFriendHealth(false);
@@ -5726,6 +5729,7 @@
                             EnablePlexStrmExport: q('#fedChkPlexStrmExport').checked,
                             PlexStrmExportPath: q('#fedTxtPlexStrmPath').value.trim(),
                             PreferHigherQualityRemotes: q('#fedChkPreferQuality').checked,
+                            EnableAdaptivePlayback: q('#fedChkAdaptivePlayback').checked,
                             // Retired: quality review is now delete-only storage
                             // cleanup and never starts a replacement transfer.
                             EnableQualityReplacementActions: false,

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -75,6 +76,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationItemPersistenceService _persistence;
         private readonly ConcurrentDictionary<string, ServerAvailability> _states = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new(StringComparer.OrdinalIgnoreCase);
+        private readonly AdaptiveSourceRanking _ranking;
+        private readonly ConcurrentDictionary<string, DateTime> _nextProbe = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _probeGate = new(1, 1);
         private CancellationTokenSource? _cts;
         private Task? _loop;
@@ -91,12 +94,13 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationAvailabilityService> logger,
             IRemoteServerClientFactory clientFactory,
             ExternalCatalogRegistry externalCatalogs,
-            FederationItemPersistenceService persistence)
+            FederationItemPersistenceService persistence, AdaptiveSourceRanking? ranking = null)
         {
             _logger = logger;
             _clientFactory = clientFactory;
             _externalCatalogs = externalCatalogs;
             _persistence = persistence;
+            _ranking = ranking ?? new AdaptiveSourceRanking();
         }
 
         /// <summary>
@@ -189,7 +193,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 try
                 {
-                    await ProbeAllAsync(cancellationToken).ConfigureAwait(false);
+                    await ProbeAllAsync(cancellationToken, force: false).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -215,7 +219,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Probes every enabled server once. Public for the manual "rescan now"
         /// endpoint and for tests; the background loop calls the same method.
         /// </summary>
-        public async Task ProbeAllAsync(CancellationToken cancellationToken = default)
+        public async Task ProbeAllAsync(CancellationToken cancellationToken = default, bool force = true)
         {
             if (!await _probeGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             {
@@ -226,7 +230,7 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 var servers = Plugin.Instance?.Configuration?.RemoteServers
-                    ?.Where(s => s.Enabled)
+                    ?.Where(s => s.Enabled && (force || !_nextProbe.TryGetValue(s.Id, out var due) || due <= DateTime.UtcNow))
                     .ToList() ?? new List<RemoteServer>();
                 if (servers.Count == 0)
                 {
@@ -269,6 +273,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task ProbeOneAsync(RemoteServer server, CancellationToken cancellationToken)
         {
+            var probeTime = Stopwatch.StartNew();
             using var timeoutCts = new CancellationTokenSource(ProbeTimeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
@@ -324,11 +329,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            RecordResult(server, online, error);
+            RecordResult(server, online, error, online ? probeTime.Elapsed.TotalMilliseconds : null);
         }
 
-        internal void RecordResult(RemoteServer server, bool online, string? error)
+        internal void RecordResult(RemoteServer server, bool online, string? error, double? latencyMs = null)
         {
+            _ranking.ObserveProbe(server.Id, online, latencyMs);
             var state = _states.GetOrAdd(server.Id, _ => new ServerAvailability());
             var previous = state.Reachability;
             state.LastCheckedUtc = DateTime.UtcNow;
@@ -355,6 +361,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     state.Reachability = ServerReachability.Unknown;
                 }
             }
+
+            var failuresNow = _consecutiveFailures.GetValueOrDefault(server.Id);
+            var seconds = online ? ProbeInterval.TotalSeconds : failuresNow == 1 ? ConfirmInterval.TotalSeconds
+                : Math.Min(480, ProbeInterval.TotalSeconds * Math.Pow(2, Math.Min(failuresNow - 2, 2)));
+            _nextProbe[server.Id] = DateTime.UtcNow.AddSeconds(seconds * (0.9 + Random.Shared.NextDouble() * 0.2));
 
             if (previous != state.Reachability
                 && (state.Reachability == ServerReachability.Offline || state.Reachability == ServerReachability.Online))
@@ -414,6 +425,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
             _states.TryRemove(serverId, out _);
             _consecutiveFailures.TryRemove(serverId, out _);
+            _nextProbe.TryRemove(serverId, out _);
+            _ranking.Forget(serverId);
         }
     }
 }

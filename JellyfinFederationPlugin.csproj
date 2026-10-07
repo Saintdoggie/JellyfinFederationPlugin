@@ -18,6 +18,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
     <EmbeddedResource Include="Web\federation-badge.js" />
+    <EmbeddedResource Include="Web\federation-adaptive.js" />
+    <EmbeddedResource Include="Web\vendor\hls.light.min.js" />
   </ItemGroup>
 
   <ItemGroup>

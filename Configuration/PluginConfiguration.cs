@@ -111,6 +111,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// </summary>
         public bool ShowFederatedCloudBadges { get; set; } = false;
 
+        /// <summary>Opt-in web player preview with prepared adaptive source handoff.</summary>
+        public bool EnableAdaptivePlayback { get; set; } = false;
+
         /// <summary>
         /// Gets or sets a value indicating whether the config page should compare
         /// each locally-owned item against its federated dedup counterparts (see

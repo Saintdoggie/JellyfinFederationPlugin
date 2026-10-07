@@ -58,6 +58,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
+        private readonly AdaptiveSourceRanking _ranking;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationStreamHandler"/> class.
@@ -68,7 +69,7 @@ namespace Jellyfin.Plugin.Federation.Services
             RemoteAccessControlService accessControl,
             IRemoteServerClientFactory clientFactory,
             ExternalCatalogRegistry externalCatalogs,
-            WanBandwidthMonitor bandwidthMonitor)
+            WanBandwidthMonitor bandwidthMonitor, AdaptiveSourceRanking? ranking = null)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -76,6 +77,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _accessControl = accessControl;
             _externalCatalogs = externalCatalogs;
             _bandwidthMonitor = bandwidthMonitor;
+            _ranking = ranking ?? new AdaptiveSourceRanking();
         }
 
         /// <summary>
@@ -540,7 +542,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var capMbps = isAudio || server.StreamingMode == StreamingMode.Direct && server.Kind == ServerKind.Jellyfin
                     ? null
                     : _bandwidthMonitor.GetEffectiveCapMbps(server);
-                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps).ConfigureAwait(false);
+                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
 
                 // A rejected token is almost always the remote having restarted:
                 // both of its in-memory token stores were wiped, while this side
@@ -581,7 +583,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
                         remoteItemId,
                         server.Name);
-                    await RelayAsync(url, request, response, cancellationToken, capMbps).ConfigureAwait(false);
+                    await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -610,7 +612,7 @@ namespace Jellyfin.Plugin.Federation.Services
             HttpRequest request,
             HttpResponse response,
             CancellationToken cancellationToken,
-            string? internalRelayKey = null)
+            string? internalRelayKey = null, string? observationServerId = null)
         {
             await RelayAsync(loopbackUrl, request, response, cancellationToken, internalRelayKey: internalRelayKey).ConfigureAwait(false);
         }
@@ -675,7 +677,7 @@ namespace Jellyfin.Plugin.Federation.Services
             HttpResponse response,
             CancellationToken cancellationToken,
             int? capMbps = null,
-            string? internalRelayKey = null)
+            string? internalRelayKey = null, string? observationServerId = null)
         {
             var rangeStart = 0L;
             byte[]? buffer = null;
@@ -708,6 +710,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 var capBytesPerSecond = capMbps.HasValue ? capMbps.Value * 1_000_000L / 8 : (long?)null;
                 var throttle = capBytesPerSecond.HasValue ? Stopwatch.StartNew() : null;
                 long bytesRelayed = 0;
+                long observedBytes = 0;
+                var observedReadTime = TimeSpan.Zero;
 
                 while (true)
                 {
@@ -743,6 +747,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         {
                             if ((int)remoteResp.StatusCode >= 500)
                             {
+                                if (observationServerId != null) _ranking.ObserveStall(observationServerId);
                                 _logger.LogWarning(
                                     "[Federation] Upstream stream at {UpstreamHost} returned HTTP {StatusCode}",
                                     GetSafeUpstreamHost(url),
@@ -835,7 +840,14 @@ namespace Jellyfin.Plugin.Federation.Services
                             using (var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                             {
                                 idleCts.CancelAfter(IdleReadTimeout);
-                                read = await remoteStream.ReadAsync(buffer.AsMemory(0, bufferSize), idleCts.Token).ConfigureAwait(false);
+                                var beforeRead = Stopwatch.GetTimestamp();
+                                try { read = await remoteStream.ReadAsync(buffer.AsMemory(0, bufferSize), idleCts.Token).ConfigureAwait(false); }
+                                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                                {
+                                    if (observationServerId != null) _ranking.ObserveStall(observationServerId);
+                                    throw;
+                                }
+                                observedReadTime += Stopwatch.GetElapsedTime(beforeRead);
                             }
 
                             if (!firstByteLogged)
@@ -846,7 +858,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             if (read == 0)
                             {
+                                if (observationServerId != null) _ranking.ObserveTransfer(observationServerId, observedBytes, observedReadTime);
                                 return null;
+                            }
+
+                            observedBytes += read;
+                            if (observedReadTime.TotalSeconds >= 5)
+                            {
+                                if (observationServerId != null) _ranking.ObserveTransfer(observationServerId, observedBytes, observedReadTime);
+                                observedBytes = 0; observedReadTime = TimeSpan.Zero;
                             }
 
                             // No per-chunk FlushAsync: Kestrel already sends each
