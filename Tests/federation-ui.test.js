@@ -572,7 +572,7 @@ function catalogHarness(options) {
 function pagingHarness(kind, { fallback = false } = {}) {
   const names = ['loadCatalog', 'armCatalogSentinel', 'observePagingSentinel', 'retryCatalog', 'retryBrowse',
     'loadBrowseItems', 'armBrowseSentinel', 'resetBrowseSeriesState', 'browseSelectionItems',
-    'onBrowseServerChange', 'onBrowseLibraryChange', 'openBrowseSeries', 'closeBrowseSeries',
+    'browseServerOffline', 'onBrowseServerChange', 'onBrowseLibraryChange', 'openBrowseSeries', 'closeBrowseSeries',
     'switchTab', 'setDownloadView', 'stopPagePolling', 'pageIsVisible', 'readJson'];
   const source = names.map(name => {
     const start = configPage.indexOf('                    function ' + name + '(');
