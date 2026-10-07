@@ -1583,3 +1583,8 @@ test('server picker uses theme variables and no hard-coded palette', () => {
   assert.match(block, /var\(--theme-primary-color/);
   assert.equal(/#(?!00a4dc)[0-9a-f]{3,6}\b/i.test(block), false);
 });
+
+test('admin page and web scripts use solid colours only (owner preference: no gradients)', () => {
+  assert.doesNotMatch(configPage, /gradient\(/i);
+  assert.doesNotMatch(badgeScript, /gradient\(/i);
+});

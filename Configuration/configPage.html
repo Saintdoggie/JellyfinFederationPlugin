@@ -121,6 +121,13 @@
                 #federationConfigPage .fed-srvstatus-ok { color: var(--fed-ok-text); }
                 #federationConfigPage .fed-srvstatus-err { color: var(--fed-err-text); }
                 #federationConfigPage .fed-srvstatus-info { opacity: 0.8; }
+                /* Downloads: errors and notices read as callouts, not faint text, so an
+                   unreachable source is obvious instead of looking like a broken tab. */
+                #federationConfigPage #fedBrowseStatus { margin: 0.9em 0; padding: 0.7em 0.95em; border-radius: 0.5em; border-left: 3px solid var(--fed-accent); background: rgba(127,127,127,0.10); opacity: 1; }
+                #federationConfigPage #fedBrowseStatus.fed-srvstatus-err { border-left-color: var(--fed-err-text); background: rgba(224,108,108,0.10); }
+                #federationConfigPage #fedBrowseStatus.fed-srvstatus-ok { border-left-color: var(--fed-ok-text); }
+                #federationConfigPage #fedBrowseRetry { margin: 0 0 1em; border: 1px solid rgba(127,127,127,0.35); border-radius: 0.4em; padding: 0.45em 1em; }
+                #federationConfigPage #fedBrowseList > .fed-muted:only-child { text-align: center; padding: 2.5em 1em; border: 1px dashed rgba(127,127,127,0.3); border-radius: 0.6em; }
                 #federationConfigPage .fed-tailscale-panel { border-top: 1px solid var(--fed-border-soft); border-bottom: 1px solid var(--fed-border-soft); padding: 0.9em 0; margin: 0.6em 0 1.2em; }
 
                 /* Roster rows: friends, friend requests, pools, hidden items - a
@@ -763,7 +770,7 @@
                     </div>
 
                     <div id="fedBrowseSeriesHeader" style="display:none;"></div>
-                    <div id="fedBrowseStatus" class="fed-srvstatus" style="display:none;"></div>
+                    <div id="fedBrowseStatus" class="fed-srvstatus" role="status" aria-live="polite" style="display:none;"></div>
                     <div id="fedBrowseList"></div>
                     <div id="fedBrowseSentinel" class="fed-lazy-sentinel" aria-hidden="true"></div>
                     <button type="button" class="emby-button button-flat" id="fedBrowseRetry" data-fed-action="browse-retry" style="display:none;">Retry downloads catalog</button>

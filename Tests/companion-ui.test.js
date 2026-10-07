@@ -355,3 +355,7 @@ test('inside the Windows app window the redundant open button is hidden', async 
     assert.ok(!inBrowser.window.document.getElementById('openDashboardBtn').classList.contains('hidden'));
   } finally { inApp.window.close(); inBrowser.window.close(); }
 });
+
+test('Companion dashboard uses solid colours only (owner preference: no gradients)', () => {
+  assert.doesNotMatch(html, /gradient\(/i);
+});
