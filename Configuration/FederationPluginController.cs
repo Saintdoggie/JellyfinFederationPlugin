@@ -3895,6 +3895,20 @@ namespace Jellyfin.Plugin.Federation.Api
 
         #region Browse & Selective Download
 
+        // A Plex/external source that is offline throws from its client. Answer
+        // with a readable 503 instead of Jellyfin's bare 500 so the Downloads tab
+        // can say which server is unreachable rather than breaking.
+        private static bool IsExternalSourceFailure(Exception ex, CancellationToken cancellationToken)
+            => !cancellationToken.IsCancellationRequested
+                && ex is InvalidOperationException or HttpRequestException or TaskCanceledException or System.IO.IOException;
+
+        private ObjectResult ExternalSourceUnavailable(RemoteServer server)
+            => StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                success = false,
+                message = $"{server.Name} can't be reached right now, so its catalog can't be browsed. Downloads you queue from it wait until it is back online."
+            });
+
         /// <summary>
         /// Lists the libraries a connected server exposes, for the Browse tab's
         /// server picker. Works for a Jellyfin peer (native <c>Peer/Libraries</c>)
@@ -3914,9 +3928,18 @@ namespace Jellyfin.Plugin.Federation.Api
             if (server.Kind != ServerKind.Jellyfin)
             {
                 var provider = _externalCatalogs.For(server);
-                var libs = provider == null
-                    ? new List<ExternalLibrary>()
-                    : (await provider.GetAllLibrariesAsync(server, cancellationToken).ConfigureAwait(false)).ToList();
+                List<ExternalLibrary> libs;
+                try
+                {
+                    libs = provider == null
+                        ? new List<ExternalLibrary>()
+                        : (await provider.GetAllLibrariesAsync(server, cancellationToken).ConfigureAwait(false)).ToList();
+                }
+                catch (Exception ex) when (IsExternalSourceFailure(ex, cancellationToken))
+                {
+                    return ExternalSourceUnavailable(server);
+                }
+
                 return Ok(libs.Select(l => new { id = l.Id, name = l.Name }).ToList());
             }
 
@@ -3996,9 +4019,17 @@ namespace Jellyfin.Plugin.Federation.Api
                 // for auto-sync, even though nothing about looking at it or
                 // downloading one item requires that consent.
                 var provider = _externalCatalogs.For(server);
-                var items = provider == null
-                    ? null
-                    : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                IReadOnlyList<ExternalItem>? items;
+                try
+                {
+                    items = provider == null
+                        ? null
+                        : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsExternalSourceFailure(ex, cancellationToken))
+                {
+                    return ExternalSourceUnavailable(server);
+                }
                 var page = (items ?? new List<ExternalItem>())
                     .Where(i => i.Dto.Type == requestedKind)
                     .OrderByDescending(i => i.Dto.DateCreated)
@@ -4094,9 +4125,17 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
 
                 var provider = _externalCatalogs.For(server);
-                var items = provider == null
-                    ? null
-                    : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                IReadOnlyList<ExternalItem>? items;
+                try
+                {
+                    items = provider == null
+                        ? null
+                        : await provider.GetAllItemsAsync(server, libraryId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsExternalSourceFailure(ex, cancellationToken))
+                {
+                    return ExternalSourceUnavailable(server);
+                }
                 if (items == null)
                 {
                     return Ok(new List<object>());
