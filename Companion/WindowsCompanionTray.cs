@@ -14,6 +14,8 @@ namespace FederationCompanion;
 /// </summary>
 internal static class WindowsCompanionTray
 {
+    private static readonly ManualResetEventSlim Registered = new(false);
+
     public static void Start(
         CompanionState state,
         LocalMediaMountService mount,
@@ -28,6 +30,9 @@ internal static class WindowsCompanionTray
         };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
+        // Wait briefly for the app window to register so a launch-time
+        // "open" shows the window; the tray keeps starting regardless.
+        Registered.Wait(TimeSpan.FromSeconds(5));
     }
 
     private static void Run(
@@ -51,8 +56,17 @@ internal static class WindowsCompanionTray
                 ContextMenuStrip = menu
             };
 
+            // The dashboard opens in Companion's own window (WebView2) rather
+            // than a browser tab; the window posts work onto this STA thread.
+            if (SynchronizationContext.Current is not WindowsFormsSynchronizationContext)
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+            }
+            CompanionWindow.Register(icon);
+            Registered.Set();
+
             var header = new ToolStripMenuItem("Federation Companion") { Enabled = false };
-            var open = new ToolStripMenuItem("Open dashboard") { Font = new Font(menu.Font, FontStyle.Bold) };
+            var open = new ToolStripMenuItem("Open Companion") { Font = new Font(menu.Font, FontStyle.Bold) };
             var copyKey = new ToolStripMenuItem("Copy owner key");
             var plexStatus = new ToolStripMenuItem("Plex: checking…") { Enabled = false };
             var mountStatus = new ToolStripMenuItem("Media folder: checking…") { Enabled = false };
@@ -88,7 +102,7 @@ internal static class WindowsCompanionTray
             {
                 if (!CompanionShell.OpenDashboard(runtime, state.AdminAccessKey))
                 {
-                    notify.ShowBalloonTip(4000, "Federation Companion", "Could not open a browser. Open http://127.0.0.1:" + runtime.Port + " and paste the owner key.", ToolTipIcon.Warning);
+                    notify.ShowBalloonTip(4000, "Federation Companion", "Could not open the Companion window. Open http://127.0.0.1:" + runtime.Port + " and paste the owner key.", ToolTipIcon.Warning);
                 }
             }
 
@@ -165,6 +179,7 @@ internal static class WindowsCompanionTray
             {
                 notify.Visible = false;
                 AppLog.Info("Exit requested from the tray.");
+                CompanionWindow.CloseForExit();
                 lifetime.StopApplication();
                 Application.ExitThread();
             };

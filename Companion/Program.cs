@@ -1340,16 +1340,18 @@ singleInstance.StartListener(() =>
     CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
 });
 
-if (launch.OpenBrowser)
-{
-    CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
-}
-
 #if WINDOWS
+// Start the tray first: it registers the app window, so the launch below
+// opens Companion's own window rather than a browser tab.
 var mountService = app.Services.GetRequiredService<LocalMediaMountService>();
 var autostartRegistration = app.Services.GetRequiredService<IAutostartRegistration>();
 WindowsCompanionTray.Start(state, mountService, autostartRegistration, runtime, app.Lifetime);
 #endif
+
+if (launch.OpenBrowser)
+{
+    CompanionShell.OpenDashboard(runtime, state.AdminAccessKey);
+}
 
 await app.WaitForShutdownAsync().ConfigureAwait(false);
 AppLog.Info("Companion stopped.");
