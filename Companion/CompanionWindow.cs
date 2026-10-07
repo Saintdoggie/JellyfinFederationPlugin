@@ -16,7 +16,7 @@ namespace FederationCompanion;
 /// </summary>
 internal sealed class CompanionWindow : Form
 {
-    private static readonly Color Background = Color.FromArgb(0x10, 0x14, 0x1c);
+    private static readonly Color Background = Color.FromArgb(0x08, 0x0b, 0x10);
     private readonly WebView2 _view = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Background };
     private readonly Label _status = new()
     {
@@ -123,6 +123,7 @@ internal sealed class CompanionWindow : Form
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsZoomControlEnabled = true;
             core.Settings.AreBrowserAcceleratorKeysEnabled = true;
+            await core.AddScriptToExecuteOnDocumentCreatedAsync("window.__federationCompanionApp = true;");
             core.NavigationStarting += (_, args) =>
             {
                 if (IsDashboard(args.Uri)) return;
@@ -156,6 +157,19 @@ internal sealed class CompanionWindow : Form
             _allowClose = true;
             Close();
         }
+    }
+
+    // Match the dark dashboard: Windows 10 20H1+ / 11 honour attribute 20
+    // (DWMWA_USE_IMMERSIVE_DARK_MODE); older builds ignore it harmlessly.
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        var dark = 1;
+        try { _ = DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int)); }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
