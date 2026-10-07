@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.175",
+        "changelog": "Titles whose every source server is offline are now hidden from library views instead of showing as unplayable cards, and the \"from <server>\" label follows whichever server can actually play the title. After a restart, the plugin confirms which friends are reachable before restoring their titles, so an offline friend's catalog no longer flashes back in. Faster, safer playback start: when several people press play on the same federated title at once, one metadata request is made to the friend's server instead of one each, and that cached playback information is kept per viewer so one person's access is never reused for another. Adds startup timing logs (debug level) for diagnosing slow starts.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-07T14:56:27Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.175/Jellyfin.Federation.zip",
+        "checksum": "a97220160e3fd4ed6b2b31d87f90294c"
+      },
+      {
         "version": "0.0.174",
         "changelog": "Settings page polish: the tab row stays on one line and scrolls sideways instead of wrapping, the active tab stays in view, buttons and toggles get larger tap targets and clear focus rings on small screens, and the remaining hard-coded blue tints now follow your theme. Browsing a Plex library is much faster: one library fetch is reused while you scroll instead of refetching the whole library for every page. Companion dashboard (also shown in the new Windows app window) gets a cleaner, flatter app layout with solid colours, clearer buttons and form controls, and more readable status badges.",
         "targetAbi": "12.0.0.0",
