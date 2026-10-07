@@ -3898,16 +3898,17 @@ namespace Jellyfin.Plugin.Federation.Api
         // A Plex/external source that is offline throws from its client. Answer
         // with a readable 503 instead of Jellyfin's bare 500 so the Downloads tab
         // can say which server is unreachable rather than breaking.
-        private static bool IsExternalSourceFailure(Exception ex, CancellationToken cancellationToken)
+        internal static bool IsExternalSourceFailure(Exception ex, CancellationToken cancellationToken)
             => !cancellationToken.IsCancellationRequested
                 && ex is InvalidOperationException or HttpRequestException or TaskCanceledException or System.IO.IOException;
 
-        private ObjectResult ExternalSourceUnavailable(RemoteServer server)
-            => StatusCode(StatusCodes.Status503ServiceUnavailable, new
+        internal static ObjectResult ExternalSourceUnavailable(RemoteServer server)
+            => new ObjectResult(new
             {
                 success = false,
                 message = $"{server.Name} can't be reached right now, so its catalog can't be browsed. Downloads you queue from it wait until it is back online."
-            });
+            })
+            { StatusCode = StatusCodes.Status503ServiceUnavailable };
 
         /// <summary>
         /// Lists the libraries a connected server exposes, for the Browse tab's
