@@ -988,7 +988,7 @@ test('save keeps auto mappings for a friend whose libraries failed to load', asy
   assert.ok(afterClear.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
 });
 
-test('accepting a friend does not wipe offline auto mappings on the follow-up save', async () => {
+test('a newly connected friend is not auto-selected; the prompt save keeps offline auto mappings', async () => {
   const h = pickerHarness();
   h.api.setConfig({
     RemoteServers: [
@@ -1000,7 +1000,8 @@ test('accepting a friend does not wipe offline auto mappings on the follow-up sa
     ])]
   });
 
-  h.api.load(['new']);
+  let prompted = 0;
+  h.api.load(() => { prompted += 1; });
   h.respond(0, {
     success: true,
     servers: [
@@ -1019,10 +1020,80 @@ test('accepting a friend does not wipe offline auto mappings on the follow-up sa
   });
   await settle();
 
-  assert.equal(h.api.saveCalls, 1);
-  const sources = h.api.savedAuto.flatMap((m) => m.RemoteLibrarySources);
-  assert.ok(sources.some((s) => s.ServerId === 'new' && s.RemoteLibraryId === 'lib-c'));
-  assert.ok(sources.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
+  // The prompt is shown, but nothing is pulled in or saved until the user chooses.
+  assert.equal(prompted, 1);
+  assert.equal(h.api.saveCalls, 0);
+  assert.equal(h.api.pickerLibs.find((l) => l.serverId === 'new').selected, false);
+  const before = h.api.mappings().flatMap((m) => m.RemoteLibrarySources);
+  assert.equal(before.some((s) => s.ServerId === 'new'), false);
+
+  // Ticking their library in the prompt and saving adds it without wiping the offline friend.
+  h.api.pickerLibs.find((l) => l.serverId === 'new').selected = true;
+  const after = h.api.mappings().flatMap((m) => m.RemoteLibrarySources);
+  assert.ok(after.some((s) => s.ServerId === 'new' && s.RemoteLibraryId === 'lib-c'));
+  assert.ok(after.some((s) => s.ServerId === 'offline' && s.RemoteLibraryId === 'lib-b'));
+});
+
+test('new-friend prompt saves what to share and what to receive', async () => {
+  const start = configPage.indexOf('                    function finishOnboarding(');
+  assert.notEqual(start, -1, 'finishOnboarding not found');
+  const end = configPage.indexOf('\n                    }\n', start) + '\n                    }'.length;
+  const source = configPage.slice(start, end);
+
+  const checked = (attrs, on) => ({ checked: on, getAttribute: (k) => attrs[k] });
+  const boxes = {
+    '.fedOnbRecv': [checked({ 'data-idx': '0' }, true), checked({ 'data-idx': '1' }, false)],
+    '.fedOnbShare': [checked({ 'data-lib': 'movies' }, true), checked({ 'data-lib': 'music' }, false)]
+  };
+  const root = { innerHTML: '<x/>', querySelectorAll: (sel) => boxes[sel] || [] };
+  const calls = [];
+  const state = { saved: 0, loaded: 0, next: 0 };
+  const pickerLibs = [{ selected: false }, { selected: true }];
+  const server = { Id: 'srv', Name: 'Friend', ExcludedItemIds: ['x'] };
+
+  const api = new Function('q', 'fedFetch', 'readJson', 'showError', 'pickerLibs', 'currentConfig', 'state', `
+    var pickerLoaded = true;
+    var onboardCurrentId = 'srv';
+    function saveConfiguration() { state.saved += 1; }
+    function loadConfiguration() { state.loaded += 1; }
+    function showNextOnboarding() { state.next += 1; }
+    ${source}
+    return finishOnboarding;
+  `)(
+    () => root,
+    (url, opts) => { calls.push({ url, body: JSON.parse(opts.body) }); return Promise.resolve({ json: async () => ({ success: true }) }); },
+    (r) => r.json(),
+    (m) => { throw new Error(m); },
+    pickerLibs,
+    { RemoteServers: [server] },
+    state
+  );
+
+  api(true);
+  await settle();
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /Friends\/srv\/Sharing$/);
+  assert.deepEqual(calls[0].body, { ShareAll: false, FolderIds: ['movies'], ExcludedItemIds: ['x'] });
+  assert.equal(pickerLibs[0].selected, true);
+  assert.equal(pickerLibs[1].selected, false);
+  assert.equal(state.saved, 1);
+  assert.equal(state.next, 1);
+
+  // "Decide later" changes nothing and just moves on.
+  api(false);
+  await settle();
+  assert.equal(calls.length, 1);
+  assert.equal(state.saved, 1);
+  assert.equal(state.next, 2);
+});
+
+test('config page asks about every new friend instead of silently adopting their libraries', () => {
+  assert.equal(configPage.includes('autoAdopt'), false);
+  assert.match(configPage, /id="fedOnboardRoot"/);
+  assert.match(configPage, /data-fed-action="onboard-save"/);
+  assert.match(configPage, /data-fed-action="onboard-skip"/);
+  assert.match(configPage, /loadLibraryPicker\(function \(\) \{ startOnboarding\(newlyConnectedIds\); \}\)/);
 });
 
 test('accepting a friend does not auto-save when the new friend failed to load', async () => {
@@ -1037,7 +1108,7 @@ test('accepting a friend does not auto-save when the new friend failed to load',
     ])]
   });
 
-  h.api.load(['new']);
+  h.api.load();
   h.respond(0, {
     success: true,
     servers: [

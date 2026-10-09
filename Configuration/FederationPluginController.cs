@@ -477,8 +477,26 @@ namespace Jellyfin.Plugin.Federation.Api
                     }
                 }
 
+                // Unticking a friend's library must remove what it brought in right
+                // away, not at the next scheduled sync: sweep servers that no longer
+                // feed a mapping and reconcile so their items leave the library now.
+                var unselected = _syncService.PruneUnselectedServerSources();
+                foreach (var mappingName in unselected)
+                {
+                    try
+                    {
+                        await _persistence.ReconcileMappingAsync(
+                            config.LibraryMappings!.First(m => string.Equals(m.LocalLibraryName, mappingName, StringComparison.OrdinalIgnoreCase)),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Cleanup after unticking a source in {Name} failed; it will be retried on the next sync", mappingName);
+                    }
+                }
+
                 var remapped = FederationLibraryTargets.RemapStaleCacheEntries(config, folders, _cache);
-                if (removedMappingNames.Count > 0 || remapped > 0)
+                if (removedMappingNames.Count > 0 || remapped > 0 || unselected.Count > 0)
                 {
                     await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
                 }

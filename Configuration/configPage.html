@@ -254,6 +254,14 @@
                 #federationConfigPage .fed-info-overview { line-height: 1.5; white-space: pre-line; }
                 #federationConfigPage .fed-info-close { position: absolute; top: 0.6em; right: 0.6em; background: none; border: 0; color: inherit; font-size: 1.4em; line-height: 1; cursor: pointer; opacity: 0.7; padding: 0.2em 0.4em; }
                 #federationConfigPage .fed-info-close:hover, #federationConfigPage .fed-info-close:focus-visible { opacity: 1; outline: 2px solid var(--fed-accent); outline-offset: 2px; border-radius: 0.3em; }
+                /* New-friend setup prompt: what to receive from them and what to share
+                   with them. Solid colours only, fixed dark chrome like the item card. */
+                #federationConfigPage .fed-onboard-card { position: relative; max-width: 36em; width: 100%; max-height: 88vh; overflow-y: auto; background: #18181a; color: #f2f2f2; border-radius: 0.6em; padding: 1.4em; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+                #federationConfigPage .fed-onboard-card h3 { margin: 0 0 0.3em; }
+                #federationConfigPage .fed-onboard-card h4 { margin: 1.1em 0 0.3em; }
+                #federationConfigPage .fed-onboard-card .fed-muted { opacity: 0.75; margin: 0 0 0.5em; }
+                #federationConfigPage .fed-onboard-card label.fed-onboard-row { display: flex; align-items: center; gap: 0.6em; padding: 0.35em 0; cursor: pointer; }
+                #federationConfigPage .fed-onboard-actions { display: flex; gap: 0.8em; justify-content: flex-end; margin-top: 1.2em; }
                 #federationConfigPage .fed-catalog-actionbar-row { display: flex; align-items: center; gap: 1.2em; }
                 #federationConfigPage .fed-catalog-actionbar-row a { color: var(--fed-accent); cursor: pointer; text-decoration: none; }
                 #federationConfigPage .fed-catalog-actionbar-row a:hover { text-decoration: underline; }
@@ -441,6 +449,7 @@
             <div id="fedDisabledWarn"></div>
             <div id="fedSyncHealth"></div>
             <div id="fedInfoModalRoot"></div>
+            <div id="fedOnboardRoot"></div>
 
             <div class="fed-statusstrip verticalSection" id="fedStatusCard">
                 <div class="fed-stat"><strong id="fedStatServers">–</strong><span>servers connected</span></div>
@@ -4557,6 +4566,159 @@
                         .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
                     }
 
+                    /* ---------------- New-friend setup prompt ---------------- */
+
+                    var onboardQueue = [];
+                    var onboardCurrentId = null;
+
+                    function startOnboarding(ids) {
+                        (ids || []).forEach(function (id) {
+                            if (onboardQueue.indexOf(id) === -1 && id !== onboardCurrentId) {
+                                onboardQueue.push(id);
+                            }
+                        });
+                        var root = q('#fedOnboardRoot');
+                        if (root && !root.innerHTML) {
+                            showNextOnboarding();
+                        }
+                    }
+
+                    function showNextOnboarding() {
+                        var root = q('#fedOnboardRoot');
+                        if (!root) {
+                            return;
+                        }
+
+                        var id = onboardQueue.shift();
+                        onboardCurrentId = id || null;
+                        if (!id) {
+                            root.innerHTML = '';
+                            return;
+                        }
+
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === id; })[0];
+                        if (!server) {
+                            showNextOnboarding();
+                            return;
+                        }
+
+                        var ready = localLibrariesCache ? Promise.resolve(localLibrariesCache) : loadLocalLibraries();
+                        ready.then(function () { renderOnboarding(server); });
+                    }
+
+                    function renderOnboarding(server) {
+                        var root = q('#fedOnboardRoot');
+                        if (!root) {
+                            return;
+                        }
+
+                        var name = escapeHtml(server.Name || server.Url || 'this friend');
+                        var theirs = [];
+                        pickerLibs.forEach(function (lib, idx) {
+                            if (lib.serverId === server.Id) {
+                                theirs.push({ lib: lib, idx: idx });
+                            }
+                        });
+                        var unreachable = pickerUnavailableServerIds.indexOf(server.Id) !== -1;
+                        // Plex is a one-way source: there is nothing of mine to share with it.
+                        var canShare = server.Kind !== 1;
+
+                        var html = '<div class="fed-info-overlay">';
+                        html += '<div class="fed-onboard-card" role="dialog" aria-modal="true" aria-label="Set up ' + name + '">';
+                        html += '<h3>' + name + ' is connected</h3>';
+                        html += '<p class="fed-muted">Choose what you get from them and what they can see of yours. Nothing is pulled in until you save, and you can change any of this later.</p>';
+
+                        html += '<h4>Get from ' + name + '</h4>';
+                        if (theirs.length === 0) {
+                            html += '<p class="fed-muted">' + (unreachable
+                                ? 'Their server could not be reached right now. Pick their libraries under Libraries once they are online.'
+                                : 'They are not sharing any libraries with you yet.') + '</p>';
+                        } else {
+                            theirs.forEach(function (t) {
+                                var label = escapeHtml(t.lib.libraryName) + (t.lib.itemCount ? ' <span class="fed-muted">(' + t.lib.itemCount + ')</span>' : '');
+                                if (!t.lib.knownType) {
+                                    label += ' <span class="fed-muted">· type unknown, set it under Libraries</span>';
+                                }
+                                html += '<label class="fed-onboard-row"><input type="checkbox" class="fed-check fedOnbRecv" data-idx="' + t.idx + '" ' + (t.lib.knownType ? 'checked' : '') + ' /> ' + label + '</label>';
+                            });
+                        }
+
+                        if (canShare) {
+                            html += '<h4>Share with ' + name + '</h4>';
+                            if (!localLibrariesCache || localLibrariesCache.length === 0) {
+                                html += '<p class="fed-muted">No libraries found on your server to share.</p>';
+                            } else {
+                                localLibrariesCache.forEach(function (lib) {
+                                    html += '<label class="fed-onboard-row"><input type="checkbox" class="fed-check fedOnbShare" data-lib="' + escapeHtml(lib.id) + '" checked /> ' + escapeHtml(lib.name) + '</label>';
+                                });
+                                html += '<p class="fed-muted">Unchecked libraries are invisible to them.</p>';
+                            }
+                        }
+
+                        html += '<div class="fed-onboard-actions">';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="onboard-skip">Decide later</button>';
+                        html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="onboard-save">Save choices</button>';
+                        html += '</div></div></div>';
+                        root.innerHTML = html;
+                    }
+
+                    function finishOnboarding(save) {
+                        var root = q('#fedOnboardRoot');
+                        var id = onboardCurrentId;
+                        var server = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === id; })[0];
+                        if (!save || !root || !server) {
+                            showNextOnboarding();
+                            return;
+                        }
+
+                        var anyRecv = false;
+                        Array.prototype.forEach.call(root.querySelectorAll('.fedOnbRecv'), function (box) {
+                            var lib = pickerLibs[parseInt(box.getAttribute('data-idx'), 10)];
+                            if (lib) {
+                                lib.selected = box.checked;
+                                anyRecv = anyRecv || box.checked;
+                            }
+                        });
+
+                        var shareBoxes = root.querySelectorAll('.fedOnbShare');
+                        var saveSharingFirst = Promise.resolve();
+                        if (shareBoxes.length > 0) {
+                            var folderIds = [];
+                            var all = true;
+                            Array.prototype.forEach.call(shareBoxes, function (box) {
+                                if (box.checked) {
+                                    folderIds.push(box.getAttribute('data-lib'));
+                                } else {
+                                    all = false;
+                                }
+                            });
+                            saveSharingFirst = fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(server.Id) + '/Sharing', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    ShareAll: all,
+                                    FolderIds: all ? [] : folderIds,
+                                    ExcludedItemIds: server.ExcludedItemIds || []
+                                })
+                            }).then(function (r) { return readJson(r); });
+                        }
+
+                        saveSharingFirst
+                        .then(function () {
+                            // Only rewrite library mappings when something was picked
+                            // from this friend; otherwise saving would be a no-op round trip.
+                            if (anyRecv && pickerLoaded) {
+                                saveConfiguration();
+                            } else {
+                                loadConfiguration(true);
+                            }
+                            showNextOnboarding();
+                        })
+                        .catch(function (e) {
+                            showError('Could not save choices for ' + (server.Name || server.Url) + ': ' + e.message);
+                            showNextOnboarding();
+                        });
+                    }
+
                     /* ---------------- Library picker ---------------- */
 
                     function friendlyType(collectionType) {
@@ -4639,7 +4801,7 @@
                         return defaultLocalLibraryName(mediaType);
                     }
 
-                    function loadLibraryPicker(autoAdoptServerIds) {
+                    function loadLibraryPicker(onLoaded) {
                         var hint = q('#fedPickerHint');
                         var list = q('#fedPickerList');
                         if (!hint || !list) {
@@ -4664,6 +4826,7 @@
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             if (!res.success || !res.servers || res.servers.length === 0) {
+                                if (typeof onLoaded === 'function') { onLoaded(); }
                                 pickerLoaded = false;
                                 pickerUnavailableServerIds = [];
                                 // "No servers available yet" is misleading when servers
@@ -4712,15 +4875,6 @@
                                         });
                                     });
 
-                                    // A brand new friend (just accepted, or their
-                                    // earlier acceptance of a request I sent just
-                                    // showed up) gets all their libraries picked
-                                    // up automatically - see loadConfiguration's
-                                    // seenServerIds diff - so connecting someone
-                                    // is "type address, accept, done", not a
-                                    // second required trip to this tab.
-                                    var autoAdopt = !!(autoAdoptServerIds && autoAdoptServerIds.indexOf(srv.serverId) !== -1);
-
                                     pickerLibs.push({
                                         serverId: srv.serverId,
                                         serverName: srv.serverName,
@@ -4730,7 +4884,7 @@
                                         itemCount: lib.itemCount || 0,
                                         mediaType: selectedType || inferMediaType(lib.collectionType) || 'Video',
                                         knownType: !!inferMediaType(lib.collectionType),
-                                        selected: selected || autoAdopt
+                                        selected: selected
                                     });
                                 });
                             });
@@ -4747,20 +4901,15 @@
 
                             pickerLoaded = true;
                             renderPicker(errors);
-                            // Auto-save after accept only when the new friend
-                            // actually loaded. Failed peers are merged back in
-                            // buildAutoMappings, so this save is not a wipe.
-                            if (autoAdoptServerIds && autoAdoptServerIds.length > 0) {
-                                var adopted = autoAdoptServerIds.some(function (id) { return loadedServerIds[id]; });
-                                if (adopted) {
-                                    saveConfiguration();
-                                }
+                            if (typeof onLoaded === 'function') {
+                                onLoaded();
                             }
                         })
                         .catch(function (e) {
                             pickerLoaded = false;
                             pickerUnavailableServerIds = [];
                             hint.textContent = 'Could not load remote libraries: ' + e.message;
+                            if (typeof onLoaded === 'function') { onLoaded(); }
                         });
                     }
 
@@ -5831,7 +5980,10 @@
                             loadBrowseServers();
 
                             if (newlyConnectedIds.length > 0) {
-                                loadLibraryPicker(newlyConnectedIds);
+                                // Ask what to receive and what to share before
+                                // anything is pulled in, instead of silently taking
+                                // everything they have.
+                                loadLibraryPicker(function () { startOnboarding(newlyConnectedIds); });
                             }
                         })
                         .catch(function (e) {
@@ -6071,6 +6223,8 @@
                         page.addEventListener('keydown', function (e) {
                             if (e.key === 'Escape' && q('#fedInfoModalRoot').innerHTML) {
                                 closeItemInfoModal();
+                            } else if (e.key === 'Escape' && q('#fedOnboardRoot').innerHTML) {
+                                finishOnboarding(false);
                             }
                         });
 
@@ -6137,6 +6291,12 @@
                                     break;
                                 case 'create-companion':
                                     createCompanionFriend();
+                                    break;
+                                case 'onboard-save':
+                                    finishOnboarding(true);
+                                    break;
+                                case 'onboard-skip':
+                                    finishOnboarding(false);
                                     break;
                                 case 'copy-companion-code':
                                     copyCompanionCode(t.getAttribute('data-id'), t);
