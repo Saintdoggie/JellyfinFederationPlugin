@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.177",
+        "changelog": "Adding a friend now asks what you want: a prompt lists their libraries (what you receive) and yours (what you share with them), and nothing is pulled in until you save. Previously every library they had was selected automatically. Unticking a friend's library now removes the items it brought in, right when you save: before, unticking a friend's last library in a section such as Music left their items behind until you removed the whole section.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-09T16:19:07Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.177/Jellyfin.Federation.zip",
+        "checksum": "779f1bd2220c13091e2ef620bdd74bf5"
+      },
+      {
         "version": "0.0.176",
         "changelog": "Friends' titles no longer disappear and reappear when a friend's server drops offline and comes back. Previously every one of their movies and shows was deleted from your library on each outage and recreated on return, which looked like the server constantly re-adding its whole catalog and lost watch progress. Now existing titles stay in place (the web client still hides the ones that are currently unavailable) and only genuinely new titles wait for the server to return. Disabling a server still removes its titles.",
         "targetAbi": "12.0.0.0",
