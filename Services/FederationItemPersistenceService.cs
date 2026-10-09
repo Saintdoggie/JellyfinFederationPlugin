@@ -293,14 +293,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
 
                 // Offline servers (see FederationAvailabilityService): entries
-                // whose every source server is currently unreachable are hidden
-                // from the local library - never created, and removed if already
-                // present - but the cache entries themselves are left untouched,
-                // so the items come back on the next rescan after the server
-                // returns. A deduped entry served by two servers stays visible
-                // while any one of its sources is still reachable; only a total
-                // outage across all of its sources hides it.
+                // whose every source server is currently unreachable are never
+                // newly created, but items that already exist are KEPT. Deleting
+                // them on every outage and recreating them on return churned
+                // hundreds of items per flap (and lost watch state); the web
+                // client already hides unavailable titles through the client
+                // catalog's unavailableIds, so the library rows can stay put.
+                // Only disabled or removed servers (removedServerIds) still
+                // remove their items.
                 var offlineServerIds = ResolveOfflineServerIds(config);
+                var removedServerIds = ResolveDisabledServerIds(config);
                 var hideOffline = offlineServerIds.Count > 0;
 
                 // Admin-chosen local suppression list (see PluginConfiguration.
@@ -417,11 +419,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // user already owns locally (added by earlier plugin versions before
                 // this dedup check existed, or left behind by a config change), and
                 // cascade that removal down to their Seasons/Episodes so nothing is
-                // left pointing at a deleted parent. Offline-server items are
-                // removed the same way - cache entries stay, so they are
-                // re-created on the next rescan once the server is back.
+                // left pointing at a deleted parent. Items on temporarily offline
+                // servers are deliberately NOT removed here (see offlineServerIds
+                // above); only items whose servers were disabled are.
                 var toDelete = existing
-                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds, hiddenKeys, offlineServerIds)
+                    .Where(x => !IsEntryValid(_federationManager.Cache.GetEntryByKey(x.Key!), dedupKeys, localProviderIds, hiddenKeys, removedServerIds)
                         || forcedRecreateKeys.Contains(x.Key!))
                     .Select(x => x.Item)
                     .ToList();
@@ -430,7 +432,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     : 0;
 
                 _logger.LogInformation(
-                    "[Federation] Debug {Name}: existing(federated)={ExistingCount}, toDelete={ToDeleteCount}, hideExisting={HideExisting} (already-materialized offline titles; skipOffline only counts not-yet-created)",
+                    "[Federation] Debug {Name}: existing(federated)={ExistingCount}, toDelete={ToDeleteCount}, hideExisting={HideExisting} (already-materialized offline titles are kept; skipOffline only counts not-yet-created)",
                     mapping.LocalLibraryName,
                     existing.Count,
                     toDelete.Count,
@@ -1146,6 +1148,30 @@ namespace Jellyfin.Plugin.Federation.Services
         /// singleton via <see cref="AvailabilityOverride"/>.
         /// </summary>
         internal static FederationAvailabilityService? AvailabilityOverride { get; set; }
+
+        /// <summary>
+        /// Servers whose items must be removed from the library outright: those the
+        /// admin disabled. Unlike <see cref="ResolveOfflineServerIds"/> this ignores
+        /// transient reachability, so an outage never deletes items.
+        /// </summary>
+        internal static HashSet<string> ResolveDisabledServerIds(PluginConfiguration? config)
+        {
+            var disabled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (config?.RemoteServers == null)
+            {
+                return disabled;
+            }
+
+            foreach (var server in config.RemoteServers)
+            {
+                if (!server.Enabled)
+                {
+                    disabled.Add(server.Id);
+                }
+            }
+
+            return disabled;
+        }
 
         internal static HashSet<string> ResolveOfflineServerIds(PluginConfiguration? config)
         {
