@@ -10,9 +10,9 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 /// <summary>
 /// Offline hide/unhide rule (see <see cref="FederationAvailabilityService"/>):
-/// entries whose every source server is currently unreachable are hidden from
-/// the local library - never created, removed if already present - while the
-/// cache entries themselves are left untouched so they come back on rescan.
+/// entries whose every source server is currently unreachable are never newly
+/// created, but items already in the library are kept (an outage must not delete
+/// and recreate them); only disabled servers remove items.
 /// These tests pin <see cref="FederationItemPersistenceService.IsEntryOffline"/>,
 /// the static helper <see cref="Services.FederationItemPersistenceService.ReconcileMappingAsync"/>
 /// folds into both decisions, the same pattern as FederationHiddenItemTests.
@@ -31,6 +31,24 @@ public sealed class FederationOfflineHideTests
         var unavailable = FederationItemPersistenceService.ResolveOfflineServerIds(config);
         unavailable.Add("down");
         Assert.True(FederationItemPersistenceService.IsEntryOffline(entry, unavailable));
+    }
+
+    [Fact]
+    public void DisabledServers_AreRemoved_ButUnreachableOnesAreNot()
+    {
+        var config = new PluginConfiguration
+        {
+            RemoteServers =
+            {
+                new RemoteServer { Id = "off", Enabled = false },
+                new RemoteServer { Id = "flaky", Enabled = true }
+            }
+        };
+
+        var removed = FederationItemPersistenceService.ResolveDisabledServerIds(config);
+
+        Assert.Contains("off", removed);
+        Assert.DoesNotContain("flaky", removed);
     }
 
     private static FederatedCacheEntry EntryFrom(string serverId)
