@@ -138,6 +138,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 PruneOrphanedServerSources(mappings, config.RemoteServers ?? new List<RemoteServer>());
+                PruneUnselectedServerSources();
 
                 await RefreshWanBandwidthAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
 
@@ -356,6 +357,66 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Removes cached items whose server is still configured but has been
+        /// unticked from a mapping (e.g. the admin unchecked the last library
+        /// they were receiving from that friend). <see cref="RefreshMappingAsync"/>
+        /// only visits servers that still have a source in the mapping, so without
+        /// this sweep nothing ever prunes a server that was dropped entirely and
+        /// its items stayed in the library forever. A library unticked while
+        /// others from the same server remain is already handled by that
+        /// server's own prune, so only whole servers are swept here. Mappings
+        /// with no sources at all are left alone: they sync nothing either way
+        /// and are not evidence of a deliberate deselection.
+        /// </summary>
+        /// <returns>The names of the mappings that lost entries.</returns>
+        public IReadOnlyList<string> PruneUnselectedServerSources()
+        {
+            var config = Plugin.Instance?.Configuration;
+            var affected = new List<string>();
+            if (config?.LibraryMappings == null)
+            {
+                return affected;
+            }
+
+            var emptySeen = new HashSet<Guid>();
+            foreach (var mapping in config.LibraryMappings.Where(m => m.Enabled))
+            {
+                var sources = mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>();
+                if (sources.Count == 0)
+                {
+                    continue;
+                }
+
+                var selectedServerIds = new HashSet<string>(sources.Select(s => s.ServerId), StringComparer.OrdinalIgnoreCase);
+                var dropped = _cache.GetEntriesForMapping(mapping.LocalLibraryName)
+                    .SelectMany(e => e.GetSourcesSnapshot())
+                    .Select(s => s.ServerId)
+                    .Where(id => !string.IsNullOrEmpty(id) && !selectedServerIds.Contains(id))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var serverId in dropped)
+                {
+                    var removed = _cache.PruneServerSources(mapping.LocalLibraryName, serverId, emptySeen);
+                    if (removed > 0)
+                    {
+                        _logger.LogInformation(
+                            "[Federation] Removed {Count} item(s) from {Name} that came from server {ServerId}, which is no longer selected for it",
+                            removed,
+                            mapping.LocalLibraryName,
+                            serverId);
+                        if (!affected.Contains(mapping.LocalLibraryName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            affected.Add(mapping.LocalLibraryName);
+                        }
+                    }
+                }
+            }
+
+            return affected;
         }
 
         /// <summary>
