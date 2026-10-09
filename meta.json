@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.175",
-  "changelog": "Titles whose every source server is offline are now hidden from library views instead of showing as unplayable cards, and the \"from <server>\" label follows whichever server can actually play the title. After a restart, the plugin confirms which friends are reachable before restoring their titles, so an offline friend's catalog no longer flashes back in. Faster, safer playback start: when several people press play on the same federated title at once, one metadata request is made to the friend's server instead of one each, and that cached playback information is kept per viewer so one person's access is never reused for another. Adds startup timing logs (debug level) for diagnosing slow starts.",
+  "version": "0.0.176",
+  "changelog": "Friends' titles no longer disappear and reappear when a friend's server drops offline and comes back. Previously every one of their movies and shows was deleted from your library on each outage and recreated on return, which looked like the server constantly re-adding its whole catalog and lost watch progress. Now existing titles stay in place (the web client still hides the ones that are currently unavailable) and only genuinely new titles wait for the server to return. Disabling a server still removes its titles.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-07T14:56:27Z",
+  "timestamp": "2026-10-09T15:09:02Z",
   "imageUrl": "thumb.png"
 }
