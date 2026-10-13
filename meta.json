@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.179",
-  "changelog": "Faster settings page. Opening settings no longer waits on a friend's server that is asleep: each friend's libraries are now asked for at the same time with a 10 second limit, and one that does not answer shows as not responding on its own row instead of holding up the whole list. The slow scan for better-quality copies (about 11 seconds on a large library) no longer runs every time the page opens; it runs when you open the Storage tab, in the background, and its result is kept for five minutes.",
+  "version": "0.0.180",
+  "changelog": "Titles that several servers have now show every copy in the version dropdown on the details page, each named after its server, so you can pick which server to play from. Before, the dropdown only appeared once playback started, so the other servers' copies could not be chosen.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-13T16:41:02Z",
+  "timestamp": "2026-10-13T17:07:52Z",
   "imageUrl": "thumb.png"
 }
