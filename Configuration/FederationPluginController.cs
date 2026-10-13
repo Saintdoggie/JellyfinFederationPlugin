@@ -1950,9 +1950,16 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Ok(new { success = false, message = "No remote servers configured" });
             }
 
-            var results = new List<object>();
-            foreach (var server in config.RemoteServers.Where(s => s.Enabled))
+            // Every friend is asked at once, each with its own short deadline: a sleeping or
+            // unreachable friend used to hold this whole call (and with it the settings page's
+            // library list) for as long as the shared client's five-minute timeout, one
+            // friend after another.
+            var perServerTimeout = TimeSpan.FromSeconds(10);
+            var tasks = config.RemoteServers.Where(s => s.Enabled).Select(async server =>
             {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                deadline.CancelAfter(perServerTimeout);
+                var token = deadline.Token;
                 try
                 {
                     // A non-Jellyfin peer (Plex today) has no Peer/Libraries endpoint
@@ -1964,8 +1971,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     var externalProvider = _externalCatalogs.For(server);
                     if (externalProvider != null)
                     {
-                        var externalLibraries = await externalProvider.GetLibrariesAsync(server, cancellationToken).ConfigureAwait(false);
-                        results.Add(new
+                        var externalLibraries = await externalProvider.GetLibrariesAsync(server, token).ConfigureAwait(false);
+                        return (object)new
                         {
                             serverId = server.Id,
                             serverName = server.Name,
@@ -1976,13 +1983,12 @@ namespace Jellyfin.Plugin.Federation.Api
                                 collectionType = lib.MediaType,
                                 itemCount = 0
                             }).ToList()
-                        });
-                        continue;
+                        };
                     }
 
                     var client = _clientFactory.GetClient(server);
-                    var libraries = await client.GetLibrariesAsync(cancellationToken).ConfigureAwait(false);
-                    results.Add(new
+                    var libraries = await client.GetLibrariesAsync(token).ConfigureAwait(false);
+                    return (object)new
                     {
                         serverId = server.Id,
                         serverName = server.Name,
@@ -1993,19 +1999,30 @@ namespace Jellyfin.Plugin.Federation.Api
                             collectionType = lib.CollectionType?.ToString() ?? "unknown",
                             itemCount = lib.ChildCount ?? 0
                         }).ToList()
-                    });
+                    };
                 }
-                catch (Exception ex)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    results.Add(new
+                    return (object)new
+                    {
+                        serverId = server.Id,
+                        serverName = server.Name,
+                        error = "Not responding (gave up after " + (int)perServerTimeout.TotalSeconds + " seconds)",
+                        libraries = new List<object>()
+                    };
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    return (object)new
                     {
                         serverId = server.Id,
                         serverName = server.Name,
                         error = $"Failed to connect: {ex.Message}",
                         libraries = new List<object>()
-                    });
+                    };
                 }
-            }
+            }).ToArray();
+            var results = (await Task.WhenAll(tasks).ConfigureAwait(false)).ToList();
 
             return Ok(new { success = true, servers = results });
         }
