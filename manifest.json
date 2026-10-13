@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.179",
+        "changelog": "Faster settings page. Opening settings no longer waits on a friend's server that is asleep: each friend's libraries are now asked for at the same time with a 10 second limit, and one that does not answer shows as not responding on its own row instead of holding up the whole list. The slow scan for better-quality copies (about 11 seconds on a large library) no longer runs every time the page opens; it runs when you open the Storage tab, in the background, and its result is kept for five minutes.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-13T16:41:02Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.179/Jellyfin.Federation.zip",
+        "checksum": "ab0609d78f54114f89e0c42f18cfaaa5"
+      },
+      {
         "version": "0.0.178",
         "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"freakbob (primary)\") instead of the movie title, in every client.",
         "targetAbi": "12.0.0.0",
