@@ -109,15 +109,57 @@ namespace Jellyfin.Plugin.Federation.Providers
             {
                 var key = Services.FederationLibraryManager.GetFederationKey(item);
                 var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
-                var primary = entry?.GetSourcesSnapshot().FirstOrDefault(source =>
-                    _federationManager.GetServer(source.ServerId) is { Enabled: true }
-                    && Services.FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) != true);
-                if (entry == null || primary == null)
+                if (entry == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
                 }
 
-                var server = _federationManager.GetServer(primary.ServerId);
+                // Every server that federates this title contributes its own cover art,
+                // not just one: the preferred source's art comes first (Jellyfin takes
+                // the first image of a type as the default) and every other server's
+                // art follows, so it can be picked from the image chooser.
+                var preferred = _federationManager.GetPlaybackSource(entry);
+                var usable = entry.GetSourcesSnapshot()
+                    .Where(source => _federationManager.GetServer(source.ServerId) is { Enabled: true }
+                        && Services.FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) != true)
+                    .OrderBy(source => ReferenceEquals(source, preferred) ? 0 : 1)
+                    .ThenBy(source => source.Priority)
+                    .ToList();
+
+                var all = new List<RemoteImageInfo>();
+                foreach (var source in usable)
+                {
+                    try
+                    {
+                        all.AddRange(await GetImagesForSourceAsync(item, entry, source, cancellationToken).ConfigureAwait(false));
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Images from server {ServerId} unavailable for {Name}", source.ServerId, item.Name);
+                    }
+                }
+
+                return all;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error getting images for {Name}", item.Name);
+                return Enumerable.Empty<RemoteImageInfo>();
+            }
+        }
+
+        private async Task<IEnumerable<RemoteImageInfo>> GetImagesForSourceAsync(
+            BaseItem item,
+            Services.FederatedCacheEntry entry,
+            Services.FederatedSource source,
+            CancellationToken cancellationToken)
+        {
+            {
+                var server = _federationManager.GetServer(source.ServerId);
                 if (server == null || !server.Enabled)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
@@ -130,7 +172,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 var externalProvider = _externalCatalogs.For(server);
                 if (externalProvider != null)
                 {
-                    var nativeId = entry.GetNativeId(primary);
+                    var nativeId = entry.GetNativeId(source);
                     if (nativeId == null)
                     {
                         return Enumerable.Empty<RemoteImageInfo>();
@@ -156,7 +198,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return externalResult;
                 }
 
-                var client = _federationManager.GetClient(primary.ServerId);
+                var client = _federationManager.GetClient(source.ServerId);
                 if (client == null)
                 {
                     return Enumerable.Empty<RemoteImageInfo>();
@@ -165,7 +207,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 var actingUserId = await ResolveLocalUserId().ConfigureAwait(false);
                 var actingUser = actingUserId?.ToString("N");
                 var remoteItem = await client.GetItemAsync(
-                    primary.RemoteItemId.ToString(),
+                    source.RemoteItemId.ToString(),
                     cancellationToken: cancellationToken,
                     localActingUserId: actingUser).ConfigureAwait(false);
                 if (remoteItem == null)
@@ -186,7 +228,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 // across every image URL for this item, rather than minting one
                 // per image. The acting user is forwarded so per-remote-user
                 // visibility rules apply at mint time.
-                var itemId = primary.RemoteItemId.ToString();
+                var itemId = source.RemoteItemId.ToString();
                 var (imageToken, _) = await client.GetImageTokenAsync(itemId, cancellationToken, localActingUserId: actingUser).ConfigureAwait(false);
                 if (imageToken == null)
                 {
@@ -235,11 +277,6 @@ namespace Jellyfin.Plugin.Federation.Providers
                 }
 
                 return images;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Federation] Error getting images for {Name}", item.Name);
-                return Enumerable.Empty<RemoteImageInfo>();
             }
         }
 

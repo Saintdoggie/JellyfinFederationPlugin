@@ -96,6 +96,8 @@ namespace Jellyfin.Plugin.Federation
             }
 
             config.InternalRelayApiKey = ApiKeyProtector.Unprotect(config.InternalRelayApiKey);
+            config.PlexMetadataSource ??= new PlexMetadataSourceSettings();
+            config.PlexMetadataSource.Token = ApiKeyProtector.Unprotect(config.PlexMetadataSource.Token);
 
             foreach (var request in config.OutgoingFriendRequests ?? new List<FriendRequest>())
             {
@@ -145,6 +147,10 @@ namespace Jellyfin.Plugin.Federation
             }
 
             clone.InternalRelayApiKey = ApiKeyProtector.Protect(clone.InternalRelayApiKey);
+            if (clone.PlexMetadataSource != null)
+            {
+                clone.PlexMetadataSource.Token = ApiKeyProtector.Protect(clone.PlexMetadataSource.Token);
+            }
 
             foreach (var request in clone.OutgoingFriendRequests ?? new List<FriendRequest>())
             {

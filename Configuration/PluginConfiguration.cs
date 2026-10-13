@@ -233,6 +233,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<IncomingPlexOffer> IncomingPlexOffers { get; set; } = new List<IncomingPlexOffer>();
 
         /// <summary>
+        /// Gets or sets the Plex Media Server this server's own libraries borrow
+        /// artwork and metadata from. Managed by the Plex setup endpoints, never by
+        /// the main Save form.
+        /// </summary>
+        public PlexMetadataSourceSettings PlexMetadataSource { get; set; } = new PlexMetadataSourceSettings();
+
+        /// <summary>
         /// Gets or sets pool invites this server has sent to already-known friends,
         /// still awaiting their decision. See <see cref="PoolInvite"/>.
         /// </summary>
@@ -1249,5 +1256,36 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// per-friend/per-user sharing scope; this is one more admin gate on top.
         /// </summary>
         public bool AllowDownloads { get; set; } = true;
+    }
+
+    /// <summary>
+    /// A Plex server the owner treats as the source of truth for artwork and
+    /// descriptions of their own (non-federated) Jellyfin libraries.
+    /// </summary>
+    public class PlexMetadataSourceSettings
+    {
+        /// <summary>Gets or sets a value indicating whether Plex is consulted at all.</summary>
+        public bool Enabled { get; set; }
+
+        /// <summary>Gets or sets the Plex server's display name, for the UI only.</summary>
+        public string ServerName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the address Jellyfin reaches the Plex server at.</summary>
+        public string ServerUrl { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the Plex token (encrypted at rest).</summary>
+        public string Token { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the Plex library section keys to match against; empty means all movie/show sections.</summary>
+        public List<string> SectionKeys { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets the Jellyfin library ids Plex metadata applies to; empty means every non-federated library.</summary>
+        public List<string> JellyfinLibraryIds { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets a value indicating whether posters and backdrops come from Plex.</summary>
+        public bool PullArtwork { get; set; } = true;
+
+        /// <summary>Gets or sets a value indicating whether titles, summaries, genres, ratings and studios come from Plex.</summary>
+        public bool PullText { get; set; } = true;
     }
 }

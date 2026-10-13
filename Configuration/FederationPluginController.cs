@@ -353,6 +353,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.IncomingFriendRequests = existing.IncomingFriendRequests;
                     config.OutgoingFriendRequests = existing.OutgoingFriendRequests;
                     config.IncomingPlexOffers = existing.IncomingPlexOffers;
+                    config.PlexMetadataSource = existing.PlexMetadataSource;
 
                     // Pools are managed through their own Pools/* endpoints (create,
                     // invite, leave), never sent by the config page's main Save form -

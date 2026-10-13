@@ -296,6 +296,42 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Resolves one named image path for an item: <c>poster</c> / <c>backdrop</c> are the item's own
+        /// <c>thumb</c> / <c>art</c>, <c>seasonposter</c> is the parent (season) poster of an episode.
+        /// Asked for at request time because Plex's paths carry a rescan timestamp.
+        /// </summary>
+        public async Task<string?> GetImagePathAsync(string ratingKey, string imageName, CancellationToken cancellationToken)
+        {
+            var doc = await GetJsonAsync($"/library/metadata/{ratingKey}", cancellationToken).ConfigureAwait(false);
+            if (doc == null)
+            {
+                return null;
+            }
+
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("MediaContainer", out var container)
+                    || !container.TryGetProperty("Metadata", out var metadata)
+                    || metadata.ValueKind != JsonValueKind.Array)
+                {
+                    return null;
+                }
+
+                foreach (var m in metadata.EnumerateArray())
+                {
+                    return imageName switch
+                    {
+                        "backdrop" => FirstNonEmptyString(m, "art", "parentArt", "grandparentArt"),
+                        "seasonposter" => FirstNonEmptyString(m, "parentThumb"),
+                        _ => FirstNonEmptyString(m, "thumb", "parentThumb", "grandparentThumb"),
+                    };
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Opens the current Plex poster using the token as a request header, so
         /// the credential never becomes part of a URL passed into another
         /// component. The caller owns the returned response.
@@ -335,6 +371,36 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Plex poster request for item {RatingKey} failed", ratingKey);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Opens an image at a Plex-relative path (a <c>thumb</c> or <c>art</c> value),
+        /// token sent as a header. The caller owns the returned response.
+        /// </summary>
+        public async Task<HttpResponseMessage?> GetImageAsync(string plexPath, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, _baseUrl + plexPath);
+                request.Headers.TryAddWithoutValidation("X-Plex-Token", _token);
+                var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return response;
+                }
+
+                response.Dispose();
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Plex image request failed");
                 return null;
             }
         }
