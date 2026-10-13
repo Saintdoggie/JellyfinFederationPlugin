@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.180",
-  "changelog": "Titles that several servers have now show every copy in the version dropdown on the details page, each named after its server, so you can pick which server to play from. Before, the dropdown only appeared once playback started, so the other servers' copies could not be chosen.",
+  "version": "0.0.181",
+  "changelog": "The extra server buttons under the Play button are gone. Choosing which server's copy to play now uses only Jellyfin's own version dropdown, which lists every server that has the title, and the video, audio and subtitle details below it update for the copy you pick.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-13T17:07:52Z",
+  "timestamp": "2026-10-13T17:12:41Z",
   "imageUrl": "thumb.png"
 }
