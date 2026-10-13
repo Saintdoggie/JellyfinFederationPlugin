@@ -53,7 +53,11 @@ namespace Jellyfin.Plugin.Federation.Services
             switch (value)
             {
                 case BaseItemDto dto:
-                    Rename(dto.Id, dto.MediaSources);
+                    if (Rename(dto.Id, dto.MediaSources, addAlternates: true) is { } withAlternates)
+                    {
+                        dto.MediaSources = withAlternates.ToArray();
+                    }
+
                     break;
                 case PlaybackInfoResponse playback:
                     // The response does not carry the item id; the item's own source's Id *is* the item id.
@@ -61,7 +65,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         if (Guid.TryParse(source.Id, out var id))
                         {
-                            Rename(id, playback.MediaSources);
+                            Rename(id, playback.MediaSources, addAlternates: false);
                             break;
                         }
                     }
@@ -97,18 +101,24 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private void Rename(Guid itemId, IEnumerable<MediaSourceInfo>? sources)
+        /// <summary>
+        /// Names the item's own source after its server. With <paramref name="addAlternates"/>, also returns the
+        /// source list extended with one entry per other server that has the title: the details page builds its
+        /// version dropdown from the item's own sources, and the plugin's extra sources otherwise only appear once
+        /// playback starts, so the dropdown never showed the other copies.
+        /// </summary>
+        private List<MediaSourceInfo>? Rename(Guid itemId, IEnumerable<MediaSourceInfo>? sources, bool addAlternates)
         {
             var list = sources?.ToList();
             if (list == null || list.Count == 0)
             {
-                return;
+                return null;
             }
 
             var own = list.FirstOrDefault(s => Guid.TryParse(s.Id, out var id) && id == itemId);
             if (own == null)
             {
-                return;
+                return null;
             }
 
             var item = _libraryManager.GetItemById(itemId);
@@ -116,17 +126,66 @@ namespace Jellyfin.Plugin.Federation.Services
             var entry = key == null ? null : _federation.Cache.GetEntryByKey(key);
             if (entry == null)
             {
-                return;
+                return null;
             }
 
             var primary = _federation.GetPlaybackSource(entry);
             var server = primary == null ? null : _federation.GetServer(primary.ServerId);
             if (server == null)
             {
-                return;
+                return null;
             }
 
-            own.Name = FederationMediaSourceProvider.PrimarySourceName(server.Name, entry.GetSourcesSnapshot().Length);
+            var all = entry.GetSourcesSnapshot();
+            own.Name = FederationMediaSourceProvider.PrimarySourceName(server.Name, all.Length);
+            if (!addAlternates || all.Length < 2)
+            {
+                return null;
+            }
+
+            foreach (var source in all)
+            {
+                if (ReferenceEquals(source, primary))
+                {
+                    continue;
+                }
+
+                var other = _federation.GetServer(source.ServerId);
+                if (other is not { Enabled: true } || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true)
+                {
+                    continue;
+                }
+
+                var alternate = BuildAlternate(source, other.Name, entry.Metadata.RunTimeTicks);
+                if (list.All(existing => existing.Id != alternate.Id))
+                {
+                    list.Add(alternate);
+                }
+            }
+
+            return list;
         }
+
+        /// <summary>
+        /// A description of another server's copy built from what the catalog already knows about it. Its id is the same
+        /// one the playback path uses, so choosing it in the dropdown plays exactly that server's copy.
+        /// </summary>
+        internal static MediaSourceInfo BuildAlternate(FederatedSource source, string serverName, long? fallbackRuntime)
+            => new()
+            {
+                Id = FederationMediaSourceProvider.BuildSourceId(source),
+                Name = serverName,
+                Protocol = MediaBrowser.Model.MediaInfo.MediaProtocol.Http,
+                Type = MediaBrowser.Model.Dto.MediaSourceType.Grouping,
+                Container = source.Container,
+                Size = source.Size,
+                Bitrate = source.Bitrate,
+                RunTimeTicks = source.RunTimeTicks ?? fallbackRuntime,
+                MediaStreams = source.MediaStreams?.ToList() ?? new List<MediaBrowser.Model.Entities.MediaStream>(),
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsTranscoding = true,
+                SupportsProbing = true,
+            };
     }
 }
