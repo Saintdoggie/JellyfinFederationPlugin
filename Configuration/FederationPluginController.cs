@@ -243,6 +243,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { error = "Configuration is required" });
             }
 
+            InvalidateQualityUpgradeCache();
+
             try
             {
                 // Preserve existing API keys: the GET endpoint never serializes them,
@@ -4653,7 +4655,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpGet("QualityUpgrades")]
         [Authorize(Policy = "RequiresElevation")]
-        public IActionResult GetQualityUpgrades()
+        public async Task<IActionResult> GetQualityUpgrades(CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
             if (config?.PreferHigherQualityRemotes != true)
@@ -4661,25 +4663,53 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Ok(new List<object>());
             }
 
-            var candidates = _qualityAdvisor.FindUpgrades();
-            return Ok(candidates.Select(c => new
+            // The scan walks every local movie and episode and takes many seconds on a
+            // large library, so it runs off the request thread, one at a time, and its
+            // result is reused for a few minutes (any change that could alter it clears it).
+            if (_qualityUpgradeCache is { } cached && DateTime.UtcNow - cached.At < QualityUpgradeCacheLifetime)
             {
-                localItemId = c.LocalItemId,
-                name = c.Name,
-                year = c.Year,
-                localHeight = c.LocalHeight,
-                localBitrate = c.LocalBitrate,
-                remoteHeight = c.RemoteHeight,
-                remoteBitrate = c.RemoteBitrate,
-                remoteServerName = c.RemoteServerName,
-                itemType = c.ItemType,
-                seriesId = c.SeriesId,
-                seriesName = c.SeriesName,
-                parentIndexNumber = c.ParentIndexNumber,
-                indexNumber = c.IndexNumber,
-                localSizeBytes = c.LocalSizeBytes
-            }).ToList());
+                return Ok(cached.Rows);
+            }
+
+            await QualityUpgradeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_qualityUpgradeCache is { } fresh && DateTime.UtcNow - fresh.At < QualityUpgradeCacheLifetime)
+                {
+                    return Ok(fresh.Rows);
+                }
+
+                var rows = await Task.Run(() => _qualityAdvisor.FindUpgrades().Select(c => (object)new
+                {
+                    localItemId = c.LocalItemId,
+                    name = c.Name,
+                    year = c.Year,
+                    localHeight = c.LocalHeight,
+                    localBitrate = c.LocalBitrate,
+                    remoteHeight = c.RemoteHeight,
+                    remoteBitrate = c.RemoteBitrate,
+                    remoteServerName = c.RemoteServerName,
+                    itemType = c.ItemType,
+                    seriesId = c.SeriesId,
+                    seriesName = c.SeriesName,
+                    parentIndexNumber = c.ParentIndexNumber,
+                    indexNumber = c.IndexNumber,
+                    localSizeBytes = c.LocalSizeBytes
+                }).ToList(), cancellationToken).ConfigureAwait(false);
+                _qualityUpgradeCache = (DateTime.UtcNow, rows);
+                return Ok(rows);
+            }
+            finally
+            {
+                QualityUpgradeLock.Release();
+            }
         }
+
+        private static readonly TimeSpan QualityUpgradeCacheLifetime = TimeSpan.FromMinutes(5);
+        private static readonly SemaphoreSlim QualityUpgradeLock = new(1, 1);
+        private static (DateTime At, List<object> Rows)? _qualityUpgradeCache;
+
+        private static void InvalidateQualityUpgradeCache() => _qualityUpgradeCache = null;
 
         /// <summary>
         /// Compatibility endpoint retained for older settings pages. Replacement
@@ -4721,6 +4751,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var result = _qualityAdvisor.RemoveLocalCopies(ids);
+            InvalidateQualityUpgradeCache();
             return Ok(new
             {
                 success = result.Items.Any(i => i.Success),
@@ -4756,6 +4787,7 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 config.QualityUpgradeExcludedItemIds.Add(body.ItemId);
                 Plugin.Instance.SaveConfiguration();
+                InvalidateQualityUpgradeCache();
             }
 
             return Ok(new { success = true });
@@ -4772,6 +4804,7 @@ namespace Jellyfin.Plugin.Federation.Api
             var config = Plugin.Instance!.Configuration;
             config.QualityUpgradeExcludedItemIds?.RemoveAll(id => string.Equals(id, itemId, StringComparison.OrdinalIgnoreCase));
             Plugin.Instance.SaveConfiguration();
+            InvalidateQualityUpgradeCache();
             return Ok(new { success = true });
         }
 

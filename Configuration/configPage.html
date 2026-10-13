@@ -6143,7 +6143,8 @@
                             loadStatus();
                             loadDiagnostics();
                             loadHiddenItems();
-                            loadQualityUpgrades();
+                            // Quality upgrades are loaded when the Storage tab opens: the scan
+                            // walks the whole local library and is slow on a large one.
                             populateCatalogFriendPick();
                             loadBrowseServers();
 
