@@ -243,8 +243,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var sourceName = entrySources.Length > 1
-                        ? $"{server.Name}{(i == primaryIndex ? " (primary)" : string.Empty)}"
+                    var sourceName = i == primaryIndex
+                        ? PrimarySourceName(server.Name, entrySources.Length)
                         : server.Name;
 
                     candidates.Add((i, src, server, sourceName));
@@ -593,6 +593,10 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Deterministic 32-char hex id for a federated source, stable across syncs so
         /// a resumed stream keeps pointing at the same remote.
         /// </summary>
+        /// <summary>The label of the source that plays from the item's own path: just the server name, plus "(primary)" when other servers also offer the title.</summary>
+        internal static string PrimarySourceName(string serverName, int sourceCount)
+            => sourceCount > 1 ? $"{serverName} (primary)" : serverName;
+
         internal static string BuildSourceId(FederatedSource src)
         {
             var bytes = MD5.HashData(Encoding.UTF8.GetBytes($"{src.ServerId}:{src.RemoteItemId:N}"));

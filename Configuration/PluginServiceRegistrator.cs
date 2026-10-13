@@ -47,6 +47,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationNowWatchingService>();
             serviceCollection.AddSingleton<FederationQualityAdvisorService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
+            serviceCollection.AddSingleton<PlexMetadataSourceService>();
             serviceCollection.AddSingleton<IProcessRunner, ProcessRunner>();
             serviceCollection.AddSingleton<TailscaleService>();
             serviceCollection.AddSingleton<FunFactService>();
@@ -64,6 +65,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             // dependency - see DiscoverFriendsOfFriendsAsync there.
             serviceCollection.AddScoped<FederationFriendService>();
             serviceCollection.AddSingleton<FederationImageProvider>();
+            serviceCollection.AddTransient<FederationMediaSourceNameFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationMediaSourceNameFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
             serviceCollection.AddSingleton<FederationRefreshTask>();

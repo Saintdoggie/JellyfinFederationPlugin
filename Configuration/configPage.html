@@ -483,6 +483,7 @@
                 <button id="fedTabPools" aria-controls="fedPanelPools" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="pools" role="tab" aria-selected="false">Pools</button>
                 <button id="fedTabCompanion" aria-controls="fedPanelCompanion" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="companion" role="tab" aria-selected="false">Companion</button>
                 <button id="fedTabDiscovery" aria-controls="fedPanelDiscovery" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="discovery" role="tab" aria-selected="false">Discovery</button>
+                <button id="fedTabPlex" aria-controls="fedPanelPlex" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="plex" role="tab" aria-selected="false">Plex</button>
                 <button id="fedTabLibraries" aria-controls="fedPanelLibraries" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="libraries" role="tab" aria-selected="false">Libraries</button>
                 <button id="fedTabCatalog" aria-controls="fedPanelCatalog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
@@ -806,6 +807,57 @@
             </div>
 
             <form id="fedConfigForm">
+                <div id="fedPanelPlex" aria-labelledby="fedTabPlex" class="fed-tabpanel" data-tab-panel="plex" role="tabpanel">
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Plex as your metadata source</h3>
+                        <p class="fieldDescription">
+                            Mostly a Plex household? Connect your Plex server and this Jellyfin will use Plex's cover art and
+                            descriptions for your own libraries, matched by TMDb/IMDb/TVDB id (falling back to title and year).
+                            Anything you have locked in Jellyfin is left alone. Your Plex sign-in token stays on this server.
+                        </p>
+                        <div id="fedPlexMetaStatus" class="fed-srvstatus" style="display:none;"></div>
+
+                        <div id="fedPlexMetaConnect">
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-signin">Sign in with Plex</button>
+                            <div id="fedPlexMetaServers"></div>
+                            <details class="fed-details">
+                                <summary>Use an address and token instead</summary>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedPlexMetaUrl">Plex address</label>
+                                    <input type="text" id="fedPlexMetaUrl" class="emby-input" placeholder="http://localhost:32400" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                </div>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedPlexMetaToken">Plex token (X-Plex-Token)</label>
+                                    <input type="password" id="fedPlexMetaToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                </div>
+                                <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-manual">Connect</button>
+                            </details>
+                        </div>
+
+                        <div id="fedPlexMetaSettings" style="display:none;">
+                            <p><strong id="fedPlexMetaServerName"></strong> <span class="fed-muted" id="fedPlexMetaServerUrl"></span></p>
+                            <h4>Plex libraries to match against</h4>
+                            <div id="fedPlexMetaSections"></div>
+                            <h4>Jellyfin libraries to update</h4>
+                            <p class="fed-muted">Leave all unticked to use every movie and show library.</p>
+                            <div id="fedPlexMetaLibraries"></div>
+                            <div class="checkboxContainer">
+                                <label class="fed-check-label"><input type="checkbox" id="fedPlexMetaArtwork" class="emby-checkbox fed-check" checked /> Cover art and backdrops from Plex</label>
+                            </div>
+                            <div class="checkboxContainer">
+                                <label class="fed-check-label"><input type="checkbox" id="fedPlexMetaText" class="emby-checkbox fed-check" checked /> Titles, summaries, genres, ratings and studios from Plex</label>
+                            </div>
+                            <div class="checkboxContainer">
+                                <label class="fed-check-label"><input type="checkbox" id="fedPlexMetaEnabled" class="emby-checkbox fed-check" /> Use Plex as the metadata source</label>
+                            </div>
+                            <button is="emby-button" type="button" class="raised emby-button button-submit" data-fed-action="plex-meta-save">Save</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-pull">Pull now</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-disconnect">Disconnect</button>
+                            <p class="fed-muted">"Pull now" re-reads Plex and replaces artwork and metadata for the chosen libraries; Jellyfin does the work in the background.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="fedPanelLibraries" aria-labelledby="fedTabLibraries" class="fed-tabpanel" data-tab-panel="libraries" role="tabpanel">
                     <div class="verticalSection">
                         <h3 class="sectionTitle">Libraries</h3>
@@ -2431,6 +2483,122 @@
                             return loadConfiguration(true);
                         })
                         .catch(function (e) { setFedStatus('fedPlexManualStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Plex as the metadata source for your own libraries ---------------- */
+                    var plexMetaPinId = 0;
+                    var plexMetaPollTimer = null;
+
+                    function plexMetaCall(method, path, body) {
+                        var opts = { method: method };
+                        if (body) { opts.body = JSON.stringify(body); }
+                        return fedFetch('/Plugins/Federation/PlexSetup/' + path, opts).then(readJson);
+                    }
+
+                    function plexMetaChecks(id, items, selected, valueKey, labelKey) {
+                        var el = q('#' + id);
+                        if (!el) { return; }
+                        if (!items || !items.length) { el.innerHTML = '<p class="fed-muted">None found.</p>'; return; }
+                        el.innerHTML = items.map(function (it) {
+                            var value = it[valueKey];
+                            var checked = (selected || []).indexOf(value) !== -1 ? ' checked' : '';
+                            return '<div class="checkboxContainer"><label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check" data-value="' + escapeHtml(String(value)) + '"' + checked + ' /> ' + escapeHtml(it[labelKey]) + '</label></div>';
+                        }).join('');
+                    }
+
+                    function plexMetaChecked(id) {
+                        return qa('#' + id + ' input[type=checkbox]').filter(function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-value'); });
+                    }
+
+                    function renderPlexMeta(st) {
+                        var connected = !!st.Connected;
+                        q('#fedPlexMetaConnect').style.display = connected ? 'none' : '';
+                        q('#fedPlexMetaSettings').style.display = connected ? '' : 'none';
+                        if (!connected) { return; }
+                        q('#fedPlexMetaServerName').textContent = st.ServerName || 'Plex Media Server';
+                        q('#fedPlexMetaServerUrl').textContent = st.ServerUrl || '';
+                        plexMetaChecks('fedPlexMetaSections', st.Sections, st.SectionKeys, 'Key', 'Title');
+                        plexMetaChecks('fedPlexMetaLibraries', st.Libraries, st.JellyfinLibraryIds, 'Id', 'Name');
+                        q('#fedPlexMetaArtwork').checked = st.PullArtwork !== false;
+                        q('#fedPlexMetaText').checked = st.PullText !== false;
+                        q('#fedPlexMetaEnabled').checked = !!st.Enabled;
+                        if (st.Error) { setFedStatus('fedPlexMetaStatus', st.Error, 'err'); }
+                    }
+
+                    function loadPlexSetup() {
+                        plexMetaCall('GET', 'Status')
+                            .then(renderPlexMeta)
+                            .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaSignIn() {
+                        if (plexMetaPollTimer) { clearInterval(plexMetaPollTimer); plexMetaPollTimer = null; }
+                        setFedStatus('fedPlexMetaStatus', 'Opening Plex sign-in…', 'info');
+                        plexMetaCall('POST', 'SignIn').then(function (res) {
+                            plexMetaPinId = res.pinId;
+                            window.open(res.authUrl, '_blank', 'noopener');
+                            setFedStatus('fedPlexMetaStatus', 'Approve this server in the Plex tab that just opened. Waiting…', 'info');
+                            var tries = 0;
+                            plexMetaPollTimer = setInterval(function () {
+                                tries++;
+                                if (tries > 150) {
+                                    clearInterval(plexMetaPollTimer); plexMetaPollTimer = null;
+                                    setFedStatus('fedPlexMetaStatus', 'Sign-in timed out. Try again.', 'err');
+                                    return;
+                                }
+                                plexMetaCall('GET', 'SignIn/' + plexMetaPinId).then(function (poll) {
+                                    if (!poll.signedIn) { return; }
+                                    clearInterval(plexMetaPollTimer); plexMetaPollTimer = null;
+                                    var servers = poll.servers || [];
+                                    setFedStatus('fedPlexMetaStatus', servers.length ? 'Signed in. Pick your server:' : 'Signed in, but no Plex servers were found on that account.', servers.length ? 'ok' : 'err');
+                                    q('#fedPlexMetaServers').innerHTML = servers.map(function (sv) {
+                                        return '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-connect" data-machine="' + escapeHtml(sv.machineId) + '">' + escapeHtml(sv.name) + (sv.owned ? '' : ' (shared with you)') + '</button>';
+                                    }).join(' ');
+                                }).catch(function () { /* keep polling */ });
+                            }, 2000);
+                        }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaConnect(machineId) {
+                        setFedStatus('fedPlexMetaStatus', 'Connecting…', 'info');
+                        plexMetaCall('POST', 'Connect', { PinId: plexMetaPinId, MachineId: machineId })
+                            .then(function (st) { setFedStatus('fedPlexMetaStatus', 'Connected.', 'ok'); renderPlexMeta(st); })
+                            .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaManual() {
+                        var url = q('#fedPlexMetaUrl').value.trim();
+                        var token = q('#fedPlexMetaToken').value.trim();
+                        if (!url || !token) { setFedStatus('fedPlexMetaStatus', 'Address and token are both required.', 'err'); return; }
+                        setFedStatus('fedPlexMetaStatus', 'Connecting…', 'info');
+                        plexMetaCall('POST', 'Manual', { Url: url, Token: token })
+                            .then(function (st) { q('#fedPlexMetaToken').value = ''; setFedStatus('fedPlexMetaStatus', 'Connected.', 'ok'); renderPlexMeta(st); })
+                            .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaSave() {
+                        setFedStatus('fedPlexMetaStatus', 'Saving…', 'info');
+                        plexMetaCall('POST', 'Options', {
+                            Enabled: q('#fedPlexMetaEnabled').checked,
+                            SectionKeys: plexMetaChecked('fedPlexMetaSections'),
+                            JellyfinLibraryIds: plexMetaChecked('fedPlexMetaLibraries'),
+                            PullArtwork: q('#fedPlexMetaArtwork').checked,
+                            PullText: q('#fedPlexMetaText').checked
+                        }).then(function (st) { setFedStatus('fedPlexMetaStatus', 'Saved. Use "Pull now" to apply it to items already in your libraries.', 'ok'); renderPlexMeta(st); })
+                          .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaPull() {
+                        setFedStatus('fedPlexMetaStatus', 'Queuing…', 'info');
+                        plexMetaCall('POST', 'PullNow')
+                            .then(function (res) { setFedStatus('fedPlexMetaStatus', 'Queued ' + res.queued + ' items. Jellyfin will refresh them in the background.', 'ok'); })
+                            .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaDisconnect() {
+                        plexMetaCall('POST', 'Disconnect')
+                            .then(function (st) { q('#fedPlexMetaServers').innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Disconnected.', 'ok'); renderPlexMeta(st); })
+                            .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
                     }
 
                     function collectServer(i) {
@@ -6124,7 +6292,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'log'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'plex', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'log'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
                     var activeTab = 'friends';
 
@@ -6153,6 +6321,10 @@
                         // Lazy: the catalog can be a large fetch, so it's only loaded
                         // the first time an admin actually opens this tab, not on
                         // every page load.
+                        if (tab === 'plex') {
+                            loadPlexSetup();
+                        }
+
                         if (tab === 'catalog' && !catalogLoaded && !catalogLoading && !catalogFailed) {
                             populateCatalogFriendPick();
                             loadCatalog(true);
@@ -6312,6 +6484,24 @@
                                     break;
                                 case 'reject-plex-offer':
                                     rejectPlexOffer(friendId);
+                                    break;
+                                case 'plex-meta-signin':
+                                    plexMetaSignIn();
+                                    break;
+                                case 'plex-meta-connect':
+                                    plexMetaConnect(t.getAttribute('data-machine'));
+                                    break;
+                                case 'plex-meta-manual':
+                                    plexMetaManual();
+                                    break;
+                                case 'plex-meta-save':
+                                    plexMetaSave();
+                                    break;
+                                case 'plex-meta-pull':
+                                    plexMetaPull();
+                                    break;
+                                case 'plex-meta-disconnect':
+                                    plexMetaDisconnect();
                                     break;
                                 case 'connect-plex-source-manual':
                                     connectPlexSourceManual();
