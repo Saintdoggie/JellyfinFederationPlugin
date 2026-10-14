@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.183",
+        "changelog": "Federated titles from a friend's server in Direct mode now stream straight from that server to your device instead of through your own server's upload, so they start much faster. Apps like Findroid that ask your server for the file are sent to the friend's server too. A file that already fits your connection is no longer re-encoded by the friend's server, the connection-speed test no longer underestimates fast servers, a friend whose address redirects to https is now reached over https, and the hourly sync no longer rewrites every federated item.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-14T19:16:27Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.183/Jellyfin.Federation.zip",
+        "checksum": "e5c0b6f16e10350bd4981451e74d1493"
+      },
+      {
         "version": "0.0.182",
         "changelog": "The version dropdown on a title's details page now lists the copy on every server that has it, including a server that is currently offline (marked offline) so you can see where else the title lives. When one server has several copies, each is labelled with its resolution and file size so you can tell them apart. Before, a copy on an offline server was left out, which hid the dropdown for most titles while a friend's server was down.",
         "targetAbi": "12.0.0.0",
