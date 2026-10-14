@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Entities;
@@ -45,6 +46,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task<IReadOnlyList<MediaSourceInfo>> GetPlaybackMediaSources(BaseItem item, User user, bool allowMediaProbe, bool enablePathSubstitution, CancellationToken cancellationToken)
         {
             var sources = await _inner.GetPlaybackMediaSources(item, user, allowMediaProbe, enablePathSubstitution, cancellationToken).ConfigureAwait(false);
+            sources = PreferProviderSources(item, sources);
             Tune(item, sources);
             return sources;
         }
@@ -60,6 +62,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public async Task<MediaSourceInfo> GetMediaSource(BaseItem item, string mediaSourceId, string liveStreamId, bool enablePathSubstitution, CancellationToken cancellationToken)
         {
+            if (string.IsNullOrEmpty(liveStreamId) && item != null && FederationLibraryManager.GetFederationKey(item) != null)
+            {
+                // Same lookup Jellyfin's own GetMediaSource does, but through this
+                // wrapper so the id resolves to the source PlaybackInfo handed out.
+                var sources = await GetPlaybackMediaSources(item, null, false, enablePathSubstitution, cancellationToken).ConfigureAwait(false);
+                return sources.FirstOrDefault(s => string.Equals(s.Id, mediaSourceId, StringComparison.OrdinalIgnoreCase));
+            }
+
             var source = await _inner.GetMediaSource(item, mediaSourceId, liveStreamId, enablePathSubstitution, cancellationToken).ConfigureAwait(false);
             if (source != null)
             {
@@ -67,6 +77,44 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return source;
+        }
+
+        /// <summary>
+        /// For a federated item, keeps one source per id: when
+        /// <see cref="FederationMediaSourceProvider"/> returned a source under the
+        /// item's own id, it takes the place of the static source Jellyfin built from
+        /// the stored Path. Jellyfin lists static sources first and every lookup
+        /// takes the first id match, so without this the stored loopback relay always
+        /// won over the provider's direct-from-peer source.
+        /// </summary>
+        internal static IReadOnlyList<MediaSourceInfo> PreferProviderSources(BaseItem item, IReadOnlyList<MediaSourceInfo> sources)
+        {
+            if (sources == null || sources.Count < 2 || item == null || FederationLibraryManager.GetFederationKey(item) == null)
+            {
+                return sources;
+            }
+
+            var result = new List<MediaSourceInfo>(sources.Count);
+            var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var source in sources)
+            {
+                if (source?.Id != null && positions.TryGetValue(source.Id, out var position))
+                {
+                    // Static sources come before provider ones, so the later
+                    // duplicate is the provider's.
+                    result[position] = source;
+                    continue;
+                }
+
+                if (source?.Id != null)
+                {
+                    positions[source.Id] = result.Count;
+                }
+
+                result.Add(source);
+            }
+
+            return result.Count == sources.Count ? sources : result;
         }
 
         private static void Tune(BaseItem item, IEnumerable<MediaSourceInfo> sources)

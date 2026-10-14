@@ -824,6 +824,89 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
+    public void BuildDirectStreamCapQuery_SourceAlreadyUnderCapAndHeight_IsEmpty()
+    {
+        // Capping a 10 Mbps 1080p file at 20 Mbps/1080p only made the peer
+        // re-encode it on its CPU and lose byte-range seeking.
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 20;
+        server.WanMaxHeight = 1080;
+        var source = new FederatedSource
+        {
+            ServerId = "serverA",
+            Bitrate = 10_000_000,
+            MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = 1080 } }
+        };
+
+        Assert.Equal(string.Empty, _manager.BuildDirectStreamCapQuery(server, isAudio: false, source));
+    }
+
+    [Fact]
+    public void BuildDirectStreamCapQuery_SourceOverCapOrTooTallOrUnknown_KeepsCap()
+    {
+        var server = AddServer();
+        server.WanCapMode = Configuration.WanCapMode.Manual;
+        server.WanMaxBitrateMbps = 20;
+        server.WanMaxHeight = 1080;
+        var video4k = new[] { new MediaStream { Type = MediaStreamType.Video, Height = 2160 } };
+        var video1080 = new[] { new MediaStream { Type = MediaStreamType.Video, Height = 1080 } };
+
+        Assert.Equal("&capMbps=20&maxHeight=1080", _manager.BuildDirectStreamCapQuery(server, false, new FederatedSource { Bitrate = 59_000_000, MediaStreams = video1080 }));
+        Assert.Equal("&capMbps=20&maxHeight=1080", _manager.BuildDirectStreamCapQuery(server, false, new FederatedSource { Bitrate = 15_000_000, MediaStreams = video4k }));
+        Assert.Equal("&capMbps=20&maxHeight=1080", _manager.BuildDirectStreamCapQuery(server, false, new FederatedSource { Bitrate = null, MediaStreams = video1080 }));
+        Assert.Equal("&capMbps=20&maxHeight=1080", _manager.BuildDirectStreamCapQuery(server, false, new FederatedSource { Bitrate = 10_000_000 }));
+    }
+
+    [Fact]
+    public void StoredStaticPath_AfterHourTicks_StillCurrent_UntilHalfLifetimeLeft()
+    {
+        // Every signature carries an expiry hour, so a fresh URL differs from the
+        // stored one after each clock hour. That used to rewrite every item on
+        // every hourly sync and log a stale-path warning on most plays.
+        AddServer();
+        var remoteId = Guid.NewGuid();
+        var mintedAt = new DateTimeOffset(2026, 10, 14, 9, 5, 0, TimeSpan.Zero);
+        string Url(DateTimeOffset at) => $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={_manager.CreateProxySignature("serverA", remoteId, false, null, at)}";
+        var stored = Url(mintedAt);
+
+        Assert.NotEqual(stored, Url(mintedAt.AddHours(3)));
+        Assert.True(_manager.IsStoredStaticPathCurrent(stored, Url(mintedAt.AddHours(3)), mintedAt.AddHours(3), FederationLibraryManager.StaticPathRefreshMargin));
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored, Url(mintedAt.AddHours(13)), mintedAt.AddHours(13), FederationLibraryManager.StaticPathRefreshMargin));
+
+        // Playback only needs it valid right now.
+        Assert.True(_manager.IsStoredStaticPathCurrent(stored, Url(mintedAt.AddHours(20)), mintedAt.AddHours(20), TimeSpan.Zero));
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored, Url(mintedAt.AddHours(25)), mintedAt.AddHours(25), TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void StoredStaticPath_DifferentItemServerFlagsOrCredential_IsNotCurrent()
+    {
+        var server = AddServer();
+        var remoteId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 10, 14, 9, 5, 0, TimeSpan.Zero);
+        var sig = _manager.CreateProxySignature("serverA", remoteId, false, null, now);
+        var stored = $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={sig}";
+        var expected = $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig={_manager.CreateProxySignature("serverA", remoteId, false, null, now.AddHours(1))}";
+
+        // Anything but the signature differs: not current.
+        var otherItem = Guid.NewGuid();
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored, $"http://127.0.0.1:8096/Plugins/Federation/Stream?serverId=serverA&itemId={otherItem:N}&sig=x.1", now, TimeSpan.Zero));
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored, $"http://127.0.0.1:9000/Plugins/Federation/Stream?serverId=serverA&itemId={remoteId:N}&sig=x.1", now, TimeSpan.Zero));
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored.Replace("&sig=", "&audio=true&sig="), expected.Replace("&sig=", "&audio=true&sig="), now, TimeSpan.Zero));
+
+        // Same shape but a forged or legacy signature: not current.
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored.Replace(sig, new string('a', 64) + sig.Substring(64)), expected, now, TimeSpan.Zero));
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored.Replace(sig, new string('a', 64)), expected, now, TimeSpan.Zero));
+
+        // Rotating the credential revokes it, so it must be restamped.
+        Assert.True(_manager.IsStoredStaticPathCurrent(stored, expected, now, TimeSpan.Zero));
+        server.ApiKey = "rotated-key";
+        Assert.False(_manager.IsStoredStaticPathCurrent(stored, expected, now, TimeSpan.Zero));
+        Assert.False(_manager.IsStoredStaticPathCurrent(null, expected, now, TimeSpan.Zero));
+    }
+
+    [Fact]
     public void BuildDirectGatewayLoopbackUrl_Lan_UsesStaticTrue()
     {
         var itemId = Guid.NewGuid();
@@ -1102,6 +1185,66 @@ public class FederationStreamPathTests : IDisposable
         Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", path);
         Assert.DoesNotContain("session-tok-123", path);
         Assert.Equal(localUserId.ToString("N"), handler.LastRemoteUserId);
+    }
+
+    [Fact]
+    public async Task GetMediaSources_DirectMode_CurrentStoredPath_StillEmitsPeerSourceUnderItemId()
+    {
+        // The stored Path is this server's loopback relay. Jellyfin 12 matches
+        // MediaSourceId exactly and sorts the item's own id first, so the peer
+        // source has to be emitted - and under the item's own id - even while the
+        // stored path is current, or playback always went through this server.
+        var serverId = "direct-current-" + Guid.NewGuid().ToString("N");
+        var remoteId = Guid.NewGuid();
+        var server = new RemoteServer
+        {
+            Id = serverId,
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "secret-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Direct
+        };
+        _plugin.Configuration.RemoteServers.Add(server);
+        _cache.UpsertRaw(
+            "Movies",
+            serverId,
+            remoteId,
+            new BaseItemDto { Id = remoteId, Name = "F1", Type = Jellyfin.Data.Enums.BaseItemKind.Movie, Container = "mkv" },
+            0,
+            "Movie");
+        var entry = _cache.GetEntriesForMapping("Movies").First(e => e.GetPrimarySource()?.ServerId == serverId);
+        var item = _manager.MaterializeItem(entry);
+        Assert.Contains("/Plugins/Federation/Stream?", item.Path);
+
+        var handler = new DirectPathTokenHandler();
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, new HttpClient(handler) { BaseAddress = new Uri(server.Url) });
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+        clientFactory.Setup(f => f.GetClient(It.IsAny<string>())).Returns(remoteClient);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(),
+            NullLogger<FederationLibraryManager>.Instance,
+            clientFactory.Object,
+            _cache,
+            _bandwidthMonitor,
+            _mediaStreamRepository.Object);
+        Assert.True(manager.IsStoredStaticPathCurrent(item.Path, manager.BuildStaticPath(entry, entry.GetPrimarySource()!), TimeSpan.Zero));
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(new DefaultHttpContext());
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance,
+            manager,
+            accessor.Object,
+            Mock.Of<IAuthorizationContext>(),
+            new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+
+        Assert.Equal(item.Id.ToString("N"), source.Id);
+        Assert.Equal(MediaSourceType.Default, source.Type);
+        Assert.True(source.IsRemote);
+        Assert.StartsWith($"http://friend.example:8096/Plugins/Federation/DirectStream/{remoteId:N}?token=", source.Path);
     }
 
     [Fact]

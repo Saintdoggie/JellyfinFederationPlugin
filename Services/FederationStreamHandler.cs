@@ -187,7 +187,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // the original MKV/HEVC/HDR file. Keep the static relay raw; the
             // per-request provider source can advertise and request a capped
             // representation with matching metadata.
-            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
+            return $"{RemoteServerClientFactory.EffectiveUrl(server)}/Plugins/Federation/DirectStream/{remoteItemId}?token={Uri.EscapeDataString(token)}{audioFlag}";
         }
 
         /// <summary>

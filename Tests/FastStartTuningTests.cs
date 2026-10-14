@@ -222,7 +222,8 @@ public class FastStartTuningTests : IDisposable
         var item = FederatedMovie();
         var source = HttpSource();
         var inner = new Mock<IMediaSourceManager>();
-        inner.Setup(m => m.GetMediaSource(item, source.Id, null!, false, It.IsAny<CancellationToken>())).ReturnsAsync(source);
+        inner.Setup(m => m.GetPlaybackMediaSources(item, null!, false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MediaSourceInfo> { source });
 
         var result = await new FederationMediaSourceManager(inner.Object)
             .GetMediaSource(item, source.Id, null!, false, CancellationToken.None);
@@ -235,11 +236,60 @@ public class FastStartTuningTests : IDisposable
     public async Task Wrapper_GetMediaSource_UnknownId_ReturnsNull()
     {
         var inner = new Mock<IMediaSourceManager>();
-        inner.Setup(m => m.GetMediaSource(It.IsAny<BaseItem>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((MediaSourceInfo)null!);
+        inner.Setup(m => m.GetPlaybackMediaSources(It.IsAny<BaseItem>(), It.IsAny<Jellyfin.Database.Implementations.Entities.User>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MediaSourceInfo> { HttpSource() });
 
         Assert.Null(await new FederationMediaSourceManager(inner.Object)
             .GetMediaSource(FederatedMovie(), "missing", null!, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Wrapper_ProviderSourceUnderItemId_ReplacesStoredLoopbackSource()
+    {
+        // Jellyfin lists the static source built from the stored loopback Path
+        // first; the provider's direct-from-peer source under the same id must
+        // take its place, or every client keeps playing through this server.
+        var item = FederatedMovie();
+        var id = item.Id.ToString("N");
+        var stored = new MediaSourceInfo { Id = id, Path = "http://127.0.0.1:8096/Plugins/Federation/Stream?x", Protocol = MediaProtocol.Http };
+        var direct = new MediaSourceInfo { Id = id, Path = "https://peer.example/Plugins/Federation/DirectStream/x", Protocol = MediaProtocol.Http, IsRemote = true };
+        var alternate = new MediaSourceInfo { Id = Guid.NewGuid().ToString("N"), Path = "https://other.example/x", Protocol = MediaProtocol.Http };
+        var inner = new Mock<IMediaSourceManager>();
+        inner.Setup(m => m.GetPlaybackMediaSources(item, It.IsAny<Jellyfin.Database.Implementations.Entities.User>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MediaSourceInfo> { stored, alternate, direct });
+        var wrapper = new FederationMediaSourceManager(inner.Object);
+
+        var sources = await wrapper.GetPlaybackMediaSources(item, null!, true, true, CancellationToken.None);
+
+        Assert.Equal(new[] { direct, alternate }, sources);
+        Assert.Same(direct, await wrapper.GetMediaSource(item, id, null!, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Wrapper_WithoutProviderCopy_KeepsStoredSource()
+    {
+        // A primary that failed its live check is not emitted; the stored source
+        // then remains the fallback.
+        var item = FederatedMovie();
+        var stored = new MediaSourceInfo { Id = item.Id.ToString("N"), Path = "http://127.0.0.1:8096/Plugins/Federation/Stream?x", Protocol = MediaProtocol.Http };
+        var alternate = new MediaSourceInfo { Id = Guid.NewGuid().ToString("N"), Path = "https://other.example/x", Protocol = MediaProtocol.Http };
+        var inner = new Mock<IMediaSourceManager>();
+        inner.Setup(m => m.GetPlaybackMediaSources(item, It.IsAny<Jellyfin.Database.Implementations.Entities.User>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MediaSourceInfo> { stored, alternate });
+
+        var sources = await new FederationMediaSourceManager(inner.Object).GetPlaybackMediaSources(item, null!, true, true, CancellationToken.None);
+
+        Assert.Equal(new[] { stored, alternate }, sources);
+    }
+
+    [Fact]
+    public void PreferProviderSources_NonFederatedItem_KeepsDuplicates()
+    {
+        var item = LocalMovie();
+        var id = item.Id.ToString("N");
+        var sources = new List<MediaSourceInfo> { new() { Id = id }, new() { Id = id } };
+
+        Assert.Same(sources, FederationMediaSourceManager.PreferProviderSources(item, sources));
     }
 
     [Fact]

@@ -92,4 +92,122 @@ public class WanBandwidthMonitorTests
 
         clientFactory.VerifyNoOtherCalls();
     }
+
+    [Fact]
+    public async Task SteadyThroughput_IgnoresSlowStart()
+    {
+        // 300 ms latency, a redirect and TCP slow-start made a 100 Mbps peer
+        // read as ~20 Mbps when the whole request was timed.
+        var clock = 0.0;
+        var stream = new PacedStream(totalBytes: 10_000_000, chunk: 64 * 1024, secondsPerChunk: read => read < 1_000_000 ? 0.2 : 64 * 1024 * 8 / 100_000_000.0, advance: s => clock += s);
+
+        var mbps = await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(stream, () => clock, CancellationToken.None);
+
+        Assert.NotNull(mbps);
+        Assert.InRange(mbps!.Value, 95, 105);
+    }
+
+    [Fact]
+    public async Task SteadyThroughput_SlowLink_StopsAfterTimeBudget()
+    {
+        var clock = 0.0;
+        var stream = new PacedStream(totalBytes: 50_000_000, chunk: 64 * 1024, secondsPerChunk: _ => 64 * 1024 * 8 / 2_000_000.0, advance: s => clock += s);
+
+        var mbps = await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(stream, () => clock, CancellationToken.None);
+
+        Assert.InRange(mbps!.Value, 1.9, 2.1);
+        Assert.True(stream.Delivered < 5_000_000);
+    }
+
+    [Fact]
+    public async Task SteadyThroughput_BodyShorterThanWarmup_IsNull()
+    {
+        var clock = 0.0;
+        var stream = new PacedStream(totalBytes: 500_000, chunk: 64 * 1024, secondsPerChunk: _ => 0.01, advance: s => clock += s);
+
+        Assert.Null(await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(stream, () => clock, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("http://jellyfin.example.org", 308, "https://jellyfin.example.org/System/Info/Public", "https://jellyfin.example.org")]
+    [InlineData("http://jellyfin.example.org", 301, "https://jellyfin.example.org/System/Info/Public", "https://jellyfin.example.org")]
+    [InlineData("http://example.org/jf", 308, "https://example.org/jf/System/Info/Public", "https://example.org/jf")]
+    [InlineData("http://jellyfin.example.org", 302, "https://jellyfin.example.org/System/Info/Public", null)]
+    [InlineData("http://jellyfin.example.org", 308, "https://evil.example.net/System/Info/Public", null)]
+    [InlineData("http://jellyfin.example.org", 308, "https://jellyfin.example.org/login", null)]
+    [InlineData("http://jellyfin.example.org", 308, "http://jellyfin.example.org:8080/System/Info/Public", null)]
+    [InlineData("http://jellyfin.example.org", 200, null, null)]
+    public void HttpsUpgradeTarget_OnlyPermanentSameHostHttps(string configured, int status, string? location, string? expected)
+    {
+        var requested = new Uri(configured.TrimEnd('/') + "/System/Info/Public");
+        Assert.Equal(expected, RemoteServerClientFactory.HttpsUpgradeTarget(requested, (System.Net.HttpStatusCode)status, location == null ? null : new Uri(location)));
+    }
+
+    [Fact]
+    public void EffectiveUrl_UsesUpgradeOnlyForTheUrlItWasLearnedFor()
+    {
+        RemoteServerClientFactory.ResetHttpsUpgradesForTests();
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        server.Url = "http://jellyfin.example.org/";
+        Assert.Equal("http://jellyfin.example.org", RemoteServerClientFactory.EffectiveUrl(server));
+
+        RemoteServerClientFactory.SeedHttpsUpgradeForTests(server, "https://jellyfin.example.org");
+        Assert.Equal("https://jellyfin.example.org", RemoteServerClientFactory.EffectiveUrl(server));
+
+        // The admin edits the address: the old result no longer applies.
+        server.Url = "http://other.example.org";
+        Assert.Equal("http://other.example.org", RemoteServerClientFactory.EffectiveUrl(server));
+        RemoteServerClientFactory.ResetHttpsUpgradesForTests();
+    }
+
+    private sealed class PacedStream : System.IO.Stream
+    {
+        private readonly long _total;
+        private readonly int _chunk;
+        private readonly Func<long, double> _secondsPerChunk;
+        private readonly Action<double> _advance;
+
+        public PacedStream(long totalBytes, int chunk, Func<long, double> secondsPerChunk, Action<double> advance)
+        {
+            _total = totalBytes;
+            _chunk = chunk;
+            _secondsPerChunk = secondsPerChunk;
+            _advance = advance;
+        }
+
+        public long Delivered { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _total;
+
+        public override long Position { get => Delivered; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = (int)Math.Min(Math.Min(count, _chunk), _total - Delivered);
+            if (n <= 0)
+            {
+                return 0;
+            }
+
+            _advance(_secondsPerChunk(Delivered));
+            Delivered += n;
+            return n;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }

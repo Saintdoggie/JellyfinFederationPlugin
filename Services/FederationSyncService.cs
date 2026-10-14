@@ -91,8 +91,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Internally rate-limited and never throws, so it is safe to call at the top
         /// of every sync cycle.
         /// </summary>
-        private Task RefreshWanBandwidthAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
+        private async Task RefreshWanBandwidthAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
         {
+            // First, so the measurements below already go to the https address of
+            // a peer that redirects there.
+            await Task.WhenAll(servers.Where(s => s.Enabled)
+                .Select(server => _clientFactory.ProbeHttpsUpgradeAsync(server, cancellationToken) ?? Task.FromResult(false)))
+                .ConfigureAwait(false);
+
             // Parallel rather than sequential: each server's check is now
             // individually bounded (~28s worst case - see MeasureBandwidthMbpsAsync
             // and WanBandwidthMonitor.ClassifyAsync's own timeouts), but a sequential
@@ -104,7 +110,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 .Select(server => _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken));
             var linkSamples = servers.Where(s => s.Enabled)
                 .Select(server => _bandwidthMonitor.MeasureLinkIfDueAsync(server, cancellationToken));
-            return Task.WhenAll(refreshes.Concat(linkSamples));
+            await Task.WhenAll(refreshes.Concat(linkSamples)).ConfigureAwait(false);
         }
 
         /// <summary>

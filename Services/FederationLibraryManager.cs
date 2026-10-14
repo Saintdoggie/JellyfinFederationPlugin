@@ -666,6 +666,87 @@ namespace Jellyfin.Plugin.Federation.Services
             return download || autoSelect ? v2Match : (v2Match | v1Match);
         }
 
+        /// <summary>
+        /// How much signature lifetime a stored static Path must have left for a
+        /// sync to keep it instead of restamping. Half the lifetime means a stored
+        /// item is rewritten about twice a day instead of on every hourly sync.
+        /// </summary>
+        internal static readonly TimeSpan StaticPathRefreshMargin = TimeSpan.FromHours(ProxySignatureLifetimeHours / 2);
+
+        /// <summary>
+        /// True when a stored proxy Path is still as good as a freshly built one:
+        /// identical apart from its signature, and that signature is a v2 one that
+        /// stays valid for at least <paramref name="minRemaining"/>. A plain string
+        /// comparison is not enough because every signature carries an expiry hour,
+        /// so a freshly built URL differs from the stored one after every clock hour
+        /// even when nothing about the source changed. That made every hourly sync
+        /// rewrite every federated item and made playback warn about stale paths.
+        /// </summary>
+        public bool IsStoredStaticPathCurrent(string? storedPath, string? expectedPath, TimeSpan minRemaining)
+            => IsStoredStaticPathCurrent(storedPath, expectedPath, DateTimeOffset.UtcNow, minRemaining);
+
+        /// <summary>
+        /// Test seam for <see cref="IsStoredStaticPathCurrent(string?, string?, TimeSpan)"/> at a chosen UTC time.
+        /// </summary>
+        internal bool IsStoredStaticPathCurrent(string? storedPath, string? expectedPath, DateTimeOffset utcNow, TimeSpan minRemaining)
+        {
+            if (string.IsNullOrEmpty(storedPath) || string.IsNullOrEmpty(expectedPath))
+            {
+                return false;
+            }
+
+            if (string.Equals(storedPath, expectedPath, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!TrySplitSignature(storedPath, out var storedBase, out var storedSignature)
+                || !TrySplitSignature(expectedPath, out var expectedBase, out _)
+                || !string.Equals(storedBase, expectedBase, StringComparison.Ordinal)
+                || storedSignature.IndexOf('.') < 0
+                || !Uri.TryCreate(storedPath, UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+            if (!Guid.TryParse(query.TryGetValue("itemId", out var itemValue) ? itemValue.ToString() : null, out var remoteItemId))
+            {
+                return false;
+            }
+
+            var serverId = query.TryGetValue("serverId", out var serverValue) ? serverValue.ToString() : string.Empty;
+            var user = query.TryGetValue("requestingUserId", out var userValue) ? userValue.ToString() : null;
+            return ValidateProxySignature(
+                serverId,
+                remoteItemId,
+                IsTrue(query, "audio"),
+                string.IsNullOrEmpty(user) ? null : user,
+                storedSignature,
+                utcNow + minRemaining,
+                IsTrue(query, "download"),
+                IsTrue(query, "auto"));
+
+            static bool IsTrue(Dictionary<string, Microsoft.Extensions.Primitives.StringValues> query, string name)
+                => query.TryGetValue(name, out var value) && string.Equals(value.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Proxy URLs always end in "&sig=<signature>" (see BuildProxyStreamUrl).
+        private static bool TrySplitSignature(string path, out string withoutSignature, out string signature)
+        {
+            var index = path.LastIndexOf("&sig=", StringComparison.Ordinal);
+            if (index < 0 || path.IndexOf('&', index + 5) >= 0)
+            {
+                withoutSignature = string.Empty;
+                signature = string.Empty;
+                return false;
+            }
+
+            withoutSignature = path.Substring(0, index);
+            signature = path.Substring(index + 5);
+            return signature.Length > 0;
+        }
+
         private static long GetUtcUnixHour(DateTimeOffset utcNow)
             => utcNow.ToUnixTimeSeconds() / 3600;
 
@@ -741,7 +822,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // handed to a client (see ResolvePlaybackUrl and
             // FederationMediaSourceProvider.BuildPlaybackPathAsync).
             var endpoint = IsAudioType(itemType) ? "Audio" : "Videos";
-            var baseUrl = $"{server.Url.TrimEnd('/')}/{endpoint}/{src.RemoteItemId:N}/stream";
+            var baseUrl = $"{RemoteServerClientFactory.EffectiveUrl(server)}/{endpoint}/{src.RemoteItemId:N}/stream";
             var apiKeyParam = $"api_key={Uri.EscapeDataString(server.ApiKey)}";
 
             // A cap never applies to audio (already a fraction of any sensible video
@@ -771,8 +852,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// WAN link). DirectStream honors these by requesting a lower-bitrate
         /// transcode from this server's native loopback endpoint instead of
         /// <c>Static=true</c>.
+        /// <para>
+        /// Also empty when <paramref name="source"/>'s cached description shows the
+        /// file already fits: bitrate at or under the cap and, when a height limit
+        /// is set, height at or under it. Asking the peer to "cap" such a file only
+        /// makes it re-encode on its CPU (slow to start, often slower than real
+        /// time) and loses byte-range seeking, for no bandwidth saving. A source
+        /// whose bitrate or height is unknown keeps the cap.
+        /// </para>
         /// </summary>
-        public string BuildDirectStreamCapQuery(RemoteServer server, bool isAudio)
+        public string BuildDirectStreamCapQuery(RemoteServer server, bool isAudio, FederatedSource? source = null)
         {
             if (isAudio)
             {
@@ -785,8 +874,33 @@ namespace Jellyfin.Plugin.Federation.Services
                 return string.Empty;
             }
 
+            if (source != null && SourceFitsCap(source, capMbps.Value, server.WanMaxHeight))
+            {
+                return string.Empty;
+            }
+
             var height = server.WanMaxHeight > 0 ? $"&maxHeight={server.WanMaxHeight}" : string.Empty;
             return $"&capMbps={capMbps.Value}{height}";
+        }
+
+        private static bool SourceFitsCap(FederatedSource source, int capMbps, int maxHeight)
+        {
+            var streams = source.MediaStreams ?? Array.Empty<MediaStream>();
+            long bitrate = source.Bitrate is > 0
+                ? source.Bitrate.Value
+                : streams.Where(s => s.BitRate is > 0).Sum(s => (long)s.BitRate!.Value);
+            if (bitrate <= 0 || bitrate > capMbps * 1_000_000L)
+            {
+                return false;
+            }
+
+            if (maxHeight <= 0)
+            {
+                return true;
+            }
+
+            var height = streams.Where(s => s.Type == MediaStreamType.Video).Select(s => s.Height.GetValueOrDefault()).DefaultIfEmpty(0).Max();
+            return height > 0 && height <= maxHeight;
         }
 
         /// <summary>
