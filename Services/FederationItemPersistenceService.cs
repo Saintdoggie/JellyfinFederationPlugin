@@ -638,7 +638,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             changed = true;
                         }
                     }
-                    else if (!string.Equals(x.Item.Path, expected, StringComparison.Ordinal))
+                    else if (!_federationManager.IsStoredStaticPathCurrent(x.Item.Path, expected, FederationLibraryManager.StaticPathRefreshMargin))
                     {
                         x.Item.Path = expected;
                         changed = true;

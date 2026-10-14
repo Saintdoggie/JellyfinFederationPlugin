@@ -166,8 +166,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var currentPrimaryUrl = primarySource == null
                     ? null
                     : _federationManager.BuildStaticPath(entry, primarySource);
-                var staticSourceCoversPrimary = !string.IsNullOrEmpty(item.Path)
-                    && string.Equals(item.Path, currentPrimaryUrl, StringComparison.Ordinal);
+                var staticSourceCoversPrimary = _federationManager.IsStoredStaticPathCurrent(item.Path, currentPrimaryUrl, TimeSpan.Zero);
 
                 if (!string.IsNullOrEmpty(item.Path) && !staticSourceCoversPrimary)
                 {
@@ -185,10 +184,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // before ever starting the metadata fetches) turns what would
                 // otherwise be several serial round trips per play into roughly one
                 // round trip's worth - the slowest of them, not the sum of all.
+                var adaptive = Plugin.Instance?.Configuration.EnableAdaptivePlayback == true;
                 var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
-                    if (staticSourceCoversPrimary && i == primaryIndex && Plugin.Instance?.Configuration.EnableAdaptivePlayback != true)
+                    if (staticSourceCoversPrimary && i == primaryIndex && !adaptive && !IsPeerDirect(_federationManager.GetServer(entrySources[i].ServerId)))
                     {
                         // The item's own Path already IS this source (stamped once
                         // at materialization time, outside any request context - see
@@ -198,6 +198,12 @@ namespace Jellyfin.Plugin.Federation.Services
                         // currently remains allowed; a newly restrictive rule makes
                         // an older path stale immediately and emits a fresh,
                         // user-bound provider source below.
+                        //
+                        // Never skipped for a Direct-mode peer: the stored Path is
+                        // this server's loopback relay, so playing it sends every
+                        // byte through this server's upload. The provider's own
+                        // source points at the peer instead and replaces the
+                        // stored one (see the Id assignment below).
                         continue;
                     }
 
@@ -394,12 +400,22 @@ namespace Jellyfin.Plugin.Federation.Services
                     var remote = candidate.Remote;
                     var advertised = DescribeDeliveredSource(candidate.Server, candidate.Path, remote, entry.ItemType);
 
+                    // The primary source takes the item's own id. Every client asks
+                    // for MediaSourceId == item id (the only source the details page
+                    // knows about), and Jellyfin 12 matches that id exactly and sorts
+                    // it first, so under a hashed id this source was never chosen
+                    // and the item's stored loopback Path always won.
+                    // FederationMediaSourceManager drops that stored copy when this
+                    // one is present. Adaptive playback addresses sources by their
+                    // hashed ids, so it keeps them.
+                    var replacesStatic = !adaptive && candidate.Index == primaryIndex;
+
                     sources.Add(new MediaSourceInfo
                     {
                         // Jellyfin round-trips MediaSourceId through playback URLs and
                         // expects a plain 32-char hex string; the old
                         // "{serverId}:{remoteItemId}" composite did not survive that.
-                        Id = BuildSourceId(candidate.Src),
+                        Id = replacesStatic ? item.Id.ToString("N") : BuildSourceId(candidate.Src),
                         Name = position == 0 ? $"{candidate.SourceName} (Auto)" : candidate.SourceName,
                         Path = candidate.Path,
                         Protocol = MediaProtocol.Http,
@@ -435,7 +451,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         RequiresClosing = false,
 
                         RunTimeTicks = FirstPositiveRuntime(remote.RunTimeTicks, candidate.Src.RunTimeTicks, entry.Metadata.RunTimeTicks, item.RunTimeTicks),
-                        Type = position == 0 ? MediaSourceType.Default : MediaSourceType.Grouping
+                        Type = position == 0 || replacesStatic ? MediaSourceType.Default : MediaSourceType.Grouping
                     });
                 }
 
@@ -546,6 +562,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return remote;
         }
+
+        /// <summary>True for a Jellyfin peer whose bytes go straight from it to the viewer.</summary>
+        private static bool IsPeerDirect(RemoteServer? server)
+            => server is { StreamingMode: StreamingMode.Direct, Kind: ServerKind.Jellyfin };
 
         private double? ProjectedStart(RemoteServer server, MediaSourceInfo source)
             => _federationManager.ProjectedStartSeconds(server, SourceBitrate(source) is > 0 and var bitrate ? bitrate : null);
@@ -788,8 +808,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var directAudioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
-            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, itemType == "Audio");
-            return $"{server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}{capQuery}";
+            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, itemType == "Audio", src);
+            return $"{RemoteServerClientFactory.EffectiveUrl(server)}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}{capQuery}";
         }
 
         /// <summary>

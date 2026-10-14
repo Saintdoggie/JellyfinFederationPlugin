@@ -67,6 +67,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationImageProvider>();
             serviceCollection.AddTransient<FederationMediaSourceNameFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationMediaSourceNameFilter>());
+            serviceCollection.AddTransient<FederationDirectStreamRedirectFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationDirectStreamRedirectFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
             serviceCollection.AddSingleton<FederationRefreshTask>();

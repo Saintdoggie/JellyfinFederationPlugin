@@ -1100,7 +1100,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 throw new InvalidOperationException(error ?? $"Could not obtain download authorization from {_server.Name}.");
             }
 
-            var url = $"{_server.Url.TrimEnd('/')}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}&download=true";
+            var url = $"{RemoteServerClientFactory.EffectiveUrl(_server)}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}&download=true";
             await DownloadTransfer.CopyUrlToFileAsync(
                 DownloadHttpClient,
                 url,
@@ -1234,13 +1234,10 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default)
         {
-            // 5MB: large enough that TCP slow-start (the connection ramping up to its
-            // real throughput over the first several round-trips) doesn't skew a
-            // short sample toward an artificially low reading - a real concern on
-            // faster links, where slow-start accounts for a bigger fraction of a
-            // small sample's total time. Still finishes in a few seconds on a
-            // fairly slow link.
-            const int sampleBytes = 5_000_000;
+            // Only the steady part of the transfer is timed (see
+            // MeasureSteadyThroughputMbpsAsync), so the sample has to be big enough
+            // to have a steady part after the warm-up on a fast, high-latency link.
+            const int sampleBytes = 10_000_000;
             try
             {
                 // The shared HttpClient's own timeout (5 minutes - reasonable for a
@@ -1256,8 +1253,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
                 // Prefer this plugin's own token-authenticated Peer/BitrateTest
                 // route. The native /Playback/BitrateTest endpoint requires real
                 // Jellyfin auth, which the scoped federation token this client
@@ -1267,29 +1262,83 @@ namespace Jellyfin.Plugin.Federation.Services
                 // direct-play bitrates their link can't carry - buffering). The
                 // native endpoint stays as a fallback for remotes running plugin
                 // versions too old to have the peer route.
-                var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
+                var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
                     response.Dispose();
-                    response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", linkedCts.Token).ConfigureAwait(false);
+                    response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
                 }
 
-                response.EnsureSuccessStatusCode();
-                var bytes = await response.Content.ReadAsByteArrayAsync(linkedCts.Token).ConfigureAwait(false);
-                stopwatch.Stop();
-
-                if (bytes.Length == 0 || stopwatch.Elapsed.TotalSeconds <= 0)
+                using (response)
                 {
-                    return null;
+                    response.EnsureSuccessStatusCode();
+                    var body = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, linkedCts.Token).ConfigureAwait(false);
                 }
-
-                return bytes.Length * 8.0 / stopwatch.Elapsed.TotalSeconds / 1_000_000.0;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Bandwidth probe failed for remote server {ServerName}", _server.Name);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Reads a bitrate-test body and returns the throughput of its steady part in
+        /// Mbps. Timing the whole request (as this used to) also counted DNS, the
+        /// TCP/TLS handshakes, an http-to-https redirect, the time to first byte and
+        /// TCP slow-start; on a fast link with ~300 ms of latency that made an
+        /// 80-120 Mbps peer read as 15-25 Mbps and put a needless transcode cap on it.
+        /// The first <c>warmupBytes</c> are therefore read untimed, and timing then
+        /// runs until the body ends or <c>maxMeasureSeconds</c> have passed (so a
+        /// slow link still finishes inside the caller's timeout). Null when too
+        /// little was read after the warm-up to say anything.
+        /// </summary>
+        /// <param name="body">The response body.</param>
+        /// <param name="nowSeconds">Monotonic clock in seconds; a seam for tests.</param>
+        /// <param name="cancellationToken">Cancellation.</param>
+        /// <returns>Megabits per second, or null.</returns>
+        internal static async Task<double?> MeasureSteadyThroughputMbpsAsync(Stream body, Func<double> nowSeconds, CancellationToken cancellationToken)
+        {
+            const int warmupBytes = 1_000_000;
+            const int minMeasuredBytes = 256_000;
+            const double maxMeasureSeconds = 8.0;
+
+            var buffer = new byte[64 * 1024];
+            long warmedUp = 0;
+            while (warmedUp < warmupBytes)
+            {
+                var read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return null;
+                }
+
+                warmedUp += read;
+            }
+
+            var start = nowSeconds();
+            long measured = 0;
+            double elapsed = 0;
+            while (elapsed < maxMeasureSeconds)
+            {
+                var read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                measured += read;
+                elapsed = nowSeconds() - start;
+            }
+
+            if (measured < minMeasuredBytes || elapsed <= 0)
+            {
+                return null;
+            }
+
+            return measured * 8.0 / elapsed / 1_000_000.0;
         }
 
         /// <inheritdoc />
@@ -1655,7 +1704,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var client = new HttpClient
             {
-                BaseAddress = new Uri(server.Url.TrimEnd('/')),
+                BaseAddress = new Uri(RemoteServerClientFactory.EffectiveUrl(server)),
                 Timeout = TimeSpan.FromMinutes(5)
             };
 
