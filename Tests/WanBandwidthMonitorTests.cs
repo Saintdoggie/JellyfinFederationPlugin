@@ -160,6 +160,83 @@ public class WanBandwidthMonitorTests
         RemoteServerClientFactory.ResetHttpsUpgradesForTests();
     }
 
+    [Fact]
+    public async Task MeasureBandwidth_WithSampleTitle_TimesARangeOfTheRealFile()
+    {
+        // A peer's BitrateTest endpoint read 23 Mbps on a link that served its
+        // media at 120+ Mbps, which capped every 4K title to 20 Mbps 1080p.
+        var handler = new PeerHandler(directStreamStatus: System.Net.HttpStatusCode.PartialContent);
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        server.Url = "https://peer.example";
+        var client = new RemoteServerClient(server, NullLogger.Instance, new System.Net.Http.HttpClient(handler) { BaseAddress = new Uri(server.Url) });
+        var itemId = Guid.NewGuid();
+
+        var mbps = await client.MeasureBandwidthMbpsAsync(CancellationToken.None, itemId);
+
+        Assert.True(mbps > 0);
+        Assert.Equal($"/Plugins/Federation/DirectStream/{itemId:N}", handler.DirectStreamPath);
+        Assert.DoesNotContain("capMbps", handler.DirectStreamQuery);
+        Assert.Equal("bytes=0-9999999", handler.DirectStreamRange);
+        Assert.Equal(0, handler.BitrateTestCalls);
+    }
+
+    [Fact]
+    public async Task MeasureBandwidth_MediaSampleRefused_FallsBackToBitrateTest()
+    {
+        var handler = new PeerHandler(directStreamStatus: System.Net.HttpStatusCode.Forbidden);
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        server.Url = "https://peer.example";
+        var client = new RemoteServerClient(server, NullLogger.Instance, new System.Net.Http.HttpClient(handler) { BaseAddress = new Uri(server.Url) });
+
+        Assert.True(await client.MeasureBandwidthMbpsAsync(CancellationToken.None, Guid.NewGuid()) > 0);
+        Assert.Equal(1, handler.BitrateTestCalls);
+    }
+
+    private sealed class PeerHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly System.Net.HttpStatusCode _directStreamStatus;
+
+        public PeerHandler(System.Net.HttpStatusCode directStreamStatus) => _directStreamStatus = directStreamStatus;
+
+        public string? DirectStreamPath { get; private set; }
+
+        public string DirectStreamQuery { get; private set; } = string.Empty;
+
+        public string? DirectStreamRange { get; private set; }
+
+        public int BitrateTestCalls { get; private set; }
+
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.Equals("/Plugins/Federation/PlaybackToken", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("{\"token\":\"item-tok\",\"purpose\":\"Playback\"}", System.Text.Encoding.UTF8, "application/json")
+                });
+            }
+
+            if (path.StartsWith("/Plugins/Federation/DirectStream/", StringComparison.OrdinalIgnoreCase))
+            {
+                DirectStreamPath = path;
+                DirectStreamQuery = request.RequestUri.Query;
+                DirectStreamRange = request.Headers.Range?.ToString();
+                return Task.FromResult(_directStreamStatus is System.Net.HttpStatusCode.PartialContent
+                    ? new System.Net.Http.HttpResponseMessage(_directStreamStatus) { Content = new System.Net.Http.ByteArrayContent(new byte[10_000_000]) }
+                    : new System.Net.Http.HttpResponseMessage(_directStreamStatus));
+            }
+
+            if (path.Equals("/Plugins/Federation/Peer/BitrateTest", StringComparison.OrdinalIgnoreCase))
+            {
+                BitrateTestCalls++;
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.ByteArrayContent(new byte[10_000_000]) });
+            }
+
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
     private sealed class PacedStream : System.IO.Stream
     {
         private readonly long _total;

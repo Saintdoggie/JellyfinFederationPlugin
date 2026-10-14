@@ -181,7 +181,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
                 else if (server.Kind == ServerKind.Jellyfin)
                 {
-                    measured = await _clientFactory.GetClient(server.Id)?.MeasureBandwidthMbpsAsync(cancellationToken)!;
+                    var client = _clientFactory.GetClient(server.Id);
+                    if (client != null)
+                    {
+                        measured = await client.MeasureBandwidthMbpsAsync(cancellationToken, FindSampleVideoId(server)).ConfigureAwait(false);
+                    }
                 }
             }
             catch (Exception ex)
@@ -226,6 +230,37 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return null;
+        }
+
+        // A shared video on a Jellyfin peer to time the link on (see
+        // RemoteServerClient.MeasureBandwidthMbpsAsync). The highest-bitrate one,
+        // so the 10 MB sample is a small part of a real file.
+        private Guid? FindSampleVideoId(RemoteServer server)
+        {
+            if (_itemCache == null)
+            {
+                return null;
+            }
+
+            FederatedSource? best = null;
+            foreach (var entry in _itemCache.GetAllEntries())
+            {
+                if (entry.ItemType is not ("Movie" or "Episode"))
+                {
+                    continue;
+                }
+
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (source.ServerId == server.Id && source.RemoteItemId != Guid.Empty
+                        && (best == null || source.Bitrate.GetValueOrDefault() > best.Bitrate.GetValueOrDefault()))
+                    {
+                        best = source;
+                    }
+                }
+            }
+
+            return best?.RemoteItemId;
         }
 
         /// <summary>
@@ -328,7 +363,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     var client = _clientFactory.GetClient(server.Id);
                     if (client != null)
                     {
-                        var measured = await client.MeasureBandwidthMbpsAsync(cancellationToken).ConfigureAwait(false);
+                        var measured = await client.MeasureBandwidthMbpsAsync(cancellationToken, FindSampleVideoId(server)).ConfigureAwait(false);
                         if (measured.HasValue)
                         {
                             info.MeasuredMbps = measured;

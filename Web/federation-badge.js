@@ -1120,12 +1120,19 @@
     return 'friend:' + name;
   }
 
+  // Library-browsing routes only. On a details page the same /Items queries
+  // load a show's seasons and episodes or a collection's titles, and filtering
+  // those by origin made a friend's show look empty under "This server".
+  function originFilterActive() {
+    return /^#!?\/(home|movies|tv|search|list|music)(\.html)?(?=[?\/#]|$)/i.test(window.location.hash || '');
+  }
+
   function cardMatchesOrigin(el) {
     if (unavailableIds.has(normalizeId(el.getAttribute('data-id')))) {
       return false;
     }
     var mode = getOriginFilter();
-    if (mode === 'all') {
+    if (mode === 'all' || !originFilterActive()) {
       return true;
     }
 
@@ -1146,7 +1153,7 @@
 
     document.querySelectorAll('.itemsContainer').forEach(function (container) {
       var empty = container.querySelector(':scope > .federation-origin-empty');
-      if (mode === 'all') {
+      if (mode === 'all' || !originFilterActive()) {
         if (empty) {
           empty.setAttribute('data-show', '0');
         }
@@ -1190,7 +1197,7 @@
 
   function applyOriginToOptions(options) {
     var mode = getOriginFilter();
-    if (!options || mode === 'all') {
+    if (!options || mode === 'all' || !originFilterActive()) {
       return;
     }
 
@@ -1215,7 +1222,7 @@
 
   function applyOriginToUrl(url) {
     var mode = getOriginFilter();
-    if (mode === 'all' || !isItemsListUrl(url)) {
+    if (mode === 'all' || !originFilterActive() || !isItemsListUrl(url)) {
       return url;
     }
 
@@ -1638,6 +1645,10 @@
       };
     }
   }
+
+  // Before anything loads: a library page opened right away otherwise fetched
+  // its first page unfiltered, so the selected tab only sometimes applied.
+  hookOriginQueries();
 
   Promise.all([refreshFederatedIds(), refreshClientSettings(), resolveAdminState()]).then(function () {
     if (currentUserIsAdmin) {
