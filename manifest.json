@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.182",
+        "changelog": "The version dropdown on a title's details page now lists the copy on every server that has it, including a server that is currently offline (marked offline) so you can see where else the title lives. When one server has several copies, each is labelled with its resolution and file size so you can tell them apart. Before, a copy on an offline server was left out, which hid the dropdown for most titles while a friend's server was down.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-14T15:45:51Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.182/Jellyfin.Federation.zip",
+        "checksum": "7a38da04c32a37d0388fcfe2978e2e17"
+      },
+      {
         "version": "0.0.181",
         "changelog": "The extra server buttons under the Play button are gone. Choosing which server's copy to play now uses only Jellyfin's own version dropdown, which lists every server that has the title, and the video, audio and subtitle details below it update for the copy you pick.",
         "targetAbi": "12.0.0.0",
