@@ -143,6 +143,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
+            var serverCounts = all.GroupBy(x => x.ServerId).ToDictionary(g => g.Key, g => g.Count());
             foreach (var source in all)
             {
                 if (ReferenceEquals(source, primary))
@@ -151,12 +152,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var other = _federation.GetServer(source.ServerId);
-                if (other is not { Enabled: true } || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true)
+                if (other is not { Enabled: true })
                 {
                     continue;
                 }
 
-                var alternate = BuildAlternate(source, other.Name, entry.Metadata.RunTimeTicks);
+                // A copy on a server that is down right now is still listed, so you can see where else the title
+                // lives; it is marked so you know it will not play until that server is back.
+                var offline = FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true;
+                var alternate = BuildAlternate(source, other.Name, entry.Metadata.RunTimeTicks, offline, serverCounts[source.ServerId] > 1 || source.ServerId == primary!.ServerId);
                 if (list.All(existing => existing.Id != alternate.Id))
                 {
                     list.Add(alternate);
@@ -170,11 +174,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// A description of another server's copy built from what the catalog already knows about it. Its id is the same
         /// one the playback path uses, so choosing it in the dropdown plays exactly that server's copy.
         /// </summary>
-        internal static MediaSourceInfo BuildAlternate(FederatedSource source, string serverName, long? fallbackRuntime)
+        internal static MediaSourceInfo BuildAlternate(FederatedSource source, string serverName, long? fallbackRuntime, bool offline = false, bool needsDetail = false)
             => new()
             {
                 Id = FederationMediaSourceProvider.BuildSourceId(source),
-                Name = serverName,
+                Name = AlternateName(source, serverName, offline, needsDetail),
                 Protocol = MediaBrowser.Model.MediaInfo.MediaProtocol.Http,
                 Type = MediaBrowser.Model.Dto.MediaSourceType.Grouping,
                 Container = source.Container,
@@ -187,5 +191,35 @@ namespace Jellyfin.Plugin.Federation.Services
                 SupportsTranscoding = true,
                 SupportsProbing = true,
             };
+
+        /// <summary>
+        /// "server", "server (2160p · 54.3 GB)" when the same server has several copies (so they can be told apart),
+        /// with ", offline" added while that server is down.
+        /// </summary>
+        internal static string AlternateName(FederatedSource source, string serverName, bool offline, bool needsDetail)
+        {
+            var parts = new List<string>();
+            if (needsDetail)
+            {
+                var height = source.MediaStreams?.FirstOrDefault(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video)?.Height;
+                if (height > 0)
+                {
+                    parts.Add(height + "p");
+                }
+
+                if (source.Size > 0)
+                {
+                    parts.Add((source.Size.Value / 1_073_741_824d).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " GB");
+                }
+            }
+
+            var detail = string.Join(" · ", parts);
+            if (offline)
+            {
+                detail = detail.Length > 0 ? detail + ", offline" : "offline";
+            }
+
+            return detail.Length > 0 ? $"{serverName} ({detail})" : serverName;
+        }
     }
 }

@@ -45,4 +45,31 @@ public class FederationMediaSourceNameTests
         Assert.Equal(5, alternate.RunTimeTicks);
         Assert.Empty(alternate.MediaStreams);
     }
+
+    private static FederatedSource Copy(int height, long bytes) => new()
+    {
+        ServerId = "s",
+        RemoteItemId = Guid.NewGuid(),
+        Size = bytes,
+        MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = height } },
+    };
+
+    [Fact]
+    public void AlternateName_OnlyServer_IsJustTheServerName()
+        => Assert.Equal("plexpal", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plexpal", offline: false, needsDetail: false));
+
+    [Fact]
+    public void AlternateName_SeveralCopiesOnOneServer_AddsResolutionAndSize()
+        => Assert.Equal("plexpal (2160p · 54.3 GB)", FederationMediaSourceNameFilter.AlternateName(Copy(2160, 58_300_000_000), "plexpal", offline: false, needsDetail: true));
+
+    [Fact]
+    public void AlternateName_OfflineServer_IsMarked()
+    {
+        Assert.Equal("plexpal (offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1), "plexpal", offline: true, needsDetail: false));
+        Assert.Equal("plexpal (1080p · 1 GB, offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plexpal", offline: true, needsDetail: true));
+    }
+
+    [Fact]
+    public void AlternateName_MissingDetails_FallsBackToServerName()
+        => Assert.Equal("plexpal", FederationMediaSourceNameFilter.AlternateName(new FederatedSource(), "plexpal", offline: false, needsDetail: true));
 }
