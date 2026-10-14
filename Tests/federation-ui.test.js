@@ -291,6 +291,46 @@ test('friend origin tab keeps that friend and hides local titles', async () => {
   dom.window.close();
 });
 
+test('origin filter never touches a details page, so a friend\'s show keeps its episodes', async () => {
+  const { dom, getItemsCalls, calls } = makeLibraryWindow();
+  await settle();
+  await settle();
+  [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'This server').click();
+  await settle();
+  dom.window.location.hash = '#/details?id=' + itemId;
+  await dom.window.fetch('/Users/abc/Items?ParentId=season1');
+  assert.equal(calls.at(-1).includes('ExcludeItemTags'), false);
+  await dom.window.ApiClient.getItems('abc', { ParentId: 'season1' });
+  assert.equal(getItemsCalls.at(-1).ExcludeItemTags, undefined);
+  dom.window.document.querySelectorAll('.page').forEach((page) => page.classList.add('hide'));
+  const episodes = dom.window.document.createElement('div');
+  episodes.className = 'page itemDetailPage';
+  episodes.innerHTML = '<div class="itemsContainer"><div class="card" data-id="' + itemId + '"></div></div>';
+  dom.window.document.body.appendChild(episodes);
+  await new Promise((resolve) => dom.window.setTimeout(resolve, 5));
+  dom.window.eval('void 0');
+  await settle();
+  assert.equal(episodes.querySelector('.card').classList.contains('federation-origin-hidden'), false);
+  dom.window.close();
+});
+
+test('origin query hooks are in place before the catalog finishes loading', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/movies?topParentId=1' });
+  const calls = [];
+  dom.window.sessionStorage.setItem('federation-origin-filter', 'local');
+  dom.window.ApiClient = { getCurrentUser: () => new Promise(() => {}), accessToken: () => 't' };
+  dom.window.fetch = (url) => {
+    calls.push(String(url));
+    return new Promise(() => {});
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  dom.window.fetch('/Users/abc/Items?ParentId=1');
+  assert.ok(calls.at(-1).includes('ExcludeItemTags=Federated'));
+  dom.window.close();
+});
+
 test('origin filter CSS is a tab strip, not a floating overlay', () => {
   assert.match(badgeScript, /\.federation-origin-filter\{/);
   assert.match(badgeScript, /Library source/);

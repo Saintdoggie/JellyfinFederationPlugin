@@ -1232,7 +1232,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// fixed number. Returns null on any failure; callers must keep using their
         /// last known-good measurement rather than treat null as "no bandwidth".
         /// </summary>
-        public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default)
+        /// <param name="cancellationToken">Cancellation.</param>
+        /// <param name="sampleItemId">
+        /// A title this peer shares with us. When given, the sample is a range of that
+        /// real file over the same DirectStream route playback uses, which is what
+        /// actually matters. A peer's BitrateTest endpoint measured 23 Mbps on a link
+        /// that delivered its media files at 120+ Mbps, so it is only a fallback.
+        /// </param>
+        public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default, Guid? sampleItemId = null)
         {
             // Only the steady part of the transfer is timed (see
             // MeasureSteadyThroughputMbpsAsync), so the sample has to be big enough
@@ -1252,6 +1259,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 // risking that blast radius.
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+                if (sampleItemId is { } itemId)
+                {
+                    var onMedia = await MeasureOnMediaAsync(itemId, sampleBytes, linkedCts.Token).ConfigureAwait(false);
+                    if (onMedia != null)
+                    {
+                        return onMedia;
+                    }
+                }
 
                 // Prefer this plugin's own token-authenticated Peer/BitrateTest
                 // route. The native /Playback/BitrateTest endpoint requires real
@@ -1280,6 +1296,40 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        // Times a byte range of a real shared file through DirectStream (uncapped,
+        // so the peer serves the original bytes). Null when the token, the request
+        // or the body falls short; the caller then uses the BitrateTest endpoint.
+        private async Task<double?> MeasureOnMediaAsync(Guid itemId, int sampleBytes, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var (token, _) = await GetPlaybackTokenAsync(itemId.ToString("N"), cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(token))
+                {
+                    return null;
+                }
+
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    $"{RemoteServerClientFactory.EffectiveUrl(_server)}/Plugins/Federation/DirectStream/{itemId:N}?token={Uri.EscapeDataString(token)}");
+                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, sampleBytes - 1);
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                var clock = Stopwatch.StartNew();
+                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "Media-based bandwidth sample failed for {ServerName}; falling back to BitrateTest", _server.Name);
                 return null;
             }
         }
