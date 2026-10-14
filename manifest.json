@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.184",
+        "changelog": "The connection-speed test now times a real file from each friend instead of a test endpoint that read far too low, so fast friends are no longer capped to 20 Mbps 1080p and 4K titles play in full quality. The library \"This server\" tab now filters on the server, so it shows all of your own titles with correct paging instead of a few cards or an empty page, and the source tabs no longer hide a friend's episodes on a show's page or miss the first page you open.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-14T19:36:26Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.184/Jellyfin.Federation.zip",
+        "checksum": "8a8ba203e39156402ad7b276ef28f0c6"
+      },
+      {
         "version": "0.0.183",
         "changelog": "Federated titles from a friend's server in Direct mode now stream straight from that server to your device instead of through your own server's upload, so they start much faster. Apps like Findroid that ask your server for the file are sent to the friend's server too. A file that already fits your connection is no longer re-encoded by the friend's server, the connection-speed test no longer underestimates fast servers, a friend whose address redirects to https is now reached over https, and the hourly sync no longer rewrites every federated item.",
         "targetAbi": "12.0.0.0",
