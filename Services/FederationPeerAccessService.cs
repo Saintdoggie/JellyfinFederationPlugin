@@ -86,7 +86,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            return IsItemVisible(caller, remoteUserId, itemId, ResolveTopLibraryFolderId(item));
+            return IsItemVisible(caller, remoteUserId, itemId, ResolveLibraryFolderIds(item));
         }
 
         /// <summary>
@@ -96,6 +96,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// the whole-library scope check, same as a genuinely unmatched folder).
         /// </summary>
         public bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, string? libraryFolderId)
+        {
+            return IsItemVisible(
+                caller,
+                remoteUserId,
+                itemId,
+                string.IsNullOrEmpty(libraryFolderId) ? Array.Empty<string>() : new[] { libraryFolderId });
+        }
+
+        private bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, System.Collections.Generic.IReadOnlyCollection<string> libraryFolderIds)
         {
             // Apply this before every allow-all shortcut. Catalogs and playback
             // token issuance share this gate; a friend may only receive our
@@ -118,9 +127,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             if (!caller.ShareAllLibraries
-                && (string.IsNullOrEmpty(libraryFolderId)
-                    || !(caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
-                        .Any(id => FolderIdsEqual(id, libraryFolderId))))
+                && !libraryFolderIds.Any(folderId => (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
+                    .Any(id => FolderIdsEqual(id, folderId))))
             {
                 return false;
             }
@@ -158,8 +166,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 RemoteUserAccessMode.Blocked => false,
                 RemoteUserAccessMode.AllLibraries => true,
-                RemoteUserAccessMode.CertainLibraries => !string.IsNullOrEmpty(libraryFolderId)
-                    && rule.LibraryFolderIds.Any(id => FolderIdsEqual(id, libraryFolderId)),
+                RemoteUserAccessMode.CertainLibraries => libraryFolderIds.Any(folderId =>
+                    rule.LibraryFolderIds.Any(id => FolderIdsEqual(id, folderId))),
                 RemoteUserAccessMode.CertainItems => IsItemOrAncestorListed(itemId, rule.ItemIds),
                 _ => true
             };
@@ -258,6 +266,35 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var top = item.GetTopParent();
             return top?.Id.ToString("N");
+        }
+
+        /// <summary>
+        /// Every library id an item can be matched against: the library
+        /// (CollectionFolder) ids Jellyfin itself resolves for it, plus
+        /// <see cref="ResolveTopLibraryFolderId"/>. A real item's top parent is
+        /// its library's physical media folder, not the library - so the top
+        /// parent alone never matches the CollectionFolder ids stored by the
+        /// library picker, which hid every item from a friend shared specific
+        /// libraries instead of all of them.
+        /// </summary>
+        public System.Collections.Generic.IReadOnlyCollection<string> ResolveLibraryFolderIds(BaseItem item)
+        {
+            var ids = new System.Collections.Generic.List<string>();
+            foreach (var folder in _libraryManager.GetCollectionFolders(item) ?? new System.Collections.Generic.List<Folder>())
+            {
+                if (folder != null)
+                {
+                    ids.Add(folder.Id.ToString("N"));
+                }
+            }
+
+            var top = ResolveTopLibraryFolderId(item);
+            if (!string.IsNullOrEmpty(top))
+            {
+                ids.Add(top);
+            }
+
+            return ids;
         }
 
         /// <summary>

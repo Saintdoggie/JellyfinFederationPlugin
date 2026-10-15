@@ -132,6 +132,36 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
         Assert.False(LibraryProvisioningService.IsEntirelyFederatedFolder(folder, "/data/federation"));
     }
 
+    [Fact]
+    public void SpecificSharedLibrary_MatchesItemsByTheirLibraryNotTheirPhysicalFolder()
+    {
+        // GetTopParent() of a real item is its library's physical folder, which
+        // never equals the CollectionFolder id the library picker stores.
+        var library = new CollectionFolder { Id = Guid.NewGuid() };
+        var otherLibrary = new CollectionFolder { Id = Guid.NewGuid() };
+        var movie = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid() };
+        SetItems(movie);
+        _library.Setup(l => l.GetCollectionFolders(movie)).Returns(new List<Folder> { library });
+        var service = new FederationPeerAccessService(_library.Object);
+
+        var shared = new RemoteServer { ShareAllLibraries = false, SharedLibraryFolderIds = new() { library.Id.ToString() } };
+        Assert.True(service.IsItemVisible(shared, null, movie.Id));
+
+        var notShared = new RemoteServer { ShareAllLibraries = false, SharedLibraryFolderIds = new() { otherLibrary.Id.ToString() } };
+        Assert.False(service.IsItemVisible(notShared, null, movie.Id));
+
+        var perUser = new RemoteServer { ShareAllLibraries = true };
+        perUser.RemoteUserAccessRules.Add(new RemoteUserAccessRule
+        {
+            RemoteUserId = "viewer",
+            Mode = RemoteUserAccessMode.CertainLibraries,
+            LibraryFolderIds = new List<string> { library.Id.ToString("N") }
+        });
+        Assert.True(service.IsItemVisible(perUser, "viewer", movie.Id));
+        perUser.RemoteUserAccessRules[0].LibraryFolderIds = new List<string> { otherLibrary.Id.ToString("N") };
+        Assert.False(service.IsItemVisible(perUser, "viewer", movie.Id));
+    }
+
     private void SetItems(params BaseItem[] items)
     {
         foreach (var item in items)
