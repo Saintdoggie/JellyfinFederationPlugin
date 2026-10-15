@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.184",
-  "changelog": "The connection-speed test now times a real file from each friend instead of a test endpoint that read far too low, so fast friends are no longer capped to 20 Mbps 1080p and 4K titles play in full quality. The library \"This server\" tab now filters on the server, so it shows all of your own titles with correct paging instead of a few cards or an empty page, and the source tabs no longer hide a friend's episodes on a show's page or miss the first page you open.",
+  "version": "0.0.185",
+  "changelog": "Coming from Plex? The Plex tab is now a three-step guide that brings your Plex movie and TV libraries into Jellyfin. Sign in with Plex, pick the libraries, and the plugin creates matching Jellyfin libraries over the same folders (or reuses ones you already have), with Plex's cover art, backdrops and descriptions. If Plex runs on another computer, drive or container, add a folder rewrite and check again. A match report shows how many titles found their Plex artwork. The new libraries are ordinary Jellyfin libraries, so sharing with friends and downloads keep working.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-14T19:36:26Z",
+  "timestamp": "2026-10-15T02:46:03Z",
   "imageUrl": "thumb.png"
 }
