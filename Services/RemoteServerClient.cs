@@ -146,7 +146,8 @@ namespace Jellyfin.Plugin.Federation.Services
             CancellationToken cancellationToken = default,
             string? localActingUserId = null,
             string? localActingUserName = null,
-            bool slim = false)
+            bool slim = false,
+            int? cursor = null)
         {
             try
             {
@@ -156,6 +157,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // kept as a parameter only so existing call sites don't need
                 // updating, not because anything here still reads it.
                 var queryParams = new List<string>();
+
+                if (cursor.HasValue)
+                {
+                    queryParams.Add($"cursor={cursor.Value}");
+                }
 
                 if (!string.IsNullOrEmpty(mediaType))
                 {
@@ -242,8 +248,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                int? nextCursor = null;
+                if (root.TryGetProperty("NextCursor", out var cursorProp) && cursorProp.TryGetInt32(out var cursorValue))
+                {
+                    nextCursor = cursorValue;
+                }
+
                 _logger.LogDebug("[Federation] Retrieved {Count} items from remote server {ServerName}", items.Count, _server.Name);
-                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount, hasMore);
+                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount, hasMore, nextCursor);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

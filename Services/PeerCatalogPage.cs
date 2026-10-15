@@ -17,9 +17,10 @@ internal static class PeerCatalogPage
     /// </summary>
     internal sealed class RemoteItemPage : List<BaseItemDto>
     {
-        public RemoteItemPage(IEnumerable<BaseItemDto> items, int? totalRecordCount, bool? hasMore = null)
+        public RemoteItemPage(IEnumerable<BaseItemDto> items, int? totalRecordCount, bool? hasMore = null, int? nextCursor = null)
             : base(items)
         {
+            NextCursor = nextCursor;
             TotalRecordCount = totalRecordCount;
             // Preferred paging signal once both sides run a version that sends
             // it: whether more rows exist after this page, independent of how
@@ -30,6 +31,13 @@ internal static class PeerCatalogPage
         public int? TotalRecordCount { get; }
 
         public bool? HasMore { get; }
+
+        /// <summary>
+        /// The peer's raw resume position after this page, when it sends one.
+        /// Passing it back lets the peer continue there instead of re-reading
+        /// and skipping every earlier row on each request.
+        /// </summary>
+        public int? NextCursor { get; }
 
         /// <summary>
         /// True when the remote's total says items remain after this page.

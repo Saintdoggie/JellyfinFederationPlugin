@@ -9,6 +9,7 @@ using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Configuration
 {
@@ -25,7 +26,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
             // server's public URL for Proxy streaming. AddHttpContextAccessor is
             // idempotent if the host already registered it.
             serviceCollection.AddHttpContextAccessor();
-            serviceCollection.AddSingleton<IRemoteServerClientFactory, RemoteServerClientFactory>();
+            RegisterCapturingLoggers(serviceCollection);
+            serviceCollection.AddSingleton<IRemoteServerClientFactory>(sp =>
+                new RemoteServerClientFactory(sp.GetRequiredService<FederationCapturingLoggerFactory>()));
             serviceCollection.AddSingleton<FederationItemCache>();
             serviceCollection.AddSingleton<WanBandwidthMonitor>();
             serviceCollection.AddSingleton<AdaptiveSourceRanking>();
@@ -118,6 +121,47 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<IMediaSourceManager>(sp =>
                 new FederationMediaSourceManager((IMediaSourceManager)ActivatorUtilities.CreateInstance(sp, implementationType)));
             return true;
+        }
+
+        /// <summary>
+        /// Gives this plugin's own classes an ILogger&lt;T&gt; that also feeds the
+        /// settings page's Log tab (see <see cref="FederationCapturingLoggerFactory"/>).
+        /// Closed registrations only, one per plugin type that asks for a
+        /// logger, so Jellyfin's own loggers are left untouched.
+        /// </summary>
+        internal static void RegisterCapturingLoggers(IServiceCollection serviceCollection)
+        {
+            serviceCollection.AddSingleton<FederationCapturingLoggerFactory>(sp => new FederationCapturingLoggerFactory(
+                sp.GetRequiredService<ILoggerFactory>(),
+                sp.GetRequiredService<FederationLogBuffer>()));
+
+            System.Type[] types;
+            try
+            {
+                types = typeof(PluginServiceRegistrator).Assembly.GetTypes();
+            }
+            catch (System.Reflection.ReflectionTypeLoadException ex)
+            {
+                types = ex.Types.Where(t => t != null).ToArray()!;
+            }
+
+            var categories = types
+                .Where(t => t.IsClass && !t.IsAbstract && !t.ContainsGenericParameters)
+                .SelectMany(t => t.GetConstructors())
+                .SelectMany(c => c.GetParameters())
+                .Select(p => p.ParameterType)
+                .Where(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(ILogger<>))
+                .Select(t => t.GetGenericArguments()[0])
+                .Distinct();
+
+            foreach (var category in categories)
+            {
+                serviceCollection.AddSingleton(
+                    typeof(ILogger<>).MakeGenericType(category),
+                    sp => System.Activator.CreateInstance(
+                        typeof(Logger<>).MakeGenericType(category),
+                        sp.GetRequiredService<FederationCapturingLoggerFactory>())!);
+            }
         }
     }
 }

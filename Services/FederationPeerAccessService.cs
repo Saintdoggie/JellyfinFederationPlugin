@@ -86,7 +86,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            return IsItemVisible(caller, remoteUserId, itemId, ResolveLibraryFolderIds(item));
+            // Resolved only when a library-scoped setting needs it: Peer/Items
+            // runs this for every row of a friend's catalog.
+            return IsItemVisible(
+                caller,
+                remoteUserId,
+                itemId,
+                new Lazy<System.Collections.Generic.IReadOnlyCollection<string>>(() => ResolveLibraryFolderIds(item)));
         }
 
         /// <summary>
@@ -101,10 +107,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 caller,
                 remoteUserId,
                 itemId,
-                string.IsNullOrEmpty(libraryFolderId) ? Array.Empty<string>() : new[] { libraryFolderId });
+                new Lazy<System.Collections.Generic.IReadOnlyCollection<string>>(
+                    string.IsNullOrEmpty(libraryFolderId) ? Array.Empty<string>() : new[] { libraryFolderId }));
         }
 
-        private bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, System.Collections.Generic.IReadOnlyCollection<string> libraryFolderIds)
+        private bool IsItemVisible(RemoteServer caller, string? remoteUserId, Guid itemId, Lazy<System.Collections.Generic.IReadOnlyCollection<string>> libraryFolderIds)
         {
             // Apply this before every allow-all shortcut. Catalogs and playback
             // token issuance share this gate; a friend may only receive our
@@ -127,7 +134,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             if (!caller.ShareAllLibraries
-                && !libraryFolderIds.Any(folderId => (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
+                && !libraryFolderIds.Value.Any(folderId => (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
                     .Any(id => FolderIdsEqual(id, folderId))))
             {
                 return false;
@@ -166,7 +173,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 RemoteUserAccessMode.Blocked => false,
                 RemoteUserAccessMode.AllLibraries => true,
-                RemoteUserAccessMode.CertainLibraries => libraryFolderIds.Any(folderId =>
+                RemoteUserAccessMode.CertainLibraries => libraryFolderIds.Value.Any(folderId =>
                     rule.LibraryFolderIds.Any(id => FolderIdsEqual(id, folderId))),
                 RemoteUserAccessMode.CertainItems => IsItemOrAncestorListed(itemId, rule.ItemIds),
                 _ => true
