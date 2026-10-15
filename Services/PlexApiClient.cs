@@ -126,12 +126,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     var type = GetString(d, "type");
                     if (key != null && title != null && type != null)
                     {
-                        sections.Add(new PlexSection(key, title, type));
+                        sections.Add(new PlexSection(key, title, type, GetLocations(d)));
                     }
                 }
 
                 return sections;
             }
+        }
+
+        // The folders a section scans, as Plex's own machine sees them.
+        private static IReadOnlyList<string> GetLocations(JsonElement directory)
+        {
+            if (!directory.TryGetProperty("Location", out var locations) || locations.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return locations.EnumerateArray()
+                .Select(l => GetString(l, "path"))
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p!)
+                .ToList();
         }
 
         /// <summary>
@@ -1315,6 +1330,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
     /// <summary>
     /// One Plex library section (Plex's equivalent of a Jellyfin library).
+    /// <paramref name="Locations"/> are its folders as the Plex machine sees them.
     /// </summary>
-    public sealed record PlexSection(string Key, string Title, string Type);
+    public sealed record PlexSection(string Key, string Title, string Type, IReadOnlyList<string>? Locations = null);
 }

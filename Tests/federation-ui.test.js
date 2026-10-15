@@ -1658,3 +1658,54 @@ test('admin tab row is one scrollable row and switchTab keeps the active tab in 
   assert.deepEqual(calls, [['log', { block: 'nearest', inline: 'nearest' }]]);
   dom.window.close();
 });
+
+function plexGuidedImport() {
+  const block = configPage.match(/(var plexImportPlanData = null;[\s\S]*?)\n {20}function collectServer/);
+  assert.ok(block, 'guided Plex import script not found');
+  const dom = new JSDOM(configPage);
+  const doc = dom.window.document;
+  const posts = [];
+  const helpers = {
+    q: (sel) => doc.querySelector(sel),
+    qa: (sel) => Array.from(doc.querySelectorAll(sel)),
+    escapeHtml: (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    setFedStatus: () => {},
+    setPlexStep: () => {},
+    loadPlexSetup: () => {},
+    plexMetaCall: (method, apiPath, body) => { posts.push({ method, apiPath, body }); return Promise.resolve({ Results: [] }); }
+  };
+  const api = new Function(...Object.keys(helpers), block[1] + '\nreturn { renderPlexPlan, plexImport, renderPlexMapRows, setRows: (r) => { plexMapRows = r; }, updatePlexImportButton };');
+  return { doc, posts, ...api(...Object.values(helpers)) };
+}
+
+test('guided Plex import lists each library, escapes Plex names, and only offers usable ones', () => {
+  const ui = plexGuidedImport();
+  ui.renderPlexPlan({ Sections: [
+    { Key: '1', Title: '<img src=x onerror=alert(1)>', Type: 'movie', State: 'Ready', Folders: [{ PlexPath: 'D:\\Movies', LocalPath: '/mnt/movies', Found: true }] },
+    { Key: '2', Title: 'TV', Type: 'show', State: 'Missing', Folders: [{ PlexPath: '/tv', LocalPath: '/tv', Found: false }] },
+    { Key: '3', Title: 'Kids', Type: 'movie', State: 'Linked', LibraryName: 'Family', Folders: [{ PlexPath: '/kids', LocalPath: '/kids', Found: true }] }
+  ] });
+
+  assert.equal(ui.doc.querySelector('#fedPlexImportList img'), null);
+  const picks = [...ui.doc.querySelectorAll('.fedPlexImportPick')];
+  assert.deepEqual(picks.map((c) => [c.getAttribute('data-value'), c.checked, c.disabled]), [['1', true, false], ['2', false, true], ['3', true, false]]);
+  assert.equal(ui.doc.querySelector('#fedPlexImportBtn').textContent, 'Bring 2 libraries into Jellyfin');
+  assert.ok(ui.doc.querySelector('#fedPlexMapBox').open, 'folder rewrites open when a library is missing');
+  assert.match(ui.doc.querySelector('#fedPlexImportList').textContent, /D:\\Movies → \/mnt\/movies/);
+  assert.match(ui.doc.querySelector('#fedPlexImportIntro').textContent, /1 of your Plex libraries/);
+
+  picks[0].checked = false;
+  ui.updatePlexImportButton();
+  assert.equal(ui.doc.querySelector('#fedPlexImportBtn').textContent, 'Bring 1 library into Jellyfin');
+});
+
+test('guided Plex import posts the chosen libraries with only complete folder rewrites', () => {
+  const ui = plexGuidedImport();
+  ui.setRows([{ From: 'D:\\Media', To: '/mnt/media' }, { From: '/half', To: '' }]);
+  ui.renderPlexMapRows();
+  ui.renderPlexPlan({ Sections: [{ Key: '7', Title: 'Movies', Type: 'movie', State: 'Ready', Folders: [] }] });
+  ui.plexImport();
+
+  const post = ui.posts.find((p) => p.apiPath === 'Import');
+  assert.deepEqual(post.body, { SectionKeys: ['7'], PathMappings: [{ From: 'D:\\Media', To: '/mnt/media' }] });
+});

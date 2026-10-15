@@ -130,6 +130,29 @@
                 #federationConfigPage #fedBrowseStatus.fed-srvstatus-err { border-left-color: var(--fed-err-text); background: rgba(224,108,108,0.10); }
                 #federationConfigPage #fedBrowseStatus.fed-srvstatus-ok { border-left-color: var(--fed-ok-text); }
                 #federationConfigPage #fedBrowseRetry { margin: 0 0 1em; border: 1px solid rgba(127,127,127,0.35); border-radius: 0.4em; padding: 0.45em 1em; }
+                #federationConfigPage .fed-plex-step { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:1em 1.1em; margin:0 0 1em; }
+                #federationConfigPage .fed-plex-step[data-locked] { opacity:.5; }
+                #federationConfigPage .fed-plex-step > h4 { display:flex; align-items:center; gap:.6em; margin:0 0 .6em; font-size:1.05em; }
+                #federationConfigPage .fed-plex-num { display:inline-flex; align-items:center; justify-content:center; width:1.7em; height:1.7em; border-radius:50%; background:rgba(128,128,128,.22); font-size:.85em; font-weight:700; flex:none; }
+                #federationConfigPage .fed-plex-step[data-done] .fed-plex-num { background:var(--fed-accent); color:#fff; }
+                #federationConfigPage .fed-plex-lib { border-top:1px solid var(--fed-border-soft); padding:.7em 0; }
+                #federationConfigPage .fed-plex-lib:first-child { border-top:0; }
+                #federationConfigPage .fed-plex-lib-head { display:flex; flex-wrap:wrap; align-items:center; gap:.5em; }
+                #federationConfigPage .fed-plex-chip { font-size:.8em; padding:.15em .6em; border-radius:1em; border:1px solid currentColor; white-space:nowrap; }
+                #federationConfigPage .fed-plex-chip-ok { color:var(--fed-ok-text); }
+                #federationConfigPage .fed-plex-chip-warn { color:var(--fed-warn-text); }
+                #federationConfigPage .fed-plex-chip-err { color:var(--fed-err-text); }
+                #federationConfigPage .fed-plex-folder { font-family:monospace; font-size:.85em; margin:.25em 0 0 2.1em; overflow-wrap:anywhere; }
+                #federationConfigPage .fed-plex-folder-missing { color:var(--fed-err-text); }
+                #federationConfigPage .fed-plex-map { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto; gap:.5em; align-items:center; margin:.4em 0; }
+                #federationConfigPage .fed-plex-map input { width:100%; box-sizing:border-box; }
+                #federationConfigPage .fed-plex-meter { height:.45em; border-radius:.3em; background:rgba(128,128,128,.22); overflow:hidden; margin:.35em 0 .2em; }
+                #federationConfigPage .fed-plex-meter > span { display:block; height:100%; background:var(--fed-ok-text); }
+                @media (max-width: 600px) {
+                    #federationConfigPage .fed-plex-map { grid-template-columns:minmax(0,1fr) auto; }
+                    #federationConfigPage .fed-plex-map .fed-plex-arrow { display:none; }
+                    #federationConfigPage .fed-plex-folder { margin-left:0; }
+                }
                 #federationConfigPage #fedBrowseList > .fed-muted:only-child { text-align: center; padding: 2.5em 1em; border: 1px dashed rgba(127,127,127,0.3); border-radius: 0.6em; }
                 #federationConfigPage .fed-tailscale-panel { border-top: 1px solid var(--fed-border-soft); border-bottom: 1px solid var(--fed-border-soft); padding: 0.9em 0; margin: 0.6em 0 1.2em; }
 
@@ -809,34 +832,69 @@
             <form id="fedConfigForm">
                 <div id="fedPanelPlex" aria-labelledby="fedTabPlex" class="fed-tabpanel" data-tab-panel="plex" role="tabpanel">
                     <div class="verticalSection">
-                        <h3 class="sectionTitle">Plex as your metadata source</h3>
+                        <h3 class="sectionTitle">Coming from Plex?</h3>
                         <p class="fieldDescription">
-                            Mostly a Plex household? Connect your Plex server and this Jellyfin will use Plex's cover art and
-                            descriptions for your own libraries, matched by TMDb/IMDb/TVDB id (falling back to title and year).
-                            Anything you have locked in Jellyfin is left alone. Your Plex sign-in token stays on this server.
+                            Bring your Plex libraries into Jellyfin in three steps. Jellyfin gets the same movies and shows, with Plex's
+                            cover art, backdrops and descriptions, and they stay ordinary Jellyfin libraries: share them with friends,
+                            download them, and keep using Plex alongside. Your Plex sign-in token stays on this server.
                         </p>
                         <div id="fedPlexMetaStatus" class="fed-srvstatus" style="display:none;"></div>
 
-                        <div id="fedPlexMetaConnect">
-                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-signin">Sign in with Plex</button>
-                            <div id="fedPlexMetaServers"></div>
-                            <details class="fed-details">
-                                <summary>Use an address and token instead</summary>
-                                <div class="inputContainer">
-                                    <label class="inputLabel" for="fedPlexMetaUrl">Plex address</label>
-                                    <input type="text" id="fedPlexMetaUrl" class="emby-input" placeholder="http://localhost:32400" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                </div>
-                                <div class="inputContainer">
-                                    <label class="inputLabel" for="fedPlexMetaToken">Plex token (X-Plex-Token)</label>
-                                    <input type="password" id="fedPlexMetaToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                </div>
-                                <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-manual">Connect</button>
-                            </details>
+                        <div class="fed-plex-step" id="fedPlexStep1">
+                            <h4><span class="fed-plex-num">1</span> Connect your Plex server</h4>
+                            <div id="fedPlexMetaConnect">
+                                <button is="emby-button" type="button" class="raised emby-button button-submit" data-fed-action="plex-meta-signin">Sign in with Plex</button>
+                                <div id="fedPlexMetaServers"></div>
+                                <details class="fed-details">
+                                    <summary>Use an address and token instead</summary>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel" for="fedPlexMetaUrl">Plex address</label>
+                                        <input type="text" id="fedPlexMetaUrl" class="emby-input" placeholder="http://localhost:32400" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                    </div>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel" for="fedPlexMetaToken">Plex token (X-Plex-Token)</label>
+                                        <input type="password" id="fedPlexMetaToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                    </div>
+                                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-manual">Connect</button>
+                                </details>
+                            </div>
+                            <div id="fedPlexMetaConnected" style="display:none;">
+                                <p>Connected to <strong id="fedPlexMetaServerName"></strong> <span class="fed-muted" id="fedPlexMetaServerUrl"></span></p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="plex-meta-disconnect">Disconnect</button>
+                            </div>
                         </div>
 
-                        <div id="fedPlexMetaSettings" style="display:none;">
-                            <p><strong id="fedPlexMetaServerName"></strong> <span class="fed-muted" id="fedPlexMetaServerUrl"></span></p>
+                        <div class="fed-plex-step" id="fedPlexStep2" data-locked>
+                            <h4><span class="fed-plex-num">2</span> Pick the libraries to bring over</h4>
+                            <p class="fed-muted" id="fedPlexImportIntro">Connect Plex first.</p>
+                            <div id="fedPlexImportList"></div>
+                            <details class="fed-details" id="fedPlexMapBox">
+                                <summary>Plex is on another computer, drive or container</summary>
+                                <p class="fieldDescription" id="fedPlexMapHelp">
+                                    Jellyfin needs to see the same files Plex plays. If Plex shows a folder Jellyfin can't find, tell Jellyfin where
+                                    that folder is from here: on the left, the start of the path as Plex shows it; on the right, the same folder on
+                                    this Jellyfin server (a network share, mounted drive or container volume).
+                                </p>
+                                <div id="fedPlexMapRows"></div>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="plex-map-add">+ Add a folder rewrite</button>
+                                <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-import-check">Check again</button>
+                            </details>
+                            <button is="emby-button" type="button" class="raised emby-button button-submit" id="fedPlexImportBtn" data-fed-action="plex-import" disabled>Bring these into Jellyfin</button>
+                            <div id="fedPlexImportResults"></div>
+                        </div>
+
+                        <div class="fed-plex-step" id="fedPlexStep3" data-locked>
+                            <h4><span class="fed-plex-num">3</span> Check the artwork matched</h4>
+                            <p class="fed-muted">Jellyfin scans new libraries in the background. Big libraries can take a while; check back here as it goes.</p>
+                            <div id="fedPlexReport"></div>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-report">Check matches</button>
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-pull">Re-pull all Plex artwork</button>
+                        </div>
+
+                        <details class="fed-details" id="fedPlexMetaSettings" style="display:none;">
+                            <summary>Fine-tune which libraries use Plex</summary>
                             <h4>Plex libraries to match against</h4>
+                            <p class="fed-muted">Leave all unticked to use every Plex movie and show library.</p>
                             <div id="fedPlexMetaSections"></div>
                             <h4>Jellyfin libraries to update</h4>
                             <p class="fed-muted">Leave all unticked to use every movie and show library.</p>
@@ -851,10 +909,8 @@
                                 <label class="fed-check-label"><input type="checkbox" id="fedPlexMetaEnabled" class="emby-checkbox fed-check" /> Use Plex as the metadata source</label>
                             </div>
                             <button is="emby-button" type="button" class="raised emby-button button-submit" data-fed-action="plex-meta-save">Save</button>
-                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-pull">Pull now</button>
-                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="plex-meta-disconnect">Disconnect</button>
-                            <p class="fed-muted">"Pull now" re-reads Plex and replaces artwork and metadata for the chosen libraries; Jellyfin does the work in the background.</p>
-                        </div>
+                            <p class="fed-muted">Anything you have locked in Jellyfin is left alone. Matching uses TMDb/IMDb/TVDB ids, then title and year.</p>
+                        </details>
                     </div>
                 </div>
 
@@ -2510,11 +2566,32 @@
                         return qa('#' + id + ' input[type=checkbox]').filter(function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-value'); });
                     }
 
+                    function setPlexStep(id, state) {
+                        var el = q('#' + id);
+                        if (!el) { return; }
+                        if (state === 'locked') { el.setAttribute('data-locked', ''); } else { el.removeAttribute('data-locked'); }
+                        if (state === 'done') { el.setAttribute('data-done', ''); } else { el.removeAttribute('data-done'); }
+                    }
+
                     function renderPlexMeta(st) {
                         var connected = !!st.Connected;
                         q('#fedPlexMetaConnect').style.display = connected ? 'none' : '';
+                        q('#fedPlexMetaConnected').style.display = connected ? '' : 'none';
                         q('#fedPlexMetaSettings').style.display = connected ? '' : 'none';
-                        if (!connected) { return; }
+                        setPlexStep('fedPlexStep1', connected ? 'done' : 'open');
+                        setPlexStep('fedPlexStep2', connected ? 'open' : 'locked');
+                        setPlexStep('fedPlexStep3', connected && st.Enabled ? 'open' : 'locked');
+                        if (!connected) {
+                            plexImportPlanData = null;
+                            q('#fedPlexImportIntro').textContent = 'Connect Plex first.';
+                            q('#fedPlexImportList').innerHTML = '';
+                            q('#fedPlexImportResults').innerHTML = '';
+                            q('#fedPlexReport').innerHTML = '';
+                            q('#fedPlexImportBtn').disabled = true;
+                            return;
+                        }
+                        if (!plexImportPlanData) { plexMapRows = (st.PathMappings || []).map(function (m) { return { From: m.From, To: m.To }; }); renderPlexMapRows(); plexImportCheck(); }
+                        if (st.Enabled && !q('#fedPlexReport').innerHTML) { plexReport(); }
                         q('#fedPlexMetaServerName').textContent = st.ServerName || 'Plex Media Server';
                         q('#fedPlexMetaServerUrl').textContent = st.ServerUrl || '';
                         plexMetaChecks('fedPlexMetaSections', st.Sections, st.SectionKeys, 'Key', 'Title');
@@ -2599,6 +2676,140 @@
                         plexMetaCall('POST', 'Disconnect')
                             .then(function (st) { q('#fedPlexMetaServers').innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Disconnected.', 'ok'); renderPlexMeta(st); })
                             .catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    /* ---------------- Guided Plex import: create Jellyfin libraries over Plex's folders ---------------- */
+                    var plexImportPlanData = null;
+                    var plexMapRows = [];
+
+                    var plexStateText = {
+                        Ready: ['New Jellyfin library', 'ok'],
+                        Linked: ['Already in Jellyfin', 'ok'],
+                        WrongType: ['In a non-movie/show library', 'warn'],
+                        Missing: ['Folders not found', 'err']
+                    };
+
+                    function renderPlexMapRows() {
+                        var el = q('#fedPlexMapRows');
+                        if (!el) { return; }
+                        el.innerHTML = plexMapRows.map(function (m, i) {
+                            return '<div class="fed-plex-map">' +
+                                '<input type="text" class="emby-input fedPlexMapFrom" data-i="' + i + '" aria-label="Folder as Plex shows it" placeholder="As Plex shows it, e.g. D:\\Media" value="' + escapeHtml(m.From || '') + '" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+                                '<span class="fed-plex-arrow" aria-hidden="true">&rarr;</span>' +
+                                '<input type="text" class="emby-input fedPlexMapTo" data-i="' + i + '" aria-label="Same folder on this Jellyfin server" placeholder="On this server, e.g. /mnt/media" value="' + escapeHtml(m.To || '') + '" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+                                '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="plex-map-remove" data-i="' + i + '" aria-label="Remove this rewrite">Remove</button>' +
+                                '</div>';
+                        }).join('');
+                    }
+
+                    function collectPlexMapRows() {
+                        qa('#fedPlexMapRows .fedPlexMapFrom').forEach(function (input) {
+                            var i = parseInt(input.getAttribute('data-i'), 10);
+                            if (plexMapRows[i]) { plexMapRows[i].From = input.value.trim(); }
+                        });
+                        qa('#fedPlexMapRows .fedPlexMapTo').forEach(function (input) {
+                            var i = parseInt(input.getAttribute('data-i'), 10);
+                            if (plexMapRows[i]) { plexMapRows[i].To = input.value.trim(); }
+                        });
+                        return plexMapRows.filter(function (m) { return m.From && m.To; });
+                    }
+
+                    function plexImportSelected() {
+                        return qa('#fedPlexImportList input[type=checkbox]').filter(function (c) { return c.checked && !c.disabled; }).map(function (c) { return c.getAttribute('data-value'); });
+                    }
+
+                    function updatePlexImportButton() {
+                        var n = plexImportSelected().length;
+                        var btn = q('#fedPlexImportBtn');
+                        btn.disabled = n === 0;
+                        btn.textContent = n === 0 ? 'Bring these into Jellyfin' : 'Bring ' + n + (n === 1 ? ' library' : ' libraries') + ' into Jellyfin';
+                    }
+
+                    function renderPlexPlan(plan) {
+                        plexImportPlanData = plan;
+                        var sections = plan.Sections || [];
+                        var missing = sections.filter(function (sec) { return sec.State === 'Missing'; }).length;
+                        q('#fedPlexImportIntro').textContent = !sections.length
+                            ? 'This Plex server has no movie or TV libraries.'
+                            : missing
+                                ? (missing === 1 ? '1 of your Plex libraries is' : missing + ' of your Plex libraries are') + ' in folders this Jellyfin server cannot see yet. Use the section below to point Jellyfin at them.'
+                                : 'Jellyfin can see every Plex folder. Untick anything you want to leave out.';
+                        if (missing) { q('#fedPlexMapBox').open = true; }
+                        q('#fedPlexImportList').innerHTML = sections.map(function (sec) {
+                            var label = plexStateText[sec.State] || [sec.State, 'warn'];
+                            var usable = sec.State === 'Ready' || sec.State === 'Linked';
+                            var kind = sec.Type === 'show' ? 'TV shows' : 'Movies';
+                            var note = sec.State === 'Linked' ? ' &middot; uses &ldquo;' + escapeHtml(sec.LibraryName || '') + '&rdquo;'
+                                : sec.State === 'WrongType' ? ' &middot; &ldquo;' + escapeHtml(sec.LibraryName || '') + '&rdquo; must be a ' + kind + ' library'
+                                : '';
+                            var folders = (sec.Folders || []).map(function (f) {
+                                var mapped = f.LocalPath !== f.PlexPath ? ' &rarr; ' + escapeHtml(f.LocalPath) : '';
+                                return '<div class="fed-plex-folder' + (f.Found ? '' : ' fed-plex-folder-missing') + '">' + (f.Found ? '&#10003; ' : '&#10007; ') + escapeHtml(f.PlexPath) + mapped + (f.Found ? '' : ' <span class="fed-muted">(not found here)</span>') + '</div>';
+                            }).join('');
+                            return '<div class="fed-plex-lib"><div class="fed-plex-lib-head">' +
+                                '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedPlexImportPick" data-value="' + escapeHtml(sec.Key) + '"' + (usable ? ' checked' : ' disabled') + ' /> <strong>' + escapeHtml(sec.Title) + '</strong></label>' +
+                                '<span class="fed-muted">' + kind + note + '</span>' +
+                                '<span class="fed-plex-chip fed-plex-chip-' + label[1] + '">' + label[0] + '</span>' +
+                                '</div>' + folders + '</div>';
+                        }).join('');
+                        updatePlexImportButton();
+                    }
+
+                    function plexImportCheck() {
+                        var body = { PathMappings: collectPlexMapRows() };
+                        q('#fedPlexImportIntro').textContent = 'Reading your Plex libraries…';
+                        plexMetaCall('POST', 'ImportPlan', body)
+                            .then(renderPlexPlan)
+                            .catch(function (e) { q('#fedPlexImportIntro').textContent = ''; setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexImport() {
+                        var keys = plexImportSelected();
+                        if (!keys.length) { return; }
+                        var btn = q('#fedPlexImportBtn');
+                        btn.disabled = true;
+                        q('#fedPlexImportResults').innerHTML = '<p class="fed-srvstatus fed-srvstatus-info">Setting up your libraries…</p>';
+                        plexMetaCall('POST', 'Import', { SectionKeys: keys, PathMappings: collectPlexMapRows() })
+                            .then(function (res) {
+                                var results = res.Results || [];
+                                q('#fedPlexImportResults').innerHTML = results.map(function (r) {
+                                    return '<p class="fed-srvstatus ' + (r.Ok ? 'fed-srvstatus-ok' : 'fed-srvstatus-err') + '"><strong>' + escapeHtml(r.Title) + ':</strong> ' + escapeHtml(r.Message) + '</p>';
+                                }).join('');
+                                plexImportPlanData = null;
+                                q('#fedPlexReport').innerHTML = '';
+                                loadPlexSetup();
+                            })
+                            .catch(function (e) {
+                                q('#fedPlexImportResults').innerHTML = '';
+                                setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err');
+                                updatePlexImportButton();
+                            });
+                    }
+
+                    function plexReport() {
+                        var el = q('#fedPlexReport');
+                        el.innerHTML = '<p class="fed-srvstatus fed-srvstatus-info">Counting matches…</p>';
+                        plexMetaCall('GET', 'Report')
+                            .then(function (res) {
+                                var libs = res.Libraries || [];
+                                if (!libs.length) { el.innerHTML = '<p class="fed-muted">No libraries are using Plex yet.</p>'; return; }
+                                setPlexStep('fedPlexStep2', 'done');
+                                el.innerHTML = libs.map(function (lib) {
+                                    if (!lib.Total) {
+                                        return '<div class="fed-plex-lib"><strong>' + escapeHtml(lib.Name) + '</strong> <span class="fed-muted">&middot; nothing scanned yet, check again in a few minutes</span></div>';
+                                    }
+                                    var pct = Math.round(lib.Matched * 100 / lib.Total);
+                                    var misses = (lib.Unmatched || []).length
+                                        ? '<details class="fed-details"><summary>' + (lib.Total - lib.Matched) + ' without a Plex match</summary><p class="fed-muted">These keep Jellyfin&rsquo;s own artwork. Usually the title or year differs from Plex, or the item is not in the Plex libraries above.</p><ul>' +
+                                          lib.Unmatched.map(function (n) { return '<li>' + escapeHtml(n) + '</li>'; }).join('') +
+                                          (lib.Total - lib.Matched > lib.Unmatched.length ? '<li class="fed-muted">and ' + (lib.Total - lib.Matched - lib.Unmatched.length) + ' more</li>' : '') +
+                                          '</ul></details>'
+                                        : '';
+                                    return '<div class="fed-plex-lib"><strong>' + escapeHtml(lib.Name) + '</strong> <span class="fed-muted">&middot; ' + lib.Matched + ' of ' + lib.Total + ' matched Plex (' + pct + '%)</span>' +
+                                        '<div class="fed-plex-meter" role="img" aria-label="' + pct + '% matched"><span style="width:' + pct + '%"></span></div>' + misses + '</div>';
+                                }).join('');
+                            })
+                            .catch(function (e) { el.innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
                     }
 
                     function collectServer(i) {
@@ -6504,6 +6715,26 @@
                                 case 'plex-meta-disconnect':
                                     plexMetaDisconnect();
                                     break;
+                                case 'plex-import-check':
+                                    plexImportCheck();
+                                    break;
+                                case 'plex-import':
+                                    plexImport();
+                                    break;
+                                case 'plex-map-add':
+                                    collectPlexMapRows();
+                                    plexMapRows.push({ From: '', To: '' });
+                                    renderPlexMapRows();
+                                    break;
+                                case 'plex-map-remove':
+                                    collectPlexMapRows();
+                                    plexMapRows.splice(parseInt(t.getAttribute('data-i'), 10), 1);
+                                    renderPlexMapRows();
+                                    plexImportCheck();
+                                    break;
+                                case 'plex-report':
+                                    plexReport();
+                                    break;
                                 case 'connect-plex-source-manual':
                                     connectPlexSourceManual();
                                     break;
@@ -6802,6 +7033,11 @@
                         page.addEventListener('change', function (e) {
                             var t = e.target;
                             if (!t || !t.classList) {
+                                return;
+                            }
+
+                            if (t.classList.contains('fedPlexImportPick')) {
+                                updatePlexImportButton();
                                 return;
                             }
 

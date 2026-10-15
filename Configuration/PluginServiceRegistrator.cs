@@ -48,6 +48,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationQualityAdvisorService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
             serviceCollection.AddSingleton<PlexMetadataSourceService>();
+            serviceCollection.AddSingleton<PlexLibraryImportService>();
             serviceCollection.AddSingleton<IProcessRunner, ProcessRunner>();
             serviceCollection.AddSingleton<TailscaleService>();
             serviceCollection.AddSingleton<FunFactService>();
