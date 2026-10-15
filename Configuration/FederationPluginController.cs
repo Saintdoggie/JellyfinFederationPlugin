@@ -3062,7 +3062,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string? sortOrder,
             CancellationToken cancellationToken,
             [FromQuery] bool includeMediaSources = false,
-            [FromQuery] bool slim = false)
+            [FromQuery] bool slim = false,
+            [FromQuery] int? cursor = null)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -3131,8 +3132,12 @@ namespace Jellyfin.Plugin.Federation.Api
             // StartIndex counts visible items, not raw rows. Starting the raw
             // query at this offset repeats items whenever earlier rows were
             // filtered out (and can keep imports paging forever).
-            var remainingSkip = Math.Max(0, startIndex ?? 0);
-            var cursor = 0;
+            // A caller that sends back the previous page's NextCursor resumes
+            // at that raw row instead. Re-reading and skipping every earlier
+            // row made each sync request cost more than the last, so a large
+            // library took quadratic time and its late pages timed out.
+            var remainingSkip = cursor.HasValue ? 0 : Math.Max(0, startIndex ?? 0);
+            var rawCursor = Math.Max(0, cursor ?? 0);
             var safetyPage = 0;
             var exhausted = false;
 
@@ -3153,7 +3158,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 var pageParams = new List<string>(queryParams)
                 {
-                    $"StartIndex={cursor}",
+                    $"StartIndex={rawCursor}",
                     $"Limit={requestCount}"
                 };
 
@@ -3174,8 +3179,10 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Removing each kept node detaches it from the fetched page's
                 // array, so it can be re-parented into the response array below
                 // (a JsonNode may only ever have one parent).
+                var consumed = 0;
                 foreach (var item in items.ToList())
                 {
+                    consumed++;
                     if (item != null
                         && Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
                         && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
@@ -3188,10 +3195,20 @@ namespace Jellyfin.Plugin.Federation.Api
 
                         items.Remove(item);
                         pageItems.Add(item);
+                        if (pageItems.Count >= target)
+                        {
+                            break;
+                        }
                     }
                 }
 
-                cursor += rawCount;
+                rawCursor += consumed;
+                if (pageItems.Count >= target)
+                {
+                    exhausted = consumed == rawCount && rawCount < requestCount;
+                    break;
+                }
+
                 if (rawCount < requestCount)
                 {
                     // The internal source returned fewer raw items than asked -
@@ -3222,7 +3239,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 {
                     ["Items"] = pageItems,
                     ["TotalRecordCount"] = pageItems.Count,
-                    ["HasMore"] = !exhausted
+                    ["HasMore"] = !exhausted,
+                    ["NextCursor"] = rawCursor
                 }.ToJsonString(),
                 ContentType = "application/json",
                 StatusCode = StatusCodes.Status200OK

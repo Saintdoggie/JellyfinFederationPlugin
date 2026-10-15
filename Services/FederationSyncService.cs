@@ -854,6 +854,7 @@ namespace Jellyfin.Plugin.Federation.Services
             int pageSize = CatalogPageSize;
             int startIndex = 0;
             int pageNumber = 1;
+            int? cursor = null;
 
             while (true)
             {
@@ -864,12 +865,16 @@ namespace Jellyfin.Plugin.Federation.Services
                     parentId: source.RemoteLibraryId,
                     startIndex: startIndex,
                     limit: pageSize,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                    cancellationToken: cancellationToken,
+                    cursor: cursor).ConfigureAwait(false);
 
                 if (page == null)
                 {
                     return null;
                 }
+
+                // Null for an older peer, which then keeps paging by startIndex.
+                cursor = (page as PeerCatalogPage.RemoteItemPage)?.NextCursor;
 
                 var totalRecordCount = (page as PeerCatalogPage.RemoteItemPage)?.TotalRecordCount;
 
@@ -959,7 +964,8 @@ namespace Jellyfin.Plugin.Federation.Services
                             parentId: source.RemoteLibraryId,
                             startIndex: startIndex + page.Count,
                             limit: 1,
-                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                            cancellationToken: cancellationToken,
+                            cursor: cursor).ConfigureAwait(false);
                         if (next == null)
                         {
                             return null;

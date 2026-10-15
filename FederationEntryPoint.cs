@@ -53,8 +53,7 @@ namespace Jellyfin.Plugin.Federation
             IMediaSourceManager mediaSources,
             WanBandwidthMonitor bandwidthMonitor,
             FederationLogBuffer logBuffer,
-            AvailabilityScheduleStore availabilitySchedule,
-            Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
+            AvailabilityScheduleStore availabilitySchedule)
         {
             _logger = logger;
             _federationManager = federationManager;
@@ -71,11 +70,6 @@ namespace Jellyfin.Plugin.Federation
             _availabilitySchedule = availabilitySchedule;
             FederationItemPersistenceService.AvailabilityOverride = availability;
             FederationItemPersistenceService.BandwidthOverride = bandwidthMonitor;
-            if (!_logBuffer.ProviderAttached)
-            {
-                loggerFactory.AddProvider(new FederationLoggerProvider(_logBuffer));
-                _logBuffer.ProviderAttached = true;
-            }
         }
 
         /// <inheritdoc />

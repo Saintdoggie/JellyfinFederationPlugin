@@ -492,6 +492,32 @@ public class FederationSyncServiceTests
         Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
     }
 
+    [Fact]
+    public async Task RefreshMapping_PeerWithCursor_ResumesWhereThePreviousPageStopped()
+    {
+        // Raw rows include ones the peer hides from this friend, so raw
+        // positions and visible positions differ.
+        var rows = Enumerable.Range(0, 7)
+            .Select(i => (Id: Guid.NewGuid(), Name: "Movie " + i, Visible: i % 3 != 1))
+            .ToArray();
+        var handler = new CursorCatalogHandler(rows);
+        var (sync, cache, mapping, config, _) = CreateMovieSync(handler);
+        sync.CatalogPageSize = 2;
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        foreach (var row in rows)
+        {
+            Assert.Equal(row.Visible, CacheHasRemoteId(cache, mapping.LocalLibraryName, row.Id));
+        }
+
+        Assert.Null(handler.Requests[0].Cursor);
+        for (var i = 1; i < handler.Requests.Count; i++)
+        {
+            Assert.Equal(handler.Requests[i - 1].NextCursor, handler.Requests[i].Cursor);
+        }
+    }
+
     private static (FederationSyncService Sync, FederationItemCache Cache, LibraryMapping Mapping, PluginConfiguration Config, RemoteServer Server) CreateMovieSync(
         HttpMessageHandler handler,
         ServerKind kind = ServerKind.Jellyfin,
@@ -684,6 +710,63 @@ public class FederationSyncServiceTests
             var itemsJson = string.Join(",", slice.Select(i =>
                 $"{{\"Id\":\"{i.Id}\",\"Name\":\"{i.Name}\",\"Type\":\"Movie\"}}"));
             return Ok($"{{\"Items\":[{itemsJson}],\"TotalRecordCount\":{total}}}");
+        }
+
+        private static Task<HttpResponseMessage> Ok(string body)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+    }
+
+    /// <summary>A peer that sends NextCursor, like Peer/Items does.</summary>
+    private sealed class CursorCatalogHandler : HttpMessageHandler
+    {
+        private readonly IReadOnlyList<(Guid Id, string Name, bool Visible)> _rows;
+
+        public CursorCatalogHandler(IReadOnlyList<(Guid Id, string Name, bool Visible)> rows)
+        {
+            _rows = rows;
+        }
+
+        public List<(int? Cursor, int NextCursor)> Requests { get; } = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (!path.Contains("/Peer/Items", StringComparison.OrdinalIgnoreCase))
+            {
+                return Ok("{}");
+            }
+
+            var query = request.RequestUri?.Query ?? string.Empty;
+            var cursor = ParseQueryInt(query, "cursor");
+            var limit = ParseQueryInt(query, "limit") ?? 200;
+            var skip = cursor.HasValue ? 0 : ParseQueryInt(query, "startIndex") ?? 0;
+            var raw = cursor ?? 0;
+            var page = new List<(Guid Id, string Name, bool Visible)>();
+            while (raw < _rows.Count && page.Count < limit)
+            {
+                var row = _rows[raw++];
+                if (!row.Visible)
+                {
+                    continue;
+                }
+
+                if (skip > 0)
+                {
+                    skip--;
+                    continue;
+                }
+
+                page.Add(row);
+            }
+
+            Requests.Add((cursor, raw));
+            var itemsJson = string.Join(",", page.Select(i =>
+                $"{{\"Id\":\"{i.Id}\",\"Name\":\"{i.Name}\",\"Type\":\"Movie\"}}"));
+            var hasMore = raw < _rows.Count ? "true" : "false";
+            return Ok($"{{\"Items\":[{itemsJson}],\"TotalRecordCount\":{page.Count},\"HasMore\":{hasMore},\"NextCursor\":{raw}}}");
         }
 
         private static Task<HttpResponseMessage> Ok(string body)
