@@ -25,12 +25,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         private static readonly ConcurrentDictionary<long, (string Token, DateTime Expires)> SignIns = new();
 
         private readonly PlexMetadataSourceService _plex;
+        private readonly PlexLibraryImportService _import;
         private readonly ILogger<PlexMetadataSetupController> _logger;
 
         /// <summary>Initializes a new instance of the <see cref="PlexMetadataSetupController"/> class.</summary>
-        public PlexMetadataSetupController(PlexMetadataSourceService plex, ILogger<PlexMetadataSetupController> logger)
+        public PlexMetadataSetupController(PlexMetadataSourceService plex, PlexLibraryImportService import, ILogger<PlexMetadataSetupController> logger)
         {
             _plex = plex;
+            _import = import;
             _logger = logger;
         }
 
@@ -64,6 +66,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 settings.JellyfinLibraryIds,
                 settings.PullArtwork,
                 settings.PullText,
+                PathMappings = settings.PathMappings.Select(m => new { m.From, m.To }),
                 Sections = sections,
                 Libraries = _plex.ListEligibleLibraries().Select(l => new { Id = l.Id, Name = l.Name }),
                 Error = error,
@@ -237,6 +240,83 @@ namespace Jellyfin.Plugin.Federation.Configuration
             return Ok(new { queued = _plex.QueueFullRefresh() });
         }
 
+        /// <summary>
+        /// Guided import, step 1: each Plex library, where this server sees its folders, and whether a Jellyfin
+        /// library will be created or reused. <c>PathMappings</c> previews unsaved rewrites; omit it to use the saved ones.
+        /// </summary>
+        [HttpPost("ImportPlan")]
+        public async Task<IActionResult> ImportPlan([FromBody] PlanBody? body, CancellationToken cancellationToken)
+        {
+            var settings = Plugin.Instance!.Configuration.PlexMetadataSource;
+            if (string.IsNullOrEmpty(settings.ServerUrl) || string.IsNullOrEmpty(settings.Token))
+            {
+                return BadRequest(new { error = "Connect a Plex server first." });
+            }
+
+            try
+            {
+                var plan = await _import.PlanAsync(body?.PathMappings, cancellationToken).ConfigureAwait(false);
+                return Ok(new
+                {
+                    PathMappings = (body?.PathMappings ?? settings.PathMappings).Select(m => new { m.From, m.To }),
+                    Sections = plan.Select(p => new
+                    {
+                        p.Key,
+                        p.Title,
+                        p.Type,
+                        State = p.State.ToString(),
+                        p.LibraryName,
+                        Folders = p.Folders.Select(f => new { f.PlexPath, f.LocalPath, f.Found }),
+                    }),
+                });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not read Plex libraries for the guided import");
+                return StatusCode(502, new { error = "Could not read your Plex libraries: " + ex.Message });
+            }
+        }
+
+        /// <summary>Guided import, step 2: create or reuse a Jellyfin library per chosen Plex library and turn Plex artwork on.</summary>
+        [HttpPost("Import")]
+        public async Task<IActionResult> Import([FromBody] ImportBody body, CancellationToken cancellationToken)
+        {
+            var settings = Plugin.Instance!.Configuration.PlexMetadataSource;
+            if (string.IsNullOrEmpty(settings.ServerUrl) || string.IsNullOrEmpty(settings.Token))
+            {
+                return BadRequest(new { error = "Connect a Plex server first." });
+            }
+
+            if (body.SectionKeys == null || body.SectionKeys.Count == 0)
+            {
+                return BadRequest(new { error = "Pick at least one Plex library." });
+            }
+
+            try
+            {
+                var results = await _import.ImportAsync(body.SectionKeys, body.PathMappings ?? new List<PlexPathMapping>(), cancellationToken).ConfigureAwait(false);
+                return Ok(new { Results = results.Select(r => new { r.Key, r.Title, r.Ok, r.LibraryName, r.Message }) });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "[Federation] Guided Plex import failed");
+                return StatusCode(502, new { error = "Import stopped: " + ex.Message });
+            }
+        }
+
+        /// <summary>Guided import, step 3: how many movies and shows in each library found their Plex twin.</summary>
+        [HttpGet("Report")]
+        public async Task<IActionResult> Report(CancellationToken cancellationToken)
+        {
+            if (!Plugin.Instance!.Configuration.PlexMetadataSource.Enabled)
+            {
+                return Ok(new { Libraries = Array.Empty<object>() });
+            }
+
+            var reports = await _import.ReportAsync(cancellationToken).ConfigureAwait(false);
+            return Ok(new { Libraries = reports.Select(r => new { r.Id, r.Name, r.Total, r.Matched, r.Unmatched }) });
+        }
+
         private static void Save(Action<PlexMetadataSourceSettings> change)
         {
             var plugin = Plugin.Instance!;
@@ -272,6 +352,23 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             /// <summary>Gets or sets the Plex token.</summary>
             public string? Token { get; set; }
+        }
+
+        /// <summary>Body of <c>PlexSetup/ImportPlan</c>.</summary>
+        public sealed class PlanBody
+        {
+            /// <summary>Gets or sets folder rewrites to preview; null uses the saved ones.</summary>
+            public List<PlexPathMapping>? PathMappings { get; set; }
+        }
+
+        /// <summary>Body of <c>PlexSetup/Import</c>.</summary>
+        public sealed class ImportBody
+        {
+            /// <summary>Gets or sets the Plex library section keys to bring over.</summary>
+            public List<string>? SectionKeys { get; set; }
+
+            /// <summary>Gets or sets the folder rewrites to save and use.</summary>
+            public List<PlexPathMapping>? PathMappings { get; set; }
         }
 
         /// <summary>Body of <c>PlexSetup/Options</c>.</summary>

@@ -1287,5 +1287,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets a value indicating whether titles, summaries, genres, ratings and studios come from Plex.</summary>
         public bool PullText { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets folder rewrites from how Plex sees a path to how this Jellyfin sees the same
+        /// files, for when Plex runs on another machine, OS or container. Used by the guided import.
+        /// </summary>
+        public List<PlexPathMapping> PathMappings { get; set; } = new List<PlexPathMapping>();
+    }
+
+    /// <summary>One folder prefix rewrite from a Plex path to the same folder on this Jellyfin server.</summary>
+    public class PlexPathMapping
+    {
+        /// <summary>Gets or sets the folder prefix as Plex reports it, e.g. <c>D:\Media</c>.</summary>
+        public string From { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the same folder as this Jellyfin server sees it, e.g. <c>/mnt/media</c>.</summary>
+        public string To { get; set; } = string.Empty;
     }
 }
