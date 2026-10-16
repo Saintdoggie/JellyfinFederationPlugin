@@ -6305,6 +6305,7 @@
                         }
 
                         var html = '';
+                        var resyncOffered = {};
                         libs.forEach(function (lib) {
                             var d = describeLibrarySync(lib, now);
                             html += '<div class="fed-syncrow" data-sync-key="' + escapeHtml(lib.key) + '">';
@@ -6321,6 +6322,13 @@
                             if (d.held) {
                                 html += '<div class="fed-syncrow-error">' + escapeHtml(d.held) + '</div>'
                                     + '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="confirm-removal" data-sync-key="' + escapeHtml(lib.key) + '" data-count="' + escapeHtml(String(lib.heldRemovals)) + '">Remove ' + escapeHtml(syncCount(lib.heldRemovals)) + ' titles</button>';
+                            }
+                            // One per local library: it rebuilds the whole library, from every friend.
+                            var localKey = String(lib.localLibraryName || '').toLowerCase();
+                            if (localKey && !resyncOffered[localKey]) {
+                                resyncOffered[localKey] = true;
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="full-resync" data-library="' + escapeHtml(lib.localLibraryName) + '"'
+                                    + (data.running ? ' disabled title="Available when the current sync has finished"' : '') + '>Full resync of ' + escapeHtml(lib.localLibraryName) + '</button>';
                             }
                             html += '</div>';
                         });
@@ -7321,6 +7329,23 @@
                                     .then(function (r) { return readJson(r); })
                                     .then(function (res) { setSaveMsg(res.message || 'Confirmed'); loadSyncStatus(); })
                                     .catch(function (err) { t.disabled = false; showError('Could not confirm the removal: ' + err.message); });
+                                    break;
+                                case 'full-resync':
+                                    var resyncName = t.getAttribute('data-library') || '';
+                                    if (!window.confirm('Full resync of "' + resyncName + '"?\n\nEverything your friends\' libraries put into it is deleted, the library is recreated (with its current type) and then downloaded again. Watch progress on these titles is lost, and the library is empty until the download finishes. Your own media is not touched.')) {
+                                        break;
+                                    }
+
+                                    t.disabled = true;
+                                    clearError();
+                                    fedFetch('/Plugins/Federation/Sync/FullResync', { method: 'POST', body: JSON.stringify({ LocalLibraryName: resyncName }) })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) {
+                                        if (!res.started) { t.disabled = false; }
+                                        setSaveMsg(res.message || 'Full resync started', !res.started);
+                                        loadSyncStatus();
+                                    })
+                                    .catch(function (err) { t.disabled = false; showError('Full resync could not start: ' + err.message); });
                                     break;
                                 case 'open-log':
                                     switchTab('log');

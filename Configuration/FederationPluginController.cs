@@ -4286,6 +4286,47 @@ namespace Jellyfin.Plugin.Federation.Api
             });
         }
 
+        /// <summary>
+        /// Deletes everything in one friend library, recreates the library, and
+        /// downloads it again (see FederationSyncService.TryStartFullResync).
+        /// </summary>
+        [HttpPost("Sync/FullResync")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult FullResync([FromBody] FullResyncBody? body)
+        {
+            var mapping = Plugin.Instance?.Configuration?.LibraryMappings?
+                .FirstOrDefault(m => string.Equals(m.LocalLibraryName, body?.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+            if (mapping == null || string.IsNullOrWhiteSpace(mapping.LocalLibraryName))
+            {
+                return BadRequest(new { success = false, message = "This library is not configured any more." });
+            }
+
+            _syncService.EnsureStatusLoaded();
+            var provisioning = _provisioning;
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var started = _syncService.TryStartFullResync(
+                mapping,
+                async ct =>
+                {
+                    // Only plugin-owned libraries are deleted; from a library of your
+                    // own only the plugin's folder is detached and attached again.
+                    await provisioning.RemoveLibraryAsync(mapping.LocalLibraryName).ConfigureAwait(false);
+                    if (mapping.Enabled && mapping.AutoProvision)
+                    {
+                        await provisioning.EnsureLibraryAsync(mapping, ct).ConfigureAwait(false);
+                    }
+                },
+                lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Ok(new
+            {
+                success = started,
+                started,
+                message = started
+                    ? "Full resync started: " + mapping.LocalLibraryName + " is emptied, recreated and downloaded again."
+                    : "A sync is running. Try again when it has finished."
+            });
+        }
+
         [HttpGet("Progress/{operationId}")]
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetProgress(string operationId)
@@ -5788,6 +5829,11 @@ namespace Jellyfin.Plugin.Federation.Api
     public class ConfirmRemovalBody
     {
         public string? Key { get; set; }
+    }
+
+    public class FullResyncBody
+    {
+        public string? LocalLibraryName { get; set; }
     }
 
         public class UpdateSharingBody

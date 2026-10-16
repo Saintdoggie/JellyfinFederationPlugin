@@ -134,7 +134,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private async Task EnsureLibraryAsync(LibraryMapping mapping, CancellationToken cancellationToken)
+        internal async Task EnsureLibraryAsync(LibraryMapping mapping, CancellationToken cancellationToken)
         {
             var federationRoot = GetFederationRoot();
             if (string.IsNullOrEmpty(federationRoot))
