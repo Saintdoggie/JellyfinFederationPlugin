@@ -78,6 +78,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
+            // Episode images from a Jellyfin friend are fetched when first shown,
+            // not during the sync: a large first sync otherwise downloaded one
+            // image per episode, thousands nobody looks at.
+            if (provider == null
+                && !string.IsNullOrWhiteSpace(sourceTag)
+                && string.Equals(entry.ItemType, "Episode", StringComparison.OrdinalIgnoreCase))
+            {
+                item.SetImage(
+                    new ItemImageInfo
+                    {
+                        Path = LazyArtwork.BuildUrl(_federationManager.GetInternalPlaybackBaseUrl(), source.ServerId, source.RemoteItemId, sourceTag!),
+                        Type = ImageType.Primary,
+                        DateModified = DateTime.UtcNow
+                    },
+                    0);
+                item.SetProviderId(PrimaryImageTagProviderId, tag);
+                return true;
+            }
+
             try
             {
                 using var response = provider != null
@@ -115,6 +134,22 @@ namespace Jellyfin.Plugin.Federation.Services
                     server.Name);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// A Jellyfin friend's primary image for one of its items, for the lazy
+        /// episode image address (see <see cref="LazyArtwork"/>). Null when the
+        /// friend is gone, disabled or did not answer.
+        /// </summary>
+        internal Task<HttpResponseMessage?> FetchJellyfinPrimaryAsync(string serverId, Guid remoteItemId, CancellationToken cancellationToken)
+        {
+            var server = _federationManager.GetServer(serverId);
+            if (server == null || !server.Enabled || _externalCatalogs.For(server) != null)
+            {
+                return Task.FromResult<HttpResponseMessage?>(null);
+            }
+
+            return GetJellyfinPosterAsync(new FederatedSource { ServerId = serverId, RemoteItemId = remoteItemId }, server.Url, cancellationToken);
         }
 
         private async Task<HttpResponseMessage?> GetJellyfinPosterAsync(
