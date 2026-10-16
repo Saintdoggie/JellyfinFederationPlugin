@@ -752,6 +752,37 @@ public class FederationStreamHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpstreamRefusesBytesZeroRange_RetriesWithoutRangeAndRelaysTheWholeFile()
+    {
+        // ffprobe opens a song with "Range: bytes=0-". A friend (or a proxy in
+        // front of it) answering 416 left the song unprobed and unplayable.
+        var remoteBytes = Encoding.UTF8.GetBytes("ID3 the whole song");
+        var ranges = new System.Collections.Generic.List<string?>();
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            var range = req.Headers.TryGetValues("Range", out var values) ? string.Join(",", values) : null;
+            ranges.Add(range);
+            return range != null
+                ? new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable) { Content = new ByteArrayContent(Array.Empty<byte>()) }
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(remoteBytes) };
+        }));
+
+        var (request, response, body) = MakeContext("bytes=0-");
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None, isAudio: true);
+
+        Assert.Equal(new string?[] { "bytes=0-", null }, ranges);
+        Assert.Equal(200, response.StatusCode);
+        Assert.Equal(remoteBytes, body.ToArray());
+
+        // A real partial request is not rewritten: its 416 goes back to the client.
+        ranges.Clear();
+        (request, response, body) = MakeContext("bytes=100-");
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None, isAudio: true);
+        Assert.Equal(new string?[] { "bytes=100-" }, ranges);
+        Assert.Equal(416, response.StatusCode);
+    }
+
+    [Fact]
     public async Task ManualWanCap_ThrottlesRelayToTheConfiguredRate()
     {
         // A Manual WAN cap must be enforced as an actual byte-rate throttle for
