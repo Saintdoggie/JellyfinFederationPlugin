@@ -78,30 +78,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            // Episode images from a Jellyfin friend are fetched when first shown,
-            // not during the sync: a large first sync otherwise downloaded one
-            // image per episode, thousands nobody looks at.
-            if (provider == null
-                && !string.IsNullOrWhiteSpace(sourceTag)
-                && string.Equals(entry.ItemType, "Episode", StringComparison.OrdinalIgnoreCase))
-            {
-                item.SetImage(
-                    new ItemImageInfo
-                    {
-                        Path = LazyArtwork.BuildUrl(_federationManager.GetInternalPlaybackBaseUrl(), source.ServerId, source.RemoteItemId, sourceTag!),
-                        Type = ImageType.Primary,
-                        DateModified = DateTime.UtcNow
-                    },
-                    0);
-                item.SetProviderId(PrimaryImageTagProviderId, tag);
-                return true;
-            }
-
             try
             {
                 using var response = provider != null
                     ? await provider.GetPrimaryImageResponseAsync(server, nativeId!, cancellationToken).ConfigureAwait(false)
-                    : await GetJellyfinPosterAsync(source, server.Url, cancellationToken).ConfigureAwait(false);
+                    : await GetJellyfinPosterAsync(source, server.Url, MaxWidthFor(entry.ItemType), cancellationToken).ConfigureAwait(false);
                 if (response == null)
                 {
                     return false;
@@ -137,29 +118,29 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// A Jellyfin friend's primary image for one of its items, for the lazy
-        /// episode image address (see <see cref="LazyArtwork"/>). Null when the
-        /// friend is gone, disabled or did not answer.
+        /// Width an image is fetched at, or null for the friend's original. Episode
+        /// images are only ever shown small; a 640 px copy is a fraction of the
+        /// original, and a large first sync fetches one per episode. Jellyfin
+        /// cannot load a library item's image lazily: saving the item converts
+        /// any remote image address into a local file at once.
         /// </summary>
-        internal Task<HttpResponseMessage?> FetchJellyfinPrimaryAsync(string serverId, Guid remoteItemId, CancellationToken cancellationToken)
-        {
-            var server = _federationManager.GetServer(serverId);
-            if (server == null || !server.Enabled || _externalCatalogs.For(server) != null)
-            {
-                return Task.FromResult<HttpResponseMessage?>(null);
-            }
+        internal static int? MaxWidthFor(string? itemType)
+            => string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase) ? EpisodeImageMaxWidth : null;
 
-            return GetJellyfinPosterAsync(new FederatedSource { ServerId = serverId, RemoteItemId = remoteItemId }, server.Url, cancellationToken);
-        }
+        internal const int EpisodeImageMaxWidth = 640;
+
+        internal static string BuildPosterUrl(string serverUrl, Guid remoteItemId, string token, int? maxWidth)
+            => $"{serverUrl.TrimEnd('/')}/Plugins/Federation/Peer/Images/{remoteItemId:N}/Primary?token={Uri.EscapeDataString(token)}"
+                + (maxWidth.HasValue ? $"&maxWidth={maxWidth.Value}" : string.Empty);
 
         private async Task<HttpResponseMessage?> GetJellyfinPosterAsync(
-            FederatedSource source, string serverUrl, CancellationToken cancellationToken)
+            FederatedSource source, string serverUrl, int? maxWidth, CancellationToken cancellationToken)
         {
             var client = _federationManager.GetClient(source.ServerId);
             if (client == null) return null;
             var (token, _) = await client.GetImageTokenAsync(source.RemoteItemId.ToString("N"), cancellationToken).ConfigureAwait(false);
             if (token == null) return null;
-            var url = $"{serverUrl.TrimEnd('/')}/Plugins/Federation/Peer/Images/{source.RemoteItemId:N}/Primary?token={Uri.EscapeDataString(token)}";
+            var url = BuildPosterUrl(serverUrl, source.RemoteItemId, token, maxWidth);
             var response = await ImageHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode) return response;
             response.Dispose();

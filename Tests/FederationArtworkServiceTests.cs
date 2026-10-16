@@ -105,68 +105,19 @@ public sealed class FederationArtworkServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task JellyfinEpisodeImage_IsAddressedLazily_WithoutDownloading()
+    public void EpisodeImages_AreFetchedScaledDown_PostersAtFullSize()
     {
-        LazyArtwork.KeyDirectory = Path.Combine(Path.GetTempPath(), "fed-art-" + Guid.NewGuid().ToString("N"));
-        LazyArtwork.ResetForTests();
-        try
-        {
-            var server = new RemoteServer { Id = "jf-friend", Name = "Friend", Url = "https://friend.example", ApiKey = "secret", Kind = ServerKind.Jellyfin, Enabled = true };
-            _plugin.Configuration.RemoteServers.Add(server);
-            var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
-            var remoteId = Guid.NewGuid();
-            var entry = cache.UpsertRaw(
-                "Shows",
-                server.Id,
-                remoteId,
-                new BaseItemDto { Id = remoteId, Name = "Pilot", ImageTags = new Dictionary<ImageType, string> { [ImageType.Primary] = "abc123" } },
-                0,
-                "Episode");
-
-            var clients = new Mock<IRemoteServerClientFactory>(MockBehavior.Strict);
-            var manager = new FederationLibraryManager(
-                Mock.Of<ILibraryManager>(),
-                NullLogger<FederationLibraryManager>.Instance,
-                clients.Object,
-                cache,
-                new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clients.Object),
-                Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
-            var providerManager = new Mock<IProviderManager>(MockBehavior.Strict);
-            var service = new FederationArtworkService(
-                NullLogger<FederationArtworkService>.Instance,
-                manager,
-                new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()),
-                providerManager.Object);
-            var episode = new MediaBrowser.Controller.Entities.TV.Episode { Name = "Pilot" };
-
-            Assert.True(await service.SyncPrimaryImageAsync(episode, entry, CancellationToken.None));
-
-            var image = episode.GetImageInfo(ImageType.Primary, 0);
-            Assert.NotNull(image);
-            Assert.False(image!.IsLocalFile);
-            Assert.Contains("/Plugins/Federation/Artwork?serverId=jf-friend&itemId=" + remoteId.ToString("N") + "&tag=abc123&sig=", image.Path, StringComparison.Ordinal);
-            Assert.DoesNotContain("secret", image.Path, StringComparison.Ordinal);
-            var query = System.Web.HttpUtility.ParseQueryString(new Uri(image.Path).Query);
-            Assert.True(LazyArtwork.Verify("jf-friend", remoteId, "abc123", query["sig"]));
-            Assert.False(LazyArtwork.Verify("jf-friend", remoteId, "abc124", query["sig"]));
-            Assert.False(LazyArtwork.Verify("other", remoteId, "abc123", query["sig"]));
-            Assert.False(LazyArtwork.Verify("jf-friend", Guid.NewGuid(), "abc123", query["sig"]));
-
-            // Unchanged on the next sync, and the key survives a restart.
-            Assert.False(await service.SyncPrimaryImageAsync(episode, entry, CancellationToken.None));
-            LazyArtwork.ResetForTests();
-            Assert.True(LazyArtwork.Verify("jf-friend", remoteId, "abc123", query["sig"]));
-        }
-        finally
-        {
-            if (Directory.Exists(LazyArtwork.KeyDirectory!))
-            {
-                Directory.Delete(LazyArtwork.KeyDirectory!, true);
-            }
-
-            LazyArtwork.KeyDirectory = null;
-            LazyArtwork.ResetForTests();
-        }
+        var id = Guid.NewGuid();
+        Assert.Equal(640, FederationArtworkService.MaxWidthFor("Episode"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Movie"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Series"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Season"));
+        Assert.Equal(
+            $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t%2B1&maxWidth=640",
+            FederationArtworkService.BuildPosterUrl("https://friend.example/", id, "t+1", 640));
+        Assert.Equal(
+            $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t",
+            FederationArtworkService.BuildPosterUrl("https://friend.example", id, "t", null));
     }
 
     [Fact]
