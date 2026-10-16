@@ -4229,7 +4229,7 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetSyncStatus()
         {
-            _syncService.EnsureStatusLoaded();
+            _syncService.ForgetUnconfiguredLibraries(Plugin.Instance?.Configuration);
             var status = _syncService.Status;
             return Ok(new
             {
@@ -4311,9 +4311,14 @@ namespace Jellyfin.Plugin.Federation.Api
                     // Only plugin-owned libraries are deleted; from a library of your
                     // own only the plugin's folder is detached and attached again.
                     await provisioning.RemoveLibraryAsync(mapping.LocalLibraryName).ConfigureAwait(false);
-                    if (mapping.Enabled && mapping.AutoProvision)
+
+                    // Use the settings as they are now: the library may have been
+                    // removed or changed while it was being emptied.
+                    var current = Plugin.Instance?.Configuration?.LibraryMappings?
+                        .FirstOrDefault(m => string.Equals(m.LocalLibraryName, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+                    if (current != null && current.Enabled && current.AutoProvision)
                     {
-                        await provisioning.EnsureLibraryAsync(mapping, ct).ConfigureAwait(false);
+                        await provisioning.EnsureLibraryAsync(current, ct).ConfigureAwait(false);
                     }
                 },
                 lifetime?.ApplicationStopping ?? CancellationToken.None);

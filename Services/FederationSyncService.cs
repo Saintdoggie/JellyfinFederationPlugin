@@ -211,8 +211,21 @@ namespace Jellyfin.Plugin.Federation.Services
             _cache.ClearMapping(name);
             await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
             await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
-            await rebuildLibrary(cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("[Federation] Full resync of {Name}: library recreated, downloading again", name);
+            try
+            {
+                await rebuildLibrary(cancellationToken).ConfigureAwait(false);
+                _logger.LogInformation("[Federation] Full resync of {Name}: library recreated, downloading again", name);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // The titles are gone at this point; downloading them again into the
+                // existing library beats leaving it empty.
+                _logger.LogWarning(ex, "[Federation] Full resync of {Name}: the library could not be recreated, so its titles are downloaded into the existing one", name);
+            }
         }
 
         /// <summary>
@@ -537,9 +550,18 @@ namespace Jellyfin.Plugin.Federation.Services
                     cancellationToken.ThrowIfCancellationRequested();
                     SyncProgressTracker.Update(operationId, totalItems, $"Processing mapping {i + 1}/{mappings.Count}: {mapping.LocalLibraryName}");
 
+                    if (RemovedSinceSyncStarted(mapping, config))
+                    {
+                        continue;
+                    }
+
                     var result = await RefreshMappingAsync(mapping, config, cancellationToken).ConfigureAwait(false);
                     totalItems += result.ItemCount;
                     failedSources += result.FailedSources;
+                    if (RemovedSinceSyncStarted(mapping, config))
+                    {
+                        continue;
+                    }
 
                     await _persistence.ReconcileMappingAsync(
                         mapping,
@@ -803,9 +825,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 int failedSources = 0;
                 foreach (var mapping in mappings)
                 {
+                    if (RemovedSinceSyncStarted(mapping, config!))
+                    {
+                        continue;
+                    }
+
                     var result = await RefreshMappingAsync(mapping, config!, cancellationToken, onlyServerId: serverId).ConfigureAwait(false);
                     total += result.ItemCount;
                     failedSources += result.FailedSources;
+                    if (RemovedSinceSyncStarted(mapping, config!))
+                    {
+                        continue;
+                    }
 
                     await _persistence.ReconcileMappingAsync(
                         mapping,
@@ -1493,6 +1524,44 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogInformation("[Federation] {What} from {Server} failed; retrying in {Seconds:0} s", what, server.Name, RetryDelays[i].TotalSeconds);
                 await Task.Delay(RetryDelays[i], cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>
+        /// A sync works on the library list from when it started. A library removed
+        /// or switched off in the settings meanwhile used to be downloaded and
+        /// written anyway - into a library that was being deleted, which failed and
+        /// left its titles in the cache. Its downloaded titles are dropped instead.
+        /// </summary>
+        private bool RemovedSinceSyncStarted(LibraryMapping mapping, PluginConfiguration syncConfig)
+        {
+            var current = Plugin.Instance?.Configuration;
+            if (current == null || ReferenceEquals(current, syncConfig))
+            {
+                return false;
+            }
+
+            var stillThere = current.LibraryMappings?.Any(m => m.Enabled
+                && string.Equals(m.LocalLibraryName, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase)) == true;
+            if (stillThere)
+            {
+                return false;
+            }
+
+            _cache.ClearMapping(mapping.LocalLibraryName);
+            _logger.LogInformation("[Federation] Skipped {Name}: it was removed or switched off while this sync was running", mapping.LocalLibraryName);
+            return true;
+        }
+
+        /// <summary>Removes status rows of libraries that are no longer configured.</summary>
+        public void ForgetUnconfiguredLibraries(PluginConfiguration? config)
+        {
+            EnsureStatusLoaded();
+            var keys = new HashSet<string>(
+                (config?.LibraryMappings ?? new List<LibraryMapping>())
+                    .Where(m => m.Enabled)
+                    .SelectMany(m => (m.RemoteLibrarySources ?? new List<RemoteLibrarySource>()).Select(s => StatusKey(m, s))),
+                StringComparer.OrdinalIgnoreCase);
+            Status.Forget(keys);
         }
 
         private static string StatusKey(LibraryMapping mapping, RemoteLibrarySource source)
