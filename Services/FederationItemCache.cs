@@ -28,6 +28,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
 
+        // Fingerprint of the file as last written or read, so an unchanged cache
+        // (13 MB for 12,600 items) is not rewritten after every sync.
+        private byte[]? _savedFingerprint;
+
         /// <summary>Where the cache is stored; empty until initialized.</summary>
         public string CacheFilePath => _cacheFilePath;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
@@ -577,18 +581,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     Directory.CreateDirectory(dir);
                 }
 
+                // Sorted so the same content always serializes to the same bytes.
                 var payload = new CachePayload
                 {
                     LastRefreshUtc = _lastRefreshUtc,
-                    Entries = _entries.Values.Select(e => e.Snapshot()).ToList(),
-                    SyncIndexes = _syncIndexes.Count == 0 ? null : new Dictionary<string, SyncIndexSnapshot>(_syncIndexes, StringComparer.OrdinalIgnoreCase),
-                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+                    Entries = _entries.Values.Select(e => e.Snapshot()).OrderBy(e => e.Key, StringComparer.Ordinal).ToList(),
+                    SyncIndexes = _syncIndexes.Count == 0 ? null : _syncIndexes.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
                 };
 
-                var json = JsonSerializer.Serialize(payload, CacheJsonOptions);
+                var json = JsonSerializer.SerializeToUtf8Bytes(payload, CacheJsonOptions);
+                var fingerprint = System.Security.Cryptography.SHA256.HashData(json);
+                if (_savedFingerprint != null && fingerprint.AsSpan().SequenceEqual(_savedFingerprint) && File.Exists(_cacheFilePath))
+                {
+                    _logger.LogDebug("[Federation] Cache unchanged; not rewriting {Path}", _cacheFilePath);
+                    return Task.CompletedTask;
+                }
+
                 var tempPath = _cacheFilePath + ".tmp";
-                File.WriteAllText(tempPath, json);
+                File.WriteAllBytes(tempPath, json);
                 File.Move(tempPath, _cacheFilePath, true);
+                _savedFingerprint = fingerprint;
                 _logger.LogDebug("[Federation] Cache saved to {Path} ({Count} entries)", _cacheFilePath, _entries.Count);
             }
             catch (Exception ex)
@@ -724,8 +737,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var json = File.ReadAllText(_cacheFilePath);
-                var payload = JsonSerializer.Deserialize<CachePayload>(json, CacheJsonOptions);
+                var bytes = File.ReadAllBytes(_cacheFilePath);
+                _savedFingerprint = System.Security.Cryptography.SHA256.HashData(bytes);
+                var payload = JsonSerializer.Deserialize<CachePayload>(bytes, CacheJsonOptions);
                 if (payload?.Entries != null)
                 {
                     // Playback validates exact server/item membership through this
