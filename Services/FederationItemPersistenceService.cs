@@ -1242,28 +1242,83 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal static bool ApplySourceMetadata(BaseItem item, FederatedItemMetadata metadata, bool includeRuntime = true)
         {
-            var before = System.Text.Json.JsonSerializer.Serialize(new
+            // Only values that really differ are written. Jellyfin reads an empty
+            // Studios list back as [""] and returns dates in UTC while the cache may
+            // hold local times, so a plain before/after comparison reported every
+            // item as changed and rewrote the whole library on every sync.
+            var changed = false;
+            if (!string.IsNullOrEmpty(metadata.Name) && !string.Equals(item.Name, metadata.Name, StringComparison.Ordinal))
             {
-                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
-                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
-            });
-            if (!string.IsNullOrEmpty(metadata.Name)) item.Name = metadata.Name;
-            item.Overview = metadata.Overview ?? item.Overview;
-            item.OriginalTitle = metadata.OriginalTitle ?? item.OriginalTitle;
-            item.ProductionYear = metadata.ProductionYear ?? item.ProductionYear;
-            item.PremiereDate = metadata.PremiereDate ?? item.PremiereDate;
-            item.CommunityRating = metadata.CommunityRating ?? item.CommunityRating;
-            item.OfficialRating = metadata.OfficialRating ?? item.OfficialRating;
-            if (includeRuntime)
-                item.RunTimeTicks = metadata.RunTimeTicks ?? item.RunTimeTicks;
-            item.Genres = metadata.Genres ?? item.Genres;
-            item.Studios = metadata.Studios ?? item.Studios;
-            var after = System.Text.Json.JsonSerializer.Serialize(new
+                item.Name = metadata.Name;
+                changed = true;
+            }
+
+            changed |= SetIfDifferent(metadata.Overview, item.Overview, v => item.Overview = v);
+            changed |= SetIfDifferent(metadata.OriginalTitle, item.OriginalTitle, v => item.OriginalTitle = v);
+            changed |= SetIfDifferent(metadata.OfficialRating, item.OfficialRating, v => item.OfficialRating = v);
+            if (metadata.ProductionYear.HasValue && item.ProductionYear != metadata.ProductionYear)
             {
-                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
-                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
-            });
-            return !string.Equals(before, after, StringComparison.Ordinal);
+                item.ProductionYear = metadata.ProductionYear;
+                changed = true;
+            }
+
+            if (metadata.PremiereDate.HasValue && !SameInstant(item.PremiereDate, metadata.PremiereDate))
+            {
+                item.PremiereDate = metadata.PremiereDate;
+                changed = true;
+            }
+
+            if (metadata.CommunityRating.HasValue && item.CommunityRating != metadata.CommunityRating)
+            {
+                item.CommunityRating = metadata.CommunityRating;
+                changed = true;
+            }
+
+            if (includeRuntime && metadata.RunTimeTicks.HasValue && item.RunTimeTicks != metadata.RunTimeTicks)
+            {
+                item.RunTimeTicks = metadata.RunTimeTicks;
+                changed = true;
+            }
+
+            if (metadata.Genres != null && !NonEmpty(item.Genres).SequenceEqual(NonEmpty(metadata.Genres), StringComparer.Ordinal))
+            {
+                item.Genres = NonEmpty(metadata.Genres);
+                changed = true;
+            }
+
+            if (metadata.Studios != null && !NonEmpty(item.Studios).SequenceEqual(NonEmpty(metadata.Studios), StringComparer.Ordinal))
+            {
+                item.Studios = NonEmpty(metadata.Studios);
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool SetIfDifferent(string? value, string? current, Action<string> set)
+        {
+            if (value == null || string.Equals(value, current, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            set(value);
+            return true;
+        }
+
+        private static string[] NonEmpty(IEnumerable<string>? values)
+            => (values ?? Array.Empty<string>()).Where(v => !string.IsNullOrWhiteSpace(v)).ToArray();
+
+        /// <summary>Compares two dates as moments in time, treating an unspecified kind as UTC like Jellyfin's database does.</summary>
+        internal static bool SameInstant(DateTime? a, DateTime? b)
+        {
+            if (!a.HasValue || !b.HasValue)
+            {
+                return a.HasValue == b.HasValue;
+            }
+
+            static DateTime Utc(DateTime d) => d.Kind == DateTimeKind.Local ? d.ToUniversalTime() : DateTime.SpecifyKind(d, DateTimeKind.Utc);
+            return Utc(a.Value) == Utc(b.Value);
         }
     }
 }
