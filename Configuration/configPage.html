@@ -528,16 +528,22 @@
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Add a friend</h3>
                     <p class="fieldDescription">
-                        Enter another Federation server's address and send a request. Once they accept, both servers add
-                        each other automatically — no API key to copy by hand.
+                        Send another Federation server a friend request. You choose what they can see of your library before
+                        the request leaves this server; once they accept, both servers add each other automatically.
                     </p>
 
-                    <div class="fed-inline">
-                        <div class="inputContainer fed-grow">
+                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="new-friend-open" id="fedNewFriendOpen">Create new friend request</button>
+                    <div id="fedNewFriend" class="fed-subcard" style="display:none;">
+                        <div class="inputContainer">
                             <label class="inputLabel" for="fedFriendUrl">Friend's server address</label>
                             <input type="text" id="fedFriendUrl" class="emby-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+                        <h4 class="fed-subhead">What they can see of my library</h4>
+                        <div id="fedNewFriendShare"></div>
+                        <div class="fed-inline" style="margin-top:0.8em;">
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="new-friend-cancel">Cancel</button>
+                        </div>
                     </div>
                     <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
 
@@ -3040,6 +3046,70 @@
                         el.textContent = msg;
                     }
 
+                    var acceptChoosing = {};
+                    var shareChoices = {};
+
+                    // Library choice for a friendship that does not exist yet: a new
+                    // request, or accepting someone else's. Nothing is ticked, so a
+                    // friend sees none of this server's libraries until chosen here
+                    // or under Manage later.
+                    function renderShareChooser(group) {
+                        var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                        shareChoices[group] = choice;
+                        var html = '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChooseAll" data-group="' + escapeHtml(group) + '"' + (choice.ShareAll ? ' checked' : '') + ' /> Share all my libraries, including ones added later</label>';
+                        html += '<div class="fedChooseLibs" data-group="' + escapeHtml(group) + '" style="display:' + (choice.ShareAll ? 'none' : 'block') + ';margin:0.4em 0 0 0.2em;">';
+                        if (!localLibrariesCache) {
+                            html += '<p class="fed-muted">Loading your libraries…</p>';
+                        } else if (localLibrariesCache.length === 0) {
+                            html += '<p class="fed-muted">No libraries found.</p>';
+                        } else {
+                            localLibrariesCache.forEach(function (lib) {
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChooseLib" data-group="' + escapeHtml(group) + '" data-lib="' + escapeHtml(lib.id) + '"' + (choice.FolderIds.indexOf(lib.id) !== -1 ? ' checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                            });
+                        }
+
+                        html += '<p class="fed-hint">Nothing ticked means they see none of your libraries. You can share more later under Manage.</p>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function readShareChooser(group) {
+                        var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                        return { ShareAll: !!choice.ShareAll, FolderIds: choice.FolderIds.slice() };
+                    }
+
+                    function showNewFriendDialog(open, url) {
+                        var panel = q('#fedNewFriend');
+                        var opener = q('#fedNewFriendOpen');
+                        if (!panel) {
+                            return;
+                        }
+
+                        panel.style.display = open ? 'block' : 'none';
+                        if (opener) {
+                            opener.style.display = open ? 'none' : '';
+                        }
+
+                        if (!open) {
+                            delete shareChoices['new'];
+                            return;
+                        }
+
+                        var urlEl = q('#fedFriendUrl');
+                        if (urlEl && url) {
+                            urlEl.value = url;
+                        }
+
+                        var renderChooser = function () {
+                            var target = q('#fedNewFriendShare');
+                            if (target) {
+                                target.innerHTML = renderShareChooser('new');
+                            }
+                        };
+                        renderChooser();
+                        loadLocalLibraries().then(renderChooser);
+                    }
+
                     // What accepting a reconnect request does, and when to be careful.
                     function renderReconnectNote(r) {
                         if (!r || !r.Reconnect) {
@@ -3083,10 +3153,20 @@
 
                                 ih += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + (r.Verified ? ' · verified' : ' · unverified') + '</span>';
                                 ih += '<span class="fed-spacer"></span>';
-                                ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
+                                if (r.Reconnect) {
+                                    ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
+                                } else {
+                                    ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend-choose" data-id="' + escapeHtml(r.Id) + '">Accept…</button>';
+                                }
+
                                 ih += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-friend" data-id="' + escapeHtml(r.Id) + '">Reject</button>';
                                 ih += '</div>';
                                 ih += renderReconnectNote(r);
+                                if (!r.Reconnect && acceptChoosing[r.Id]) {
+                                    ih += '<div class="fed-subcard"><h4 class="fed-subhead">What ' + escapeHtml(r.RemoteServerName) + ' can see of my library</h4>'
+                                        + renderShareChooser('accept-' + r.Id)
+                                        + '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept and become friends</button></div>';
+                                }
                                 ih += '</div>';
                             });
                             incoming.innerHTML = ih;
@@ -3129,16 +3209,21 @@
                             return;
                         }
 
+                        var sharing = readShareChooser('new');
                         setFriendStatus('Sending…', 'info');
                         fedFetch('/Plugins/Federation/Friends/Send', {
                             method: 'POST',
-                            body: JSON.stringify({ Url: url })
+                            body: JSON.stringify({ Url: url, ShareAll: sharing.ShareAll, FolderIds: sharing.FolderIds })
                         })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            if (res.success && urlEl) {
-                                urlEl.value = '';
+                            if (res.success) {
+                                if (urlEl) {
+                                    urlEl.value = '';
+                                }
+
+                                showNewFriendDialog(false);
                             }
 
                             loadFriendRequests();
@@ -3148,7 +3233,12 @@
 
                     function acceptFriendRequest(id) {
                         setFriendStatus('Confirming with your friend\'s server…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
+                        var chooser = q('.fedChooseLibs[data-group="accept-' + id + '"]');
+                        var sharing = chooser ? readShareChooser('accept-' + id) : null;
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', {
+                            method: 'POST',
+                            body: JSON.stringify(sharing ? { ShareAll: sharing.ShareAll, FolderIds: sharing.FolderIds } : {})
+                        })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             loadFriendRequests();
@@ -4987,18 +5077,11 @@
                     }
 
                     function addDiscoveredFriend(url) {
-                        setDiscoveryStatus('Sending…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/Send', {
-                            method: 'POST',
-                            body: JSON.stringify({ Url: url })
-                        })
-                        .then(function (r) { return readJson(r); })
-                        .then(function (res) {
-                            setDiscoveryStatus(res.message, res.success ? 'ok' : 'err');
-                            loadFriendRequests();
-                            searchDiscovery();
-                        })
-                        .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
+                        // Same dialog as a new request, so the library choice is made
+                        // before anything is sent.
+                        switchTab('friends');
+                        showNewFriendDialog(true, url);
+                        setFriendStatus('Choose what they can see of your library, then send the request.', 'info');
                     }
 
                     /* ---------------- New-friend setup prompt ---------------- */
@@ -6857,6 +6940,17 @@
                                 case 'send-friend-request':
                                     sendFriendRequest();
                                     break;
+                                case 'new-friend-open':
+                                    showNewFriendDialog(true);
+                                    break;
+                                case 'new-friend-cancel':
+                                    showNewFriendDialog(false);
+                                    break;
+                                case 'accept-friend-choose':
+                                    acceptChoosing[friendId] = true;
+                                    loadLocalLibraries().then(loadFriendRequests);
+                                    loadFriendRequests();
+                                    break;
                                 case 'accept-friend':
                                     acceptFriendRequest(friendId);
                                     break;
@@ -7356,6 +7450,27 @@
 
                             if (t.classList.contains('fedPoolIconInput')) {
                                 setPoolIconFromFile(t.getAttribute('data-pool'), t.files && t.files[0]);
+                                return;
+                            }
+
+                            if (t.classList.contains('fedChooseAll') || t.classList.contains('fedChooseLib')) {
+                                var group = t.getAttribute('data-group');
+                                var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                                shareChoices[group] = choice;
+                                if (t.classList.contains('fedChooseAll')) {
+                                    choice.ShareAll = t.checked;
+                                    var libsBox = q('.fedChooseLibs[data-group="' + group + '"]');
+                                    if (libsBox) {
+                                        libsBox.style.display = t.checked ? 'none' : 'block';
+                                    }
+                                } else {
+                                    var lib = t.getAttribute('data-lib');
+                                    choice.FolderIds = choice.FolderIds.filter(function (x) { return x !== lib; });
+                                    if (t.checked) {
+                                        choice.FolderIds.push(lib);
+                                    }
+                                }
+
                                 return;
                             }
 

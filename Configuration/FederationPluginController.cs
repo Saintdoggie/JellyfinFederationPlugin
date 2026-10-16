@@ -1192,8 +1192,29 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> SendFriendRequest([FromBody] SendFriendRequestBody body, CancellationToken cancellationToken)
         {
-            var (success, message) = await _friends.SendFriendRequestAsync(body?.Url ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            var (success, message) = await _friends.SendFriendRequestAsync(body?.Url ?? string.Empty, cancellationToken, sharing: SharingFrom(body?.ShareAll, body?.FolderIds)).ConfigureAwait(false);
             return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// The sharing chosen in a friend request or accept dialog, limited to this
+        /// server's own libraries. Null when the caller chose nothing (older
+        /// pages and scripts), which keeps the old default.
+        /// </summary>
+        private FriendSharing? SharingFrom(bool? shareAll, List<string>? folderIds)
+        {
+            if (shareAll == null && folderIds == null)
+            {
+                return null;
+            }
+
+            var own = _libraryManager.GetVirtualFolders()
+                .Where(f => !LibraryProvisioningService.IsEntirelyFederatedFolder(f, LibraryProvisioningService.GetFederationRoot()))
+                .Select(f => f.ItemId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return new FriendSharing(
+                shareAll == true,
+                (folderIds ?? new List<string>()).Where(id => !string.IsNullOrWhiteSpace(id) && own.Contains(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList());
         }
 
         /// <summary>
@@ -1216,9 +1237,12 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/{id}/Accept")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> AcceptFriendRequest(string id, CancellationToken cancellationToken)
+        public async Task<IActionResult> AcceptFriendRequest(
+            string id,
+            CancellationToken cancellationToken,
+            [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] AcceptFriendBody? body = null)
         {
-            var (success, message) = await _friends.AcceptFriendRequestAsync(id, cancellationToken).ConfigureAwait(false);
+            var (success, message) = await _friends.AcceptFriendRequestAsync(id, cancellationToken, SharingFrom(body?.ShareAll, body?.FolderIds)).ConfigureAwait(false);
             return Ok(new { success, message });
         }
 
@@ -5640,6 +5664,19 @@ namespace Jellyfin.Plugin.Federation.Api
     public class SendFriendRequestBody
     {
         public string? Url { get; set; }
+
+        /// <summary>Share every library, including ones added later. Null keeps the old default.</summary>
+        public bool? ShareAll { get; set; }
+
+        /// <summary>Libraries to share when <see cref="ShareAll"/> is false; empty shares nothing.</summary>
+        public List<string>? FolderIds { get; set; }
+    }
+
+    public class AcceptFriendBody
+    {
+        public bool? ShareAll { get; set; }
+
+        public List<string>? FolderIds { get; set; }
     }
 
     public class CreatePoolBody

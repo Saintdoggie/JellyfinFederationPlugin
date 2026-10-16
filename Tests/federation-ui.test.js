@@ -1781,3 +1781,30 @@ test('refresh starts a background sync and the page polls per-library status', (
   assert.match(configPage, /id="fedSyncStatusList"/);
   assert.match(configPage, /clearInterval\(syncStatusPollInterval\)/);
 });
+
+test('friend requests choose shared libraries before sending or accepting', () => {
+  assert.match(configPage, /data-fed-action="new-friend-open"[^>]*>Create new friend request</);
+  assert.match(configPage, /id="fedNewFriend" class="fed-subcard" style="display:none;"/);
+  const send = configPage.match(/function sendFriendRequest\(\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(send, 'sendFriendRequest not found');
+  assert.match(send[0], /readShareChooser\('new'\)/);
+  assert.match(send[0], /ShareAll: sharing\.ShareAll, FolderIds: sharing\.FolderIds/);
+  const accept = configPage.match(/function acceptFriendRequest\(id\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(accept, 'acceptFriendRequest not found');
+  assert.match(accept[0], /readShareChooser\('accept-' \+ id\)/);
+  assert.match(configPage, /data-fed-action="accept-friend-choose"/);
+  assert.match(configPage, /function addDiscoveredFriend\(url\) \{[\s\S]*?showNewFriendDialog\(true, url\)/);
+
+  const chooser = configPage.match(/function renderShareChooser\(group\) \{[\s\S]*?\n {20}\}/);
+  const reader = configPage.match(/function readShareChooser\(group\) \{[\s\S]*?\n {20}\}/);
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  const fns = new Function('document', 'var shareChoices = {}; var localLibrariesCache = [{ id: "m", name: "Movies" }, { id: "s", name: "Shows" }];\n'
+    + escape[0] + chooser[0] + reader[0] + '\nreturn { renderShareChooser, readShareChooser, shareChoices };')(new JSDOM('').window.document);
+  const html = fns.renderShareChooser('new');
+  assert.equal((html.match(/ checked/g) || []).length, 0, 'nothing is shared by default');
+  assert.match(html, /Share all my libraries, including ones added later/);
+  assert.match(html, /data-lib="m"[^>]*> Movies/);
+  assert.deepEqual(fns.readShareChooser('new'), { ShareAll: false, FolderIds: [] });
+  fns.shareChoices['new'].FolderIds.push('s');
+  assert.deepEqual(fns.readShareChooser('new'), { ShareAll: false, FolderIds: ['s'] });
+});
