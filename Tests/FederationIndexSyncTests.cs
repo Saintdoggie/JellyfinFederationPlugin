@@ -435,6 +435,36 @@ public partial class FederationSyncServiceTests
     }
 
     [Fact]
+    public async Task FullResync_EmptiesTheLibrary_RebuildsIt_AndTheNextSyncDownloadsEverything()
+    {
+        var peer = new IndexedPeerHandler();
+        var movies = Enumerable.Range(0, 100).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, server) = CreateMovieSync(peer);
+        await RunWithStatusAsync(sync, mapping, config);
+        foreach (var gone in movies.Take(40))
+        {
+            peer.Remove(gone);
+        }
+
+        await RunWithStatusAsync(sync, mapping, config);
+        await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(40, cache.GetPendingRemoval(FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id))!.HeldCount);
+
+        var rebuilt = 0;
+        await sync.ClearLibraryForResyncAsync(mapping, _ => { rebuilt++; return Task.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal(1, rebuilt);
+        Assert.Empty(cache.GetEntriesForMapping(mapping.LocalLibraryName));
+        Assert.Null(cache.GetPendingRemoval(FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id)));
+
+        // No stored hashes survive, so every title still on the friend comes back.
+        peer.Fetched.Clear();
+        await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(movies.Skip(40).ToHashSet(), peer.Fetched.ToHashSet());
+        Assert.Equal(60, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+    }
+
+    [Fact]
     public async Task ModerateRemoval_IsNotHeld_OnlyDelayedOneSync()
     {
         var peer = new IndexedPeerHandler();

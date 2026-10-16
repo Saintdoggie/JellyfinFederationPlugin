@@ -1767,6 +1767,17 @@ test('sync status shows per-library plan, progress, outcome and plain-language f
   assert.ok(html.includes('&lt;b&gt;Anna&lt;/b&gt;'), 'friend names are escaped');
   assert.match(renderSyncStatusHtml({ libraries: [] }, now), /No friend libraries are selected yet/);
 
+  // One full resync button per local library, even when several friends feed it.
+  const merged = renderSyncStatusHtml({ libraries: [
+    { ...base, key: 'a', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 },
+    { ...base, key: 'b', serverName: 'Ben', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 },
+    { ...base, key: 'c', localLibraryName: 'Music', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 }
+  ] }, now);
+  assert.equal((merged.match(/data-fed-action="full-resync"/g) || []).length, 2);
+  assert.match(merged, /data-fed-action="full-resync" data-library="Movies">Full resync of Movies<\/button>/);
+  assert.match(merged, /data-library="Music">Full resync of Music</);
+  assert.match(renderSyncStatusHtml({ running: true, libraries: [{ ...base, state: 'downloading', mode: 'changes', toDownload: 2, downloaded: 1 }] }, now), /data-fed-action="full-resync" data-library="Movies" disabled/);
+
   assert.equal(
     syncRunSummary({ libraries: [
       { ...base, state: 'done', toDownload: 10, downloaded: 10 },

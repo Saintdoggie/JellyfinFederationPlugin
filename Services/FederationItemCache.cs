@@ -395,6 +395,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
             RemoveSyncIndexes(mappingName);
 
+            var removalPrefix = mappingName + "|";
+            foreach (var key in _pendingRemovals.Keys.Where(k => k.StartsWith(removalPrefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _pendingRemovals.TryRemove(key, out _);
+            }
+
             RemoveStaleIndexEntries();
         }
 

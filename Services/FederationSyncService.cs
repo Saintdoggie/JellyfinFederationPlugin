@@ -149,6 +149,73 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Full resync of one library, for the settings page: everything the plugin
+        /// put into it is deleted, <paramref name="rebuildLibrary"/> removes and
+        /// recreates the Jellyfin library itself (so a changed library type takes
+        /// effect), and a sync then downloads every title again. Runs in the
+        /// background under the sync lock, so no sync can write into the library
+        /// while it is emptied. False when a sync is already running.
+        /// </summary>
+        public bool TryStartFullResync(LibraryMapping mapping, Func<CancellationToken, Task> rebuildLibrary, CancellationToken stoppingToken)
+        {
+            if (Status.Running || !_syncLock.Wait(0))
+            {
+                return false;
+            }
+
+            Status.MarkPending();
+            _ = Task.Run(async () =>
+            {
+                var cleared = false;
+                try
+                {
+                    try
+                    {
+                        await ClearLibraryForResyncAsync(mapping, rebuildLibrary, stoppingToken).ConfigureAwait(false);
+                        cleared = true;
+                    }
+                    finally
+                    {
+                        _syncLock.Release();
+                    }
+
+                    // Another sync that starts in this gap downloads the titles too.
+                    await SyncAllAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Jellyfin is shutting down.
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Full resync of {Name} failed{When}", mapping.LocalLibraryName, cleared ? " while downloading" : " while clearing the library");
+                }
+                finally
+                {
+                    Status.ClearPending();
+                }
+            });
+            return true;
+        }
+
+        /// <summary>The clearing half of <see cref="TryStartFullResync"/>; the caller holds the sync lock.</summary>
+        internal async Task ClearLibraryForResyncAsync(LibraryMapping mapping, Func<CancellationToken, Task> rebuildLibrary, CancellationToken cancellationToken)
+        {
+            var name = mapping.LocalLibraryName;
+            var count = _cache.GetEntriesForMapping(name).Count();
+            _logger.LogInformation("[Federation] Full resync of {Name}: deleting its {Count} federated items", name, count);
+
+            // Cached titles, their stored hashes and any held removal go first, so
+            // the sync afterwards downloads everything again; reconciling against
+            // the empty cache then deletes every item the plugin created here.
+            _cache.ClearMapping(name);
+            await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
+            await _persistence.ReconcileMappingAsync(mapping, cancellationToken).ConfigureAwait(false);
+            await rebuildLibrary(cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("[Federation] Full resync of {Name}: library recreated, downloading again", name);
+        }
+
+        /// <summary>
         /// A friend reported that its catalog changed (see
         /// <see cref="FederationChangeNotifier"/>): sync just that friend in the
         /// background, so its new titles appear within minutes instead of at the
