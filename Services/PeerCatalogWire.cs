@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -43,6 +44,44 @@ internal static class PeerCatalogWire
     private static readonly HashSet<string> StudioFields = new(StringComparer.Ordinal) { "Name" };
 
     private const int MinimumCompressedLength = 1024;
+
+    /// <summary>Most ids one Peer/Items?ids= request may name.</summary>
+    public const int MaxIdsPerRequest = 200;
+
+    /// <summary>
+    /// Fingerprint of one compacted item exactly as a compact caller would
+    /// receive it. Computed per caller, after sharing rules, so it never
+    /// reflects a field or item that caller is not allowed to see.
+    /// </summary>
+    public static string ItemHash(JsonObject compactedItem)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(compactedItem.ToJsonString()));
+        return Convert.ToBase64String(digest, 0, 16).TrimEnd('=');
+    }
+
+    /// <summary>
+    /// Parses a Peer/Items ids= list. Null when it is malformed or too long.
+    /// </summary>
+    public static List<Guid>? ParseIds(string? ids)
+    {
+        if (string.IsNullOrWhiteSpace(ids))
+        {
+            return null;
+        }
+
+        var parsed = new List<Guid>();
+        foreach (var part in ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!Guid.TryParse(part, out var id) || parsed.Count == MaxIdsPerRequest)
+            {
+                return null;
+            }
+
+            parsed.Add(id);
+        }
+
+        return parsed.Count == 0 ? null : parsed.Distinct().ToList();
+    }
 
     /// <summary>Strips one Peer/Items item down to what a sync caller reads.</summary>
     public static void CompactItem(JsonObject item)

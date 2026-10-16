@@ -20,7 +20,7 @@ using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
 
-public class FederationSyncServiceTests
+public partial class FederationSyncServiceTests
 {
     /// <summary>
     /// Regression test for a bug where synthesized Season entries were deleted in
@@ -740,6 +740,12 @@ public class FederationSyncServiceTests
             }
 
             var query = request.RequestUri?.Query ?? string.Empty;
+            if (query.Contains("index=true", StringComparison.Ordinal))
+            {
+                // Behaves like a peer without the catalog index.
+                return Ok("{\"Items\":[]}");
+            }
+
             var cursor = ParseQueryInt(query, "cursor");
             var limit = ParseQueryInt(query, "limit") ?? 200;
             var skip = cursor.HasValue ? 0 : ParseQueryInt(query, "startIndex") ?? 0;

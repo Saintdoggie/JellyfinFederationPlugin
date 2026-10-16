@@ -40,6 +40,18 @@ namespace Jellyfin.Plugin.Federation.Services
 
         internal int MaxCatalogPages { get; set; } = 1000;
 
+        // Tests lower these to exercise index paging and id batching.
+        internal int IndexPageSize { get; set; } = 2000;
+
+        internal int IdsBatchSize { get; set; } = PeerCatalogWire.MaxIdsPerRequest;
+
+        /// <summary>
+        /// Stored per-title hashes are trusted for at most this long; then every
+        /// title is fetched again. A backstop for anything the hashes cannot see,
+        /// such as an entry another friend's copy of the same title updated.
+        /// </summary>
+        internal static readonly TimeSpan IndexFullRefreshInterval = TimeSpan.FromHours(24);
+
         /// <summary>
         /// Gets the outcome of the most recent sync, or null if none has finished
         /// since startup. Exists so the config page can show whether federation is
@@ -738,9 +750,21 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             int total = 0;
+            IReadOnlySet<Guid> changedSeries = new HashSet<Guid>();
             foreach (var mediaType in mediaTypesToFetch)
             {
-                var count = await FetchAndUpsertPagesAsync(mapping, server, source, config, client, mediaType, seen, cancellationToken).ConfigureAwait(false);
+                // Friends running this version describe their catalog as [id, hash]
+                // pairs first, so only new or changed titles are downloaded. Others
+                // answer the index request with full items: page through them as before.
+                var indexed = await FetchAndUpsertByIndexAsync(mapping, server, source, config, client, mediaType, seen, changedSeries, cancellationToken).ConfigureAwait(false);
+                var count = indexed.Supported
+                    ? indexed.Count
+                    : await FetchAndUpsertPagesAsync(mapping, server, source, config, client, mediaType, seen, cancellationToken).ConfigureAwait(false);
+                if (indexed.Supported && string.Equals(mediaType, "Series", StringComparison.OrdinalIgnoreCase))
+                {
+                    changedSeries = indexed.ChangedIds;
+                }
+
                 if (count == null)
                 {
                     // Request failed: report failure so the caller preserves the cache.
@@ -1000,6 +1024,213 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return total;
+        }
+
+        private sealed record IndexSyncResult(bool Supported, int? Count, IReadOnlySet<Guid> ChangedIds)
+        {
+            public static IndexSyncResult Unsupported { get; } = new(false, null, new HashSet<Guid>());
+
+            public static IndexSyncResult Failed { get; } = new(true, null, new HashSet<Guid>());
+        }
+
+        /// <summary>
+        /// Index sync for one source and item type. Reads the friend's complete
+        /// [id, hash] list, keeps every title whose hash matches what was last
+        /// imported and which this mapping still holds, and fetches the rest by
+        /// id. Titles missing from the complete list are simply not marked seen,
+        /// so the caller's normal prune removes them; an incomplete or failed list
+        /// returns failure and nothing is pruned. Episodes of a series that
+        /// changed this cycle are always fetched again, since their season and
+        /// parent links are rebuilt from the series entry.
+        /// </summary>
+        private async Task<IndexSyncResult> FetchAndUpsertByIndexAsync(
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            RemoteServerClient client,
+            string mediaType,
+            HashSet<Guid> seen,
+            IReadOnlySet<Guid> changedSeries,
+            CancellationToken cancellationToken)
+        {
+            var key = $"{mapping.LocalLibraryName}|{server.Id}|{source.RemoteLibraryId}|{mediaType}";
+
+            var index = new Dictionary<Guid, string>();
+            int? cursor = null;
+            for (var page = 0; ; page++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (page >= MaxCatalogPages)
+                {
+                    _logger.LogWarning("[Federation] Catalog index for {Source} exceeded {MaxPages} pages; keeping cached items", source.RemoteLibraryName, MaxCatalogPages);
+                    return IndexSyncResult.Failed;
+                }
+
+                // The first request is a single entry: an older friend answers it
+                // with one full item, which is all it costs to find that out.
+                var indexPage = await client.GetCatalogIndexPageAsync(mediaType, source.RemoteLibraryId, cursor, page == 0 ? 1 : IndexPageSize, cancellationToken).ConfigureAwait(false);
+                if (indexPage == null)
+                {
+                    return IndexSyncResult.Failed;
+                }
+
+                if (!indexPage.Supported)
+                {
+                    _cache.RemoveSyncIndex(key);
+                    return IndexSyncResult.Unsupported;
+                }
+
+                foreach (var (id, hash) in indexPage.Entries)
+                {
+                    index[id] = hash;
+                }
+
+                if (!indexPage.HasMore)
+                {
+                    break;
+                }
+
+                if (cursor == indexPage.NextCursor)
+                {
+                    _logger.LogWarning("[Federation] Catalog index for {Source} stopped advancing; keeping cached items", source.RemoteLibraryName);
+                    return IndexSyncResult.Failed;
+                }
+
+                cursor = indexPage.NextCursor;
+            }
+
+            var context = SyncContext(mapping, server, config, mediaType);
+            var stored = _cache.GetSyncIndex(key);
+            var now = DateTime.UtcNow;
+            var trusted = stored != null
+                && string.Equals(stored.Context, context, StringComparison.Ordinal)
+                && now - stored.FullRefreshUtc < IndexFullRefreshInterval
+                && now >= stored.FullRefreshUtc;
+            var next = new SyncIndexSnapshot { Context = context, FullRefreshUtc = trusted ? stored!.FullRefreshUtc : now };
+            var changed = new HashSet<Guid>();
+            var toFetch = new List<Guid>();
+            var total = 0;
+
+            foreach (var (id, hash) in index)
+            {
+                if (trusted
+                    && stored!.Items.TryGetValue(id, out var known)
+                    && string.Equals(known.H, hash, StringComparison.Ordinal)
+                    && !(known.Series is Guid series && changedSeries.Contains(series))
+                    && (known.Skip
+                        || (_cache.HoldsRemoteItem(mapping.LocalLibraryName, server.Id, id)
+                            && (known.Season is not Guid season || _cache.HoldsRemoteItem(mapping.LocalLibraryName, server.Id, season)))))
+                {
+                    next.Items[id] = known;
+                    if (!known.Skip)
+                    {
+                        seen.Add(id);
+                        if (known.Season is Guid knownSeason)
+                        {
+                            seen.Add(knownSeason);
+                        }
+
+                        total++;
+                    }
+
+                    continue;
+                }
+
+                toFetch.Add(id);
+                changed.Add(id);
+            }
+
+            if (stored != null)
+            {
+                changed.UnionWith(stored.Items.Keys.Where(id => !index.ContainsKey(id)));
+            }
+
+            foreach (var batch in toFetch.Chunk(Math.Max(1, IdsBatchSize)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var items = await client.GetItemsAsync(ids: batch, limit: batch.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (items == null)
+                {
+                    return IndexSyncResult.Failed;
+                }
+
+                foreach (var remoteItem in items)
+                {
+                    if (!index.TryGetValue(remoteItem.Id, out var hash))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (!PeerCatalogPage.IsOwned(remoteItem)
+                            || !IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem))
+                        {
+                            next.Items[remoteItem.Id] = new SyncIndexItem { H = hash, Skip = true };
+                            continue;
+                        }
+
+                        if (UpsertRemoteItem(mapping, remoteItem, server, config, seen) != null)
+                        {
+                            seen.Add(remoteItem.Id);
+                            total++;
+                            var isEpisode = remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Episode;
+                            next.Items[remoteItem.Id] = new SyncIndexItem
+                            {
+                                H = hash,
+                                Season = isEpisode ? remoteItem.SeasonId : null,
+                                Series = isEpisode ? remoteItem.SeriesId : null
+                            };
+                        }
+
+                        // else: an orphaned episode. Left out of the index so it is
+                        // fetched again next cycle, once its series may be present.
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Federation] Failed to upsert item {Name}", remoteItem.Name);
+                        return IndexSyncResult.Failed;
+                    }
+                }
+            }
+
+            _cache.SetSyncIndex(key, next);
+            if (toFetch.Count > 0)
+            {
+                _logger.LogInformation(
+                    "[Federation] {Server}/{Library}: {Changed} of {Total} {Type} item(s) new or changed",
+                    server.Name,
+                    source.RemoteLibraryName,
+                    toFetch.Count,
+                    index.Count,
+                    mediaType);
+            }
+
+            return new IndexSyncResult(true, total, changed);
+        }
+
+        /// <summary>
+        /// Everything on this side that shapes how a fetched title is stored.
+        /// Stored hashes are only trusted while this is unchanged.
+        /// </summary>
+        private static string SyncContext(LibraryMapping mapping, RemoteServer server, PluginConfiguration config, string mediaType)
+        {
+            var context = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                Version = typeof(FederationSyncService).Assembly.GetName().Version?.ToString(),
+                mapping.MediaType,
+                ItemType = mediaType,
+                server.Priority,
+                config.EnableDedup,
+                Dedup = config.EnableDedup ? config.DedupProviderIds : null,
+                config.IncomingFilter
+            });
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(context)));
         }
 
         /// <summary>

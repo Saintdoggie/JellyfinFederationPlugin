@@ -8,6 +8,12 @@ using MediaBrowser.Model.Dto;
 namespace Jellyfin.Plugin.Federation.Services;
 
 /// <summary>Receiving-side protection when an older peer exports other friends' items.</summary>
+/// <summary>One page of a friend's catalog index (see RemoteServerClient.GetCatalogIndexPageAsync).</summary>
+public sealed record PeerCatalogIndexPage(bool Supported, IReadOnlyList<(Guid Id, string Hash)> Entries, bool HasMore, int NextCursor)
+{
+    public static readonly PeerCatalogIndexPage Unsupported = new(false, Array.Empty<(Guid, string)>(), false, 0);
+}
+
 internal static class PeerCatalogPage
 {
     internal sealed record Result(List<BaseItemDto> Items, int NextStartIndex);
