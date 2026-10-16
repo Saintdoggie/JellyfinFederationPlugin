@@ -559,6 +559,7 @@ public partial class FederationSyncServiceTests
             bandwidthMonitor,
             new Mock<IServiceProvider>().Object,
             catalogs ?? new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+        syncService.RetryDelays = new[] { TimeSpan.Zero, TimeSpan.Zero };
         var mapping = new LibraryMapping
         {
             LocalLibraryName = "Movies",
