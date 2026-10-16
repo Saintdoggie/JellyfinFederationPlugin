@@ -443,6 +443,40 @@ public partial class FederationSyncServiceTests
         }
     }
 
+    [Fact]
+    public async Task DownloadBatch_FailingOnce_IsRetried()
+    {
+        var peer = new IndexedPeerHandler { FailNextIds = 2 };
+        var movies = Enumerable.Range(0, 3).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, _) = CreateMovieSync(peer);
+
+        var state = await RunWithStatusAsync(sync, mapping, config);
+
+        Assert.Equal(FederationSyncStatus.Done, state.State);
+        Assert.All(movies, id => Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, id)));
+    }
+
+    [Fact]
+    public async Task InterruptedDownload_ResumesWithWhatIsStillMissing()
+    {
+        var peer = new IndexedPeerHandler { FailIdsAfter = 2 };
+        var movies = Enumerable.Range(0, 10).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, _) = CreateMovieSync(peer);
+        sync.IdsBatchSize = 2;
+
+        var failed = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Failed, failed.State);
+        Assert.Equal(4, peer.Fetched.Count);
+
+        peer.FailIdsAfter = null;
+        peer.Fetched.Clear();
+        var resumed = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Done, resumed.State);
+        Assert.Equal(6, peer.Fetched.Count);
+        Assert.Equal(6, resumed.ToDownload);
+        Assert.All(movies, id => Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, id)));
+    }
+
     /// <summary>The check phase, download phase and status bookkeeping SyncAllAsync runs, for one mapping.</summary>
     private static async Task<LibrarySyncState> RunWithStatusAsync(FederationSyncService sync, LibraryMapping mapping, PluginConfiguration config)
     {
@@ -468,6 +502,12 @@ public partial class FederationSyncServiceTests
         public bool FailIndexAfterFirstPage { get; set; }
 
         public bool FailIds { get; set; }
+
+        /// <summary>Fail the next this many ids= requests, then answer normally.</summary>
+        public int FailNextIds { get; set; }
+
+        /// <summary>Answer this many more ids= requests, then fail every one after.</summary>
+        public int? FailIdsAfter { get; set; }
 
         /// <summary>Runs before the first title-list request is answered.</summary>
         public Func<Task>? OnIndexRequest { get; set; }
@@ -512,9 +552,14 @@ public partial class FederationSyncServiceTests
             var ids = Param(query, "ids");
             if (ids != null)
             {
-                if (FailIds)
+                if (FailIds || (FailNextIds > 0 && FailNextIds-- > 0) || FailIdsAfter is <= 0)
                 {
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+                }
+
+                if (FailIdsAfter is > 0)
+                {
+                    FailIdsAfter--;
                 }
 
                 var wanted = ids.Split(',').Select(Guid.Parse).ToHashSet();

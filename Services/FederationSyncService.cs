@@ -57,6 +57,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
         internal const double LargeRemovalShare = 0.10;
 
+        // Waits before retrying a failed title-list page or download batch. Tests
+        // set these to zero.
+        internal TimeSpan[] RetryDelays { get; set; } = { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10) };
+
+        // During a long download the cache file is also written every this many
+        // batches, so a restart in the middle loses little.
+        internal int SaveEveryBatches { get; set; } = 20;
+
         // How many friends the check phase talks to at once.
         internal int MaxParallelFriends { get; set; } = 4;
 
@@ -1328,6 +1336,27 @@ namespace Jellyfin.Plugin.Federation.Services
             public int Removed { get; set; }
         }
 
+        /// <summary>
+        /// Runs a friend request, retrying a failed one (null) after each of
+        /// <see cref="RetryDelays"/>, so one network hiccup does not fail a whole
+        /// library.
+        /// </summary>
+        private async Task<T?> WithRetriesAsync<T>(Func<Task<T?>> attempt, string what, RemoteServer server, CancellationToken cancellationToken)
+            where T : class
+        {
+            for (var i = 0; ; i++)
+            {
+                var result = await attempt().ConfigureAwait(false);
+                if (result != null || i >= RetryDelays.Length)
+                {
+                    return result;
+                }
+
+                _logger.LogInformation("[Federation] {What} from {Server} failed; retrying in {Seconds:0} s", what, server.Name, RetryDelays[i].TotalSeconds);
+                await Task.Delay(RetryDelays[i], cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         private static string StatusKey(LibraryMapping mapping, RemoteLibrarySource source)
             => FederationSyncStatus.KeyFor(mapping.LocalLibraryName, source.ServerId, source.RemoteLibraryId);
 
@@ -1497,7 +1526,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 // The first request is a single entry: an older friend answers it
                 // with one full item, which is all it costs to find that out.
-                var indexPage = await client.GetCatalogIndexPageAsync(mediaType, source.RemoteLibraryId, cursor, page == 0 ? 1 : IndexPageSize, cancellationToken).ConfigureAwait(false);
+                var requestCursor = cursor;
+                var requestSize = page == 0 ? 1 : IndexPageSize;
+                var indexPage = await WithRetriesAsync(
+                    () => client.GetCatalogIndexPageAsync(mediaType, source.RemoteLibraryId, requestCursor, requestSize, cancellationToken),
+                    "A title-list page",
+                    server,
+                    cancellationToken).ConfigureAwait(false);
                 if (indexPage == null)
                 {
                     return null;
@@ -1604,11 +1639,16 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var total = plan.Keep.Count;
+            var batchNumber = 0;
             foreach (var batch in plan.ToFetch.Chunk(Math.Max(1, IdsBatchSize)))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var bytesBefore = client.CatalogBytesReceived;
-                var items = await client.GetItemsAsync(ids: batch, limit: batch.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var items = await WithRetriesAsync(
+                    () => client.GetItemsAsync(ids: batch, limit: batch.Length, cancellationToken: cancellationToken),
+                    "A download batch",
+                    server,
+                    cancellationToken).ConfigureAwait(false);
                 var received = client.CatalogBytesReceived - bytesBefore;
                 Status.Update(statusKey, s => s.BytesReceived += received);
                 if (items == null)
@@ -1662,6 +1702,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 Status.Update(statusKey, s => s.Downloaded += batch.Length);
+
+                // Record progress after every batch: everything kept or fetched so
+                // far is trusted next time, so a sync that fails or is interrupted
+                // later resumes with the titles still missing instead of starting
+                // over. The prune still waits for a complete, successful pass.
+                _cache.SetSyncIndex(plan.Key, CopyOf(plan.Next));
+                if (++batchNumber % Math.Max(1, SaveEveryBatches) == 0)
+                {
+                    await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
 
             _cache.SetSyncIndex(plan.Key, plan.Next);
@@ -1678,6 +1728,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return total;
         }
+
+        private static SyncIndexSnapshot CopyOf(SyncIndexSnapshot snapshot) => new()
+        {
+            Context = snapshot.Context,
+            FullRefreshUtc = snapshot.FullRefreshUtc,
+            Items = new Dictionary<Guid, SyncIndexItem>(snapshot.Items)
+        };
 
         /// <summary>
         /// Everything on this side that shapes how a fetched title is stored.
