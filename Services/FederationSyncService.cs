@@ -52,6 +52,11 @@ namespace Jellyfin.Plugin.Federation.Services
         // Tests lower these to exercise index paging and id batching.
         internal int IndexPageSize { get; set; } = 2000;
 
+        // A removal larger than both of these waits for the admin (see PruneSafely).
+        internal const int LargeRemovalMinimum = 25;
+
+        internal const double LargeRemovalShare = 0.10;
+
         // How many friends the check phase talks to at once.
         internal int MaxParallelFriends { get; set; } = 4;
 
@@ -826,7 +831,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // than left stale, same as if the server had been deleted
                     // outright (see DeleteServer) - regardless of what its other
                     // sources for this mapping reported.
-                    var removedForMissingPlugin = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, new HashSet<Guid>());
+                    var removedForMissingPlugin = PruneSafely(mapping, server, new HashSet<Guid>());
                     if (removedForMissingPlugin > 0)
                     {
                         _logger.LogInformation(
@@ -851,7 +856,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                var pruned = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, seenAcrossServer);
+                var pruned = PruneSafely(mapping, server, seenAcrossServer);
                 if (pruned > 0)
                 {
                     _logger.LogInformation("[Federation] Pruned {Count} stale entries for {Server} in {Mapping}", pruned, server.Name, mapping.LocalLibraryName);
@@ -859,6 +864,79 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return new MappingSyncResult(total, failedSources);
+        }
+
+        /// <summary>
+        /// Removes this friend's titles that its complete list no longer contains,
+        /// with two brakes. A title goes only when it was also missing from the
+        /// previous complete sync, so a friend that is briefly half-scanned or
+        /// misreports once costs nothing. And a large removal (more than
+        /// <see cref="LargeRemovalMinimum"/> titles and more than
+        /// <see cref="LargeRemovalShare"/> of what this friend has here) waits until
+        /// the admin confirms it: every mass deletion so far came from a bug or a
+        /// misreading, not from a friend really deleting a tenth of a library.
+        /// Returns how many entries were removed.
+        /// </summary>
+        private int PruneSafely(LibraryMapping mapping, RemoteServer server, HashSet<Guid> seen)
+        {
+            var key = FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id);
+            var held = _cache.RemoteIdsHeldFor(mapping.LocalLibraryName, server.Id);
+            var missingNow = held.Where(id => !seen.Contains(id)).ToHashSet();
+            var pending = _cache.GetPendingRemoval(key) ?? new PendingRemoval();
+            var confirmed = missingNow.Where(pending.Missing.Contains).ToHashSet();
+            var firstTime = missingNow.Count - confirmed.Count;
+            var large = confirmed.Count > LargeRemovalMinimum && confirmed.Count > held.Count * LargeRemovalShare;
+
+            int removed;
+            if (large && !pending.Approved)
+            {
+                removed = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, held);
+                if (pending.HeldCount == 0)
+                {
+                    _logger.LogWarning(
+                        "[Federation] {Server} no longer lists {Count} of {Total} title(s) in {Mapping}; holding the removal until it is confirmed on the Libraries tab",
+                        server.Name,
+                        confirmed.Count,
+                        held.Count,
+                        mapping.LocalLibraryName);
+                }
+
+                _cache.SetPendingRemoval(key, new PendingRemoval
+                {
+                    Missing = missingNow,
+                    HeldCount = confirmed.Count,
+                    HeldSinceUtc = pending.HeldSinceUtc ?? DateTime.UtcNow
+                });
+            }
+            else
+            {
+                var keep = new HashSet<Guid>(seen);
+                keep.UnionWith(missingNow.Where(id => !confirmed.Contains(id)));
+                removed = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, keep);
+                _cache.SetPendingRemoval(key, new PendingRemoval { Missing = missingNow.Where(id => !confirmed.Contains(id)).ToHashSet() });
+                if (firstTime > 0)
+                {
+                    _logger.LogInformation(
+                        "[Federation] {Server} no longer lists {Count} title(s) in {Mapping}; they are removed if still missing at the next sync",
+                        server.Name,
+                        firstTime,
+                        mapping.LocalLibraryName);
+                }
+            }
+
+            var heldCount = large && !pending.Approved ? confirmed.Count : 0;
+            var waiting = large && !pending.Approved ? 0 : firstTime;
+            foreach (var source in (mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>()).Where(s => s.ServerId == server.Id))
+            {
+                Status.Update(StatusKey(mapping, source), s =>
+                {
+                    s.Removed = removed;
+                    s.WaitingRemovals = waiting;
+                    s.HeldRemovals = heldCount;
+                });
+            }
+
+            return removed;
         }
 
         private async Task<SourceSyncResult> RefreshSourceAsync(

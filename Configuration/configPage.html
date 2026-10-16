@@ -6144,7 +6144,7 @@
                         } else if (finished) {
                             // What the run did, not what it planned.
                             facts.push(lib.downloaded > 0 ? syncCount(lib.downloaded) + ' downloaded' : 'no changes');
-                            if (lib.toRemove > 0) { facts.push(syncCount(lib.toRemove) + ' removed'); }
+                            if (lib.removed > 0) { facts.push(syncCount(lib.removed) + ' removed'); }
                         } else if (lib.mode === 'changes' || lib.mode === 'full') {
                             facts.push(syncCount(lib.toDownload) + ' to download');
                             if (lib.toRemove > 0) { facts.push(syncCount(lib.toRemove) + ' to remove'); }
@@ -6155,13 +6155,20 @@
                         if (!lib.lastSuccessUtc && lib.state === 'failed') { facts.push('never synced successfully'); }
 
                         var note = '';
+                        var held = '';
+                        if (lib.heldRemovals > 0) {
+                            held = syncCount(lib.heldRemovals) + ' titles are no longer on ' + lib.serverName + '\'s server. Because that is a large part of this library, they were kept until you confirm. If they should be gone, remove them; otherwise check that ' + lib.serverName + '\'s library is complete.';
+                        } else if (lib.waitingRemovals > 0) {
+                            note = syncCount(lib.waitingRemovals) + ' titles are missing on ' + lib.serverName + '\'s server and will be removed at the next sync if they are still missing.';
+                        }
+
                         if (lib.mode === 'legacy') {
                             note = lib.serverName + ' runs an older Federation version, so every sync downloads the whole library. Updating the plugin there makes syncs much faster.';
                         } else if (lib.mode === 'full' && lib.state !== 'done') {
                             note = 'Downloading every title this time: first sync, changed settings here, or the daily full check.';
                         }
 
-                        return { label: label, tone: tone, progress: progress, facts: facts, note: note, error: lib.state === 'failed' ? (lib.error || 'The sync failed. The Log tab has details.') : '' };
+                        return { label: label, tone: tone, progress: progress, facts: facts, note: note, held: held, error: lib.state === 'failed' ? (lib.error || 'The sync failed. The Log tab has details.') : '' };
                     }
 
                     function renderSyncStatusHtml(data, now) {
@@ -6184,6 +6191,10 @@
                             if (d.facts.length) { html += '<div class="fed-syncrow-meta">' + escapeHtml(d.facts.join(' · ')) + '</div>'; }
                             if (d.error) { html += '<div class="fed-syncrow-error">' + escapeHtml(d.error) + '</div>'; }
                             if (d.note) { html += '<div class="fed-syncrow-note">' + escapeHtml(d.note) + '</div>'; }
+                            if (d.held) {
+                                html += '<div class="fed-syncrow-error">' + escapeHtml(d.held) + '</div>'
+                                    + '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="confirm-removal" data-sync-key="' + escapeHtml(lib.key) + '" data-count="' + escapeHtml(String(lib.heldRemovals)) + '">Remove ' + escapeHtml(syncCount(lib.heldRemovals)) + ' titles</button>';
+                            }
                             html += '</div>';
                         });
                         return html;
@@ -7147,6 +7158,17 @@
                                         loadSyncStatus();
                                     })
                                     .catch(function (err) { showError('Sync could not start: ' + err.message); setSaveMsg('Sync could not start', true); });
+                                    break;
+                                case 'confirm-removal':
+                                    if (!window.confirm('Remove ' + (t.getAttribute('data-count') || 'these') + ' titles from this library? Watch progress on them is lost.')) {
+                                        break;
+                                    }
+
+                                    t.disabled = true;
+                                    fedFetch('/Plugins/Federation/Sync/ConfirmRemoval', { method: 'POST', body: JSON.stringify({ Key: t.getAttribute('data-sync-key') }) })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) { setSaveMsg(res.message || 'Confirmed'); loadSyncStatus(); })
+                                    .catch(function (err) { t.disabled = false; showError('Could not confirm the removal: ' + err.message); });
                                     break;
                                 case 'open-log':
                                     switchTab('log');
