@@ -290,7 +290,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var dedupKeys = (config?.EnableDedup ?? true)
                     ? (config?.DedupProviderIds ?? new List<string>())
                     : new List<string>();
-                var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
+                var localProviderIds = LocalProviderIdsForSync(dedupKeys);
 
                 // Offline servers (see FederationAvailabilityService): entries
                 // whose every source server is currently unreachable are never
@@ -1032,7 +1032,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// nothing sensible to nest under once it's gone from local browsing, so
         /// they are hidden along with it.
         /// </summary>
-        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds, HashSet<string> hiddenKeys, HashSet<string>? offlineServerIds = null)
+        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, IReadOnlySet<string> localProviderIds, HashSet<string> hiddenKeys, HashSet<string>? offlineServerIds = null)
         {
             var depth = 0;
             while (entry != null)
@@ -1074,6 +1074,49 @@ namespace Jellyfin.Plugin.Federation.Services
         /// user's local copy of a movie is just as real a duplicate if it lives in a
         /// separate, ordinary library as if it happens to share the federated one.
         /// </summary>
+        private readonly object _localIdsLock = new();
+        private (DateTime At, string Signature, IReadOnlySet<string> Ids)? _localIdsMemo;
+
+        /// <summary>
+        /// Forgets the collected local provider ids, so the next reconciliation
+        /// scans the server again. Called when a sync starts.
+        /// </summary>
+        public void ResetLocalMatchCache()
+        {
+            lock (_localIdsLock)
+            {
+                _localIdsMemo = null;
+            }
+        }
+
+        /// <summary>
+        /// The server-wide scan below, done once per sync instead of once per
+        /// friend library: it loads every movie, series and episode on the server
+        /// (several seconds for a large library), and its result cannot change
+        /// while a sync only adds or removes federated items, which it skips.
+        /// </summary>
+        private IReadOnlySet<string> LocalProviderIdsForSync(List<string> dedupKeys)
+        {
+            var signature = string.Join("|", dedupKeys);
+            lock (_localIdsLock)
+            {
+                if (_localIdsMemo is { } memo
+                    && string.Equals(memo.Signature, signature, StringComparison.OrdinalIgnoreCase)
+                    && DateTime.UtcNow - memo.At < TimeSpan.FromMinutes(10))
+                {
+                    return memo.Ids;
+                }
+            }
+
+            var ids = CollectServerWideLocalProviderIds(dedupKeys);
+            lock (_localIdsLock)
+            {
+                _localIdsMemo = (DateTime.UtcNow, signature, ids);
+            }
+
+            return ids;
+        }
+
         private HashSet<string> CollectServerWideLocalProviderIds(List<string> dedupKeys)
         {
             var localProviderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1214,7 +1257,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return sources.All(s => offlineServerIds.Contains(s.ServerId));
         }
 
-        private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
+        private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, IReadOnlySet<string> localProviderIds)
         {
             if (entry == null || dedupKeys.Count == 0 || localProviderIds.Count == 0 || entry.Metadata.ProviderIds == null)
             {
