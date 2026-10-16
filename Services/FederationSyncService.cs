@@ -52,7 +52,9 @@ namespace Jellyfin.Plugin.Federation.Services
         // Tests lower these to exercise index paging and id batching.
         internal int IndexPageSize { get; set; } = 2000;
 
-        internal int IdsBatchSize { get; set; } = PeerCatalogWire.MaxIdsPerRequest;
+        // 100 ids keep each request line comfortably under common 8 KB limits
+        // (Kestrel, nginx), also behind a reverse proxy.
+        internal int IdsBatchSize { get; set; } = 100;
 
         /// <summary>
         /// Stored per-title hashes are trusted for at most this long; then every
