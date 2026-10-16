@@ -191,6 +191,33 @@ namespace Jellyfin.Plugin.Federation.Services
             Save();
         }
 
+        /// <summary>
+        /// Drops libraries that are no longer configured, so one removed in the
+        /// settings disappears from the list at once instead of at the next sync.
+        /// Leaves a running sync alone; it replaces the list itself.
+        /// </summary>
+        public void Forget(ISet<string> configuredKeys)
+        {
+            var removed = false;
+            lock (_sync)
+            {
+                if (Running)
+                {
+                    return;
+                }
+
+                foreach (var key in _libraries.Keys.Where(k => !configuredKeys.Contains(k)).ToList())
+                {
+                    removed |= _libraries.TryRemove(key, out _);
+                }
+            }
+
+            if (removed)
+            {
+                Save();
+            }
+        }
+
         public IReadOnlyList<LibrarySyncState> Snapshot()
         {
             lock (_sync)

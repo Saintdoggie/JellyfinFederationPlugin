@@ -87,16 +87,26 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// The old client is retired, not disposed: a sync, stream or download
+        /// still using it would otherwise fail on the spot - saving any setting
+        /// during a sync aborted it with "Cannot access a disposed object". New
+        /// requests get a fresh client; the retired one's pooled connections close
+        /// after the handler's idle timeout and it is then garbage collected.
+        /// </remarks>
         public void Invalidate(string serverId)
         {
-            if (_httpClients.TryRemove(serverId, out var client))
-            {
-                client.Dispose();
-            }
+            _httpClients.TryRemove(serverId, out _);
         }
 
         /// <inheritdoc />
         public void InvalidateAll()
+        {
+            _httpClients.Clear();
+        }
+
+        /// <inheritdoc />
+        public void Dispose()
         {
             foreach (var kvp in _httpClients)
             {
@@ -104,12 +114,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             _httpClients.Clear();
-        }
-
-        /// <inheritdoc />
-        public void Dispose()
-        {
-            InvalidateAll();
         }
 
         /// <summary>

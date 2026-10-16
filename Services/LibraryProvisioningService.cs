@@ -291,30 +291,38 @@ namespace Jellyfin.Plugin.Federation.Services
             var federationRoot = GetFederationRoot();
             if (string.IsNullOrEmpty(federationRoot))
             {
+                _logger.LogWarning("[Federation] Library {Name} was not removed: the plugin's data folder is not known yet", name);
                 return;
             }
 
             var vf = _libraryManager.GetVirtualFolders()?.FirstOrDefault(v =>
                 string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (vf == null || !IsFederationFolder(vf, federationRoot))
+            if (vf == null)
             {
+                _logger.LogInformation("[Federation] Library {Name} was not removed: Jellyfin has no library with this name", name);
                 return;
             }
 
-            var shadowPath = Path.Combine(federationRoot, SafeFolderName(name));
+            // Every early return used to be silent, so a library the plugin did not
+            // recognise as its own simply stayed, with no hint why.
             var ownLocations = vf.Locations?
-                .Where(l => IsUnderFederationRoot(l, federationRoot))
+                .Where(l => IsOwnLocation(l, federationRoot))
                 .ToList() ?? new System.Collections.Generic.List<string>();
 
             if (ownLocations.Count == 0)
             {
+                _logger.LogWarning(
+                    "[Federation] Library {Name} was not removed: none of its folders ({Locations}) is a folder of this plugin (under {Root}). Remove it in Jellyfin's library settings if it is no longer needed.",
+                    name,
+                    string.Join(", ", vf.Locations ?? Array.Empty<string>()),
+                    federationRoot);
                 return;
             }
 
             // If the library has any non-federation locations, it's a user library we
             // merged into: only detach our shadow path(s), never delete the library.
             var hasUserLocations = vf.Locations != null
-                && vf.Locations.Any(l => !IsUnderFederationRoot(l, federationRoot));
+                && vf.Locations.Any(l => !string.IsNullOrEmpty(l) && !IsOwnLocation(l, federationRoot));
 
             if (hasUserLocations)
             {
@@ -330,12 +338,46 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                _logger.LogInformation("[Federation] Detached federation media path(s) from merged library {Name}", name);
+                _logger.LogInformation(
+                    "[Federation] {Name} also holds your own folders ({Locations}), so only the plugin's folder was detached and the library itself kept",
+                    name,
+                    string.Join(", ", vf.Locations!.Where(l => !string.IsNullOrEmpty(l) && !IsOwnLocation(l, federationRoot))));
                 return;
             }
 
             // All locations are plugin-owned: safe to delete the whole virtual folder.
-            await _libraryManager.RemoveVirtualFolder(name, refreshLibrary: true).ConfigureAwait(false);
+            await _libraryManager.RemoveVirtualFolder(vf.Name, refreshLibrary: true).ConfigureAwait(false);
+            _logger.LogInformation("[Federation] Removed library {Name}", name);
+        }
+
+        /// <summary>
+        /// Whether a library folder belongs to this plugin: under its data folder,
+        /// the legacy federation:// scheme, or a folder holding the plugin's marker
+        /// file. The marker also recognises a shadow folder whose stored path is
+        /// spelled differently from the data folder (a symlink, a bind mount or a
+        /// moved data directory), which otherwise left such a library undeletable.
+        /// </summary>
+        internal static bool IsOwnLocation(string location, string federationRoot)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return false;
+            }
+
+            if (location.StartsWith("federation://", StringComparison.OrdinalIgnoreCase)
+                || IsUnderFederationRoot(location, federationRoot))
+            {
+                return true;
+            }
+
+            try
+            {
+                return File.Exists(Path.Combine(location, PlaceholderFileName));
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -344,10 +386,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <c>federation://</c> URI scheme from a prior plugin version.
         /// </summary>
         internal static bool IsEntirelyFederatedFolder(VirtualFolderInfo vf, string federationRoot)
-            => vf.Locations is { Length: > 0 } && vf.Locations.All(location =>
-                !string.IsNullOrWhiteSpace(location) &&
-                (location.StartsWith("federation://", StringComparison.OrdinalIgnoreCase)
-                 || IsUnderFederationRoot(location, federationRoot)));
+            => vf.Locations is { Length: > 0 } && vf.Locations.All(location => IsOwnLocation(location, federationRoot));
 
         internal static bool IsFederationFolder(VirtualFolderInfo vf, string federationRoot)
         {
@@ -356,25 +395,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            foreach (var l in vf.Locations)
-            {
-                if (string.IsNullOrEmpty(l))
-                {
-                    continue;
-                }
-
-                if (l.StartsWith("federation://", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-
-                if (!string.IsNullOrEmpty(federationRoot) && IsUnderFederationRoot(l, federationRoot))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return vf.Locations.Any(l => IsOwnLocation(l, federationRoot));
         }
 
         /// <summary>
