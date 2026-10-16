@@ -35,6 +35,15 @@ namespace Jellyfin.Plugin.Federation.Services
         // destructive when a sync deletes items before recreating them.
         private readonly SemaphoreSlim _syncLock = new(1, 1);
 
+        // The check phase's result for every library of the running sync, so the
+        // download phase never asks a friend for its title list twice.
+        private Dictionary<string, SourcePlan>? _currentPlans;
+
+        private int _statusLoaded;
+
+        /// <summary>Per friend library sync state shown on the settings page.</summary>
+        public FederationSyncStatus Status { get; } = new FederationSyncStatus();
+
         // Tests lower these to exercise the 1000-page safety cap without 200k upserts.
         internal int CatalogPageSize { get; set; } = 200;
 
@@ -61,6 +70,126 @@ namespace Jellyfin.Plugin.Federation.Services
         /// stopped updating looked identical to one that was fine.
         /// </summary>
         public SyncHealth? LastSync { get; private set; }
+
+        /// <summary>Loads the last saved per-library outcomes once the cache location is known.</summary>
+        public void EnsureStatusLoaded()
+        {
+            var path = _cache.CacheFilePath;
+            if (!string.IsNullOrEmpty(path) && Interlocked.Exchange(ref _statusLoaded, 1) == 0)
+            {
+                Status.Initialize(path);
+            }
+        }
+
+        /// <summary>
+        /// Starts a full sync without waiting for it, so the settings page can poll
+        /// its progress instead of holding one request open for the whole sync.
+        /// False when a sync is already running.
+        /// </summary>
+        public bool TryStartSyncAll(CancellationToken stoppingToken)
+        {
+            if (Status.Running || _syncLock.CurrentCount == 0)
+            {
+                return false;
+            }
+
+            Status.MarkPending();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await SyncAllAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Jellyfin is shutting down.
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Federation] Background sync failed");
+                }
+                finally
+                {
+                    // Skipped (another sync was already running) or ended before any
+                    // library was listed, e.g. with no libraries configured.
+                    Status.ClearPending();
+                }
+            });
+            return true;
+        }
+
+        private void BeginStatusRun(IEnumerable<LibraryMapping> mappings, PluginConfiguration config, string? onlyServerId)
+        {
+            EnsureStatusLoaded();
+            var states = new List<LibrarySyncState>();
+            foreach (var mapping in mappings)
+            {
+                foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+                {
+                    if (onlyServerId != null && source.ServerId != onlyServerId)
+                    {
+                        continue;
+                    }
+
+                    var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
+                    states.Add(new LibrarySyncState
+                    {
+                        Key = StatusKey(mapping, source),
+                        ServerId = source.ServerId,
+                        ServerName = server?.Name ?? source.ServerName ?? "Removed friend",
+                        RemoteLibraryId = source.RemoteLibraryId,
+                        RemoteLibraryName = source.RemoteLibraryName ?? source.RemoteLibraryId,
+                        LocalLibraryName = mapping.LocalLibraryName
+                    });
+                }
+            }
+
+            Status.BeginRun(states, replaceAll: onlyServerId == null);
+        }
+
+        /// <summary>
+        /// Check phase: reads every enabled friend library's title list before
+        /// anything is downloaded, so each library's status shows what it will
+        /// transfer from the start.
+        /// </summary>
+        private async Task PlanAllAsync(IEnumerable<LibraryMapping> mappings, PluginConfiguration config, string? onlyServerId, CancellationToken cancellationToken)
+        {
+            var plans = new Dictionary<string, SourcePlan>(StringComparer.OrdinalIgnoreCase);
+            foreach (var mapping in mappings)
+            {
+                foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+                {
+                    if (onlyServerId != null && source.ServerId != onlyServerId)
+                    {
+                        continue;
+                    }
+
+                    var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
+                    if (server == null || !server.Enabled)
+                    {
+                        continue;
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                    plans[StatusKey(mapping, source)] = await PlanSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            _currentPlans = plans;
+        }
+
+        /// <summary>A library counts as synced once Jellyfin has stored its titles.</summary>
+        private void MarkMappingSaved(LibraryMapping mapping)
+        {
+            foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+            {
+                var key = StatusKey(mapping, source);
+                if (Status.Snapshot().FirstOrDefault(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase))?.State == FederationSyncStatus.Saving)
+                {
+                    Status.Succeed(key);
+                }
+            }
+        }
 
         private void RecordSyncOutcome(bool success, string message, int itemCount, int failedSources)
         {
@@ -151,6 +280,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var mappings = config.LibraryMappings?.Where(m => m.Enabled).ToList() ?? new List<LibraryMapping>();
                 if (mappings.Count == 0)
                 {
+                    BeginStatusRun(mappings, config, null);
                     SyncProgressTracker.Complete(operationId, true, "No mappings configured");
                     return new SyncResult { Success = true, Message = "No mappings configured", OperationId = operationId };
                 }
@@ -158,7 +288,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 PruneOrphanedServerSources(mappings, config.RemoteServers ?? new List<RemoteServer>());
                 PruneUnselectedServerSources();
 
+                BeginStatusRun(mappings, config, null);
                 await RefreshWanBandwidthAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
+                SyncProgressTracker.Update(operationId, 0, "Checking what each friend has");
+                await PlanAllAsync(mappings, config, null, cancellationToken).ConfigureAwait(false);
 
                 // One-time migration: items created before 0.0.16 never had
                 // SeriesPresentationUniqueKey set (see FederationLibraryManager.
@@ -238,6 +371,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
                         forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration || needsContainerMigration).ConfigureAwait(false);
+                    MarkMappingSaved(mapping);
                 }
 
                 if (needsNestedMigration || needsSeasonIndexMigration)
@@ -323,6 +457,12 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             finally
             {
+                _currentPlans = null;
+                if (Status.Running)
+                {
+                    Status.EndRun();
+                }
+
                 _syncLock.Release();
             }
         }
@@ -466,7 +606,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     return Failed("No mappings use this server");
                 }
 
+                BeginStatusRun(mappings, config!, serverId);
                 await RefreshWanBandwidthAsync(new[] { server }, cancellationToken).ConfigureAwait(false);
+                await PlanAllAsync(mappings, config!, serverId, cancellationToken).ConfigureAwait(false);
 
                 // Same one-time migrations as SyncAllAsync (see there for details). The
                 // global flags are only ever set by SyncAllAsync, since this only covers
@@ -495,6 +637,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         forceRecreateNested: needsNestedMigration || needsSeasonIndexMigration,
                         sweepSyntheticSeasons: needsSeasonIndexMigration,
                         forceRecreateAll: needsRemoteLocationMigration || needsRemotePathMigration || needsStockTypeMigration || needsRemoveShortcutMigration || needsPlaceholderPathMigration || needsContainerMigration).ConfigureAwait(false);
+                    MarkMappingSaved(mapping);
                 }
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
@@ -524,6 +667,12 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             finally
             {
+                _currentPlans = null;
+                if (Status.Running)
+                {
+                    Status.EndRun();
+                }
+
                 _syncLock.Release();
             }
         }
@@ -590,6 +739,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (server == null || !server.Enabled)
                 {
                     _logger.LogWarning("[Federation] Skipping disabled/missing server {ServerId}", serverSources.Key);
+                    foreach (var skipped in serverSources)
+                    {
+                        Status.Fail(StatusKey(mapping, skipped), server == null
+                            ? "This friend was removed. Remove the library on the Libraries tab, or add the friend again."
+                            : "This friend is turned off on the Friends tab, so it wasn't synced.");
+                    }
                     continue;
                 }
 
@@ -611,6 +766,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "[Federation] Error refreshing source {Source} on {Server}", source.RemoteLibraryName, server.Name);
+                        Status.Fail(StatusKey(mapping, source), $"Unexpected error while syncing from {server.Name}: {ex.Message}");
                         anyFailed = true;
                         continue;
                     }
@@ -687,93 +843,88 @@ namespace Jellyfin.Plugin.Federation.Services
             PluginConfiguration config,
             CancellationToken cancellationToken)
         {
+            var statusKey = StatusKey(mapping, source);
+
+            // A full sync checks every library before downloading anything (see
+            // SyncAllAsync); anything else plans its own library here.
+            var plan = _currentPlans != null && _currentPlans.TryGetValue(statusKey, out var planned)
+                ? planned
+                : await PlanSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+
             // A server that isn't another Jellyfin federation peer (Plex today,
             // see IExternalCatalogProvider) speaks its own protocol and has no
             // federation plugin to probe for, so it takes a separate path
             // entirely - it still lands in the same cache through the same
             // UpsertRemoteItem below.
             var externalProvider = _externalCatalogs.For(server);
-            if (externalProvider != null)
+            if (plan.External && externalProvider != null)
             {
-                return await RefreshExternalSourceAsync(mapping, server, source, config, externalProvider, cancellationToken).ConfigureAwait(false);
+                Status.Update(statusKey, s => s.State = FederationSyncStatus.Downloading);
+                var external = await RefreshExternalSourceAsync(mapping, server, source, config, externalProvider, cancellationToken).ConfigureAwait(false);
+                if (external.Failed)
+                {
+                    Status.Fail(statusKey, $"{server.Name} didn't return this library. Titles already here were kept; the Log tab has details.");
+                }
+                else
+                {
+                    Status.Update(statusKey, s =>
+                    {
+                        s.Total = external.Count;
+                        s.Downloaded = external.Count;
+                        s.State = FederationSyncStatus.Saving;
+                    });
+                }
+
+                return external;
             }
 
-            var client = _clientFactory.GetClient(server);
-            if (client == null)
+            if (plan.PluginMissing)
             {
-                return SourceSyncResult.Failure();
-            }
-
-            // Federation only ever talks to the remote's stock Jellyfin API (Items,
-            // Users, PlaybackInfo, ...), so nothing above this point actually proves
-            // the remote is a federation peer rather than just any reachable Jellyfin
-            // server - it would happily keep pulling content from one even after the
-            // owner uninstalled Federation there. Checked per source (not once up
-            // front) so it stays current even if the remote's plugin state changes
-            // mid-session; the client caches the probe briefly so this is one round
-            // trip per server per cycle, not one per source.
-            var peerStatus = await client.GetFederationPeerStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (peerStatus == FederationPeerStatus.NotInstalled)
-            {
-                _logger.LogWarning(
-                    "[Federation] {Server} does not have the Federation plugin installed; its items in {Mapping} will be removed",
-                    server.Name,
-                    mapping.LocalLibraryName);
                 return SourceSyncResult.PluginMissingResult();
             }
 
-            if (peerStatus == FederationPeerStatus.Unknown)
+            if (plan.Failed || plan.Client == null)
             {
-                // Unreachable, or answered from something that isn't the remote's
-                // Jellyfin (a tunnel 502, a proxy error page, an access gate). This
-                // is an ordinary failure: the cache is preserved untouched, exactly
-                // as for any other transient fault. Reporting it as "plugin missing"
-                // would delete this server's whole library over a blip.
-                _logger.LogWarning(
-                    "[Federation] Could not confirm whether {Server} is running Federation; skipping it this cycle and keeping its cached content",
-                    server.Name);
                 return SourceSyncResult.Failure();
             }
 
+            var client = plan.Client;
             var seen = new HashSet<Guid>();
-            var mediaTypesToFetch = new List<string> { mapping.MediaType };
-
-            // The /Items API only returns the item type it's asked for. A "Series"
-            // mapping otherwise syncs nothing but empty show shells - Episodes are
-            // a distinct item type that has to be requested explicitly. Fetched
-            // recursively under the same library in a second pass, same as the
-            // series themselves; the series pass runs first so episodes can look
-            // their series back up by remote id (see UpsertEpisodeSeason).
-            if (string.Equals(mapping.MediaType, "Series", StringComparison.OrdinalIgnoreCase))
-            {
-                mediaTypesToFetch.Add("Episode");
-            }
-
             int total = 0;
-            IReadOnlySet<Guid> changedSeries = new HashSet<Guid>();
-            foreach (var mediaType in mediaTypesToFetch)
+            Status.Update(statusKey, s => s.State = FederationSyncStatus.Downloading);
+            if (plan.Legacy)
             {
-                // Friends running this version describe their catalog as [id, hash]
-                // pairs first, so only new or changed titles are downloaded. Others
-                // answer the index request with full items: page through them as before.
-                var indexed = await FetchAndUpsertByIndexAsync(mapping, server, source, config, client, mediaType, seen, changedSeries, cancellationToken).ConfigureAwait(false);
-                var count = indexed.Supported
-                    ? indexed.Count
-                    : await FetchAndUpsertPagesAsync(mapping, server, source, config, client, mediaType, seen, cancellationToken).ConfigureAwait(false);
-                if (indexed.Supported && string.Equals(mediaType, "Series", StringComparison.OrdinalIgnoreCase))
+                foreach (var mediaType in MediaTypesFor(mapping))
                 {
-                    changedSeries = indexed.ChangedIds;
-                }
+                    var count = await FetchAndUpsertPagesAsync(mapping, server, source, config, client, mediaType, seen, cancellationToken, statusKey).ConfigureAwait(false);
+                    if (count == null)
+                    {
+                        Status.Fail(statusKey, $"Downloading {source.RemoteLibraryName} from {server.Name} failed part-way. Nothing was removed; the Log tab has details.");
+                        return SourceSyncResult.Failure();
+                    }
 
-                if (count == null)
+                    total += count.Value;
+                }
+            }
+            else
+            {
+                foreach (var indexPlan in plan.ByType)
                 {
-                    // Request failed: report failure so the caller preserves the cache.
-                    return SourceSyncResult.Failure();
-                }
+                    var count = await ApplyIndexPlanAsync(indexPlan, mapping, server, source, config, client, seen, cancellationToken).ConfigureAwait(false);
+                    if (count == null)
+                    {
+                        return SourceSyncResult.Failure();
+                    }
 
-                total += count.Value;
+                    total += count.Value;
+                }
             }
 
+            Status.Update(statusKey, s =>
+            {
+                s.Total ??= total;
+                s.State = FederationSyncStatus.Saving;
+            });
             _logger.LogInformation("[Federation] Refreshed {Count} items from {Server}/{Library}", total, server.Name, source.RemoteLibraryName);
             return new SourceSyncResult(total, false, false, seen);
         }
@@ -872,7 +1023,8 @@ namespace Jellyfin.Plugin.Federation.Services
             RemoteServerClient client,
             string mediaType,
             HashSet<Guid> seen,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? statusKey = null)
         {
             int total = 0;
             int pageSize = CatalogPageSize;
@@ -899,6 +1051,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 // Null for an older peer, which then keeps paging by startIndex.
                 cursor = (page as PeerCatalogPage.RemoteItemPage)?.NextCursor;
+                if (statusKey != null)
+                {
+                    Status.Update(statusKey, st => st.Downloaded += page.Count);
+                }
 
                 var totalRecordCount = (page as PeerCatalogPage.RemoteItemPage)?.TotalRecordCount;
 
@@ -1026,31 +1182,200 @@ namespace Jellyfin.Plugin.Federation.Services
             return total;
         }
 
-        private sealed record IndexSyncResult(bool Supported, int? Count, IReadOnlySet<Guid> ChangedIds)
+        /// <summary>
+        /// What the check phase found for one friend library, before anything
+        /// is downloaded. Built for every library at the start of a sync so the
+        /// settings page can show how much each will transfer.
+        /// </summary>
+        private sealed class SourcePlan
         {
-            public static IndexSyncResult Unsupported { get; } = new(false, null, new HashSet<Guid>());
+            public RemoteServerClient? Client { get; set; }
 
-            public static IndexSyncResult Failed { get; } = new(true, null, new HashSet<Guid>());
+            public bool External { get; set; }
+
+            public bool PluginMissing { get; set; }
+
+            /// <summary>An older friend without the title list: page through everything.</summary>
+            public bool Legacy { get; set; }
+
+            public bool Failed { get; set; }
+
+            public List<IndexPlan> ByType { get; } = new();
+        }
+
+        /// <summary>One item type of one friend library: the friend's title list against what is stored here.</summary>
+        private sealed class IndexPlan
+        {
+            public string Key { get; init; } = string.Empty;
+
+            public string MediaType { get; init; } = string.Empty;
+
+            public Dictionary<Guid, string> Index { get; init; } = new();
+
+            public SyncIndexSnapshot Next { get; init; } = new();
+
+            public bool Full { get; init; }
+
+            public List<(Guid Id, Guid? Season)> Keep { get; } = new();
+
+            public List<Guid> ToFetch { get; } = new();
+
+            public HashSet<Guid> Changed { get; } = new();
+
+            public int Removed { get; set; }
+        }
+
+        private static string StatusKey(LibraryMapping mapping, RemoteLibrarySource source)
+            => FederationSyncStatus.KeyFor(mapping.LocalLibraryName, source.ServerId, source.RemoteLibraryId);
+
+        /// <summary>
+        /// Check phase for one friend library: confirms the friend runs Federation
+        /// and reads its complete title list for every item type, without
+        /// downloading any title. The download phase then works from this plan.
+        /// </summary>
+        private async Task<SourcePlan> PlanSourceAsync(
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            CancellationToken cancellationToken)
+        {
+            var key = StatusKey(mapping, source);
+            var plan = new SourcePlan();
+            Status.Update(key, s => s.State = FederationSyncStatus.Checking);
+
+            if (_externalCatalogs.For(server) != null)
+            {
+                plan.External = true;
+                Status.Update(key, s =>
+                {
+                    s.Mode = "external";
+                    s.State = FederationSyncStatus.Ready;
+                });
+                return plan;
+            }
+
+            var client = _clientFactory.GetClient(server);
+            if (client == null)
+            {
+                plan.Failed = true;
+                Status.Fail(key, $"Couldn't set up a connection to {server.Name}. Check its address on the Friends tab.");
+                return plan;
+            }
+
+            // Federation only ever talks to the remote's stock Jellyfin API (Items,
+            // Users, PlaybackInfo, ...), so nothing above this point actually proves
+            // the remote is a federation peer rather than just any reachable Jellyfin
+            // server. Checked per source so it stays current; the client caches the
+            // probe briefly, so this is one round trip per server per cycle.
+            var peerStatus = await client.GetFederationPeerStatusAsync(cancellationToken).ConfigureAwait(false);
+            if (peerStatus == FederationPeerStatus.NotInstalled)
+            {
+                _logger.LogWarning(
+                    "[Federation] {Server} does not have the Federation plugin installed; its items in {Mapping} will be removed",
+                    server.Name,
+                    mapping.LocalLibraryName);
+                plan.PluginMissing = true;
+                Status.Fail(key, $"{server.Name} answered, but Federation isn't installed there any more, so its titles were removed from this library.");
+                return plan;
+            }
+
+            if (peerStatus == FederationPeerStatus.Unknown)
+            {
+                // Unreachable, or answered from something that isn't the remote's
+                // Jellyfin (a tunnel 502, a proxy error page, an access gate). An
+                // ordinary failure: the cache is preserved untouched. Reporting it as
+                // "plugin missing" would delete this server's library over a blip.
+                _logger.LogWarning(
+                    "[Federation] Could not confirm whether {Server} is running Federation; skipping it this cycle and keeping its cached content",
+                    server.Name);
+                plan.Failed = true;
+                Status.Fail(key, $"Couldn't reach {server.Name}, or it didn't answer as a Federation server. Titles already here were kept.");
+                return plan;
+            }
+
+            plan.Client = client;
+            var bytesBefore = client.CatalogBytesReceived;
+            IReadOnlySet<Guid> changedSeries = new HashSet<Guid>();
+            foreach (var mediaType in MediaTypesFor(mapping))
+            {
+                var indexPlan = await PlanIndexAsync(mapping, server, source, config, client, mediaType, changedSeries, cancellationToken).ConfigureAwait(false);
+                if (indexPlan == null)
+                {
+                    plan.Failed = true;
+                    Status.Fail(key, $"{server.Name} didn't send its complete title list for {source.RemoteLibraryName}. Titles already here were kept; the Log tab has details.");
+                    return plan;
+                }
+
+                if (!indexPlan.Supported)
+                {
+                    plan.Legacy = true;
+                    plan.ByType.Clear();
+                    break;
+                }
+
+                plan.ByType.Add(indexPlan.Plan!);
+                if (string.Equals(mediaType, "Series", StringComparison.OrdinalIgnoreCase))
+                {
+                    changedSeries = indexPlan.Plan!.Changed;
+                }
+            }
+
+            var received = client.CatalogBytesReceived - bytesBefore;
+            Status.Update(key, s =>
+            {
+                s.BytesReceived += received;
+                s.State = FederationSyncStatus.Ready;
+                if (plan.Legacy)
+                {
+                    s.Mode = "legacy";
+                    return;
+                }
+
+                s.Mode = plan.ByType.Any(p => p.Full) ? "full" : "changes";
+                s.Total = plan.ByType.Sum(p => p.Index.Count);
+                s.ToDownload = plan.ByType.Sum(p => p.ToFetch.Count);
+                s.ToRemove = plan.ByType.Sum(p => p.Removed);
+            });
+            return plan;
+        }
+
+        private static List<string> MediaTypesFor(LibraryMapping mapping)
+        {
+            // The /Items API only returns the item type it's asked for. A "Series"
+            // mapping otherwise syncs nothing but empty show shells - Episodes are
+            // a distinct item type that has to be requested explicitly, after the
+            // series so episodes can look their series back up by remote id.
+            var types = new List<string> { mapping.MediaType };
+            if (string.Equals(mapping.MediaType, "Series", StringComparison.OrdinalIgnoreCase))
+            {
+                types.Add("Episode");
+            }
+
+            return types;
+        }
+
+        private sealed record IndexPlanResult(bool Supported, IndexPlan? Plan)
+        {
+            public static IndexPlanResult Unsupported { get; } = new(false, null);
         }
 
         /// <summary>
-        /// Index sync for one source and item type. Reads the friend's complete
-        /// [id, hash] list, keeps every title whose hash matches what was last
-        /// imported and which this mapping still holds, and fetches the rest by
-        /// id. Titles missing from the complete list are simply not marked seen,
-        /// so the caller's normal prune removes them; an incomplete or failed list
-        /// returns failure and nothing is pruned. Episodes of a series that
+        /// Reads the friend's complete [id, hash] list for one item type and
+        /// decides, without downloading, which titles are unchanged, which must be
+        /// fetched, and how many disappeared. Null when the list could not be read
+        /// completely. A title is kept only when its hash matches what was last
+        /// imported and this mapping still holds it; episodes of a series that
         /// changed this cycle are always fetched again, since their season and
         /// parent links are rebuilt from the series entry.
         /// </summary>
-        private async Task<IndexSyncResult> FetchAndUpsertByIndexAsync(
+        private async Task<IndexPlanResult?> PlanIndexAsync(
             LibraryMapping mapping,
             RemoteServer server,
             RemoteLibrarySource source,
             PluginConfiguration config,
             RemoteServerClient client,
             string mediaType,
-            HashSet<Guid> seen,
             IReadOnlySet<Guid> changedSeries,
             CancellationToken cancellationToken)
         {
@@ -1064,7 +1389,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (page >= MaxCatalogPages)
                 {
                     _logger.LogWarning("[Federation] Catalog index for {Source} exceeded {MaxPages} pages; keeping cached items", source.RemoteLibraryName, MaxCatalogPages);
-                    return IndexSyncResult.Failed;
+                    return null;
                 }
 
                 // The first request is a single entry: an older friend answers it
@@ -1072,13 +1397,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 var indexPage = await client.GetCatalogIndexPageAsync(mediaType, source.RemoteLibraryId, cursor, page == 0 ? 1 : IndexPageSize, cancellationToken).ConfigureAwait(false);
                 if (indexPage == null)
                 {
-                    return IndexSyncResult.Failed;
+                    return null;
                 }
 
                 if (!indexPage.Supported)
                 {
                     _cache.RemoveSyncIndex(key);
-                    return IndexSyncResult.Unsupported;
+                    return IndexPlanResult.Unsupported;
                 }
 
                 foreach (var (id, hash) in indexPage.Entries)
@@ -1094,7 +1419,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (cursor == indexPage.NextCursor)
                 {
                     _logger.LogWarning("[Federation] Catalog index for {Source} stopped advancing; keeping cached items", source.RemoteLibraryName);
-                    return IndexSyncResult.Failed;
+                    return null;
                 }
 
                 cursor = indexPage.NextCursor;
@@ -1107,10 +1432,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 && string.Equals(stored.Context, context, StringComparison.Ordinal)
                 && now - stored.FullRefreshUtc < IndexFullRefreshInterval
                 && now >= stored.FullRefreshUtc;
-            var next = new SyncIndexSnapshot { Context = context, FullRefreshUtc = trusted ? stored!.FullRefreshUtc : now };
-            var changed = new HashSet<Guid>();
-            var toFetch = new List<Guid>();
-            var total = 0;
+            var plan = new IndexPlan
+            {
+                Key = key,
+                MediaType = mediaType,
+                Index = index,
+                Full = !trusted,
+                Next = new SyncIndexSnapshot { Context = context, FullRefreshUtc = trusted ? stored!.FullRefreshUtc : now }
+            };
 
             foreach (var (id, hash) in index)
             {
@@ -1122,42 +1451,72 @@ namespace Jellyfin.Plugin.Federation.Services
                         || (_cache.HoldsRemoteItem(mapping.LocalLibraryName, server.Id, id)
                             && (known.Season is not Guid season || _cache.HoldsRemoteItem(mapping.LocalLibraryName, server.Id, season)))))
                 {
-                    next.Items[id] = known;
+                    plan.Next.Items[id] = known;
                     if (!known.Skip)
                     {
-                        seen.Add(id);
-                        if (known.Season is Guid knownSeason)
-                        {
-                            seen.Add(knownSeason);
-                        }
-
-                        total++;
+                        plan.Keep.Add((id, known.Season));
                     }
 
                     continue;
                 }
 
-                toFetch.Add(id);
-                changed.Add(id);
+                plan.ToFetch.Add(id);
+                plan.Changed.Add(id);
             }
 
             if (stored != null)
             {
-                changed.UnionWith(stored.Items.Keys.Where(id => !index.ContainsKey(id)));
+                var gone = stored.Items.Where(pair => !index.ContainsKey(pair.Key)).ToList();
+                plan.Changed.UnionWith(gone.Select(pair => pair.Key));
+                plan.Removed = gone.Count(pair => !pair.Value.Skip);
             }
 
-            foreach (var batch in toFetch.Chunk(Math.Max(1, IdsBatchSize)))
+            return new IndexPlanResult(true, plan);
+        }
+
+        /// <summary>
+        /// Download phase for one planned item type: marks unchanged titles seen and
+        /// fetches the rest by id. Titles missing from the complete list are simply
+        /// not marked seen, so the caller's normal prune removes them; a failed batch
+        /// returns null and nothing is pruned.
+        /// </summary>
+        private async Task<int?> ApplyIndexPlanAsync(
+            IndexPlan plan,
+            LibraryMapping mapping,
+            RemoteServer server,
+            RemoteLibrarySource source,
+            PluginConfiguration config,
+            RemoteServerClient client,
+            HashSet<Guid> seen,
+            CancellationToken cancellationToken)
+        {
+            var statusKey = StatusKey(mapping, source);
+            foreach (var (id, season) in plan.Keep)
+            {
+                seen.Add(id);
+                if (season is Guid knownSeason)
+                {
+                    seen.Add(knownSeason);
+                }
+            }
+
+            var total = plan.Keep.Count;
+            foreach (var batch in plan.ToFetch.Chunk(Math.Max(1, IdsBatchSize)))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var bytesBefore = client.CatalogBytesReceived;
                 var items = await client.GetItemsAsync(ids: batch, limit: batch.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var received = client.CatalogBytesReceived - bytesBefore;
+                Status.Update(statusKey, s => s.BytesReceived += received);
                 if (items == null)
                 {
-                    return IndexSyncResult.Failed;
+                    Status.Fail(statusKey, $"Downloading titles from {server.Name} failed part-way. Nothing was removed; the next sync continues. The Log tab has details.");
+                    return null;
                 }
 
                 foreach (var remoteItem in items)
                 {
-                    if (!index.TryGetValue(remoteItem.Id, out var hash))
+                    if (!plan.Index.TryGetValue(remoteItem.Id, out var hash))
                     {
                         continue;
                     }
@@ -1167,7 +1526,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         if (!PeerCatalogPage.IsOwned(remoteItem)
                             || !IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem))
                         {
-                            next.Items[remoteItem.Id] = new SyncIndexItem { H = hash, Skip = true };
+                            plan.Next.Items[remoteItem.Id] = new SyncIndexItem { H = hash, Skip = true };
                             continue;
                         }
 
@@ -1176,7 +1535,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             seen.Add(remoteItem.Id);
                             total++;
                             var isEpisode = remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Episode;
-                            next.Items[remoteItem.Id] = new SyncIndexItem
+                            plan.Next.Items[remoteItem.Id] = new SyncIndexItem
                             {
                                 H = hash,
                                 Season = isEpisode ? remoteItem.SeasonId : null,
@@ -1194,24 +1553,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     catch (Exception ex)
                     {
                         _logger.LogWarning(ex, "[Federation] Failed to upsert item {Name}", remoteItem.Name);
-                        return IndexSyncResult.Failed;
+                        Status.Fail(statusKey, $"\"{remoteItem.Name}\" from {server.Name} couldn't be stored. Nothing was removed; the Log tab has details.");
+                        return null;
                     }
                 }
+
+                Status.Update(statusKey, s => s.Downloaded += batch.Length);
             }
 
-            _cache.SetSyncIndex(key, next);
-            if (toFetch.Count > 0)
+            _cache.SetSyncIndex(plan.Key, plan.Next);
+            if (plan.ToFetch.Count > 0)
             {
                 _logger.LogInformation(
                     "[Federation] {Server}/{Library}: {Changed} of {Total} {Type} item(s) new or changed",
                     server.Name,
                     source.RemoteLibraryName,
-                    toFetch.Count,
-                    index.Count,
-                    mediaType);
+                    plan.ToFetch.Count,
+                    plan.Index.Count,
+                    plan.MediaType);
             }
 
-            return new IndexSyncResult(true, total, changed);
+            return total;
         }
 
         /// <summary>

@@ -3741,8 +3741,18 @@ namespace Jellyfin.Plugin.Federation.Api
 
         [HttpPost("Refresh")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> TriggerRefresh(CancellationToken cancellationToken)
+        public async Task<IActionResult> TriggerRefresh(CancellationToken cancellationToken, [FromQuery] bool background = false)
         {
+            if (background)
+            {
+                // The settings page polls Sync/Status instead of holding this
+                // request open for the whole sync, which a large library or a
+                // reverse proxy timeout used to cut off.
+                var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+                var started = _syncService.TryStartSyncAll(lifetime?.ApplicationStopping ?? CancellationToken.None);
+                return Ok(new { success = true, started, message = started ? "Sync started" : "A sync is already running" });
+            }
+
             var result = await _syncService.SyncAllAsync(cancellationToken).ConfigureAwait(false);
             return Ok(new { result.Success, result.Message, result.ItemCount, result.FailedSources, result.OperationId });
         }
@@ -3917,6 +3927,44 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return await Task.FromResult(Ok(new { success = true })).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Per friend library sync state for the settings page: what each library
+        /// will transfer (known before downloading), progress while a sync runs,
+        /// and how the last attempt ended.
+        /// </summary>
+        [HttpGet("Sync/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetSyncStatus()
+        {
+            _syncService.EnsureStatusLoaded();
+            var status = _syncService.Status;
+            return Ok(new
+            {
+                running = status.Running,
+                startedUtc = status.StartedUtc,
+                finishedUtc = status.FinishedUtc,
+                libraries = status.Snapshot().Select(s => new
+                {
+                    key = s.Key,
+                    serverId = s.ServerId,
+                    serverName = s.ServerName,
+                    remoteLibraryName = s.RemoteLibraryName,
+                    localLibraryName = s.LocalLibraryName,
+                    state = s.State,
+                    mode = s.Mode,
+                    total = s.Total,
+                    toDownload = s.ToDownload,
+                    downloaded = s.Downloaded,
+                    toRemove = s.ToRemove,
+                    bytesReceived = s.BytesReceived,
+                    error = s.Error,
+                    lastAttemptUtc = s.LastAttemptUtc,
+                    lastSuccessUtc = s.LastSuccessUtc,
+                    lastTotal = s.LastTotal
+                })
+            });
         }
 
         [HttpGet("Progress/{operationId}")]

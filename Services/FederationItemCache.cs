@@ -23,6 +23,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<(string ServerId, Guid RemoteItemId), string> _remoteIndex = new();
         private readonly ConcurrentDictionary<string, SyncIndexSnapshot> _syncIndexes = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
+
+        /// <summary>Where the cache is stored; empty until initialized.</summary>
+        public string CacheFilePath => _cacheFilePath;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
 
         public FederationItemCache(ILogger<FederationItemCache> logger)

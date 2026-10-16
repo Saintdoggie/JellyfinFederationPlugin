@@ -197,6 +197,15 @@
                 #federationConfigPage .fed-userrule-result { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; padding: 0.22em 0; }
 
                 /* Library picker */
+                #federationConfigPage .fed-syncrow { padding: 0.6em 0.7em; margin: 0.4em 0; border-radius: 0.3em; background: rgba(128,128,128,0.06); }
+                #federationConfigPage .fed-syncrow-head { display: flex; flex-wrap: wrap; gap: 0.4em 0.8em; align-items: baseline; justify-content: space-between; }
+                #federationConfigPage .fed-syncstate { font-size: 0.9em; font-weight: 600; white-space: nowrap; }
+                #federationConfigPage .fed-syncstate-ok { color: var(--fed-ok-text); }
+                #federationConfigPage .fed-syncstate-busy { color: inherit; opacity: 0.85; }
+                #federationConfigPage .fed-syncstate-bad { color: var(--fed-err-text); }
+                #federationConfigPage .fed-syncrow-meta { opacity: 0.65; font-size: 0.85em; margin-top: 0.2em; }
+                #federationConfigPage .fed-syncrow-error { color: var(--fed-err-text); font-size: 0.9em; margin-top: 0.3em; line-height: 1.45; }
+                #federationConfigPage .fed-syncrow-note { color: var(--fed-warn-text); font-size: 0.85em; margin-top: 0.3em; line-height: 1.45; }
                 #federationConfigPage .fed-libgroup { margin: 1em 0; }
                 #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
                 #federationConfigPage .fed-librow { display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap; padding: 0.45em 0.6em; border-radius: 0.3em; cursor: pointer; }
@@ -922,6 +931,15 @@
                             a friend's "TV Shows" still lands in Shows, and "The PSP Experience" lands in Movies.
                             Cover art and details come from the friend's server (including custom posters), not from TMDb.
                         </p>
+
+                        <div id="fedSyncStatusCard">
+                            <h4 class="fed-subhead">Sync status</h4>
+                            <p class="fieldDescription">
+                                Every sync first asks each friend what it shares, so you see how much will change before anything is downloaded.
+                                After the first sync, only new or changed titles are downloaded.
+                            </p>
+                            <div id="fedSyncStatusList"><p class="fed-muted">Loading sync status…</p></div>
+                        </div>
 
                         <div id="fedLibraryPicker">
                             <p class="fieldDescription" id="fedPickerHint">Loading remote libraries…</p>
@@ -6063,6 +6081,156 @@
 
                     /* ---------------- Downloads ---------------- */
 
+                    /* sync-status:start */
+                    function syncTimeAgo(iso, now) {
+                        if (!iso) { return ''; }
+                        var mins = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60000));
+                        if (mins < 1) { return 'just now'; }
+                        if (mins < 60) { return mins + ' min ago'; }
+                        var hours = Math.round(mins / 60);
+                        return hours < 48 ? hours + ' h ago' : Math.round(hours / 24) + ' days ago';
+                    }
+
+                    function syncCount(n) {
+                        return Number(n || 0).toLocaleString('en-US');
+                    }
+
+                    // Plain-language state of one friend library: what it is doing,
+                    // what it found up front, and how the last attempt ended.
+                    function describeLibrarySync(lib, now) {
+                        var label;
+                        var tone = 'busy';
+                        var progress = null;
+                        switch (lib.state) {
+                            case 'checking':
+                                label = 'Checking what ' + (lib.serverName || 'the friend') + ' has…';
+                                break;
+                            case 'downloading':
+                                if (lib.mode === 'legacy' || lib.mode === 'external') {
+                                    label = 'Downloading all titles · ' + syncCount(lib.downloaded) + ' so far';
+                                } else if (lib.toDownload > 0) {
+                                    label = 'Downloading ' + syncCount(lib.downloaded) + ' of ' + syncCount(lib.toDownload);
+                                    progress = Math.min(1, lib.downloaded / lib.toDownload);
+                                } else {
+                                    label = 'Nothing new to download';
+                                }
+                                break;
+                            case 'ready':
+                                label = lib.mode === 'legacy' || lib.mode === 'external'
+                                    ? 'Checked · queued'
+                                    : (lib.toDownload > 0 || lib.toRemove > 0 ? 'Checked · queued' : 'Checked · no changes');
+                                break;
+                            case 'saving':
+                                label = 'Adding to Jellyfin…';
+                                break;
+                            case 'done':
+                                label = 'Up to date';
+                                tone = 'ok';
+                                break;
+                            case 'failed':
+                                label = 'Failed';
+                                tone = 'bad';
+                                break;
+                            default:
+                                label = lib.lastSuccessUtc ? 'Waiting · last synced ' + syncTimeAgo(lib.lastSuccessUtc, now) : 'Waiting for the next sync';
+                        }
+
+                        var facts = [];
+                        var total = lib.total != null ? lib.total : lib.lastTotal;
+                        if (total != null) { facts.push(syncCount(total) + ' items'); }
+                        var finished = lib.state === 'done' || lib.state === 'saving';
+                        if (lib.state === 'checking' || lib.state === 'waiting') {
+                            // Counts belong to the run that is about to start.
+                        } else if (finished) {
+                            // What the run did, not what it planned.
+                            facts.push(lib.downloaded > 0 ? syncCount(lib.downloaded) + ' downloaded' : 'no changes');
+                            if (lib.toRemove > 0) { facts.push(syncCount(lib.toRemove) + ' removed'); }
+                        } else if (lib.mode === 'changes' || lib.mode === 'full') {
+                            facts.push(syncCount(lib.toDownload) + ' to download');
+                            if (lib.toRemove > 0) { facts.push(syncCount(lib.toRemove) + ' to remove'); }
+                        }
+
+                        if (lib.bytesReceived > 0) { facts.push(formatBytes(lib.bytesReceived) + ' received'); }
+                        if (lib.lastSuccessUtc && lib.state !== 'waiting') { facts.push('last synced ' + syncTimeAgo(lib.lastSuccessUtc, now)); }
+                        if (!lib.lastSuccessUtc && lib.state === 'failed') { facts.push('never synced successfully'); }
+
+                        var note = '';
+                        if (lib.mode === 'legacy') {
+                            note = lib.serverName + ' runs an older Federation version, so every sync downloads the whole library. Updating the plugin there makes syncs much faster.';
+                        } else if (lib.mode === 'full' && lib.state !== 'done') {
+                            note = 'Downloading every title this time: first sync, changed settings here, or the daily full check.';
+                        }
+
+                        return { label: label, tone: tone, progress: progress, facts: facts, note: note, error: lib.state === 'failed' ? (lib.error || 'The sync failed. The Log tab has details.') : '' };
+                    }
+
+                    function renderSyncStatusHtml(data, now) {
+                        var libs = (data && data.libraries) || [];
+                        if (!libs.length) {
+                            return '<p class="fed-muted">No friend libraries are selected yet. Pick some below, save, and they will show up here after the next sync.</p>';
+                        }
+
+                        var html = '';
+                        libs.forEach(function (lib) {
+                            var d = describeLibrarySync(lib, now);
+                            html += '<div class="fed-syncrow" data-sync-key="' + escapeHtml(lib.key) + '">';
+                            html += '<div class="fed-syncrow-head"><span><strong>' + escapeHtml(lib.serverName) + '</strong> · '
+                                + escapeHtml(lib.remoteLibraryName) + ' <span class="fed-muted">→ ' + escapeHtml(lib.localLibraryName) + '</span></span>';
+                            html += '<span class="fed-syncstate fed-syncstate-' + d.tone + '">' + escapeHtml(d.label) + '</span></div>';
+                            if (d.progress != null) {
+                                html += '<div class="fed-plex-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(d.progress * 100) + '"><span style="width:' + Math.round(d.progress * 100) + '%"></span></div>';
+                            }
+
+                            if (d.facts.length) { html += '<div class="fed-syncrow-meta">' + escapeHtml(d.facts.join(' · ')) + '</div>'; }
+                            if (d.error) { html += '<div class="fed-syncrow-error">' + escapeHtml(d.error) + '</div>'; }
+                            if (d.note) { html += '<div class="fed-syncrow-note">' + escapeHtml(d.note) + '</div>'; }
+                            html += '</div>';
+                        });
+                        return html;
+                    }
+
+                    // One-line summary for the banner at the top while a sync runs.
+                    function syncRunSummary(data) {
+                        var libs = (data && data.libraries) || [];
+                        var finished = libs.filter(function (l) { return l.state === 'done' || l.state === 'failed'; }).length;
+                        var checking = libs.some(function (l) { return l.state === 'checking'; });
+                        var toDownload = 0;
+                        var downloaded = 0;
+                        libs.forEach(function (l) { toDownload += l.toDownload || 0; downloaded += l.downloaded || 0; });
+                        var text = 'Syncing · ' + finished + ' of ' + libs.length + ' libraries finished';
+                        if (checking) {
+                            text += ' · checking what friends have';
+                        } else if (toDownload > 0) {
+                            text += ' · ' + syncCount(downloaded) + ' of ' + syncCount(toDownload) + ' titles downloaded';
+                        }
+
+                        return text;
+                    }
+                    /* sync-status:end */
+
+                    var syncStatusRunning = false;
+                    var syncStatusTick = 0;
+
+                    function loadSyncStatus() {
+                        return fedFetch('/Plugins/Federation/Sync/Status')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (data) {
+                            var list = q('#fedSyncStatusList');
+                            if (list) { list.innerHTML = renderSyncStatusHtml(data, Date.now()); }
+                            var wasRunning = syncStatusRunning;
+                            syncStatusRunning = !!(data && data.running);
+                            if (syncStatusRunning) {
+                                var banner = q('#fedSyncHealth');
+                                if (banner) { banner.innerHTML = '<div class="fed-synchealth">' + escapeHtml(syncRunSummary(data)) + '</div>'; }
+                            } else if (wasRunning) {
+                                setSaveMsg('Sync finished');
+                                loadStatus();
+                                loadDiagnostics();
+                            }
+                        })
+                        .catch(function () { /* status is informational; the next poll retries */ });
+                    }
+
                     function formatBytes(n) {
                         if (n == null || n === '') { return ''; }
                         n = Number(n);
@@ -6969,17 +7137,16 @@
                                     break;
                                 case 'refresh-cache':
                                     clearError();
-                                    setSaveMsg('Refreshing cache…');
-                                    fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
+                                    setSaveMsg('Starting sync…');
+                                    // Runs on the server in the background; progress per
+                                    // library comes from Sync/Status (see loadSyncStatus).
+                                    fedFetch('/Plugins/Federation/Refresh?background=true', { method: 'POST' })
                                     .then(function (r) { return readJson(r); })
                                     .then(function (res) {
-                                        var success = res.success !== undefined ? res.success : res.Success;
-                                        var message = res.message !== undefined ? res.message : res.Message;
-                                        setSaveMsg(message || (success === false ? 'Refresh failed' : 'Refresh complete'), success === false);
-                                        loadStatus();
-                                        loadDiagnostics();
+                                        setSaveMsg(res.started ? 'Sync started. Progress is shown per library on the Libraries tab.' : (res.message || 'A sync is already running'));
+                                        loadSyncStatus();
                                     })
-                                    .catch(function (err) { showError('Refresh failed: ' + err.message); setSaveMsg('Refresh failed', true); });
+                                    .catch(function (err) { showError('Sync could not start: ' + err.message); setSaveMsg('Sync could not start', true); });
                                     break;
                                 case 'open-log':
                                     switchTab('log');
@@ -7245,6 +7412,7 @@
                     var watchingPollInterval = null;
                     var healthPollInterval = null;
                     var logPollInterval = null;
+                    var syncStatusPollInterval = null;
                     var activePage = null;
 
                     function stopPagePolling() {
@@ -7258,7 +7426,8 @@
                         clearInterval(watchingPollInterval);
                         clearInterval(healthPollInterval);
                         clearInterval(logPollInterval);
-                        downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = null;
+                        clearInterval(syncStatusPollInterval);
+                        downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = syncStatusPollInterval = null;
                         activePage = null;
                         stopWatchdog();
                     }
@@ -7306,6 +7475,11 @@
                         healthPollInterval = setInterval(function () { if (pageIsVisible()) { loadFriendHealth(false); } }, 60000);
                         loadLogs();
                         logPollInterval = setInterval(function () { if (pageIsVisible()) { loadLogs(); } }, 10000);
+                        loadSyncStatus();
+                        // Every 2 s while a sync runs (it may also be the scheduled one), every 30 s otherwise.
+                        syncStatusPollInterval = setInterval(function () {
+                            if (pageIsVisible() && (syncStatusRunning || ++syncStatusTick % 15 === 0)) { loadSyncStatus(); }
+                        }, 2000);
                     }
 
                     function onPageShow(e) {
