@@ -46,6 +46,8 @@ public partial class FederationSyncServiceTests
         await InvokeRefreshMappingAsync(sync, mapping, config);
 
         Assert.Equal(new HashSet<Guid> { movies[1], added }, peer.Fetched.ToHashSet());
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, movies[3]));
+        await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.False(CacheHasRemoteId(cache, mapping.LocalLibraryName, movies[3]));
         Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, added));
         Assert.Equal("Movie 1 (Director's Cut)", cache.GetEntriesForMapping(mapping.LocalLibraryName)
@@ -87,6 +89,8 @@ public partial class FederationSyncServiceTests
         peer.Fetched.Clear();
         await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.Contains(movies[1], peer.Fetched);
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, movies[0]));
+        await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.False(CacheHasRemoteId(cache, mapping.LocalLibraryName, movies[0]));
     }
 
@@ -332,6 +336,111 @@ public partial class FederationSyncServiceTests
         Assert.Equal(2, overlapped.Count);
         Assert.All(overlapped, Assert.True);
         Assert.Equal(2, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+    }
+
+    [Fact]
+    public async Task LargeRemoval_IsHeldUntilConfirmed()
+    {
+        var peer = new IndexedPeerHandler();
+        var movies = Enumerable.Range(0, 100).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, server) = CreateMovieSync(peer);
+        await RunWithStatusAsync(sync, mapping, config);
+
+        foreach (var gone in movies.Take(40))
+        {
+            peer.Remove(gone);
+        }
+
+        var first = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(40, first.WaitingRemovals);
+        Assert.Equal(0, first.HeldRemovals);
+        Assert.Equal(100, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+
+        var second = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(40, second.HeldRemovals);
+        Assert.Equal(0, second.Removed);
+        Assert.Equal(100, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+
+        var third = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(40, third.HeldRemovals);
+        Assert.Equal(100, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+
+        Assert.True(cache.ApprovePendingRemoval(FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id)));
+        var confirmed = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(40, confirmed.Removed);
+        Assert.Equal(0, confirmed.HeldRemovals);
+        Assert.Equal(60, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+        Assert.False(cache.ApprovePendingRemoval(FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id)));
+    }
+
+    [Fact]
+    public async Task ModerateRemoval_IsNotHeld_OnlyDelayedOneSync()
+    {
+        var peer = new IndexedPeerHandler();
+        var movies = Enumerable.Range(0, 1000).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, _) = CreateMovieSync(peer);
+        await RunWithStatusAsync(sync, mapping, config);
+        foreach (var gone in movies.Take(30))
+        {
+            peer.Remove(gone);
+        }
+
+        await RunWithStatusAsync(sync, mapping, config);
+        var second = await RunWithStatusAsync(sync, mapping, config);
+
+        Assert.Equal(30, second.Removed);
+        Assert.Equal(0, second.HeldRemovals);
+        Assert.Equal(970, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+    }
+
+    [Fact]
+    public async Task TitleMissingOnce_ThenBack_IsNeverRemoved()
+    {
+        var peer = new IndexedPeerHandler();
+        var movies = Enumerable.Range(0, 3).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, cache, mapping, config, _) = CreateMovieSync(peer);
+        await RunWithStatusAsync(sync, mapping, config);
+
+        peer.SupportsIndex = false;
+        var hidden = movies[0];
+        var all = typeof(IndexedPeerHandler).GetField("_items", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var items = (System.Collections.IList)all.GetValue(peer)!;
+        var saved = items[0];
+        items.RemoveAt(0);
+        await RunWithStatusAsync(sync, mapping, config);
+        items.Insert(0, saved);
+        peer.SupportsIndex = true;
+        await RunWithStatusAsync(sync, mapping, config);
+        await RunWithStatusAsync(sync, mapping, config);
+
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, hidden));
+    }
+
+    [Fact]
+    public void PendingRemoval_SurvivesARestart()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fed-pending-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            var path = System.IO.Path.Combine(dir, "federation-cache.json");
+            var cache = new FederationItemCache(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationItemCache>.Instance);
+            cache.Initialize(path);
+            var id = Guid.NewGuid();
+            cache.SetPendingRemoval("Movies|s", new PendingRemoval { Missing = new HashSet<Guid> { id }, HeldCount = 1 });
+            cache.SaveAsync().GetAwaiter().GetResult();
+
+            var restarted = new FederationItemCache(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationItemCache>.Instance);
+            restarted.Initialize(path);
+            var pending = restarted.GetPendingRemoval("Movies|s");
+            Assert.NotNull(pending);
+            Assert.Contains(id, pending!.Missing);
+            Assert.True(restarted.ApprovePendingRemoval("Movies|s"));
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, true);
+        }
     }
 
     /// <summary>The check phase, download phase and status bookkeeping SyncAllAsync runs, for one mapping.</summary>

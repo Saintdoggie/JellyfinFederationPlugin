@@ -26,6 +26,10 @@ namespace Jellyfin.Plugin.Federation.Services
         // Provider key -> the provider-keyed entry that already holds that title,
         // recorded when an item's provider id changes after it was first stored.
         private readonly ConcurrentDictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
+
+        // mapping|server -> titles that were missing from that friend's last
+        // complete sync, and whether a large removal is waiting for the admin.
+        private readonly ConcurrentDictionary<string, PendingRemoval> _pendingRemovals = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
 
         // Fingerprint of the file as last written or read, so an unchanged cache
@@ -554,12 +558,65 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>Every remote item id this mapping holds from one friend.</summary>
+        public HashSet<Guid> RemoteIdsHeldFor(string mappingName, string serverId)
+        {
+            var ids = new HashSet<Guid>();
+            foreach (var entry in _entries.Values)
+            {
+                if (!entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (source.ServerId == serverId)
+                    {
+                        ids.Add(source.RemoteItemId);
+                    }
+                }
+            }
+
+            return ids;
+        }
+
+        public static string RemovalKey(string mappingName, string serverId) => mappingName + "|" + serverId;
+
+        public PendingRemoval? GetPendingRemoval(string key)
+            => _pendingRemovals.TryGetValue(key, out var pending) ? pending : null;
+
+        public void SetPendingRemoval(string key, PendingRemoval? pending)
+        {
+            if (pending == null || (pending.Missing.Count == 0 && !pending.Approved))
+            {
+                _pendingRemovals.TryRemove(key, out _);
+            }
+            else
+            {
+                _pendingRemovals[key] = pending;
+            }
+        }
+
+        /// <summary>The admin confirmed a held removal; the next sync carries it out.</summary>
+        public bool ApprovePendingRemoval(string key)
+        {
+            if (!_pendingRemovals.TryGetValue(key, out var pending) || pending.HeldCount == 0)
+            {
+                return false;
+            }
+
+            pending.Approved = true;
+            return true;
+        }
+
         public void Clear()
         {
             _entries.Clear();
             _remoteIndex.Clear();
             _syncIndexes.Clear();
             _aliases.Clear();
+            _pendingRemovals.Clear();
             _lastRefreshUtc = DateTime.MinValue;
         }
 
@@ -587,7 +644,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     LastRefreshUtc = _lastRefreshUtc,
                     Entries = _entries.Values.Select(e => e.Snapshot()).OrderBy(e => e.Key, StringComparer.Ordinal).ToList(),
                     SyncIndexes = _syncIndexes.Count == 0 ? null : _syncIndexes.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
-                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                    PendingRemovals = _pendingRemovals.Count == 0 ? null : _pendingRemovals.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
                 };
 
                 var json = JsonSerializer.SerializeToUtf8Bytes(payload, CacheJsonOptions);
@@ -761,6 +819,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                _pendingRemovals.Clear();
+                foreach (var pair in payload?.PendingRemovals ?? new Dictionary<string, PendingRemoval>())
+                {
+                    if (pair.Value?.Missing != null)
+                    {
+                        _pendingRemovals[pair.Key] = pair.Value;
+                    }
+                }
+
                 _aliases.Clear();
                 foreach (var pair in payload?.Aliases ?? new Dictionary<string, string>())
                 {
@@ -801,6 +868,8 @@ namespace Jellyfin.Plugin.Federation.Services
             public Dictionary<string, SyncIndexSnapshot>? SyncIndexes { get; set; }
 
             public Dictionary<string, string>? Aliases { get; set; }
+
+            public Dictionary<string, PendingRemoval>? PendingRemovals { get; set; }
         }
     }
 
@@ -1255,5 +1324,22 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>An episode's remote series; a changed series refetches its episodes.</summary>
         public Guid? Series { get; set; }
+    }
+
+    /// <summary>
+    /// Titles a friend no longer listed at its last complete sync. A title is
+    /// removed only when it is missing twice in a row; a large removal waits for
+    /// the admin (see FederationSyncService.PruneSafelyAsync).
+    /// </summary>
+    public class PendingRemoval
+    {
+        public HashSet<Guid> Missing { get; set; } = new();
+
+        /// <summary>How many titles a held removal would take away; 0 when nothing is held.</summary>
+        public int HeldCount { get; set; }
+
+        public DateTime? HeldSinceUtc { get; set; }
+
+        public bool Approved { get; set; }
     }
 }

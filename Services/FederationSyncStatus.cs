@@ -131,6 +131,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     state.Downloaded = 0;
                     state.ToRemove = 0;
                     state.BytesReceived = 0;
+                    state.Removed = 0;
+                    state.WaitingRemovals = 0;
                     state.Error = null;
                 }
 
@@ -256,6 +258,15 @@ namespace Jellyfin.Plugin.Federation.Services
         public int ToRemove { get; set; }
 
         public long BytesReceived { get; set; }
+
+        /// <summary>Entries this sync actually removed.</summary>
+        public int Removed { get; set; }
+
+        /// <summary>Titles missing for the first time; removed at the next sync if still missing.</summary>
+        public int WaitingRemovals { get; set; }
+
+        /// <summary>A large removal waiting for the admin to confirm it; kept across syncs until then.</summary>
+        public int HeldRemovals { get; set; }
 
         public string? Error { get; set; }
 

@@ -424,8 +424,11 @@ public partial class FederationSyncServiceTests
         SeedRaw(cache, mapping.LocalLibraryName, server.Id, keepId, "Keep");
         SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
 
+        // A title is removed only when two complete syncs in a row miss it.
         await InvokeRefreshMappingAsync(sync, mapping, config);
+        Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
 
+        await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, keepId));
         Assert.False(CacheHasRemoteId(cache, mapping.LocalLibraryName, staleId));
     }
@@ -439,7 +442,9 @@ public partial class FederationSyncServiceTests
         SeedRaw(cache, mapping.LocalLibraryName, server.Id, staleId, "Stale");
 
         await InvokeRefreshMappingAsync(sync, mapping, config);
+        Assert.Single(cache.GetEntriesForMapping(mapping.LocalLibraryName));
 
+        await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.Empty(cache.GetEntriesForMapping(mapping.LocalLibraryName));
     }
 

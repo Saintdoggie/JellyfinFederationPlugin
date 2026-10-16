@@ -4087,11 +4087,39 @@ namespace Jellyfin.Plugin.Federation.Api
                     downloaded = s.Downloaded,
                     toRemove = s.ToRemove,
                     bytesReceived = s.BytesReceived,
+                    removed = s.Removed,
+                    waitingRemovals = s.WaitingRemovals,
+                    heldRemovals = s.HeldRemovals,
                     error = s.Error,
                     lastAttemptUtc = s.LastAttemptUtc,
                     lastSuccessUtc = s.LastSuccessUtc,
                     lastTotal = s.LastTotal
                 })
+            });
+        }
+
+        /// <summary>
+        /// The admin confirms a large removal that a sync held back (see
+        /// FederationSyncService.PruneSafely); a sync starts and carries it out.
+        /// </summary>
+        [HttpPost("Sync/ConfirmRemoval")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ConfirmRemoval([FromBody] ConfirmRemovalBody? body)
+        {
+            _syncService.EnsureStatusLoaded();
+            var library = _syncService.Status.Snapshot().FirstOrDefault(s => string.Equals(s.Key, body?.Key, StringComparison.OrdinalIgnoreCase));
+            if (library == null || !_cache.ApprovePendingRemoval(FederationItemCache.RemovalKey(library.LocalLibraryName, library.ServerId)))
+            {
+                return BadRequest(new { success = false, message = "There is no held removal for this library any more." });
+            }
+
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var started = _syncService.TryStartSyncAll(lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Ok(new
+            {
+                success = true,
+                started,
+                message = started ? "Confirmed. The titles are removed by the sync that just started." : "Confirmed. The titles are removed by the next sync."
             });
         }
 
@@ -5581,7 +5609,12 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Key { get; set; }
     }
 
-    public class UpdateSharingBody
+    public class ConfirmRemovalBody
+    {
+        public string? Key { get; set; }
+    }
+
+        public class UpdateSharingBody
     {
         public bool ShareAll { get; set; } = true;
 

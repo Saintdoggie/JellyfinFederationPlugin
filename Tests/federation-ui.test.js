@@ -1736,7 +1736,7 @@ test('sync status shows per-library plan, progress, outcome and plain-language f
   assert.equal(done.label, 'Up to date');
   assert.equal(done.tone, 'ok');
   assert.deepEqual(done.facts, ['12,400 items', 'no changes', '2.0 KB received', 'last synced 5 min ago']);
-  const doneWithWork = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 50, toDownload: 7, downloaded: 7, toRemove: 2 }, now);
+  const doneWithWork = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 50, toDownload: 7, downloaded: 7, toRemove: 2, removed: 2 }, now);
   assert.deepEqual(doneWithWork.facts, ['50 items', '7 downloaded', '2 removed']);
 
   const failed = describeLibrarySync({ ...base, state: 'failed', error: "Couldn't reach Anna, or it didn't answer as a Federation server. Titles already here were kept." }, now);
@@ -1755,6 +1755,13 @@ test('sync status shows per-library plan, progress, outcome and plain-language f
   assert.equal(ready.label, 'Checked · queued');
   assert.deepEqual(ready.facts, ['50 items', '4 to download']);
   assert.equal(describeLibrarySync({ ...base, state: 'ready', mode: 'changes', total: 50, toDownload: 0, downloaded: 0 }, now).label, 'Checked · no changes');
+
+  const waiting = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 50, toDownload: 0, downloaded: 0, waitingRemovals: 3 }, now);
+  assert.match(waiting.note, /^3 titles are missing on Anna's server and will be removed at the next sync/);
+  const heldLib = { ...base, state: 'done', mode: 'changes', total: 500, toDownload: 0, downloaded: 0, heldRemovals: 120 };
+  assert.match(describeLibrarySync(heldLib, now).held, /^120 titles are no longer on Anna's server/);
+  const heldHtml = renderSyncStatusHtml({ libraries: [heldLib] }, now);
+  assert.match(heldHtml, /data-fed-action="confirm-removal" data-sync-key="k" data-count="120">Remove 120 titles<\/button>/);
 
   const html = renderSyncStatusHtml({ libraries: [{ ...base, serverName: '<b>Anna</b>', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 }] }, now);
   assert.ok(html.includes('&lt;b&gt;Anna&lt;/b&gt;'), 'friend names are escaped');
