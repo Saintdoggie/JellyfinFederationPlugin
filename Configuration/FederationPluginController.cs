@@ -60,9 +60,24 @@ namespace Jellyfin.Plugin.Federation.Api
         // one sync, so items added mid-sync do not shift later pages.
         private static readonly TimeSpan StableOrderLifetime = TimeSpan.FromMinutes(10);
 
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, IReadOnlyList<Guid> Ids)> StableOrders = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, StableOrder Order)> StableOrders = new();
+
+        // Title-list hashes remembered per item with the Etag (a fingerprint of the
+        // item's last-saved time) they were computed for, so an unchanged sync
+        // does not rebuild every item's full details. Recomputed after
+        // IndexHashLifetime anyway, for changes Jellyfin saves without touching
+        // that time; the receiving side also fetches everything once a day.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, (string Etag, string Hash, DateTime Computed)> IndexHashes = new();
+
+        private static readonly TimeSpan IndexHashLifetime = TimeSpan.FromHours(6);
+
+        private const int IndexHashCapacity = 500_000;
+
+        /// <summary>Every item id a sync query matches, sorted, with each item's Etag when Jellyfin reported one.</summary>
+        private sealed record StableOrder(IReadOnlyList<Guid> Ids, IReadOnlyDictionary<Guid, string> Etags);
 
         private readonly ILogger<FederationController> _logger;
+        private readonly FederationArtworkService _artwork;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
         private readonly LibraryProvisioningService _provisioning;
@@ -113,8 +128,10 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationQualityAdvisorService qualityAdvisor,
             FederationAvailabilityService availability,
             IAuthorizationContext authorizationContext,
-            FederationLogBuffer logBuffer)
+            FederationLogBuffer logBuffer,
+            FederationArtworkService artwork)
         {
+            _artwork = artwork;
             _logger = logger;
             _syncService = syncService;
             _federationManager = federationManager;
@@ -2947,16 +2964,16 @@ namespace Jellyfin.Plugin.Federation.Api
         /// at the beginning takes a fresh one. Null when the catalog could not
         /// be read.
         /// </summary>
-        private async Task<IReadOnlyList<Guid>?> GetStableItemOrderAsync(Guid userId, string? mediaType, string? parentId, bool fresh, CancellationToken cancellationToken)
+        private async Task<StableOrder?> GetStableItemOrderAsync(Guid userId, string? mediaType, string? parentId, bool fresh, CancellationToken cancellationToken)
         {
             var key = $"{userId:N}|{mediaType}|{parentId}";
             var now = DateTime.UtcNow;
             if (!fresh && StableOrders.TryGetValue(key, out var cached) && now - cached.Created < StableOrderLifetime)
             {
-                return cached.Ids;
+                return cached.Order;
             }
 
-            var query = new List<string> { "Recursive=true", "EnableImages=false", "EnableUserData=false", "EnableTotalRecordCount=false" };
+            var query = new List<string> { "Recursive=true", "Fields=Etag", "EnableImages=false", "EnableUserData=false", "EnableTotalRecordCount=false" };
             if (!string.IsNullOrEmpty(mediaType))
             {
                 query.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
@@ -2973,23 +2990,25 @@ namespace Jellyfin.Plugin.Federation.Api
                 return null;
             }
 
-            var ids = new List<Guid>(items.Count);
+            var etags = new Dictionary<Guid, string>(items.Count);
             foreach (var node in items)
             {
                 if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var id))
                 {
-                    ids.Add(id);
+                    etags[id] = node["Etag"]?.GetValue<string>() ?? string.Empty;
                 }
             }
 
-            ids = ids.Distinct().OrderBy(id => id).ToList();
+            var order = new StableOrder(
+                etags.Keys.OrderBy(id => id).ToList(),
+                etags.Where(pair => pair.Value.Length > 0).ToDictionary(pair => pair.Key, pair => pair.Value));
             foreach (var stale in StableOrders.Where(pair => now - pair.Value.Created >= StableOrderLifetime).Select(pair => pair.Key).ToList())
             {
                 StableOrders.TryRemove(stale, out _);
             }
 
-            StableOrders[key] = (now, ids);
-            return ids;
+            StableOrders[key] = (now, order);
+            return order;
         }
 
         /// <summary>
@@ -3234,15 +3253,19 @@ namespace Jellyfin.Plugin.Federation.Api
             // different order for each offset, so whole runs of episodes were
             // never sent and the friend pruned them as deleted. ids= requests
             // use the same path, in the order asked for.
-            IReadOnlyList<Guid>? stableOrder = requestedIds;
-            if (stableOrder == null && string.IsNullOrEmpty(sortBy))
+            StableOrder? stable = requestedIds == null ? null : new StableOrder(requestedIds, new Dictionary<Guid, string>());
+            if (stable == null && string.IsNullOrEmpty(sortBy))
             {
-                stableOrder = await GetStableItemOrderAsync(userId.Value, mediaType, parentId, rawCursor == 0 && remainingSkip == 0, cancellationToken).ConfigureAwait(false);
-                if (stableOrder == null)
+                stable = await GetStableItemOrderAsync(userId.Value, mediaType, parentId, rawCursor == 0 && remainingSkip == 0, cancellationToken).ConfigureAwait(false);
+                if (stable == null)
                 {
                     return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
                 }
             }
+
+            var stableOrder = stable?.Ids;
+            var useRememberedHashes = index && includeMediaSources && stable != null;
+            var now = DateTime.UtcNow;
             var safetyPage = 0;
             var exhausted = false;
 
@@ -3262,7 +3285,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, stableOrder != null ? InternalIdsPerFetch : InternalPeerItemPageSize);
 
                 System.Text.Json.Nodes.JsonArray items;
-                List<System.Text.Json.Nodes.JsonNode?> rows;
+                List<(Guid Id, System.Text.Json.Nodes.JsonNode? Node, string? Hash)> rows;
                 if (stableOrder != null)
                 {
                     var slice = stableOrder.Skip(rawCursor).Take(requestCount).ToList();
@@ -3272,18 +3295,41 @@ namespace Jellyfin.Plugin.Federation.Api
                         break;
                     }
 
-                    // The slice's own ids replace the library and type filters:
-                    // they came from exactly that query.
-                    var sliceParams = queryParams
-                        .Where(p => !p.StartsWith("ParentId=", StringComparison.Ordinal) && !p.StartsWith("IncludeItemTypes=", StringComparison.Ordinal) && !p.StartsWith("Ids=", StringComparison.Ordinal))
-                        .Append("Ids=" + string.Join(",", slice.Select(id => id.ToString("N"))));
-                    var sliceJson = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", sliceParams)}", cancellationToken).ConfigureAwait(false);
-                    if (sliceJson?["Items"] is not System.Text.Json.Nodes.JsonArray sliceItems)
+                    // A title whose remembered hash still matches its Etag needs no
+                    // full details at all.
+                    var remembered = new Dictionary<Guid, string>();
+                    if (useRememberedHashes)
                     {
-                        return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                        foreach (var id in slice)
+                        {
+                            if (stable!.Etags.TryGetValue(id, out var etag)
+                                && IndexHashes.TryGetValue(id, out var known)
+                                && string.Equals(known.Etag, etag, StringComparison.Ordinal)
+                                && now - known.Computed < IndexHashLifetime)
+                            {
+                                remembered[id] = known.Hash;
+                            }
+                        }
                     }
 
-                    items = sliceItems;
+                    var toFetch = slice.Where(id => !remembered.ContainsKey(id)).ToList();
+                    items = new System.Text.Json.Nodes.JsonArray();
+                    if (toFetch.Count > 0)
+                    {
+                        // The slice's own ids replace the library and type filters:
+                        // they came from exactly that query.
+                        var sliceParams = queryParams
+                            .Where(p => !p.StartsWith("ParentId=", StringComparison.Ordinal) && !p.StartsWith("IncludeItemTypes=", StringComparison.Ordinal) && !p.StartsWith("Ids=", StringComparison.Ordinal))
+                            .Append("Ids=" + string.Join(",", toFetch.Select(id => id.ToString("N"))));
+                        var sliceJson = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", sliceParams)}", cancellationToken).ConfigureAwait(false);
+                        if (sliceJson?["Items"] is not System.Text.Json.Nodes.JsonArray sliceItems)
+                        {
+                            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                        }
+
+                        items = sliceItems;
+                    }
+
                     var byId = new Dictionary<Guid, System.Text.Json.Nodes.JsonNode>();
                     foreach (var node in items)
                     {
@@ -3296,7 +3342,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     // One row per position, in the stable order; an item deleted
                     // since the list was taken is an empty row that still counts
                     // as consumed.
-                    rows = slice.Select(id => byId.TryGetValue(id, out var node) ? node : null).ToList();
+                    rows = slice.Select(id => (id, byId.TryGetValue(id, out var node) ? node : null, remembered.TryGetValue(id, out var hash) ? hash : null)).ToList();
                 }
                 else
                 {
@@ -3319,7 +3365,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         break;
                     }
 
-                    rows = items.ToList();
+                    rows = items.Select(node => (Guid.Empty, node, (string?)null)).ToList();
                 }
 
                 var rawCount = rows.Count;
@@ -3328,16 +3374,32 @@ namespace Jellyfin.Plugin.Federation.Api
                 // array, so it can be re-parented into the response array below
                 // (a JsonNode may only ever have one parent).
                 var consumed = 0;
-                foreach (var item in rows)
+                foreach (var (rowId, item, rememberedHash) in rows)
                 {
                     consumed++;
-                    if (item != null
-                        && Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
-                        && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
+                    var itemGuid = rowId;
+                    if (rememberedHash == null
+                        && (item == null || !Guid.TryParse(item["Id"]?.GetValue<string>(), out itemGuid)))
+                    {
+                        continue;
+                    }
+
+                    if (_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
                     {
                         if (remainingSkip > 0)
                         {
                             remainingSkip--;
+                            continue;
+                        }
+
+                        if (rememberedHash != null)
+                        {
+                            pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), rememberedHash));
+                            if (pageItems.Count >= target)
+                            {
+                                break;
+                            }
+
                             continue;
                         }
 
@@ -3347,7 +3409,18 @@ namespace Jellyfin.Plugin.Federation.Api
                             PeerCatalogWire.CompactItem(compactable);
                             if (index)
                             {
-                                pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), PeerCatalogWire.ItemHash(compactable)));
+                                var hash = PeerCatalogWire.ItemHash(compactable);
+                                if (useRememberedHashes && stable!.Etags.TryGetValue(itemGuid, out var etag))
+                                {
+                                    if (IndexHashes.Count >= IndexHashCapacity)
+                                    {
+                                        IndexHashes.Clear();
+                                    }
+
+                                    IndexHashes[itemGuid] = (etag, hash, now);
+                                }
+
+                                pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), hash));
                                 if (pageItems.Count >= target)
                                 {
                                     break;
@@ -4121,6 +4194,38 @@ namespace Jellyfin.Plugin.Federation.Api
                 started,
                 message = started ? "Confirmed. The titles are removed by the sync that just started." : "Confirmed. The titles are removed by the next sync."
             });
+        }
+
+        /// <summary>
+        /// A friend's episode image, fetched the first time Jellyfin shows it (see
+        /// <see cref="LazyArtwork"/>). Anonymous because Jellyfin fetches it from
+        /// itself without a session; only answers a valid signature for an item
+        /// this server currently holds from an enabled friend, so it cannot be used
+        /// to fetch anything else.
+        /// </summary>
+        [HttpGet("Artwork")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetLazyArtwork(
+            [FromQuery] string? serverId,
+            [FromQuery] Guid itemId,
+            [FromQuery] string? tag,
+            [FromQuery] string? sig,
+            CancellationToken cancellationToken)
+        {
+            if (!LazyArtwork.Verify(serverId, itemId, tag, sig)
+                || _cache.TryGetLocalKeyForRemoteItem(serverId!, itemId) == null)
+            {
+                return NotFound();
+            }
+
+            using var response = await _artwork.FetchJellyfinPrimaryAsync(serverId!, itemId, cancellationToken).ConfigureAwait(false);
+            if (response == null)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            return File(bytes, response.Content.Headers.ContentType?.MediaType ?? "image/jpeg");
         }
 
         [HttpGet("Progress/{operationId}")]
