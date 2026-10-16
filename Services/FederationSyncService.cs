@@ -123,6 +123,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private void BeginStatusRun(IEnumerable<LibraryMapping> mappings, PluginConfiguration config, string? onlyServerId)
         {
             EnsureStatusLoaded();
+            _persistence.ResetLocalMatchCache();
             var states = new List<LibrarySyncState>();
             foreach (var mapping in mappings)
             {
