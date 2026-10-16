@@ -1227,6 +1227,12 @@
                     };
                     var PICKER_TYPES = ['Movie', 'Series', 'MusicAlbum', 'MusicVideo', 'Video', 'Photo', 'Book', 'BoxSet'];
                     var CUSTOM_TYPES = ['Movie', 'Series', 'Season', 'Episode', 'MusicAlbum', 'Audio', 'MusicVideo', 'Book', 'Photo', 'PhotoAlbum', 'Video', 'Playlist', 'BoxSet'];
+                    // Readable names for the custom library type list; the values stay the item types.
+                    var CUSTOM_TYPE_LABELS = {
+                        Movie: 'Movies', Series: 'TV shows (with episodes)', Season: 'Seasons only', Episode: 'Episodes only',
+                        MusicAlbum: 'Music (albums with songs)', Audio: 'Music (songs, with their albums)', MusicVideo: 'Music videos',
+                        Book: 'Books', Photo: 'Photos', PhotoAlbum: 'Photo albums', Video: 'Videos', Playlist: 'Playlists', BoxSet: 'Collections'
+                    };
 
                     function getToken() {
                         try {
@@ -5994,7 +6000,7 @@
                             html += '<div class="fed-input-container"><label class="fed-label">Media type</label>';
                             html += '<select class="emby-select fed-select fedMapType" data-i="' + i + '">';
                             CUSTOM_TYPES.forEach(function (t) {
-                                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
+                                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + escapeHtml(CUSTOM_TYPE_LABELS[t] || t) + '</option>';
                             });
                             html += '</select></div>';
                             html += '</div>';

@@ -1808,3 +1808,9 @@ test('friend requests choose shared libraries before sending or accepting', () =
   fns.shareChoices['new'].FolderIds.push('s');
   assert.deepEqual(fns.readShareChooser('new'), { ShareAll: false, FolderIds: ['s'] });
 });
+
+test('custom library types have readable names, and music is recognisable', () => {
+  assert.match(configPage, /MusicAlbum: 'Music \(albums with songs\)'/);
+  assert.match(configPage, /Audio: 'Music \(songs, with their albums\)'/);
+  assert.match(configPage, /escapeHtml\(CUSTOM_TYPE_LABELS\[t\] \|\| t\)/);
+});
