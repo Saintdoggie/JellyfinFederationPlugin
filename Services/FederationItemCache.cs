@@ -21,6 +21,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationItemCache> _logger;
         private readonly ConcurrentDictionary<string, FederatedCacheEntry> _entries = new();
         private readonly ConcurrentDictionary<(string ServerId, Guid RemoteItemId), string> _remoteIndex = new();
+        private readonly ConcurrentDictionary<string, SyncIndexSnapshot> _syncIndexes = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
 
@@ -335,6 +336,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 _entries.TryRemove(k, out _);
             }
 
+            RemoveSyncIndexes(mappingName);
+
             RemoveStaleIndexEntries();
         }
 
@@ -348,6 +351,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public int RemapMapping(string oldName, string newName)
         {
+            RemoveSyncIndexes(oldName);
+            RemoveSyncIndexes(newName);
             if (string.IsNullOrWhiteSpace(oldName)
                 || string.IsNullOrWhiteSpace(newName)
                 || oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
@@ -463,10 +468,44 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Clears the entire cache.
         /// </summary>
+        /// <summary>
+        /// The per-title hashes a friend's catalog index reported at the last
+        /// complete sync of one source, or null. Stored with the cache so the
+        /// hashes can never outlive the entries they vouch for.
+        /// </summary>
+        public SyncIndexSnapshot? GetSyncIndex(string key)
+            => _syncIndexes.TryGetValue(key, out var snapshot) ? snapshot : null;
+
+        public void SetSyncIndex(string key, SyncIndexSnapshot snapshot) => _syncIndexes[key] = snapshot;
+
+        public void RemoveSyncIndex(string key) => _syncIndexes.TryRemove(key, out _);
+
+        /// <summary>
+        /// Whether <paramref name="mappingName"/> currently holds the given remote
+        /// item - the condition for skipping its download as unchanged.
+        /// </summary>
+        public bool HoldsRemoteItem(string mappingName, string serverId, Guid remoteItemId)
+        {
+            var key = TryGetLocalKeyForRemoteItem(serverId, remoteItemId);
+            return key != null
+                && _entries.TryGetValue(key, out var entry)
+                && entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RemoveSyncIndexes(string mappingName)
+        {
+            var prefix = mappingName + "|";
+            foreach (var key in _syncIndexes.Keys.Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _syncIndexes.TryRemove(key, out _);
+            }
+        }
+
         public void Clear()
         {
             _entries.Clear();
             _remoteIndex.Clear();
+            _syncIndexes.Clear();
             _lastRefreshUtc = DateTime.MinValue;
         }
 
@@ -491,7 +530,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 var payload = new CachePayload
                 {
                     LastRefreshUtc = _lastRefreshUtc,
-                    Entries = _entries.Values.Select(e => e.Snapshot()).ToList()
+                    Entries = _entries.Values.Select(e => e.Snapshot()).ToList(),
+                    SyncIndexes = _syncIndexes.Count == 0 ? null : new Dictionary<string, SyncIndexSnapshot>(_syncIndexes, StringComparer.OrdinalIgnoreCase)
                 };
 
                 var json = JsonSerializer.Serialize(payload, CacheJsonOptions);
@@ -656,6 +696,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                _syncIndexes.Clear();
+                foreach (var pair in payload?.SyncIndexes ?? new Dictionary<string, SyncIndexSnapshot>())
+                {
+                    if (pair.Value?.Items != null)
+                    {
+                        _syncIndexes[pair.Key] = pair.Value;
+                    }
+                }
+
                 _lastRefreshUtc = payload?.LastRefreshUtc ?? DateTime.MinValue;
                 _logger.LogInformation("[Federation] Loaded {Count} cache entries from {Path}", _entries.Count, _cacheFilePath);
             }
@@ -677,6 +726,8 @@ namespace Jellyfin.Plugin.Federation.Services
             public DateTime LastRefreshUtc { get; set; }
 
             public List<FederatedCacheEntry> Entries { get; set; } = new();
+
+            public Dictionary<string, SyncIndexSnapshot>? SyncIndexes { get; set; }
         }
     }
 
@@ -1101,5 +1152,35 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? Role { get; set; }
 
         public string? Type { get; set; }
+    }
+
+    /// <summary>
+    /// What one friend's catalog index said about one library and item type
+    /// at the last complete sync. See FederationSyncService's index sync.
+    /// </summary>
+    public class SyncIndexSnapshot
+    {
+        /// <summary>Receiver settings the stored results depend on; a change discards them.</summary>
+        public string Context { get; set; } = string.Empty;
+
+        /// <summary>When every title was last fetched in full; older than a day means fetch all again.</summary>
+        public DateTime FullRefreshUtc { get; set; }
+
+        public Dictionary<Guid, SyncIndexItem> Items { get; set; } = new();
+    }
+
+    public class SyncIndexItem
+    {
+        /// <summary>The friend's hash of the title as it was last fetched.</summary>
+        public string H { get; set; } = string.Empty;
+
+        /// <summary>The title was fetched and deliberately not imported (filtered or not owned).</summary>
+        public bool Skip { get; set; }
+
+        /// <summary>An episode's remote season, which its import also marks as present.</summary>
+        public Guid? Season { get; set; }
+
+        /// <summary>An episode's remote series; a changed series refetches its episodes.</summary>
+        public Guid? Series { get; set; }
     }
 }

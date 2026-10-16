@@ -147,7 +147,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? localActingUserId = null,
             string? localActingUserName = null,
             bool slim = false,
-            int? cursor = null)
+            int? cursor = null,
+            IReadOnlyCollection<Guid>? ids = null)
         {
             try
             {
@@ -161,6 +162,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (cursor.HasValue)
                 {
                     queryParams.Add($"cursor={cursor.Value}");
+                }
+
+                if (ids != null && ids.Count > 0)
+                {
+                    queryParams.Add("ids=" + string.Join(",", ids.Select(id => id.ToString("N"))));
                 }
 
                 if (!string.IsNullOrEmpty(mediaType))
@@ -266,6 +272,82 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting items from remote server {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// One page of a friend's catalog index: [id, hash] per title it shares
+        /// with us (see PeerCatalogWire.ItemHash). Null when the request failed;
+        /// <see cref="PeerCatalogIndexPage.Supported"/> is false for a friend
+        /// running a version without the index, which answers with full items.
+        /// </summary>
+        public async Task<PeerCatalogIndexPage?> GetCatalogIndexPageAsync(
+            string? mediaType,
+            string? parentId,
+            int? cursor,
+            int limit,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var queryParams = new List<string> { "index=true", "includeMediaSources=true", $"limit={limit}" };
+                if (cursor.HasValue)
+                {
+                    queryParams.Add($"cursor={cursor.Value}");
+                }
+
+                if (!string.IsNullOrEmpty(mediaType))
+                {
+                    queryParams.Add($"mediaType={Uri.EscapeDataString(mediaType)}");
+                }
+
+                if (!string.IsNullOrEmpty(parentId))
+                {
+                    queryParams.Add($"parentId={Uri.EscapeDataString(parentId)}");
+                }
+
+                using var response = await SendGetAsync("/Plugins/Federation/Peer/Items?" + string.Join("&", queryParams), null, null, cancellationToken, acceptGzip: true).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(content);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("Items", out var itemsElement) || itemsElement.ValueKind != JsonValueKind.Array
+                    || !root.TryGetProperty("HasMore", out var hasMoreProp) || hasMoreProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                    || !root.TryGetProperty("NextCursor", out var cursorProp) || !cursorProp.TryGetInt32(out var nextCursor))
+                {
+                    return PeerCatalogIndexPage.Unsupported;
+                }
+
+                var entries = new List<(Guid Id, string Hash)>();
+                foreach (var entry in itemsElement.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Array)
+                    {
+                        // An older friend ignored index=true and sent full items.
+                        return PeerCatalogIndexPage.Unsupported;
+                    }
+
+                    if (entry.GetArrayLength() != 2
+                        || !Guid.TryParse(entry[0].GetString(), out var id)
+                        || entry[1].GetString() is not { Length: > 0 } hash)
+                    {
+                        _logger.LogWarning("[Federation] Malformed catalog index entry from {ServerName}", _server.Name);
+                        return null;
+                    }
+
+                    entries.Add((id, hash));
+                }
+
+                return new PeerCatalogIndexPage(true, entries, hasMoreProp.GetBoolean(), nextCursor);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error getting the catalog index from {ServerName}", _server.Name);
                 return null;
             }
         }

@@ -136,6 +136,36 @@ public sealed class PeerCatalogWireTests
         await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => PeerCatalogWire.ReadBodyAsync(response, CancellationToken.None));
     }
 
+    [Fact]
+    public void ItemHash_IsStableAndChangesWithAnyReceivedField()
+    {
+        var a = JsonNode.Parse(FullItem)!.AsObject();
+        var b = JsonNode.Parse(FullItem)!.AsObject();
+        PeerCatalogWire.CompactItem(a);
+        PeerCatalogWire.CompactItem(b);
+        Assert.Equal(PeerCatalogWire.ItemHash(a), PeerCatalogWire.ItemHash(b));
+
+        b["Overview"] = "A hacker learns the truth, again.";
+        Assert.NotEqual(PeerCatalogWire.ItemHash(a), PeerCatalogWire.ItemHash(b));
+
+        // Fields the receiver never gets do not count.
+        var c = JsonNode.Parse(FullItem)!.AsObject();
+        c["UserData"]!["PlayCount"] = 99;
+        PeerCatalogWire.CompactItem(c);
+        Assert.Equal(PeerCatalogWire.ItemHash(a), PeerCatalogWire.ItemHash(c));
+    }
+
+    [Fact]
+    public void ParseIds_AcceptsUpToTheLimitOnly()
+    {
+        var ids = Enumerable.Range(0, PeerCatalogWire.MaxIdsPerRequest).Select(_ => Guid.NewGuid()).ToList();
+        Assert.Equal(ids, PeerCatalogWire.ParseIds(string.Join(",", ids.Select(i => i.ToString("N")))));
+        Assert.Null(PeerCatalogWire.ParseIds(string.Join(",", ids.Append(Guid.NewGuid()))));
+        Assert.Null(PeerCatalogWire.ParseIds("not-a-guid"));
+        Assert.Null(PeerCatalogWire.ParseIds(""));
+        Assert.Single(PeerCatalogWire.ParseIds($"{ids[0]},{ids[0]:N}")!);
+    }
+
     private static string Page(string item)
         => "{\"Items\":[" + item + "],\"TotalRecordCount\":1,\"HasMore\":false,\"NextCursor\":1}";
 

@@ -3064,12 +3064,32 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] bool includeMediaSources = false,
             [FromQuery] bool slim = false,
             [FromQuery] int? cursor = null,
-            [FromQuery] bool compact = false)
+            [FromQuery] bool compact = false,
+            [FromQuery] bool index = false,
+            [FromQuery] string? ids = null)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
             {
                 return Unauthorized();
+            }
+
+            // index=true answers with [id, hash] pairs instead of items, so a
+            // friend can download only what changed; ids= then fetches those
+            // titles. Both always use the compact form the hash describes.
+            compact |= index;
+            List<Guid>? requestedIds = null;
+            if (!string.IsNullOrEmpty(ids))
+            {
+                requestedIds = PeerCatalogWire.ParseIds(ids);
+                if (requestedIds == null || index)
+                {
+                    return BadRequest(new { error = $"ids must be 1-{PeerCatalogWire.MaxIdsPerRequest} item ids and cannot be combined with index" });
+                }
+
+                limit = requestedIds.Count;
+                startIndex = null;
+                cursor = null;
             }
 
             var userId = ResolveInternalQueryUserId();
@@ -3121,6 +3141,11 @@ namespace Jellyfin.Plugin.Federation.Api
             if (!string.IsNullOrEmpty(parentId))
             {
                 queryParams.Add($"ParentId={Uri.EscapeDataString(parentId)}");
+            }
+
+            if (requestedIds != null)
+            {
+                queryParams.Add("Ids=" + string.Join(",", requestedIds.Select(id => id.ToString("N"))));
             }
 
             // No limit in the request means "everything", exactly as before: an
@@ -3198,6 +3223,16 @@ namespace Jellyfin.Plugin.Federation.Api
                         if (compact && item is System.Text.Json.Nodes.JsonObject compactable)
                         {
                             PeerCatalogWire.CompactItem(compactable);
+                            if (index)
+                            {
+                                pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), PeerCatalogWire.ItemHash(compactable)));
+                                if (pageItems.Count >= target)
+                                {
+                                    break;
+                                }
+
+                                continue;
+                            }
                         }
 
                         pageItems.Add(item);
