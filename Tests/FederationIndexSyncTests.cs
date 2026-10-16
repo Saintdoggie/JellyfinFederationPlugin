@@ -213,6 +213,22 @@ public partial class FederationSyncServiceTests
     }
 
     [Fact]
+    public async Task LibrarySetToAudio_AlsoSyncsTheAlbums()
+    {
+        var peer = new IndexedPeerHandler();
+        var album = peer.Add("MusicAlbum", "Album");
+        var songs = Enumerable.Range(1, 3).Select(i => peer.Add("Audio", "Song " + i, album)).ToList();
+        var (sync, cache, mapping, config, server) = CreateMovieSync(peer);
+        mapping.MediaType = "Audio";
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        var albumKey = cache.TryGetLocalKeyForRemoteItem(server.Id, album);
+        Assert.NotNull(albumKey);
+        Assert.All(songs, id => Assert.Equal(albumKey, cache.GetEntryByKey(cache.TryGetLocalKeyForRemoteItem(server.Id, id)!)!.ParentKey));
+    }
+
+    [Fact]
     public async Task IndexSync_OlderPeerWithoutIndex_FallsBackToFullPages()
     {
         var peer = new IndexedPeerHandler { SupportsIndex = false };

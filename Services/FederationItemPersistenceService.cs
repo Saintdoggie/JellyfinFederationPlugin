@@ -471,6 +471,24 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (entry == null) continue;
                     artworkCandidates.Add((x.Item, entry));
                     var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata, includeRuntime: !FederationLibraryManager.IsStreamableType(entry.ItemType));
+
+                    // An item whose parent changed is moved in place, never recreated,
+                    // so its play state stays. This happens when a library's type is
+                    // changed (songs synced as "Audio" stayed outside the albums that
+                    // a later "MusicAlbum" sync created), with the same parent rule as
+                    // for new items above.
+                    var parentEntry = entry.ParentKey != null ? _federationManager.Cache.GetEntryByKey(entry.ParentKey) : null;
+                    var expectedParent = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
+                    if (x.Item.ParentId != expectedParent)
+                    {
+                        x.Item.ParentId = expectedParent;
+                        if (x.Item is MediaBrowser.Controller.Entities.Audio.Audio song)
+                        {
+                            song.Album = entry.Metadata.Album;
+                        }
+
+                        sourceMetadataChanged = true;
+                    }
                     var playable = FirstEnabledSource(entry, config, offlineServerIds);
                     if (playable != null)
                     {
@@ -801,6 +819,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     toCreate.Count,
                     toDelete.Count,
                     desired.Count);
+
+                await EnsureArtistsAsync(desired, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1274,6 +1294,46 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Creates the artist entries Jellyfin's artist views are built from.
+        /// Jellyfin normally creates them during a library scan; items this plugin
+        /// creates are not scanned, so a friend's music showed no artists until the
+        /// next full scan. GetArtist creates a missing artist exactly as the scan
+        /// does and returns an existing one unchanged. A new artist has no
+        /// PresentationUniqueKey until Jellyfin's next metadata refresh, and artist
+        /// queries group by that key - so every new artist collapsed into one entry
+        /// until then. It is set here the way Jellyfin sets it for people.
+        /// </summary>
+        private async Task EnsureArtistsAsync(IEnumerable<FederatedCacheEntry> entries, CancellationToken cancellationToken)
+        {
+            var names = entries
+                .Where(e => e.ItemType is "MusicAlbum" or "Audio")
+                .SelectMany(e => (e.Metadata.Artists ?? Array.Empty<string>()).Append(e.Metadata.AlbumArtist ?? string.Empty))
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var name in names)
+            {
+                try
+                {
+                    var artist = _libraryManager.GetArtist(name);
+                    if (artist != null && string.IsNullOrEmpty(artist.PresentationUniqueKey))
+                    {
+                        artist.PresentationUniqueKey = artist.CreatePresentationUniqueKey();
+                        await artist.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not create the artist entry for {Artist}", name);
+                }
+            }
         }
 
         /// <summary>

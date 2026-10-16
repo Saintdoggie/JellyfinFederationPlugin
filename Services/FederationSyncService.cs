@@ -1554,6 +1554,13 @@ namespace Jellyfin.Plugin.Federation.Services
             // series so episodes can look their series back up by remote id.
             // Music works the same way: a "MusicAlbum" mapping synced empty albums,
             // because songs (Audio) were never requested.
+            // A library set to "Audio" (songs) is music too: without the albums its
+            // songs belonged to no album, and Jellyfin's album view stayed empty.
+            if (string.Equals(mapping.MediaType, "Audio", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<string> { "MusicAlbum", "Audio" };
+            }
+
             var types = new List<string> { mapping.MediaType };
             if (string.Equals(mapping.MediaType, "Series", StringComparison.OrdinalIgnoreCase))
             {
