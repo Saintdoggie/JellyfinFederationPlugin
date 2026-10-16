@@ -177,6 +177,42 @@ public partial class FederationSyncServiceTests
     }
 
     [Fact]
+    public async Task MusicLibrary_SyncsSongsInsideTheirAlbums()
+    {
+        var peer = new IndexedPeerHandler();
+        var albumA = peer.Add("MusicAlbum", "Album A");
+        var albumB = peer.Add("MusicAlbum", "Album B");
+        var songsA = Enumerable.Range(1, 3).Select(i => peer.Add("Audio", "A" + i, albumA)).ToList();
+        var songsB = Enumerable.Range(1, 3).Select(i => peer.Add("Audio", "B" + i, albumB)).ToList();
+        var single = peer.Add("Audio", "Single");
+        var (sync, cache, mapping, config, server) = CreateMovieSync(peer);
+        mapping.MediaType = "MusicAlbum";
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        var entries = cache.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
+        Assert.Equal(2, entries.Count(e => e.ItemType == "MusicAlbum"));
+        Assert.Equal(7, entries.Count(e => e.ItemType == "Audio"));
+        var keyA = cache.TryGetLocalKeyForRemoteItem(server.Id, albumA);
+        foreach (var song in songsA)
+        {
+            Assert.Equal(keyA, cache.GetEntryByKey(cache.TryGetLocalKeyForRemoteItem(server.Id, song)!)!.ParentKey);
+        }
+
+        Assert.Null(cache.GetEntryByKey(cache.TryGetLocalKeyForRemoteItem(server.Id, single)!)!.ParentKey);
+        Assert.Equal(0, peer.IdsRequestsWithoutTypeOrLibrary);
+
+        peer.Fetched.Clear();
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+        Assert.Empty(peer.Fetched);
+
+        peer.Change(albumB, "Album B (Remastered)");
+        peer.Fetched.Clear();
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+        Assert.Equal(new HashSet<Guid>(songsB.Append(albumB)), peer.Fetched.ToHashSet());
+    }
+
+    [Fact]
     public async Task IndexSync_OlderPeerWithoutIndex_FallsBackToFullPages()
     {
         var peer = new IndexedPeerHandler { SupportsIndex = false };
@@ -231,8 +267,17 @@ public partial class FederationSyncServiceTests
         peer.Add("Movie", "Another");
         var failed = await RunWithStatusAsync(sync, mapping, config);
         Assert.Equal(FederationSyncStatus.Failed, failed.State);
-        Assert.Contains("didn't send its complete title list", failed.Error);
+        Assert.Contains("answered HTTP 503", failed.Error);
+        Assert.Contains("Titles already here were kept", failed.Error);
         Assert.NotNull(failed.LastSuccessUtc);
+
+        peer.FailIndexAfterFirstPage = false;
+        peer.RejectKey = true;
+        var rejected = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Failed, rejected.State);
+        Assert.Contains("no longer accepts this server's key", rejected.Error);
+        Assert.Contains("Reconnect", rejected.Error);
+        peer.RejectKey = false;
 
         server.Enabled = false;
         var off = await RunWithStatusAsync(sync, mapping, config);
@@ -503,6 +548,9 @@ public partial class FederationSyncServiceTests
 
         public bool FailIds { get; set; }
 
+        /// <summary>Answer every catalog request 401, as for a key the friend no longer accepts.</summary>
+        public bool RejectKey { get; set; }
+
         /// <summary>Fail the next this many ids= requests, then answer normally.</summary>
         public int FailNextIds { get; set; }
 
@@ -517,6 +565,9 @@ public partial class FederationSyncServiceTests
         public List<Guid> Fetched { get; } = new();
 
         public int FullPageRequests { get; private set; }
+
+        /// <summary>ids= requests that named no item type or library (Jellyfin then groups music items away).</summary>
+        public int IdsRequestsWithoutTypeOrLibrary { get; private set; }
 
         public Guid Add(string type, string name, Guid? series = null, Guid? season = null)
         {
@@ -549,9 +600,19 @@ public partial class FederationSyncServiceTests
                 return Json("{}");
             }
 
+            if (RejectKey)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            }
+
             var ids = Param(query, "ids");
             if (ids != null)
             {
+                if (Param(query, "mediaType") == null || Param(query, "parentId") == null)
+                {
+                    IdsRequestsWithoutTypeOrLibrary++;
+                }
+
                 if (FailIds || (FailNextIds > 0 && FailNextIds-- > 0) || FailIdsAfter is <= 0)
                 {
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
@@ -609,7 +670,12 @@ public partial class FederationSyncServiceTests
                 json += $",\"ProviderIds\":{{\"Tvdb\":\"{tvdb}\"}}";
             }
 
-            if (x.Series is Guid series && x.Season is Guid season)
+            if (x.Type == "Audio" && x.Series is Guid album)
+            {
+                json += $",\"AlbumId\":\"{album}\",\"Album\":\"Album\"";
+            }
+
+            if (x.Type == "Episode" && x.Series is Guid series && x.Season is Guid season)
             {
                 json += $",\"SeriesId\":\"{series}\",\"SeasonId\":\"{season}\",\"SeasonName\":\"Season 1\",\"ParentIndexNumber\":1,\"IndexNumber\":1";
             }

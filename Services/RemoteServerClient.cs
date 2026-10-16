@@ -128,6 +128,44 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private long _catalogBytesReceived;
 
+        /// <summary>
+        /// Why the last catalog request to this friend failed, in words, or null.
+        /// A 401 means the friend no longer accepts this server's key; anything
+        /// else carries the friend's own error message when it sent one.
+        /// </summary>
+        public string? LastCatalogFailure { get; private set; }
+
+        private async Task<bool> RecordCatalogFailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                LastCatalogFailure = null;
+                return false;
+            }
+
+            string? detail = null;
+            try
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                {
+                    detail = error.GetString();
+                }
+            }
+            catch (Exception)
+            {
+                // Not every failure has a JSON body.
+            }
+
+            var code = (int)response.StatusCode;
+            LastCatalogFailure = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
+                ? $"{_server.Name} no longer accepts this server's key. Use Reconnect on the Friends tab; their admin has to accept."
+                : $"{_server.Name} answered HTTP {code}" + (string.IsNullOrWhiteSpace(detail) ? "." : $": {detail}");
+            _logger.LogWarning("[Federation] Catalog request to {ServerName} failed: {Failure}", _server.Name, LastCatalogFailure);
+            return true;
+        }
+
         /// <summary>Bytes received for catalog pages and title lists, as sent over the wire.</summary>
         public long CatalogBytesReceived => Interlocked.Read(ref _catalogBytesReceived);
 
@@ -225,7 +263,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
 
                 using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken, acceptGzip: true).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                if (await RecordCatalogFailureAsync(response, cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
+
 
                 var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
                 CountCatalogBytes(response, content);
@@ -340,7 +382,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 using var response = await SendGetAsync("/Plugins/Federation/Peer/Items?" + string.Join("&", queryParams), null, null, cancellationToken, acceptGzip: true).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                if (await RecordCatalogFailureAsync(response, cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
+
                 var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
                 CountCatalogBytes(response, content);
                 using var doc = JsonDocument.Parse(content);
@@ -1733,6 +1779,13 @@ namespace Jellyfin.Plugin.Federation.Services
             if (itemElement.TryGetProperty("Album", out var albumProp) && albumProp.ValueKind != JsonValueKind.Null)
             {
                 item.Album = albumProp.GetString();
+            }
+
+            // A song's album on the friend, so it can be placed inside that album here.
+            if (itemElement.TryGetProperty("AlbumId", out var albumIdProp) && albumIdProp.ValueKind == JsonValueKind.String
+                && Guid.TryParse(albumIdProp.GetString(), out var albumId))
+            {
+                item.AlbumId = albumId;
             }
 
             if (itemElement.TryGetProperty("AlbumArtist", out var albumArtistProp) && albumArtistProp.ValueKind != JsonValueKind.Null)

@@ -1506,7 +1506,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (indexPlan == null)
                 {
                     plan.Failed = true;
-                    Status.Fail(key, $"{server.Name} didn't send its complete title list for {source.RemoteLibraryName}. Titles already here were kept; the Log tab has details.");
+                    Status.Fail(key, (client.LastCatalogFailure ?? $"{server.Name} didn't send its complete title list for {source.RemoteLibraryName}.") + " Titles already here were kept.");
                     return plan;
                 }
 
@@ -1518,8 +1518,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 plan.ByType.Add(indexPlan.Plan!);
-                if (string.Equals(mediaType, "Series", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(mediaType, "Series", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(mediaType, "MusicAlbum", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Episodes of a changed series and songs of a changed album are
+                    // fetched again: their parent links are rebuilt from it.
                     changedSeries = indexPlan.Plan!.Changed;
                 }
             }
@@ -1549,10 +1552,16 @@ namespace Jellyfin.Plugin.Federation.Services
             // mapping otherwise syncs nothing but empty show shells - Episodes are
             // a distinct item type that has to be requested explicitly, after the
             // series so episodes can look their series back up by remote id.
+            // Music works the same way: a "MusicAlbum" mapping synced empty albums,
+            // because songs (Audio) were never requested.
             var types = new List<string> { mapping.MediaType };
             if (string.Equals(mapping.MediaType, "Series", StringComparison.OrdinalIgnoreCase))
             {
                 types.Add("Episode");
+            }
+            else if (string.Equals(mapping.MediaType, "MusicAlbum", StringComparison.OrdinalIgnoreCase))
+            {
+                types.Add("Audio");
             }
 
             return types;
@@ -1715,8 +1724,9 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var bytesBefore = client.CatalogBytesReceived;
+                // Type and library go along: see the Ids query in Peer/Items.
                 var items = await WithRetriesAsync(
-                    () => client.GetItemsAsync(ids: batch, limit: batch.Length, cancellationToken: cancellationToken),
+                    () => client.GetItemsAsync(mediaType: plan.MediaType, parentId: source.RemoteLibraryId, ids: batch, limit: batch.Length, cancellationToken: cancellationToken),
                     "A download batch",
                     server,
                     cancellationToken).ConfigureAwait(false);
@@ -1724,7 +1734,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 Status.Update(statusKey, s => s.BytesReceived += received);
                 if (items == null)
                 {
-                    Status.Fail(statusKey, $"Downloading titles from {server.Name} failed part-way. Nothing was removed; the next sync continues. The Log tab has details.");
+                    Status.Fail(statusKey, $"Downloading titles from {server.Name} failed part-way" + (client.LastCatalogFailure != null ? $" ({client.LastCatalogFailure})" : ".") + " Nothing was removed; the next sync continues.");
                     return null;
                 }
 
@@ -1749,11 +1759,12 @@ namespace Jellyfin.Plugin.Federation.Services
                             seen.Add(remoteItem.Id);
                             total++;
                             var isEpisode = remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Episode;
+                            var isSong = remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Audio;
                             plan.Next.Items[remoteItem.Id] = new SyncIndexItem
                             {
                                 H = hash,
                                 Season = isEpisode ? remoteItem.SeasonId : null,
-                                Series = isEpisode ? remoteItem.SeriesId : null
+                                Series = isEpisode ? remoteItem.SeriesId : isSong ? remoteItem.AlbumId : null
                             };
                         }
 
@@ -1844,6 +1855,17 @@ namespace Jellyfin.Plugin.Federation.Services
             var itemType = remoteItem.Type.ToString();
             var isEpisode = string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase);
             var parentKey = isEpisode ? UpsertEpisodeSeason(mapping, remoteItem, server, seen) : null;
+
+            // A song sits inside its album when the album was synced (the album pass
+            // runs first); a song without one (a single) stays a loose song.
+            if (remoteItem.Type == Jellyfin.Data.Enums.BaseItemKind.Audio && remoteItem.AlbumId is Guid albumId)
+            {
+                var albumKey = _cache.TryGetLocalKeyForRemoteItem(server.Id, albumId);
+                if (albumKey != null && _cache.HoldsRemoteItem(mapping.LocalLibraryName, server.Id, albumId))
+                {
+                    parentKey = albumKey;
+                }
+            }
 
             if (isEpisode)
             {

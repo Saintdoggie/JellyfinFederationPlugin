@@ -1335,6 +1335,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 changed = true;
             }
 
+            // A friend's Jellyfin reads song tags after its scan, so artists often
+            // arrive in a later sync; without this they never reached the items here.
+            if (item is MediaBrowser.Controller.Entities.Audio.IHasArtist withArtists
+                && metadata.Artists != null
+                && NonEmpty(metadata.Artists).Length > 0
+                && !NonEmpty(withArtists.Artists).SequenceEqual(NonEmpty(metadata.Artists), StringComparer.Ordinal))
+            {
+                withArtists.Artists = NonEmpty(metadata.Artists);
+                changed = true;
+            }
+
+            if (item is MediaBrowser.Controller.Entities.Audio.IHasAlbumArtist withAlbumArtist
+                && !string.IsNullOrWhiteSpace(metadata.AlbumArtist)
+                && !NonEmpty(withAlbumArtist.AlbumArtists).SequenceEqual(new[] { metadata.AlbumArtist! }, StringComparer.Ordinal))
+            {
+                withAlbumArtist.AlbumArtists = new[] { metadata.AlbumArtist! };
+                changed = true;
+            }
+
             return changed;
         }
 

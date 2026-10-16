@@ -63,4 +63,20 @@ public sealed class ApplySourceMetadataTests
         Assert.Equal("Kept", episode.Overview);
         Assert.Equal(2008, episode.ProductionYear);
     }
+
+    [Fact]
+    public void ArtistsArrivingLater_AreApplied_OnceOnly()
+    {
+        var song = new MediaBrowser.Controller.Entities.Audio.Audio { Name = "Song", Artists = Array.Empty<string>(), AlbumArtists = Array.Empty<string>() };
+        var metadata = new FederatedItemMetadata { Name = "Song", Artists = new[] { "Artist 07" }, AlbumArtist = "Artist 07" };
+
+        Assert.True(FederationItemPersistenceService.ApplySourceMetadata(song, metadata));
+        Assert.Equal(new[] { "Artist 07" }, song.Artists);
+        Assert.Equal(new[] { "Artist 07" }, song.AlbumArtists);
+        Assert.False(FederationItemPersistenceService.ApplySourceMetadata(song, metadata));
+
+        // A friend that sends no artists does not erase known ones.
+        Assert.False(FederationItemPersistenceService.ApplySourceMetadata(song, new FederatedItemMetadata { Name = "Song" }));
+        Assert.Equal(new[] { "Artist 07" }, song.Artists);
+    }
 }

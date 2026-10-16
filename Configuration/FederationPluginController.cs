@@ -1206,8 +1206,8 @@ namespace Jellyfin.Plugin.Federation.Api
             var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
             return Ok(new
             {
-                incoming = config.IncomingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, r.Verified }),
-                outgoing = config.OutgoingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc })
+                incoming = config.IncomingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, r.Verified, Reconnect = !string.IsNullOrEmpty(r.ReplacesServerId), r.IdentityChanged }),
+                outgoing = config.OutgoingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, Reconnect = !string.IsNullOrEmpty(r.ReplacesServerId) })
             });
         }
 
@@ -1307,6 +1307,18 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <see cref="FederationFriendService.AcceptFriendRequestAsync"/> already
         /// surfaces a clear error to its admin on anything but a 2xx response.
         /// </summary>
+        /// <summary>
+        /// Admin-triggered: ask an existing friend to renew this friendship's keys
+        /// (see <see cref="FederationFriendService.ReconnectFriendAsync"/>).
+        /// </summary>
+        [HttpPost("Friends/{id}/Reconnect")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ReconnectFriend(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.ReconnectFriendAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
         [HttpPost("Friends/Accept")]
         [AllowAnonymous]
         public IActionResult ReceiveFriendAccept([FromBody] FriendRequestPayload payload)
@@ -3347,10 +3359,12 @@ namespace Jellyfin.Plugin.Federation.Api
                     items = new System.Text.Json.Nodes.JsonArray();
                     if (toFetch.Count > 0)
                     {
-                        // The slice's own ids replace the library and type filters:
-                        // they came from exactly that query.
+                        // The library and type filters stay on: a query without an item
+                        // type makes Jellyfin group results by PresentationUniqueKey,
+                        // which music items without online metadata share, so fetching
+                        // 70 albums by id returned one or two.
                         var sliceParams = queryParams
-                            .Where(p => !p.StartsWith("ParentId=", StringComparison.Ordinal) && !p.StartsWith("IncludeItemTypes=", StringComparison.Ordinal) && !p.StartsWith("Ids=", StringComparison.Ordinal))
+                            .Where(p => !p.StartsWith("Ids=", StringComparison.Ordinal))
                             .Append("Ids=" + string.Join(",", toFetch.Select(id => id.ToString("N"))));
                         var sliceJson = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", sliceParams)}", cancellationToken).ConfigureAwait(false);
                         if (sliceJson?["Items"] is not System.Text.Json.Nodes.JsonArray sliceItems)

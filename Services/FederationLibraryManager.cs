@@ -286,6 +286,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            if (item is MusicAlbum musicAlbum)
+            {
+                musicAlbum.AlbumArtists = entry.Metadata.AlbumArtist != null ? new[] { entry.Metadata.AlbumArtist } : Array.Empty<string>();
+                musicAlbum.Artists = entry.Metadata.Artists ?? Array.Empty<string>();
+            }
+
             if (item is Audio audio)
             {
                 audio.Album = entry.Metadata.Album;
