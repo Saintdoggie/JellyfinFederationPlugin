@@ -119,6 +119,41 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task InternalRelayKey_DeletedInJellyfin_IsReplaced_ValidKeyIsKept()
+    {
+        FederationFriendService.ResetRelayKeyCheckForTests();
+        try
+        {
+            var first = await _service.GetOrCreateInternalRelayApiKeyAsync();
+            Assert.Single(_apiKeys);
+            Assert.Equal(first, await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true));
+            Assert.Single(_apiKeys);
+
+            // An admin deletes the key under Dashboard > API Keys. Within the
+            // check interval the stored key is still used...
+            _apiKeys.Clear();
+            Assert.Equal(first, await _service.GetOrCreateInternalRelayApiKeyAsync());
+
+            // ...until a request is rejected and forces a check.
+            var renewed = await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true);
+            Assert.NotEqual(first, renewed);
+            Assert.Equal(renewed, Assert.Single(_apiKeys).AccessToken);
+            Assert.Equal(renewed, _plugin.Configuration.InternalRelayApiKey);
+
+            // After the interval a regular call checks again by itself.
+            _apiKeys.Clear();
+            FederationFriendService.ResetRelayKeyCheckForTests();
+            var again = await _service.GetOrCreateInternalRelayApiKeyAsync();
+            Assert.NotEqual(renewed, again);
+            Assert.Equal(again, Assert.Single(_apiKeys).AccessToken);
+        }
+        finally
+        {
+            FederationFriendService.ResetRelayKeyCheckForTests();
+        }
+    }
+
+    [Fact]
     public void GetOrCreateLocalFederationId_IsStableAcrossCalls()
     {
         var first = _service.GetOrCreateLocalFederationId();
