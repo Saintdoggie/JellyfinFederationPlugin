@@ -65,6 +65,18 @@ namespace Jellyfin.Plugin.Federation.Services
         // batches, so a restart in the middle loses little.
         internal int SaveEveryBatches { get; set; } = 20;
 
+        // A friend's change notice starts a sync of that friend at most this often.
+        internal TimeSpan NotifiedSyncSpacing { get; set; } = TimeSpan.FromMinutes(5);
+
+        // How long to wait before retrying when another sync is running.
+        internal TimeSpan BusyRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+        // Test seam for the sync a change notice starts.
+        internal Func<string, CancellationToken, Task<SyncResult>>? NotifiedSyncOverride { get; set; }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastNotifiedSync = new(StringComparer.Ordinal);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pendingNotifiedSync = new(StringComparer.Ordinal);
+
         // How many friends the check phase talks to at once.
         internal int MaxParallelFriends { get; set; } = 4;
 
@@ -131,6 +143,65 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Skipped (another sync was already running) or ended before any
                     // library was listed, e.g. with no libraries configured.
                     Status.ClearPending();
+                }
+            });
+            return true;
+        }
+
+        /// <summary>
+        /// A friend reported that its catalog changed (see
+        /// <see cref="FederationChangeNotifier"/>): sync just that friend in the
+        /// background, so its new titles appear within minutes instead of at the
+        /// next scheduled sync. At most one such sync per friend per
+        /// <see cref="NotifiedSyncSpacing"/>; notices arriving meanwhile are
+        /// covered by the one already scheduled. Returns false when one is
+        /// already scheduled.
+        /// </summary>
+        public bool OnFriendCatalogChanged(string serverId, CancellationToken stoppingToken)
+        {
+            if (!_pendingNotifiedSync.TryAdd(serverId, 0))
+            {
+                return false;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var since = DateTime.UtcNow - _lastNotifiedSync.GetValueOrDefault(serverId, DateTime.MinValue);
+                    if (since < NotifiedSyncSpacing)
+                    {
+                        await Task.Delay(NotifiedSyncSpacing - since, stoppingToken).ConfigureAwait(false);
+                    }
+
+                    // Waits out a running sync instead of dropping the notice.
+                    for (var attempt = 0; attempt < 60; attempt++)
+                    {
+                        var result = NotifiedSyncOverride != null
+                            ? await NotifiedSyncOverride(serverId, stoppingToken).ConfigureAwait(false)
+                            : await SyncServerAsync(serverId, stoppingToken).ConfigureAwait(false);
+                        if (!string.Equals(result.Message, "A sync is already in progress; skipped", StringComparison.Ordinal))
+                        {
+                            _logger.LogInformation("[Federation] Synced a friend after its change notice: {Message}", result.Message);
+                            break;
+                        }
+
+                        await Task.Delay(BusyRetryDelay, stoppingToken).ConfigureAwait(false);
+                    }
+
+                    _lastNotifiedSync[serverId] = DateTime.UtcNow;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Jellyfin is shutting down.
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Sync after a friend's change notice failed");
+                }
+                finally
+                {
+                    _pendingNotifiedSync.TryRemove(serverId, out _);
                 }
             });
             return true;

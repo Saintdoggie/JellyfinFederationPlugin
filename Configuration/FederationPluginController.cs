@@ -3662,6 +3662,27 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Exchange this server's compact self-uptime blob for the caller's.
         /// Token-gated; no URLs or credentials in the payload.
         /// </summary>
+        /// <summary>
+        /// Server-to-server: a friend tells this server that its catalog changed,
+        /// so this server syncs that friend soon instead of at the next scheduled
+        /// sync. Authenticated with the friend's federation token; the notice
+        /// carries no data and only ever triggers this server's own normal sync.
+        /// </summary>
+        [HttpPost("Peer/CatalogChanged")]
+        [AllowAnonymous]
+        public IActionResult PeerCatalogChanged()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null || string.IsNullOrEmpty(caller.Id))
+            {
+                return Unauthorized();
+            }
+
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var scheduled = caller.Enabled && _syncService.OnFriendCatalogChanged(caller.Id, lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Accepted(new { scheduled });
+        }
+
         [HttpPost("Peer/AvailabilitySchedule")]
         [AllowAnonymous]
         public IActionResult ExchangeAvailabilitySchedule([FromBody] AvailabilityScheduleBlob? body)
