@@ -126,6 +126,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public RemoteServer ServerConfig => _server;
 
+        private long _catalogBytesReceived;
+
+        /// <summary>Bytes received for catalog pages and title lists, as sent over the wire.</summary>
+        public long CatalogBytesReceived => Interlocked.Read(ref _catalogBytesReceived);
+
+        private void CountCatalogBytes(HttpResponseMessage response, string body)
+            => Interlocked.Add(ref _catalogBytesReceived, response.Content.Headers.ContentLength ?? System.Text.Encoding.UTF8.GetByteCount(body));
+
         /// <summary>
         /// Gets items from the remote server, including ProviderIds and People.
         /// Returns null when the request fails (callers must treat null as
@@ -220,6 +228,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 response.EnsureSuccessStatusCode();
 
                 var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                CountCatalogBytes(response, content);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
@@ -310,6 +319,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await SendGetAsync("/Plugins/Federation/Peer/Items?" + string.Join("&", queryParams), null, null, cancellationToken, acceptGzip: true).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
                 var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                CountCatalogBytes(response, content);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
                 if (!root.TryGetProperty("Items", out var itemsElement) || itemsElement.ValueKind != JsonValueKind.Array

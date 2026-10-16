@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -154,6 +155,132 @@ public partial class FederationSyncServiceTests
         Assert.All(movies, id => Assert.True(CacheHasRemoteId(cache, mapping.LocalLibraryName, id)));
         Assert.True(peer.FullPageRequests > 0);
         Assert.Empty(peer.Fetched);
+    }
+
+    [Fact]
+    public async Task SyncStatus_KnowsWhatWillTransferBeforeDownloading_AndEndsUpToDate()
+    {
+        var peer = new IndexedPeerHandler();
+        var movies = Enumerable.Range(0, 5).Select(i => peer.Add("Movie", "Movie " + i)).ToList();
+        var (sync, _, mapping, config, _) = CreateMovieSync(peer);
+        sync.IdsBatchSize = 2;
+
+        var first = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Done, first.State);
+        Assert.Equal("full", first.Mode);
+        Assert.Equal(5, first.Total);
+        Assert.Equal(5, first.ToDownload);
+        Assert.Equal(5, first.Downloaded);
+        Assert.True(first.BytesReceived > 0);
+        Assert.NotNull(first.LastSuccessUtc);
+
+        peer.Change(movies[0], "Changed");
+        peer.Remove(movies[1]);
+        var second = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Done, second.State);
+        Assert.Equal("changes", second.Mode);
+        Assert.Equal(4, second.Total);
+        Assert.Equal(1, second.ToDownload);
+        Assert.Equal(1, second.ToRemove);
+        Assert.Equal(4, second.LastTotal);
+    }
+
+    [Fact]
+    public async Task SyncStatus_ExplainsFailuresInPlainLanguage()
+    {
+        var peer = new IndexedPeerHandler();
+        peer.Add("Movie", "Movie");
+        var (sync, _, mapping, config, server) = CreateMovieSync(peer);
+        await RunWithStatusAsync(sync, mapping, config);
+
+        peer.FailIndexAfterFirstPage = true;
+        sync.IndexPageSize = 1;
+        peer.Add("Movie", "Another");
+        var failed = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Failed, failed.State);
+        Assert.Contains("didn't send its complete title list", failed.Error);
+        Assert.NotNull(failed.LastSuccessUtc);
+
+        server.Enabled = false;
+        var off = await RunWithStatusAsync(sync, mapping, config);
+        Assert.Equal(FederationSyncStatus.Failed, off.State);
+        Assert.Contains("turned off", off.Error);
+    }
+
+    [Fact]
+    public async Task SyncStatus_MarksOlderFriendsAsFullDownloads()
+    {
+        var peer = new IndexedPeerHandler { SupportsIndex = false };
+        Enumerable.Range(0, 3).ToList().ForEach(i => peer.Add("Movie", "Movie " + i));
+        var (sync, _, mapping, config, _) = CreateMovieSync(peer);
+
+        var state = await RunWithStatusAsync(sync, mapping, config);
+
+        Assert.Equal(FederationSyncStatus.Done, state.State);
+        Assert.Equal("legacy", state.Mode);
+        Assert.Equal(3, state.Downloaded);
+        Assert.Equal(3, state.LastTotal);
+    }
+
+    [Fact]
+    public void SyncStatus_LastOutcomeSurvivesARestart()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fed-status-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            var cachePath = System.IO.Path.Combine(dir, "federation-cache.json");
+            var status = new FederationSyncStatus();
+            status.Initialize(cachePath);
+            var key = FederationSyncStatus.KeyFor("Movies", "s", "lib");
+            status.BeginRun(new[] { new LibrarySyncState { Key = key, ServerName = "Anna", RemoteLibraryName = "Movies", LocalLibraryName = "Movies" } }, replaceAll: true);
+            status.Update(key, s => { s.Total = 7; s.State = FederationSyncStatus.Saving; });
+            status.Succeed(key);
+            status.EndRun();
+
+            var restarted = new FederationSyncStatus();
+            restarted.Initialize(cachePath);
+            var loaded = Assert.Single(restarted.Snapshot());
+            Assert.Equal(FederationSyncStatus.Done, loaded.State);
+            Assert.Equal(7, loaded.LastTotal);
+            Assert.NotNull(loaded.LastSuccessUtc);
+            Assert.False(restarted.Running);
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void SyncStatus_RequestedSyncShowsAsRunningUntilItStartsOrIsDropped()
+    {
+        var status = new FederationSyncStatus();
+        status.MarkPending();
+        Assert.True(status.Running);
+        status.ClearPending();
+        Assert.False(status.Running);
+
+        status.MarkPending();
+        status.BeginRun(Array.Empty<LibrarySyncState>(), replaceAll: true);
+        status.ClearPending();
+        Assert.True(status.Running);
+        status.EndRun();
+        Assert.False(status.Running);
+    }
+
+    /// <summary>The check phase, download phase and status bookkeeping SyncAllAsync runs, for one mapping.</summary>
+    private static async Task<LibrarySyncState> RunWithStatusAsync(FederationSyncService sync, LibraryMapping mapping, PluginConfiguration config)
+    {
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        var mappings = new List<LibraryMapping> { mapping };
+        typeof(FederationSyncService).GetMethod("BeginStatusRun", flags)!.Invoke(sync, new object?[] { mappings, config, null });
+        await (Task)typeof(FederationSyncService).GetMethod("PlanAllAsync", flags)!.Invoke(sync, new object?[] { mappings, config, null, CancellationToken.None })!;
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+        typeof(FederationSyncService).GetMethod("MarkMappingSaved", flags)!.Invoke(sync, new object?[] { mapping });
+        typeof(FederationSyncService).GetField("_currentPlans", flags)!.SetValue(sync, null);
+        sync.Status.EndRun();
+        return Assert.Single(sync.Status.Snapshot());
     }
 
     /// <summary>A friend's Peer/Items with index=true and ids= support.</summary>
