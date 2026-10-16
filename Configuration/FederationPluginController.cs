@@ -77,7 +77,6 @@ namespace Jellyfin.Plugin.Federation.Api
         private sealed record StableOrder(IReadOnlyList<Guid> Ids, IReadOnlyDictionary<Guid, string> Etags);
 
         private readonly ILogger<FederationController> _logger;
-        private readonly FederationArtworkService _artwork;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
         private readonly LibraryProvisioningService _provisioning;
@@ -128,10 +127,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationQualityAdvisorService qualityAdvisor,
             FederationAvailabilityService availability,
             IAuthorizationContext authorizationContext,
-            FederationLogBuffer logBuffer,
-            FederationArtworkService artwork)
+            FederationLogBuffer logBuffer)
         {
-            _artwork = artwork;
             _logger = logger;
             _syncService = syncService;
             _federationManager = federationManager;
@@ -2888,7 +2885,8 @@ namespace Jellyfin.Plugin.Federation.Api
             int? index,
             [FromQuery] string token,
             [FromQuery] string? tag,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            [FromQuery] int? maxWidth = null)
         {
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
@@ -2903,8 +2901,21 @@ namespace Jellyfin.Plugin.Federation.Api
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
             var indexSegment = index.HasValue ? $"/{index.Value}" : string.Empty;
-            var tagParam = string.IsNullOrEmpty(tag) ? string.Empty : $"?tag={Uri.EscapeDataString(tag)}";
-            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}{tagParam}";
+            var query = new List<string>();
+            if (!string.IsNullOrEmpty(tag))
+            {
+                query.Add($"tag={Uri.EscapeDataString(tag)}");
+            }
+
+            // A friend asking for a smaller copy (episode images) gets one scaled
+            // here by Jellyfin's own image API instead of the full original.
+            if (maxWidth is > 0)
+            {
+                query.Add($"maxWidth={Math.Clamp(maxWidth.Value, 64, 4096)}");
+                query.Add("quality=85");
+            }
+
+            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}{(query.Count > 0 ? "?" + string.Join("&", query) : string.Empty)}";
 
             await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();
@@ -4215,38 +4226,6 @@ namespace Jellyfin.Plugin.Federation.Api
                 started,
                 message = started ? "Confirmed. The titles are removed by the sync that just started." : "Confirmed. The titles are removed by the next sync."
             });
-        }
-
-        /// <summary>
-        /// A friend's episode image, fetched the first time Jellyfin shows it (see
-        /// <see cref="LazyArtwork"/>). Anonymous because Jellyfin fetches it from
-        /// itself without a session; only answers a valid signature for an item
-        /// this server currently holds from an enabled friend, so it cannot be used
-        /// to fetch anything else.
-        /// </summary>
-        [HttpGet("Artwork")]
-        [AllowAnonymous]
-        public async Task<IActionResult> GetLazyArtwork(
-            [FromQuery] string? serverId,
-            [FromQuery] Guid itemId,
-            [FromQuery] string? tag,
-            [FromQuery] string? sig,
-            CancellationToken cancellationToken)
-        {
-            if (!LazyArtwork.Verify(serverId, itemId, tag, sig)
-                || _cache.TryGetLocalKeyForRemoteItem(serverId!, itemId) == null)
-            {
-                return NotFound();
-            }
-
-            using var response = await _artwork.FetchJellyfinPrimaryAsync(serverId!, itemId, cancellationToken).ConfigureAwait(false);
-            if (response == null)
-            {
-                return StatusCode(StatusCodes.Status502BadGateway);
-            }
-
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-            return File(bytes, response.Content.Headers.ContentType?.MediaType ?? "image/jpeg");
         }
 
         [HttpGet("Progress/{operationId}")]
