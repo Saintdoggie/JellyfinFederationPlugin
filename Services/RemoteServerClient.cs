@@ -286,6 +286,29 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Tells this friend that this server's catalog changed (see
+        /// FederationChangeNotifier). False when the friend did not take it,
+        /// including a friend whose version has no such endpoint.
+        /// </summary>
+        public async Task<bool> NotifyCatalogChangedAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var response = await _httpClient.PostAsync("/Plugins/Federation/Peer/CatalogChanged", new StringContent(string.Empty), cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not send a change notice to {ServerName}", _server.Name);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// One page of a friend's catalog index: [id, hash] per title it shares
         /// with us (see PeerCatalogWire.ItemHash). Null when the request failed;
         /// <see cref="PeerCatalogIndexPage.Supported"/> is false for a friend
