@@ -52,6 +52,16 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private const int InternalPeerItemPageSize = 500;
 
+        // Item ids per internal Ids= query. 100 ids keep the request line well
+        // under Kestrel's 8 KB limit together with the long Fields list.
+        private const int InternalIdsPerFetch = 100;
+
+        // How long a library's id-sorted order is reused across the pages of
+        // one sync, so items added mid-sync do not shift later pages.
+        private static readonly TimeSpan StableOrderLifetime = TimeSpan.FromMinutes(10);
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, IReadOnlyList<Guid> Ids)> StableOrders = new();
+
         private readonly ILogger<FederationController> _logger;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
@@ -2931,6 +2941,58 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Every item id a sync query matches, sorted by id: a total order that
+        /// cannot tie, unlike Jellyfin's default SortName order. Reused for a few
+        /// minutes so all pages of one sync see one snapshot; a request starting
+        /// at the beginning takes a fresh one. Null when the catalog could not
+        /// be read.
+        /// </summary>
+        private async Task<IReadOnlyList<Guid>?> GetStableItemOrderAsync(Guid userId, string? mediaType, string? parentId, bool fresh, CancellationToken cancellationToken)
+        {
+            var key = $"{userId:N}|{mediaType}|{parentId}";
+            var now = DateTime.UtcNow;
+            if (!fresh && StableOrders.TryGetValue(key, out var cached) && now - cached.Created < StableOrderLifetime)
+            {
+                return cached.Ids;
+            }
+
+            var query = new List<string> { "Recursive=true", "EnableImages=false", "EnableUserData=false", "EnableTotalRecordCount=false" };
+            if (!string.IsNullOrEmpty(mediaType))
+            {
+                query.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
+            }
+
+            if (!string.IsNullOrEmpty(parentId))
+            {
+                query.Add($"ParentId={Uri.EscapeDataString(parentId)}");
+            }
+
+            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", query)}", cancellationToken).ConfigureAwait(false);
+            if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+            {
+                return null;
+            }
+
+            var ids = new List<Guid>(items.Count);
+            foreach (var node in items)
+            {
+                if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var id))
+                {
+                    ids.Add(id);
+                }
+            }
+
+            ids = ids.Distinct().OrderBy(id => id).ToList();
+            foreach (var stale in StableOrders.Where(pair => now - pair.Value.Created >= StableOrderLifetime).Select(pair => pair.Key).ToList())
+            {
+                StableOrders.TryRemove(stale, out _);
+            }
+
+            StableOrders[key] = (now, ids);
+            return ids;
+        }
+
+        /// <summary>
         /// Fetches JSON from this server's own native REST API over loopback,
         /// authenticated with <see cref="FederationFriendService.GetOrCreateInternalRelayApiKeyAsync"/> -
         /// never exposed beyond this call. This plugin's own Peer/* endpoints use
@@ -3164,6 +3226,23 @@ namespace Jellyfin.Plugin.Federation.Api
             // library took quadratic time and its late pages timed out.
             var remainingSkip = cursor.HasValue ? 0 : Math.Max(0, startIndex ?? 0);
             var rawCursor = Math.Max(0, cursor ?? 0);
+
+            // Sync pages (no explicit sort) walk an id-sorted list of every
+            // matching item instead of Jellyfin's own paging. Without a sort,
+            // Jellyfin orders by SortName alone, and episodes share sort names
+            // across shows ("001 - 0001 - Pilot"); ties may come back in a
+            // different order for each offset, so whole runs of episodes were
+            // never sent and the friend pruned them as deleted. ids= requests
+            // use the same path, in the order asked for.
+            IReadOnlyList<Guid>? stableOrder = requestedIds;
+            if (stableOrder == null && string.IsNullOrEmpty(sortBy))
+            {
+                stableOrder = await GetStableItemOrderAsync(userId.Value, mediaType, parentId, rawCursor == 0 && remainingSkip == 0, cancellationToken).ConfigureAwait(false);
+                if (stableOrder == null)
+                {
+                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                }
+            }
             var safetyPage = 0;
             var exhausted = false;
 
@@ -3180,33 +3259,76 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Internal pages are bounded independently of the caller's limit:
                 // fewer visible items than asked for just means another internal
                 // round, not an unbounded single query against our own API.
-                var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, InternalPeerItemPageSize);
+                var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, stableOrder != null ? InternalIdsPerFetch : InternalPeerItemPageSize);
 
-                var pageParams = new List<string>(queryParams)
+                System.Text.Json.Nodes.JsonArray items;
+                List<System.Text.Json.Nodes.JsonNode?> rows;
+                if (stableOrder != null)
                 {
-                    $"StartIndex={rawCursor}",
-                    $"Limit={requestCount}"
-                };
+                    var slice = stableOrder.Skip(rawCursor).Take(requestCount).ToList();
+                    if (slice.Count == 0)
+                    {
+                        exhausted = true;
+                        break;
+                    }
 
-                var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
-                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+                    // The slice's own ids replace the library and type filters:
+                    // they came from exactly that query.
+                    var sliceParams = queryParams
+                        .Where(p => !p.StartsWith("ParentId=", StringComparison.Ordinal) && !p.StartsWith("IncludeItemTypes=", StringComparison.Ordinal) && !p.StartsWith("Ids=", StringComparison.Ordinal))
+                        .Append("Ids=" + string.Join(",", slice.Select(id => id.ToString("N"))));
+                    var sliceJson = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", sliceParams)}", cancellationToken).ConfigureAwait(false);
+                    if (sliceJson?["Items"] is not System.Text.Json.Nodes.JsonArray sliceItems)
+                    {
+                        return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                    }
+
+                    items = sliceItems;
+                    var byId = new Dictionary<Guid, System.Text.Json.Nodes.JsonNode>();
+                    foreach (var node in items)
+                    {
+                        if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var nodeId))
+                        {
+                            byId.TryAdd(nodeId, node);
+                        }
+                    }
+
+                    // One row per position, in the stable order; an item deleted
+                    // since the list was taken is an empty row that still counts
+                    // as consumed.
+                    rows = slice.Select(id => byId.TryGetValue(id, out var node) ? node : null).ToList();
+                }
+                else
                 {
-                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                    var pageParams = new List<string>(queryParams)
+                    {
+                        $"StartIndex={rawCursor}",
+                        $"Limit={requestCount}"
+                    };
+
+                    var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
+                    if (json?["Items"] is not System.Text.Json.Nodes.JsonArray pageArray)
+                    {
+                        return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                    }
+
+                    items = pageArray;
+                    if (items.Count == 0)
+                    {
+                        exhausted = true;
+                        break;
+                    }
+
+                    rows = items.ToList();
                 }
 
-                if (items.Count == 0)
-                {
-                    exhausted = true;
-                    break;
-                }
-
-                var rawCount = items.Count;
+                var rawCount = rows.Count;
 
                 // Removing each kept node detaches it from the fetched page's
                 // array, so it can be re-parented into the response array below
                 // (a JsonNode may only ever have one parent).
                 var consumed = 0;
-                foreach (var item in items.ToList())
+                foreach (var item in rows)
                 {
                     consumed++;
                     if (item != null
@@ -3244,9 +3366,15 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
 
                 rawCursor += consumed;
+                if (stableOrder != null && rawCursor >= stableOrder.Count)
+                {
+                    exhausted = true;
+                    break;
+                }
+
                 if (pageItems.Count >= target)
                 {
-                    exhausted = consumed == rawCount && rawCount < requestCount;
+                    exhausted = stableOrder == null && consumed == rawCount && rawCount < requestCount;
                     break;
                 }
 
