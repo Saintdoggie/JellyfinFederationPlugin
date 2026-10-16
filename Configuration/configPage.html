@@ -2233,6 +2233,11 @@
                                 }
 
                                 html += '<div style="margin-top:0.9em;">';
+                                if (!server.Kind) {
+                                    html += '<p class="fed-hint" style="margin:0 0 0.4em;">If syncing or playback with this friend stopped working because one of you reinstalled the plugin or lost its keys, Reconnect asks their admin to renew the keys. Libraries, sharing settings and synced titles stay.</p>';
+                                    html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="reconnect-friend" data-id="' + escapeHtml(server.Id) + '" data-name="' + escapeHtml(server.Name || server.Url || '') + '">Reconnect</button>';
+                                }
+
                                 html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-friend" data-i="' + i + '">Remove / unfriend</button>';
                                 html += '</div>';
                                 html += '</div>';
@@ -3035,6 +3040,24 @@
                         el.textContent = msg;
                     }
 
+                    // What accepting a reconnect request does, and when to be careful.
+                    function renderReconnectNote(r) {
+                        if (!r || !r.Reconnect) {
+                            return '';
+                        }
+
+                        var html = '<p class="fed-hint">This is an existing friend asking to renew your friendship\'s keys, usually because their server was reinstalled or lost its keys. Accepting sends new keys only to the address you already have for them, and keeps your libraries, sharing settings and synced titles.</p>';
+                        if (r.IdentityChanged) {
+                            html += '<p class="fed-notice">This server\'s identity changed: it was reinstalled, or it is a different server answering at that address. Only accept if your friend told you they reinstalled.</p>';
+                        }
+
+                        if (!r.Verified) {
+                            html += '<p class="fed-notice">The request could not be confirmed with that address (a private network address cannot be checked). Make sure your friend actually sent it.</p>';
+                        }
+
+                        return html;
+                    }
+
                     function renderFriendRequests(data) {
                         var incoming = q('#fedFriendIncoming');
                         var outgoing = q('#fedFriendOutgoing');
@@ -3054,11 +3077,17 @@
                                 ih += '<div class="fed-server-head">';
                                 ih += '<span class="fed-dot' + (r.Verified ? ' fed-dot-ok' : '') + '"></span>';
                                 ih += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
+                                if (r.Reconnect) {
+                                    ih += '<span class="fed-pill">wants to reconnect</span>';
+                                }
+
                                 ih += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + (r.Verified ? ' · verified' : ' · unverified') + '</span>';
                                 ih += '<span class="fed-spacer"></span>';
                                 ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
                                 ih += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-friend" data-id="' + escapeHtml(r.Id) + '">Reject</button>';
-                                ih += '</div></div>';
+                                ih += '</div>';
+                                ih += renderReconnectNote(r);
+                                ih += '</div>';
                             });
                             incoming.innerHTML = ih;
                         }
@@ -3072,6 +3101,10 @@
                                 oh += '<div class="fed-server-head">';
                                 oh += '<span class="fed-dot"></span>';
                                 oh += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
+                                if (r.Reconnect) {
+                                    oh += '<span class="fed-pill">reconnect</span>';
+                                }
+
                                 oh += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + '</span>';
                                 oh += '<span class="fed-spacer"></span>';
                                 oh += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="cancel-friend" data-id="' + escapeHtml(r.Id) + '">Cancel</button>';
@@ -3119,6 +3152,11 @@
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             loadFriendRequests();
+                            if (res.success && /^Reconnected/.test(res.message || '')) {
+                                setFriendStatus(res.message, 'ok');
+                                return loadConfiguration(false);
+                            }
+
                             if (res.success) {
                                 loadPools();
                                 // loadConfiguration's own seenServerIds diff notices
@@ -6821,6 +6859,20 @@
                                     break;
                                 case 'accept-friend':
                                     acceptFriendRequest(friendId);
+                                    break;
+                                case 'reconnect-friend':
+                                    if (!window.confirm('Ask ' + (t.getAttribute('data-name') || 'this friend') + ' to renew your friendship\'s keys? Their admin has to accept. Nothing is removed here.')) {
+                                        break;
+                                    }
+
+                                    setFriendStatus('Sending a reconnect request…', 'info');
+                                    fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(t.getAttribute('data-id')) + '/Reconnect', { method: 'POST' })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) {
+                                        setFriendStatus(res.message || (res.success ? 'Reconnect request sent' : 'Could not send the reconnect request'), res.success ? 'ok' : 'err');
+                                        loadFriendRequests();
+                                    })
+                                    .catch(function (e) { setFriendStatus('Could not send the reconnect request: ' + e.message, 'err'); });
                                     break;
                                 case 'reject-friend':
                                     rejectFriendRequest(friendId);

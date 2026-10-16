@@ -29,7 +29,7 @@ internal static class PeerCatalogWire
     {
         "Id", "Name", "OriginalTitle", "Type", "Overview", "CommunityRating", "OfficialRating",
         "PremiereDate", "DateCreated", "ProductionYear", "RunTimeTicks", "Container",
-        "MediaSources", "MediaStreams", "Album", "AlbumArtist", "Artists", "BackdropImageTags",
+        "MediaSources", "MediaStreams", "Album", "AlbumId", "AlbumArtist", "Artists", "BackdropImageTags",
         "Genres", "ImageTags", "IndexNumber", "ParentIndexNumber", "People", "ProviderIds",
         "SeasonId", "SeasonName", "SeriesId", "SeriesName", "Studios", "Tags"
     };

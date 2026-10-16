@@ -270,6 +270,34 @@ namespace Jellyfin.Plugin.Federation.Services
         /// see <see cref="SendPoolInviteAsync"/>. Null for an ordinary direct friend
         /// request.
         /// </param>
+        /// <summary>
+        /// Asks an existing friend to renew this friendship's keys, for example
+        /// after the friend's server was reinstalled or one side lost its keys.
+        /// The friend's admin has to accept, exactly as for a new friendship; the
+        /// request goes only to the friend's stored address, and accepting keeps
+        /// this entry with all its libraries, sharing rules and synced titles.
+        /// </summary>
+        public async Task<(bool Success, string Message)> ReconnectFriendAsync(string serverId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var friend = config.RemoteServers.FirstOrDefault(s => s.Id == serverId && s.Kind == ServerKind.Jellyfin);
+            if (friend == null)
+            {
+                return (false, "Friend not found.");
+            }
+
+            var url = friend.Url.TrimEnd('/');
+            if (config.OutgoingFriendRequests.Any(r => string.Equals(r.RemoteServerUrl.TrimEnd('/'), url, StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, $"A request to {friend.Name} is already waiting for them to accept.");
+            }
+
+            var sent = await SendFriendRequestCoreAsync(url, null, friend.Id, cancellationToken).ConfigureAwait(false);
+            return sent.Success
+                ? (true, $"Reconnect request sent to {friend.Name}. Their admin has to accept it; your libraries, sharing settings and synced titles stay as they are.")
+                : sent;
+        }
+
         public async Task<(bool Success, string Message)> SendFriendRequestAsync(string remoteUrl, CancellationToken cancellationToken, FederationPool? pool = null)
         {
             remoteUrl = (remoteUrl ?? string.Empty).TrimEnd('/');
@@ -281,8 +309,15 @@ namespace Jellyfin.Plugin.Federation.Services
             var config = Plugin.Instance!.Configuration;
             if (AlreadyKnown(config, remoteUrl))
             {
-                return (false, "Already friends (or a pending request already exists) with this server.");
+                return (false, "Already friends (or a pending request already exists) with this server. If the connection broke, use Reconnect on that friend instead.");
             }
+
+            return await SendFriendRequestCoreAsync(remoteUrl, pool, null, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<(bool Success, string Message)> SendFriendRequestCoreAsync(string remoteUrl, FederationPool? pool, string? replacesServerId, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance!.Configuration;
 
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
@@ -330,6 +365,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerUrl = remoteUrl,
                     RemoteServerName = result?.ServerName ?? remoteUrl,
                     ApiKey = apiKey,
+                    ReplacesServerId = replacesServerId,
                     CreatedUtc = DateTime.UtcNow,
                     PoolId = pool?.Id,
                     PoolName = pool?.Name,
@@ -581,7 +617,19 @@ namespace Jellyfin.Plugin.Federation.Services
                     };
                 }
 
-                if (AlreadyKnown(config, fromUrl))
+                // A request from the exact address of an existing friend asks to
+                // renew that friendship's keys (the friend was reinstalled, or one
+                // side lost its keys). It still needs the admin's approval, and is
+                // only ever matched by the stored address: accepting sends the new
+                // keys to that address, never to one named in a request.
+                var knownFriend = config.RemoteServers.FirstOrDefault(s =>
+                    s.Kind == ServerKind.Jellyfin
+                    && string.Equals(s.Url.TrimEnd('/'), fromUrl, StringComparison.OrdinalIgnoreCase));
+                // Both admins may press Reconnect at the same time; either request
+                // renews the keys on both sides, so only a duplicate incoming one is
+                // refused.
+                var pendingForUrl = config.IncomingFriendRequests.Any(r => string.Equals(r.RemoteServerUrl.TrimEnd('/'), fromUrl, StringComparison.OrdinalIgnoreCase));
+                if ((knownFriend == null && AlreadyKnown(config, fromUrl)) || (knownFriend != null && pendingForUrl))
                 {
                     if (swept > 0)
                     {
@@ -593,6 +641,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 existing = new FriendRequest
                 {
+                    ReplacesServerId = knownFriend?.Id,
+                    IdentityChanged = knownFriend != null
+                        && !string.IsNullOrEmpty(knownFriend.FederationId)
+                        && !string.Equals(knownFriend.FederationId, payload.FromServerId, StringComparison.Ordinal),
                     Id = payload.RequestId,
                     RemoteServerUrl = fromUrl,
                     RemoteServerName = string.IsNullOrEmpty(payload.FromServerName) ? fromUrl : payload.FromServerName,
@@ -668,10 +720,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 SupportsFederationToken = true
             };
 
+            var replaced = string.IsNullOrEmpty(entry.ReplacesServerId)
+                ? null
+                : config.RemoteServers.FirstOrDefault(s => s.Id == entry.ReplacesServerId);
+            var acceptUrl = (replaced?.Url ?? entry.RemoteServerUrl).TrimEnd('/');
+
             try
             {
                 using var content = JsonContent(payload);
-                using var response = await SharedHttpClient.PostAsync($"{entry.RemoteServerUrl}/Plugins/Federation/Friends/Accept", content, cancellationToken).ConfigureAwait(false);
+                using var response = await SharedHttpClient.PostAsync($"{acceptUrl}/Plugins/Federation/Friends/Accept", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return (false, $"Could not confirm with {entry.RemoteServerName} (HTTP {(int)response.StatusCode}). They may have cancelled the request, are unreachable right now, or are running an incompatible Federation plugin version - try again shortly, or ask them to upgrade.");
@@ -681,6 +738,24 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogError(ex, "[Federation] Failed to confirm friend acceptance with {Url}", entry.RemoteServerUrl);
                 return (false, $"Could not reach {entry.RemoteServerName}: {ex.Message}");
+            }
+
+            if (replaced != null)
+            {
+                // Only the keys and the reported identity change; the old keys stop
+                // working at once. Sharing rules, libraries and synced titles stay.
+                replaced.ApiKey = entry.ApiKey;
+                replaced.IssuedApiKey = apiKey;
+                if (!string.IsNullOrEmpty(entry.RemoteServerId))
+                {
+                    replaced.FederationId = entry.RemoteServerId;
+                }
+
+                config.IncomingFriendRequests.Remove(entry);
+                Plugin.Instance.SaveConfiguration();
+                _clientFactory.InvalidateAll();
+                _logger.LogInformation("[Federation] Renewed the keys of friend {Name} after its reconnect request{Identity}", replaced.Name, entry.IdentityChanged ? " (its server identity changed)" : string.Empty);
+                return (true, $"Reconnected with {replaced.Name}. Libraries, sharing settings and synced titles were kept.");
             }
 
             config.RemoteServers.Add(new RemoteServer
@@ -1988,6 +2063,28 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogWarning("[Federation] Received an accept callback for an unknown/expired request {RequestId}", payload.RequestId);
                 return false;
+            }
+
+            var reconnected = string.IsNullOrEmpty(entry.ReplacesServerId)
+                ? null
+                : config.RemoteServers.FirstOrDefault(s => s.Id == entry.ReplacesServerId);
+            if (reconnected != null)
+            {
+                // Our reconnect request was accepted: renew the keys of the existing
+                // entry. Its stored address is kept; an address in the callback is
+                // never trusted for an existing friend.
+                reconnected.ApiKey = payload.ApiKeyForYou;
+                reconnected.IssuedApiKey = entry.ApiKey;
+                if (!string.IsNullOrEmpty(payload.FromServerId))
+                {
+                    reconnected.FederationId = payload.FromServerId;
+                }
+
+                config.OutgoingFriendRequests.Remove(entry);
+                Plugin.Instance.SaveConfiguration();
+                _clientFactory.InvalidateAll();
+                _logger.LogInformation("[Federation] {Name} accepted the reconnect request; the friendship's keys were renewed", reconnected.Name);
+                return true;
             }
 
             var memberName = string.IsNullOrEmpty(payload.FromServerName) ? entry.RemoteServerName : payload.FromServerName;
