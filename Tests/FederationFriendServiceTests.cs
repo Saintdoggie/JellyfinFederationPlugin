@@ -119,6 +119,54 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SharingChosenBeforeSending_AppliesWhenTheFriendAccepts()
+    {
+        UseFakeHttp(_ => Json(HttpStatusCode.OK, new { success = true, serverName = "Anna" }));
+
+        var (sent, message) = await _service.SendFriendRequestAsync("http://anna.example", CancellationToken.None, sharing: new FriendSharing(false, new[] { "movies-lib" }));
+        Assert.True(sent, message);
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = outgoing.Id,
+            FromServerUrl = "http://anna.example",
+            FromServerName = "Anna",
+            FromServerId = "anna-1",
+            ApiKeyForYou = "key-for-us",
+            SupportsFederationToken = true
+        }));
+
+        var friend = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.False(friend.ShareAllLibraries);
+        Assert.Equal(new List<string> { "movies-lib" }, friend.SharedLibraryFolderIds);
+    }
+
+    [Fact]
+    public async Task EmptyRequest_SharesNothing_AndAcceptingWithAChoiceAppliesIt()
+    {
+        UseFakeHttp(_ => Json(HttpStatusCode.OK, new { success = true, serverName = "Ben" }));
+        await _service.SendFriendRequestAsync("http://ben.example", CancellationToken.None, sharing: new FriendSharing(false, Array.Empty<string>()));
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload { RequestId = outgoing.Id, FromServerUrl = "http://ben.example", ApiKeyForYou = "k", SupportsFederationToken = true }));
+        var ben = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.False(ben.ShareAllLibraries);
+        Assert.Empty(ben.SharedLibraryFolderIds);
+
+        _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest { Id = "in-1", RemoteServerUrl = "http://cara.example", RemoteServerName = "Cara", ApiKey = "k2" });
+        var (accepted, msg) = await _service.AcceptFriendRequestAsync("in-1", CancellationToken.None, new FriendSharing(false, new[] { "music-lib" }));
+        Assert.True(accepted, msg);
+        var cara = _plugin.Configuration.RemoteServers.Single(s => s.Url == "http://cara.example");
+        Assert.False(cara.ShareAllLibraries);
+        Assert.Equal(new List<string> { "music-lib" }, cara.SharedLibraryFolderIds);
+
+        // Without a choice (older pages and scripts) the old default stays.
+        _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest { Id = "in-2", RemoteServerUrl = "http://dan.example", RemoteServerName = "Dan", ApiKey = "k3" });
+        Assert.True((await _service.AcceptFriendRequestAsync("in-2", CancellationToken.None)).Success);
+        Assert.True(_plugin.Configuration.RemoteServers.Single(s => s.Url == "http://dan.example").ShareAllLibraries);
+    }
+
+    [Fact]
     public async Task ReinstalledFriend_RequestFromKnownAddress_RenewsKeysOfTheExistingEntry()
     {
         var friend = new RemoteServer

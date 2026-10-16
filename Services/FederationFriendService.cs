@@ -298,7 +298,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 : sent;
         }
 
-        public async Task<(bool Success, string Message)> SendFriendRequestAsync(string remoteUrl, CancellationToken cancellationToken, FederationPool? pool = null)
+        public async Task<(bool Success, string Message)> SendFriendRequestAsync(string remoteUrl, CancellationToken cancellationToken, FederationPool? pool = null, FriendSharing? sharing = null)
         {
             remoteUrl = (remoteUrl ?? string.Empty).TrimEnd('/');
             if (!ConfigValidator.IsValidServerUrl(remoteUrl))
@@ -312,10 +312,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Already friends (or a pending request already exists) with this server. If the connection broke, use Reconnect on that friend instead.");
             }
 
-            return await SendFriendRequestCoreAsync(remoteUrl, pool, null, cancellationToken).ConfigureAwait(false);
+            return await SendFriendRequestCoreAsync(remoteUrl, pool, null, cancellationToken, sharing).ConfigureAwait(false);
         }
 
-        private async Task<(bool Success, string Message)> SendFriendRequestCoreAsync(string remoteUrl, FederationPool? pool, string? replacesServerId, CancellationToken cancellationToken)
+        private async Task<(bool Success, string Message)> SendFriendRequestCoreAsync(string remoteUrl, FederationPool? pool, string? replacesServerId, CancellationToken cancellationToken, FriendSharing? sharing = null)
         {
             var config = Plugin.Instance!.Configuration;
 
@@ -366,6 +366,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerName = result?.ServerName ?? remoteUrl,
                     ApiKey = apiKey,
                     ReplacesServerId = replacesServerId,
+                    ShareAllLibraries = sharing?.ShareAll,
+                    SharedLibraryFolderIds = sharing?.FolderIds?.ToList(),
                     CreatedUtc = DateTime.UtcNow,
                     PoolId = pool?.Id,
                     PoolName = pool?.Name,
@@ -693,7 +695,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// may have cancelled it), so adding them locally first and hoping would risk
         /// a friend entry with a key that's already been revoked on their end.
         /// </summary>
-        public async Task<(bool Success, string Message)> AcceptFriendRequestAsync(string requestId, CancellationToken cancellationToken)
+        public async Task<(bool Success, string Message)> AcceptFriendRequestAsync(string requestId, CancellationToken cancellationToken, FriendSharing? sharing = null)
         {
             var config = Plugin.Instance!.Configuration;
             var entry = config.IncomingFriendRequests.FirstOrDefault(r => r.Id == requestId);
@@ -767,7 +769,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 IssuedApiKey = apiKey,
                 FederationId = entry.RemoteServerId,
                 Enabled = true,
-                StreamingMode = StreamingMode.Direct
+                StreamingMode = StreamingMode.Direct,
+                ShareAllLibraries = sharing?.ShareAll ?? true,
+                SharedLibraryFolderIds = sharing?.FolderIds?.ToList() ?? new List<string>()
             });
             config.IncomingFriendRequests.Remove(entry);
             Plugin.Instance.SaveConfiguration();
@@ -2099,7 +2103,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 IssuedApiKey = entry.ApiKey,
                 FederationId = payload.FromServerId ?? string.Empty,
                 Enabled = true,
-                StreamingMode = StreamingMode.Direct
+                StreamingMode = StreamingMode.Direct,
+                // Chosen in the friend request dialog before sending; the friend
+                // could not see anything before accepting.
+                ShareAllLibraries = entry.ShareAllLibraries ?? true,
+                SharedLibraryFolderIds = entry.SharedLibraryFolderIds?.ToList() ?? new List<string>()
             });
 
             if (!string.IsNullOrEmpty(entry.PoolId))
@@ -2747,4 +2755,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets or sets when this server was last seen in a discovery refresh.</summary>
         public DateTime LastSeenUtc { get; set; }
     }
+
+    /// <summary>What a new friend may see of this server, chosen before the friendship exists.</summary>
+    public sealed record FriendSharing(bool ShareAll, IReadOnlyList<string> FolderIds);
 }
