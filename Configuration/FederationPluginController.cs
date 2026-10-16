@@ -3034,18 +3034,38 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private async Task<System.Text.Json.Nodes.JsonObject?> FetchInternalJsonAsync(string path, CancellationToken cancellationToken)
         {
-            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
-            using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
-            request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
-            using var response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            System.Net.Http.HttpResponseMessage? response = null;
+            try
             {
-                return null;
-            }
+                for (var attempt = 0; attempt < 2; attempt++)
+                {
+                    // A rejected key is checked against Jellyfin at once and
+                    // replaced if it no longer exists, then the read is retried.
+                    var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync(forceCheck: attempt > 0).ConfigureAwait(false);
+                    using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
+                    request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
+                    response?.Dispose();
+                    response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    if (response.StatusCode != System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        break;
+                    }
+                }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+                if (!response!.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("[Federation] Reading this server's own library failed with HTTP {Status}", (int)response.StatusCode);
+                    return null;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+            }
+            finally
+            {
+                response?.Dispose();
+            }
         }
 
         /// <summary>

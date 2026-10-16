@@ -116,6 +116,14 @@ namespace Jellyfin.Plugin.Federation.Services
         // Once-per-process guard for the orphaned-key sweep below (0 = not run yet).
         private static int _orphanKeySweepDone;
 
+        // When the stored internal relay key was last confirmed to exist in Jellyfin.
+        private static DateTime _relayKeyCheckedUtc = DateTime.MinValue;
+
+        internal static TimeSpan RelayKeyCheckInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>Test seam: forget when the relay key was last checked.</summary>
+        internal static void ResetRelayKeyCheckForTests() => _relayKeyCheckedUtc = DateTime.MinValue;
+
         /// <summary>
         /// Gets this server's own internal relay API key (see
         /// <see cref="PluginConfiguration.InternalRelayApiKey"/>), creating and
@@ -124,10 +132,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// locally to fetch this server's own native stream endpoint over loopback
         /// when relaying a Direct-mode playback-token request.
         /// </summary>
-        public async Task<string> GetOrCreateInternalRelayApiKeyAsync()
+        public async Task<string> GetOrCreateInternalRelayApiKeyAsync(bool forceCheck = false)
         {
             var config = Plugin.Instance!.Configuration;
-            if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
+            if (!string.IsNullOrEmpty(config.InternalRelayApiKey)
+                && !forceCheck
+                && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
             {
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
                 return config.InternalRelayApiKey;
@@ -136,18 +146,47 @@ namespace Jellyfin.Plugin.Federation.Services
             await InternalRelayKeyLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                // Re-check: another request may have already created and persisted
-                // one while this one was waiting on the lock.
                 config = Plugin.Instance!.Configuration;
-                if (!string.IsNullOrEmpty(config.InternalRelayApiKey))
+                var stored = config.InternalRelayApiKey;
+                if (!string.IsNullOrEmpty(stored))
                 {
-                    await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                    return config.InternalRelayApiKey;
+                    if (!forceCheck && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
+                    {
+                        return stored;
+                    }
+
+                    // The stored key is only useful while Jellyfin still knows it. It
+                    // disappears when an admin deletes it under Dashboard > API Keys,
+                    // or with a database reset or reinstall that kept the plugin's
+                    // settings - and then every read of this server's own library
+                    // failed ("Invalid token") and every friend got a 503, forever.
+                    bool exists;
+                    try
+                    {
+                        var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
+                        exists = keys.Any(k => string.Equals(k.AccessToken, stored, StringComparison.Ordinal));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "[Federation] Could not list API keys to check the internal relay key; keeping it");
+                        exists = true;
+                    }
+
+                    if (exists)
+                    {
+                        _relayKeyCheckedUtc = DateTime.UtcNow;
+                        await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
+                        return stored;
+                    }
+
+                    _logger.LogWarning(
+                        "[Federation] The internal API key this plugin uses to read this server's own library no longer exists in Jellyfin (deleted under Dashboard > API Keys, or lost with a database reset or reinstall). Creating a new one");
                 }
 
                 var apiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
                 config.InternalRelayApiKey = apiKey;
                 Plugin.Instance.SaveConfiguration();
+                _relayKeyCheckedUtc = DateTime.UtcNow;
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
                 return apiKey;
             }
@@ -157,14 +196,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>
-        /// Deletes every "Federation internal relay" API key other than the one
-        /// currently configured. Older plugin versions had a bug (fixed in 0.0.77)
-        /// that minted a fresh real admin-equivalent key on every config save and
-        /// abandoned the old one, so long-running servers may have several of
-        /// these standing in their key store. Runs at most once per process
-        /// (flag-guarded) off the natural first relay request, never on a timer.
-        /// </summary>
         private async Task SweepOrphanedRelayKeysOnceAsync()
         {
             if (Interlocked.Exchange(ref _orphanKeySweepDone, 1) != 0)
