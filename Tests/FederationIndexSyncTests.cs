@@ -144,6 +144,35 @@ public partial class FederationSyncServiceTests
     }
 
     [Fact]
+    public async Task ShowsGainingProviderIds_KeepEveryShowSeasonAndEpisodeKey()
+    {
+        // A friend's metadata refresh adds TVDB ids hours after the files appear.
+        // The old key change deleted and recreated every show, season and episode.
+        var peer = new IndexedPeerHandler();
+        var shows = Enumerable.Range(0, 3).Select(i => peer.Add("Series", "Show " + i)).ToList();
+        foreach (var show in shows)
+        {
+            peer.Add("Episode", "Pilot", show, Guid.NewGuid());
+        }
+
+        var (sync, cache, mapping, config, _) = CreateMovieSync(peer);
+        mapping.MediaType = "Series";
+        config.EnableDedup = true;
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+        var before = cache.GetEntriesForMapping(mapping.LocalLibraryName).Select(e => e.Key).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        Assert.Equal(3 + 3 + 3, before.Count);
+
+        for (var i = 0; i < shows.Count; i++)
+        {
+            peer.SetTvdb(shows[i], "9000" + i);
+        }
+
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+        var after = cache.GetEntriesForMapping(mapping.LocalLibraryName).Select(e => e.Key).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
     public async Task IndexSync_OlderPeerWithoutIndex_FallsBackToFullPages()
     {
         var peer = new IndexedPeerHandler { SupportsIndex = false };
@@ -287,6 +316,7 @@ public partial class FederationSyncServiceTests
     private sealed class IndexedPeerHandler : HttpMessageHandler
     {
         private readonly List<(Guid Id, string Type, string Name, Guid? Series, Guid? Season, int Version)> _items = new();
+        private readonly Dictionary<Guid, string> _tvdb = new();
 
         public bool SupportsIndex { get; set; } = true;
 
@@ -312,6 +342,14 @@ public partial class FederationSyncServiceTests
         }
 
         public void Remove(Guid id) => _items.RemoveAll(x => x.Id == id);
+
+        /// <summary>The friend's metadata refresh found a TVDB id for this item.</summary>
+        public void SetTvdb(Guid id, string tvdb)
+        {
+            _tvdb[id] = tvdb;
+            var i = _items.FindIndex(x => x.Id == id);
+            _items[i] = _items[i] with { Version = _items[i].Version + 1 };
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -357,9 +395,14 @@ public partial class FederationSyncServiceTests
             return Json(Page(page.Select(ItemJson), start + page.Count < rows.Count, start + page.Count, legacy: true));
         }
 
-        private static string ItemJson((Guid Id, string Type, string Name, Guid? Series, Guid? Season, int Version) x)
+        private string ItemJson((Guid Id, string Type, string Name, Guid? Series, Guid? Season, int Version) x)
         {
             var json = $"{{\"Id\":\"{x.Id}\",\"Name\":\"{x.Name}\",\"Type\":\"{x.Type}\"";
+            if (_tvdb.TryGetValue(x.Id, out var tvdb))
+            {
+                json += $",\"ProviderIds\":{{\"Tvdb\":\"{tvdb}\"}}";
+            }
+
             if (x.Series is Guid series && x.Season is Guid season)
             {
                 json += $",\"SeriesId\":\"{series}\",\"SeasonId\":\"{season}\",\"SeasonName\":\"Season 1\",\"ParentIndexNumber\":1,\"IndexNumber\":1";

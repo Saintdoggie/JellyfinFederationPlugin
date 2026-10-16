@@ -22,6 +22,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<string, FederatedCacheEntry> _entries = new();
         private readonly ConcurrentDictionary<(string ServerId, Guid RemoteItemId), string> _remoteIndex = new();
         private readonly ConcurrentDictionary<string, SyncIndexSnapshot> _syncIndexes = new(StringComparer.OrdinalIgnoreCase);
+
+        // Provider key -> the provider-keyed entry that already holds that title,
+        // recorded when an item's provider id changes after it was first stored.
+        private readonly ConcurrentDictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
 
         /// <summary>Where the cache is stored; empty until initialized.</summary>
@@ -195,7 +199,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string itemType,
             string? parentKey = null)
         {
-            var key = BuildProviderKey(mappingName, providerName, providerId);
+            var key = StickyKey(mappingName, serverId, remoteItemId, BuildProviderKey(mappingName, providerName, providerId), itemType);
             var entry = _entries.AddOrUpdate(
                 key,
                 _ => CreateEntry(key, mappingName, itemType, remoteItem, serverId, remoteItemId, serverPriority),
@@ -213,6 +217,48 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// The key a remote item is stored under. A title keeps the key it was first
+        /// stored under even when its friend later reports a provider id (or a
+        /// different one): Jellyfin item ids derive from the key, so a new key
+        /// deleted and recreated the title - and for a series, every season and
+        /// episode below it, since their keys build on the series key - losing
+        /// watch state. A friend's metadata refresh adds TVDB/TMDB ids to a large
+        /// library over hours, so this happened to whole libraries.
+        /// </summary>
+        private string StickyKey(string mappingName, string serverId, Guid remoteItemId, string desiredKey, string itemType)
+        {
+            if (_remoteIndex.TryGetValue((serverId, remoteItemId), out var existingKey)
+                && !string.Equals(existingKey, desiredKey, StringComparison.OrdinalIgnoreCase)
+                && _entries.TryGetValue(existingKey, out var existing)
+                && existing.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existing.ItemType, itemType, StringComparison.OrdinalIgnoreCase)
+                && existing.GetSourcesSnapshot().Any(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId))
+            {
+                // Other friends' copies of the same title can still merge into a
+                // provider-keyed entry through its new provider key. Raw entries are
+                // pruned by their one server, so nothing else may join them.
+                if (!IsRawKey(existingKey) && !IsRawKey(desiredKey) && !_entries.ContainsKey(desiredKey))
+                {
+                    _aliases[desiredKey] = existingKey;
+                }
+
+                return existingKey;
+            }
+
+            if (!IsRawKey(desiredKey)
+                && !_entries.ContainsKey(desiredKey)
+                && _aliases.TryGetValue(desiredKey, out var aliased)
+                && _entries.TryGetValue(aliased, out var target)
+                && target.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(target.ItemType, itemType, StringComparison.OrdinalIgnoreCase))
+            {
+                return aliased;
+            }
+
+            return desiredKey;
+        }
+
+        /// <summary>
         /// Upserts a raw cache entry (no provider id) keyed by server + remote item.
         /// </summary>
         public FederatedCacheEntry UpsertRaw(
@@ -224,7 +270,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string itemType,
             string? parentKey = null)
         {
-            var key = BuildRawKey(mappingName, serverId, remoteItemId);
+            var key = StickyKey(mappingName, serverId, remoteItemId, BuildRawKey(mappingName, serverId, remoteItemId), itemType);
             var entry = _entries.AddOrUpdate(
                 key,
                 _ => CreateEntry(key, mappingName, itemType, remoteItem, serverId, remoteItemId, serverPriority),
@@ -509,6 +555,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _entries.Clear();
             _remoteIndex.Clear();
             _syncIndexes.Clear();
+            _aliases.Clear();
             _lastRefreshUtc = DateTime.MinValue;
         }
 
@@ -534,7 +581,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     LastRefreshUtc = _lastRefreshUtc,
                     Entries = _entries.Values.Select(e => e.Snapshot()).ToList(),
-                    SyncIndexes = _syncIndexes.Count == 0 ? null : new Dictionary<string, SyncIndexSnapshot>(_syncIndexes, StringComparer.OrdinalIgnoreCase)
+                    SyncIndexes = _syncIndexes.Count == 0 ? null : new Dictionary<string, SyncIndexSnapshot>(_syncIndexes, StringComparer.OrdinalIgnoreCase),
+                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
                 };
 
                 var json = JsonSerializer.Serialize(payload, CacheJsonOptions);
@@ -699,6 +747,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                _aliases.Clear();
+                foreach (var pair in payload?.Aliases ?? new Dictionary<string, string>())
+                {
+                    _aliases[pair.Key] = pair.Value;
+                }
+
                 _syncIndexes.Clear();
                 foreach (var pair in payload?.SyncIndexes ?? new Dictionary<string, SyncIndexSnapshot>())
                 {
@@ -731,6 +785,8 @@ namespace Jellyfin.Plugin.Federation.Services
             public List<FederatedCacheEntry> Entries { get; set; } = new();
 
             public Dictionary<string, SyncIndexSnapshot>? SyncIndexes { get; set; }
+
+            public Dictionary<string, string>? Aliases { get; set; }
         }
     }
 
