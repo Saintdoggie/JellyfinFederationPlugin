@@ -3063,7 +3063,8 @@ namespace Jellyfin.Plugin.Federation.Api
             CancellationToken cancellationToken,
             [FromQuery] bool includeMediaSources = false,
             [FromQuery] bool slim = false,
-            [FromQuery] int? cursor = null)
+            [FromQuery] int? cursor = null,
+            [FromQuery] bool compact = false)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
@@ -3194,6 +3195,11 @@ namespace Jellyfin.Plugin.Federation.Api
                         }
 
                         items.Remove(item);
+                        if (compact && item is System.Text.Json.Nodes.JsonObject compactable)
+                        {
+                            PeerCatalogWire.CompactItem(compactable);
+                        }
+
                         pageItems.Add(item);
                         if (pageItems.Count >= target)
                         {
@@ -3233,18 +3239,24 @@ namespace Jellyfin.Plugin.Federation.Api
             // that caller stop after exactly one WAN round trip on the last
             // page. TotalRecordCount stays a page-length echo for old callers;
             // only new callers that read HasMore change behavior.
-            return new ContentResult
-            {
-                Content = new System.Text.Json.Nodes.JsonObject
+            var (body, contentEncoding) = PeerCatalogWire.Encode(
+                new System.Text.Json.Nodes.JsonObject
                 {
                     ["Items"] = pageItems,
                     ["TotalRecordCount"] = pageItems.Count,
                     ["HasMore"] = !exhausted,
                     ["NextCursor"] = rawCursor
                 }.ToJsonString(),
-                ContentType = "application/json",
-                StatusCode = StatusCodes.Status200OK
-            };
+                Request.Headers.AcceptEncoding.ToString());
+            Response.Headers.Vary = "Accept-Encoding";
+            if (contentEncoding != null)
+            {
+                // Jellyfin's own response compression is off for HTTPS, which is
+                // how friends usually connect. It skips an already-encoded body.
+                Response.Headers.ContentEncoding = contentEncoding;
+            }
+
+            return File(body, "application/json");
         }
 
         /// <summary>

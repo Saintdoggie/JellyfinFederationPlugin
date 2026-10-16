@@ -202,16 +202,18 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Jellyfin 12 exposes the file container on MediaSources,
                     // not necessarily on the catalog item's top-level DTO.
                     queryParams.Add("includeMediaSources=true");
+                    // Only the fields ParseItem reads (see PeerCatalogWire).
+                    queryParams.Add("compact=true");
                 }
 
                 var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
 
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
 
-                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
+                using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken, acceptGzip: true).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
@@ -1745,15 +1747,26 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="IRemoteServerClientFactory"/>) outlives any single request
         /// and is reused across different local users.
         /// </summary>
-        private Task<HttpResponseMessage> SendGetAsync(string url, string? localActingUserId, string? localActingUserName, CancellationToken cancellationToken)
+        private Task<HttpResponseMessage> SendGetAsync(string url, string? localActingUserId, string? localActingUserName, CancellationToken cancellationToken, bool acceptGzip = false)
         {
-            if (string.IsNullOrEmpty(localActingUserId))
+            if (string.IsNullOrEmpty(localActingUserId) && !acceptGzip)
             {
                 return _httpClient.GetAsync(url, cancellationToken);
             }
 
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+            if (acceptGzip)
+            {
+                // Per request rather than on the shared client: the same client
+                // relays media, whose byte ranges must never be re-encoded.
+                request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("gzip"));
+            }
+
+            if (!string.IsNullOrEmpty(localActingUserId))
+            {
+                request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+            }
+
             if (!string.IsNullOrEmpty(localActingUserName))
             {
                 request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localActingUserName);
