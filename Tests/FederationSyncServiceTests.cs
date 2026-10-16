@@ -538,6 +538,7 @@ public partial class FederationSyncServiceTests
         var remoteClient = new RemoteServerClient(server, NullLogger.Instance, httpClient);
         var clientFactory = new Mock<IRemoteServerClientFactory>();
         clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+        LastClientFactory = clientFactory;
         var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
         var lm = new Mock<ILibraryManager>();
         lm.Setup(x => x.GetNewItemId(It.IsAny<string>(), It.IsAny<Type>())).Returns(Guid.NewGuid());
@@ -570,6 +571,10 @@ public partial class FederationSyncServiceTests
         };
         return (syncService, cache, mapping, config, server);
     }
+
+    // The client factory of the most recent CreateMovieSync, for tests adding a second friend.
+    [ThreadStatic]
+    private static Mock<IRemoteServerClientFactory>? LastClientFactory;
 
     private static async Task InvokeRefreshMappingAsync(FederationSyncService sync, LibraryMapping mapping, PluginConfiguration config)
     {

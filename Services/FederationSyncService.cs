@@ -52,6 +52,9 @@ namespace Jellyfin.Plugin.Federation.Services
         // Tests lower these to exercise index paging and id batching.
         internal int IndexPageSize { get; set; } = 2000;
 
+        // How many friends the check phase talks to at once.
+        internal int MaxParallelFriends { get; set; } = 4;
+
         // 100 ids keep each request line comfortably under common 8 KB limits
         // (Kestrel, nginx), also behind a reverse proxy.
         internal int IdsBatchSize { get; set; } = 100;
@@ -157,7 +160,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         private async Task PlanAllAsync(IEnumerable<LibraryMapping> mappings, PluginConfiguration config, string? onlyServerId, CancellationToken cancellationToken)
         {
-            var plans = new Dictionary<string, SourcePlan>(StringComparer.OrdinalIgnoreCase);
+            var work = new List<(LibraryMapping Mapping, RemoteLibrarySource Source, RemoteServer Server)>();
             foreach (var mapping in mappings)
             {
                 foreach (var source in mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
@@ -168,17 +171,36 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
-                    if (server == null || !server.Enabled)
+                    if (server != null && server.Enabled)
                     {
-                        continue;
+                        work.Add((mapping, source, server));
                     }
-
-                    cancellationToken.ThrowIfCancellationRequested();
-                    plans[StatusKey(mapping, source)] = await PlanSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
                 }
             }
 
-            _currentPlans = plans;
+            // Friends are checked at the same time, each friend's own libraries one
+            // after another: a friend never gets more than one request at once from
+            // this server, and a slow friend no longer holds up the others.
+            var plans = new System.Collections.Concurrent.ConcurrentDictionary<string, SourcePlan>(StringComparer.OrdinalIgnoreCase);
+            using var gate = new SemaphoreSlim(MaxParallelFriends);
+            await Task.WhenAll(work.GroupBy(w => w.Server.Id).Select(async friend =>
+            {
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    foreach (var (mapping, source, server) in friend)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        plans[StatusKey(mapping, source)] = await PlanSourceAsync(mapping, server, source, config, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            })).ConfigureAwait(false);
+
+            _currentPlans = new Dictionary<string, SourcePlan>(plans, StringComparer.OrdinalIgnoreCase);
         }
 
         /// <summary>A library counts as synced once Jellyfin has stored its titles.</summary>
