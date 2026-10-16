@@ -298,6 +298,42 @@ public partial class FederationSyncServiceTests
         Assert.False(status.Running);
     }
 
+    [Fact]
+    public async Task CheckPhase_AsksDifferentFriendsAtTheSameTime()
+    {
+        var arrivals = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource>();
+        var overlapped = new System.Collections.Concurrent.ConcurrentBag<bool>();
+        var peerA = new IndexedPeerHandler { OnIndexRequest = () => MeetAsync("a", "b") };
+        var peerB = new IndexedPeerHandler { OnIndexRequest = () => MeetAsync("b", "a") };
+        peerA.Add("Movie", "A movie");
+        peerB.Add("Movie", "B movie");
+
+        async Task MeetAsync(string me, string other)
+        {
+            arrivals.GetOrAdd(me, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+            var otherArrived = arrivals.GetOrAdd(other, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+            overlapped.Add(await Task.WhenAny(otherArrived, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false) == otherArrived);
+        }
+
+        var (sync, cache, mapping, config, serverA) = CreateMovieSync(peerA);
+        var serverB = new RemoteServer { Id = "server-b", Name = "Friend B", Url = "http://b.local", ApiKey = "key", Enabled = true, WanCapMode = WanCapMode.Off };
+        config.RemoteServers.Add(serverB);
+        mapping.RemoteLibrarySources.Add(new RemoteLibrarySource { ServerId = serverB.Id, RemoteLibraryId = "lib1", RemoteLibraryName = "Movies" });
+        var clientA = new RemoteServerClient(serverA, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, new HttpClient(peerA) { BaseAddress = new Uri(serverA.Url) });
+        var clientB = new RemoteServerClient(serverB, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, new HttpClient(peerB) { BaseAddress = new Uri(serverB.Url) });
+        var factory = (Moq.Mock<IRemoteServerClientFactory>)typeof(FederationSyncServiceTests).GetField("LastClientFactory", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        factory.Setup(f => f.GetClient(Moq.It.Is<RemoteServer>(s => s.Id == serverA.Id))).Returns(clientA);
+        factory.Setup(f => f.GetClient(Moq.It.Is<RemoteServer>(s => s.Id == serverB.Id))).Returns(clientB);
+
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        await (Task)typeof(FederationSyncService).GetMethod("PlanAllAsync", flags)!.Invoke(sync, new object?[] { new List<LibraryMapping> { mapping }, config, null, CancellationToken.None })!;
+        await InvokeRefreshMappingAsync(sync, mapping, config);
+
+        Assert.Equal(2, overlapped.Count);
+        Assert.All(overlapped, Assert.True);
+        Assert.Equal(2, cache.GetEntriesForMapping(mapping.LocalLibraryName).Count());
+    }
+
     /// <summary>The check phase, download phase and status bookkeeping SyncAllAsync runs, for one mapping.</summary>
     private static async Task<LibrarySyncState> RunWithStatusAsync(FederationSyncService sync, LibraryMapping mapping, PluginConfiguration config)
     {
@@ -323,6 +359,11 @@ public partial class FederationSyncServiceTests
         public bool FailIndexAfterFirstPage { get; set; }
 
         public bool FailIds { get; set; }
+
+        /// <summary>Runs before the first title-list request is answered.</summary>
+        public Func<Task>? OnIndexRequest { get; set; }
+
+        private int _indexRequests;
 
         public List<Guid> Fetched { get; } = new();
 
@@ -379,6 +420,11 @@ public partial class FederationSyncServiceTests
             var limit = ParseQueryInt(query, "limit") ?? 200;
             if (query.Contains("index=true", StringComparison.Ordinal) && SupportsIndex)
             {
+                if (OnIndexRequest != null && Interlocked.Increment(ref _indexRequests) == 1)
+                {
+                    return AnswerAfterAsync(OnIndexRequest, request, cancellationToken);
+                }
+
                 if (FailIndexAfterFirstPage && cursor > 0)
                 {
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
@@ -393,6 +439,12 @@ public partial class FederationSyncServiceTests
             var start = ParseQueryInt(query, "startIndex") ?? 0;
             var page = rows.Skip(start).Take(limit).ToList();
             return Json(Page(page.Select(ItemJson), start + page.Count < rows.Count, start + page.Count, legacy: true));
+        }
+
+        private async Task<HttpResponseMessage> AnswerAfterAsync(Func<Task> wait, HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await wait().ConfigureAwait(false);
+            return await SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
         private string ItemJson((Guid Id, string Type, string Name, Guid? Series, Guid? Season, int Version) x)
