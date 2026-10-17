@@ -747,6 +747,33 @@ namespace Jellyfin.Plugin.Federation.Services
 
                         if (!remoteResp.IsSuccessStatusCode && remoteResp.StatusCode != System.Net.HttpStatusCode.PartialContent)
                         {
+                            // "bytes=0-" asks for the whole file, so a plain request
+                            // is an equivalent answer. ffprobe sends exactly that,
+                            // and an upstream that refused it with 416 left a song
+                            // with no audio stream, which Jellyfin's player then
+                            // crashed on ("Value cannot be null (audioStream)").
+                            if (remoteResp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable
+                                && !headersSent && range != null && rangeStart == 0 && !rangeEnd.HasValue)
+                            {
+                                _logger.LogWarning(
+                                    "[Federation] Upstream stream at {UpstreamHost} refused the range \"{Range}\" (HTTP 416, {ContentRange}); asking for the whole file instead",
+                                    GetSafeUpstreamHost(url),
+                                    range,
+                                    remoteResp.Content.Headers.ContentRange?.ToString() ?? "no Content-Range");
+                                range = null;
+                                continue;
+                            }
+
+                            if ((int)remoteResp.StatusCode >= 400 && (int)remoteResp.StatusCode < 500)
+                            {
+                                _logger.LogWarning(
+                                    "[Federation] Upstream stream at {UpstreamHost} returned HTTP {StatusCode} for range {Range} ({ContentRange})",
+                                    GetSafeUpstreamHost(url),
+                                    (int)remoteResp.StatusCode,
+                                    range ?? "none",
+                                    remoteResp.Content.Headers.ContentRange?.ToString() ?? "no Content-Range");
+                            }
+
                             if ((int)remoteResp.StatusCode >= 500)
                             {
                                 if (observationServerId != null) _ranking.ObserveStall(observationServerId);

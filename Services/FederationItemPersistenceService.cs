@@ -290,7 +290,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var dedupKeys = (config?.EnableDedup ?? true)
                     ? (config?.DedupProviderIds ?? new List<string>())
                     : new List<string>();
-                var localProviderIds = CollectServerWideLocalProviderIds(dedupKeys);
+                var localProviderIds = LocalProviderIdsForSync(dedupKeys);
 
                 // Offline servers (see FederationAvailabilityService): entries
                 // whose every source server is currently unreachable are never
@@ -471,6 +471,24 @@ namespace Jellyfin.Plugin.Federation.Services
                     if (entry == null) continue;
                     artworkCandidates.Add((x.Item, entry));
                     var sourceMetadataChanged = ApplySourceMetadata(x.Item, entry.Metadata, includeRuntime: !FederationLibraryManager.IsStreamableType(entry.ItemType));
+
+                    // An item whose parent changed is moved in place, never recreated,
+                    // so its play state stays. This happens when a library's type is
+                    // changed (songs synced as "Audio" stayed outside the albums that
+                    // a later "MusicAlbum" sync created), with the same parent rule as
+                    // for new items above.
+                    var parentEntry = entry.ParentKey != null ? _federationManager.Cache.GetEntryByKey(entry.ParentKey) : null;
+                    var expectedParent = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
+                    if (x.Item.ParentId != expectedParent)
+                    {
+                        x.Item.ParentId = expectedParent;
+                        if (x.Item is MediaBrowser.Controller.Entities.Audio.Audio song)
+                        {
+                            song.Album = entry.Metadata.Album;
+                        }
+
+                        sourceMetadataChanged = true;
+                    }
                     var playable = FirstEnabledSource(entry, config, offlineServerIds);
                     if (playable != null)
                     {
@@ -801,6 +819,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     toCreate.Count,
                     toDelete.Count,
                     desired.Count);
+
+                await EnsureArtistsAsync(desired, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1032,7 +1052,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// nothing sensible to nest under once it's gone from local browsing, so
         /// they are hidden along with it.
         /// </summary>
-        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds, HashSet<string> hiddenKeys, HashSet<string>? offlineServerIds = null)
+        private bool IsEntryValid(FederatedCacheEntry? entry, List<string> dedupKeys, IReadOnlySet<string> localProviderIds, HashSet<string> hiddenKeys, HashSet<string>? offlineServerIds = null)
         {
             var depth = 0;
             while (entry != null)
@@ -1074,6 +1094,49 @@ namespace Jellyfin.Plugin.Federation.Services
         /// user's local copy of a movie is just as real a duplicate if it lives in a
         /// separate, ordinary library as if it happens to share the federated one.
         /// </summary>
+        private readonly object _localIdsLock = new();
+        private (DateTime At, string Signature, IReadOnlySet<string> Ids)? _localIdsMemo;
+
+        /// <summary>
+        /// Forgets the collected local provider ids, so the next reconciliation
+        /// scans the server again. Called when a sync starts.
+        /// </summary>
+        public void ResetLocalMatchCache()
+        {
+            lock (_localIdsLock)
+            {
+                _localIdsMemo = null;
+            }
+        }
+
+        /// <summary>
+        /// The server-wide scan below, done once per sync instead of once per
+        /// friend library: it loads every movie, series and episode on the server
+        /// (several seconds for a large library), and its result cannot change
+        /// while a sync only adds or removes federated items, which it skips.
+        /// </summary>
+        private IReadOnlySet<string> LocalProviderIdsForSync(List<string> dedupKeys)
+        {
+            var signature = string.Join("|", dedupKeys);
+            lock (_localIdsLock)
+            {
+                if (_localIdsMemo is { } memo
+                    && string.Equals(memo.Signature, signature, StringComparison.OrdinalIgnoreCase)
+                    && DateTime.UtcNow - memo.At < TimeSpan.FromMinutes(10))
+                {
+                    return memo.Ids;
+                }
+            }
+
+            var ids = CollectServerWideLocalProviderIds(dedupKeys);
+            lock (_localIdsLock)
+            {
+                _localIdsMemo = (DateTime.UtcNow, signature, ids);
+            }
+
+            return ids;
+        }
+
         private HashSet<string> CollectServerWideLocalProviderIds(List<string> dedupKeys)
         {
             var localProviderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1214,7 +1277,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return sources.All(s => offlineServerIds.Contains(s.ServerId));
         }
 
-        private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, HashSet<string> localProviderIds)
+        private static bool HasLocalMatch(FederatedCacheEntry? entry, List<string> dedupKeys, IReadOnlySet<string> localProviderIds)
         {
             if (entry == null || dedupKeys.Count == 0 || localProviderIds.Count == 0 || entry.Metadata.ProviderIds == null)
             {
@@ -1234,6 +1297,46 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Creates the artist entries Jellyfin's artist views are built from.
+        /// Jellyfin normally creates them during a library scan; items this plugin
+        /// creates are not scanned, so a friend's music showed no artists until the
+        /// next full scan. GetArtist creates a missing artist exactly as the scan
+        /// does and returns an existing one unchanged. A new artist has no
+        /// PresentationUniqueKey until Jellyfin's next metadata refresh, and artist
+        /// queries group by that key - so every new artist collapsed into one entry
+        /// until then. It is set here the way Jellyfin sets it for people.
+        /// </summary>
+        private async Task EnsureArtistsAsync(IEnumerable<FederatedCacheEntry> entries, CancellationToken cancellationToken)
+        {
+            var names = entries
+                .Where(e => e.ItemType is "MusicAlbum" or "Audio")
+                .SelectMany(e => (e.Metadata.Artists ?? Array.Empty<string>()).Append(e.Metadata.AlbumArtist ?? string.Empty))
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var name in names)
+            {
+                try
+                {
+                    var artist = _libraryManager.GetArtist(name);
+                    if (artist != null && string.IsNullOrEmpty(artist.PresentationUniqueKey))
+                    {
+                        artist.PresentationUniqueKey = artist.CreatePresentationUniqueKey();
+                        await artist.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not create the artist entry for {Artist}", name);
+                }
+            }
+        }
+
+        /// <summary>
         /// Applies the cache's latest title/plot/year/rating/genre/studio values
         /// onto an already-persisted item so corrections from the source reach
         /// it without a delete/recreate (which would lose watch progress). A
@@ -1242,28 +1345,102 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal static bool ApplySourceMetadata(BaseItem item, FederatedItemMetadata metadata, bool includeRuntime = true)
         {
-            var before = System.Text.Json.JsonSerializer.Serialize(new
+            // Only values that really differ are written. Jellyfin reads an empty
+            // Studios list back as [""] and returns dates in UTC while the cache may
+            // hold local times, so a plain before/after comparison reported every
+            // item as changed and rewrote the whole library on every sync.
+            var changed = false;
+            if (!string.IsNullOrEmpty(metadata.Name) && !string.Equals(item.Name, metadata.Name, StringComparison.Ordinal))
             {
-                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
-                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
-            });
-            if (!string.IsNullOrEmpty(metadata.Name)) item.Name = metadata.Name;
-            item.Overview = metadata.Overview ?? item.Overview;
-            item.OriginalTitle = metadata.OriginalTitle ?? item.OriginalTitle;
-            item.ProductionYear = metadata.ProductionYear ?? item.ProductionYear;
-            item.PremiereDate = metadata.PremiereDate ?? item.PremiereDate;
-            item.CommunityRating = metadata.CommunityRating ?? item.CommunityRating;
-            item.OfficialRating = metadata.OfficialRating ?? item.OfficialRating;
-            if (includeRuntime)
-                item.RunTimeTicks = metadata.RunTimeTicks ?? item.RunTimeTicks;
-            item.Genres = metadata.Genres ?? item.Genres;
-            item.Studios = metadata.Studios ?? item.Studios;
-            var after = System.Text.Json.JsonSerializer.Serialize(new
+                item.Name = metadata.Name;
+                changed = true;
+            }
+
+            changed |= SetIfDifferent(metadata.Overview, item.Overview, v => item.Overview = v);
+            changed |= SetIfDifferent(metadata.OriginalTitle, item.OriginalTitle, v => item.OriginalTitle = v);
+            changed |= SetIfDifferent(metadata.OfficialRating, item.OfficialRating, v => item.OfficialRating = v);
+            if (metadata.ProductionYear.HasValue && item.ProductionYear != metadata.ProductionYear)
             {
-                item.Name, item.Overview, item.OriginalTitle, item.ProductionYear, item.PremiereDate,
-                item.CommunityRating, item.OfficialRating, item.RunTimeTicks, item.Genres, item.Studios
-            });
-            return !string.Equals(before, after, StringComparison.Ordinal);
+                item.ProductionYear = metadata.ProductionYear;
+                changed = true;
+            }
+
+            if (metadata.PremiereDate.HasValue && !SameInstant(item.PremiereDate, metadata.PremiereDate))
+            {
+                item.PremiereDate = metadata.PremiereDate;
+                changed = true;
+            }
+
+            if (metadata.CommunityRating.HasValue && item.CommunityRating != metadata.CommunityRating)
+            {
+                item.CommunityRating = metadata.CommunityRating;
+                changed = true;
+            }
+
+            if (includeRuntime && metadata.RunTimeTicks.HasValue && item.RunTimeTicks != metadata.RunTimeTicks)
+            {
+                item.RunTimeTicks = metadata.RunTimeTicks;
+                changed = true;
+            }
+
+            if (metadata.Genres != null && !NonEmpty(item.Genres).SequenceEqual(NonEmpty(metadata.Genres), StringComparer.Ordinal))
+            {
+                item.Genres = NonEmpty(metadata.Genres);
+                changed = true;
+            }
+
+            if (metadata.Studios != null && !NonEmpty(item.Studios).SequenceEqual(NonEmpty(metadata.Studios), StringComparer.Ordinal))
+            {
+                item.Studios = NonEmpty(metadata.Studios);
+                changed = true;
+            }
+
+            // A friend's Jellyfin reads song tags after its scan, so artists often
+            // arrive in a later sync; without this they never reached the items here.
+            if (item is MediaBrowser.Controller.Entities.Audio.IHasArtist withArtists
+                && metadata.Artists != null
+                && NonEmpty(metadata.Artists).Length > 0
+                && !NonEmpty(withArtists.Artists).SequenceEqual(NonEmpty(metadata.Artists), StringComparer.Ordinal))
+            {
+                withArtists.Artists = NonEmpty(metadata.Artists);
+                changed = true;
+            }
+
+            if (item is MediaBrowser.Controller.Entities.Audio.IHasAlbumArtist withAlbumArtist
+                && !string.IsNullOrWhiteSpace(metadata.AlbumArtist)
+                && !NonEmpty(withAlbumArtist.AlbumArtists).SequenceEqual(new[] { metadata.AlbumArtist! }, StringComparer.Ordinal))
+            {
+                withAlbumArtist.AlbumArtists = new[] { metadata.AlbumArtist! };
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool SetIfDifferent(string? value, string? current, Action<string> set)
+        {
+            if (value == null || string.Equals(value, current, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            set(value);
+            return true;
+        }
+
+        private static string[] NonEmpty(IEnumerable<string>? values)
+            => (values ?? Array.Empty<string>()).Where(v => !string.IsNullOrWhiteSpace(v)).ToArray();
+
+        /// <summary>Compares two dates as moments in time, treating an unspecified kind as UTC like Jellyfin's database does.</summary>
+        internal static bool SameInstant(DateTime? a, DateTime? b)
+        {
+            if (!a.HasValue || !b.HasValue)
+            {
+                return a.HasValue == b.HasValue;
+            }
+
+            static DateTime Utc(DateTime d) => d.Kind == DateTimeKind.Local ? d.ToUniversalTime() : DateTime.SpecifyKind(d, DateTimeKind.Utc);
+            return Utc(a.Value) == Utc(b.Value);
         }
     }
 }

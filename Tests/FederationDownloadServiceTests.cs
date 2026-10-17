@@ -809,6 +809,92 @@ public class FederationDownloadServiceTests : IDisposable
         return item;
     }
 
+    [Theory]
+    [InlineData("mkv", "mkv")]
+    [InlineData(".MP4", "mp4")]
+    [InlineData("mov,mp4,m4a,3gp,3g2,mj2", "mov")]
+    [InlineData(null, "mkv")]
+    [InlineData("", "mkv")]
+    [InlineData("mkv/../../../plugins/evil.dll", "mkv")]
+    [InlineData("..", "mkv")]
+    [InlineData("mkv\\..\\evil", "mkv")]
+    [InlineData("/etc/passwd", "mkv")]
+    [InlineData("averyveryverylongextension", "mkv")]
+    public void SafeExtension_AcceptsOnlyShortAlphanumericContainers(string? container, string expected)
+    {
+        Assert.Equal(expected, FederationDownloadService.SafeExtension(container, "mkv"));
+    }
+
+    [Fact]
+    public void AreJobPathsInsideRoot_RejectsTraversalAndForeignPaths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "federation-root-" + Guid.NewGuid().ToString("N"));
+        var inside = Path.Combine(root, "Movie.mkv");
+        var partial = Path.Combine(root, ".Movie.mkv.op.partial");
+
+        Assert.True(FederationDownloadService.AreJobPathsInsideRoot(root, inside, partial));
+        Assert.False(FederationDownloadService.AreJobPathsInsideRoot(root, Path.Combine(root, "Movie.mkv/../../evil.dll"), partial));
+        Assert.False(FederationDownloadService.AreJobPathsInsideRoot(root, inside, Path.Combine(root, "../evil.partial")));
+        Assert.False(FederationDownloadService.AreJobPathsInsideRoot(root, root + "-sibling/Movie.mkv", partial));
+        Assert.False(FederationDownloadService.AreJobPathsInsideRoot(root, null, partial));
+    }
+
+    [Fact]
+    public async Task MappedDownload_MaliciousRemoteContainer_StaysInsideDownloadsRoot()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "federation-secret",
+            Enabled = true
+        });
+
+        var virtualItemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        _libraryManager.Setup(l => l.GetItemById(virtualItemId)).Returns(new Movie
+        {
+            Id = virtualItemId,
+            ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key }
+        });
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+
+        // A hostile friend controls Container. Before the fix this became
+        // "<root>/Evil Movie.mkv/../../<escape>" and File.Move resolved it
+        // outside the downloads folder.
+        var escapeName = "escape-" + Guid.NewGuid().ToString("N") + ".dll";
+        var container = "mkv/../../" + escapeName;
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Evil Movie", Container = container }, 0, "Movie");
+
+        string? stagedPath = null;
+        var service = CreateQualityService(
+            (path, token) =>
+            {
+                stagedPath = path;
+                return File.WriteAllBytesAsync(path, ValidMediaBytes(), token);
+            },
+            () => true);
+
+        var root = FederationDownloadService.GetDownloadsRoot();
+        var escapedTarget = Path.GetFullPath(Path.Combine(root, "Evil Movie." + container));
+        Assert.False(escapedTarget.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal));
+
+        var (started, message, operationId) = service.StartDownload(virtualItemId.ToString());
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.True(completed.Success, completed.Status);
+        Assert.False(File.Exists(escapedTarget));
+        Assert.True(FederationDownloadService.IsDownloadedFilePath(completed.DestinationPath));
+        Assert.True(FederationDownloadService.IsDownloadedFilePath(stagedPath));
+        Assert.Equal("Evil Movie.mkv", Path.GetFileName(completed.DestinationPath));
+    }
+
     private FederationDownloadService CreateQualityService(
         Func<string, CancellationToken, Task> download,
         Func<bool> validate)

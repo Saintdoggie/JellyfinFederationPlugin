@@ -52,6 +52,30 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private const int InternalPeerItemPageSize = 500;
 
+        // Item ids per internal Ids= query. 100 ids keep the request line well
+        // under Kestrel's 8 KB limit together with the long Fields list.
+        private const int InternalIdsPerFetch = 100;
+
+        // How long a library's id-sorted order is reused across the pages of
+        // one sync, so items added mid-sync do not shift later pages.
+        private static readonly TimeSpan StableOrderLifetime = TimeSpan.FromMinutes(10);
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, StableOrder Order)> StableOrders = new();
+
+        // Title-list hashes remembered per item with the Etag (a fingerprint of the
+        // item's last-saved time) they were computed for, so an unchanged sync
+        // does not rebuild every item's full details. Recomputed after
+        // IndexHashLifetime anyway, for changes Jellyfin saves without touching
+        // that time; the receiving side also fetches everything once a day.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, (string Etag, string Hash, DateTime Computed)> IndexHashes = new();
+
+        private static readonly TimeSpan IndexHashLifetime = TimeSpan.FromHours(6);
+
+        private const int IndexHashCapacity = 500_000;
+
+        /// <summary>Every item id a sync query matches, sorted, with each item's Etag when Jellyfin reported one.</summary>
+        private sealed record StableOrder(IReadOnlyList<Guid> Ids, IReadOnlyDictionary<Guid, string> Etags);
+
         private readonly ILogger<FederationController> _logger;
         private readonly FederationSyncService _syncService;
         private readonly FederationLibraryManager _federationManager;
@@ -1168,8 +1192,29 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> SendFriendRequest([FromBody] SendFriendRequestBody body, CancellationToken cancellationToken)
         {
-            var (success, message) = await _friends.SendFriendRequestAsync(body?.Url ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            var (success, message) = await _friends.SendFriendRequestAsync(body?.Url ?? string.Empty, cancellationToken, sharing: SharingFrom(body?.ShareAll, body?.FolderIds)).ConfigureAwait(false);
             return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// The sharing chosen in a friend request or accept dialog, limited to this
+        /// server's own libraries. Null when the caller chose nothing (older
+        /// pages and scripts), which keeps the old default.
+        /// </summary>
+        private FriendSharing? SharingFrom(bool? shareAll, List<string>? folderIds)
+        {
+            if (shareAll == null && folderIds == null)
+            {
+                return null;
+            }
+
+            var own = _libraryManager.GetVirtualFolders()
+                .Where(f => !LibraryProvisioningService.IsEntirelyFederatedFolder(f, LibraryProvisioningService.GetFederationRoot()))
+                .Select(f => f.ItemId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return new FriendSharing(
+                shareAll == true,
+                (folderIds ?? new List<string>()).Where(id => !string.IsNullOrWhiteSpace(id) && own.Contains(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList());
         }
 
         /// <summary>
@@ -1182,8 +1227,8 @@ namespace Jellyfin.Plugin.Federation.Api
             var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
             return Ok(new
             {
-                incoming = config.IncomingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, r.Verified }),
-                outgoing = config.OutgoingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc })
+                incoming = config.IncomingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, r.Verified, Reconnect = !string.IsNullOrEmpty(r.ReplacesServerId), r.IdentityChanged }),
+                outgoing = config.OutgoingFriendRequests.Select(r => new { r.Id, r.RemoteServerUrl, r.RemoteServerName, r.CreatedUtc, Reconnect = !string.IsNullOrEmpty(r.ReplacesServerId) })
             });
         }
 
@@ -1192,9 +1237,12 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/{id}/Accept")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> AcceptFriendRequest(string id, CancellationToken cancellationToken)
+        public async Task<IActionResult> AcceptFriendRequest(
+            string id,
+            CancellationToken cancellationToken,
+            [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] AcceptFriendBody? body = null)
         {
-            var (success, message) = await _friends.AcceptFriendRequestAsync(id, cancellationToken).ConfigureAwait(false);
+            var (success, message) = await _friends.AcceptFriendRequestAsync(id, cancellationToken, SharingFrom(body?.ShareAll, body?.FolderIds)).ConfigureAwait(false);
             return Ok(new { success, message });
         }
 
@@ -1283,6 +1331,18 @@ namespace Jellyfin.Plugin.Federation.Api
         /// <see cref="FederationFriendService.AcceptFriendRequestAsync"/> already
         /// surfaces a clear error to its admin on anything but a 2xx response.
         /// </summary>
+        /// <summary>
+        /// Admin-triggered: ask an existing friend to renew this friendship's keys
+        /// (see <see cref="FederationFriendService.ReconnectFriendAsync"/>).
+        /// </summary>
+        [HttpPost("Friends/{id}/Reconnect")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> ReconnectFriend(string id, CancellationToken cancellationToken)
+        {
+            var (success, message) = await _friends.ReconnectFriendAsync(id, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success, message });
+        }
+
         [HttpPost("Friends/Accept")]
         [AllowAnonymous]
         public IActionResult ReceiveFriendAccept([FromBody] FriendRequestPayload payload)
@@ -2861,7 +2921,8 @@ namespace Jellyfin.Plugin.Federation.Api
             int? index,
             [FromQuery] string token,
             [FromQuery] string? tag,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            [FromQuery] int? maxWidth = null)
         {
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
@@ -2876,8 +2937,21 @@ namespace Jellyfin.Plugin.Federation.Api
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
             var indexSegment = index.HasValue ? $"/{index.Value}" : string.Empty;
-            var tagParam = string.IsNullOrEmpty(tag) ? string.Empty : $"?tag={Uri.EscapeDataString(tag)}";
-            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}{tagParam}";
+            var query = new List<string>();
+            if (!string.IsNullOrEmpty(tag))
+            {
+                query.Add($"tag={Uri.EscapeDataString(tag)}");
+            }
+
+            // A friend asking for a smaller copy (episode images) gets one scaled
+            // here by Jellyfin's own image API instead of the full original.
+            if (maxWidth is > 0)
+            {
+                query.Add($"maxWidth={Math.Clamp(maxWidth.Value, 64, 4096)}");
+                query.Add("quality=85");
+            }
+
+            var loopbackUrl = $"{localUrl}/Items/{itemGuid:N}/Images/{Uri.EscapeDataString(imageType)}{indexSegment}{(query.Count > 0 ? "?" + string.Join("&", query) : string.Empty)}";
 
             await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();
@@ -2931,6 +3005,60 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Every item id a sync query matches, sorted by id: a total order that
+        /// cannot tie, unlike Jellyfin's default SortName order. Reused for a few
+        /// minutes so all pages of one sync see one snapshot; a request starting
+        /// at the beginning takes a fresh one. Null when the catalog could not
+        /// be read.
+        /// </summary>
+        private async Task<StableOrder?> GetStableItemOrderAsync(Guid userId, string? mediaType, string? parentId, bool fresh, CancellationToken cancellationToken)
+        {
+            var key = $"{userId:N}|{mediaType}|{parentId}";
+            var now = DateTime.UtcNow;
+            if (!fresh && StableOrders.TryGetValue(key, out var cached) && now - cached.Created < StableOrderLifetime)
+            {
+                return cached.Order;
+            }
+
+            var query = new List<string> { "Recursive=true", "Fields=Etag", "EnableImages=false", "EnableUserData=false", "EnableTotalRecordCount=false" };
+            if (!string.IsNullOrEmpty(mediaType))
+            {
+                query.Add($"IncludeItemTypes={Uri.EscapeDataString(mediaType)}");
+            }
+
+            if (!string.IsNullOrEmpty(parentId))
+            {
+                query.Add($"ParentId={Uri.EscapeDataString(parentId)}");
+            }
+
+            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", query)}", cancellationToken).ConfigureAwait(false);
+            if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+            {
+                return null;
+            }
+
+            var etags = new Dictionary<Guid, string>(items.Count);
+            foreach (var node in items)
+            {
+                if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var id))
+                {
+                    etags[id] = node["Etag"]?.GetValue<string>() ?? string.Empty;
+                }
+            }
+
+            var order = new StableOrder(
+                etags.Keys.OrderBy(id => id).ToList(),
+                etags.Where(pair => pair.Value.Length > 0).ToDictionary(pair => pair.Key, pair => pair.Value));
+            foreach (var stale in StableOrders.Where(pair => now - pair.Value.Created >= StableOrderLifetime).Select(pair => pair.Key).ToList())
+            {
+                StableOrders.TryRemove(stale, out _);
+            }
+
+            StableOrders[key] = (now, order);
+            return order;
+        }
+
+        /// <summary>
         /// Fetches JSON from this server's own native REST API over loopback,
         /// authenticated with <see cref="FederationFriendService.GetOrCreateInternalRelayApiKeyAsync"/> -
         /// never exposed beyond this call. This plugin's own Peer/* endpoints use
@@ -2942,18 +3070,38 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         private async Task<System.Text.Json.Nodes.JsonObject?> FetchInternalJsonAsync(string path, CancellationToken cancellationToken)
         {
-            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
-            using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
-            request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
-            using var response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            System.Net.Http.HttpResponseMessage? response = null;
+            try
             {
-                return null;
-            }
+                for (var attempt = 0; attempt < 2; attempt++)
+                {
+                    // A rejected key is checked against Jellyfin at once and
+                    // replaced if it no longer exists, then the read is retried.
+                    var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync(forceCheck: attempt > 0).ConfigureAwait(false);
+                    using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
+                    request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
+                    response?.Dispose();
+                    response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    if (response.StatusCode != System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        break;
+                    }
+                }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+                if (!response!.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("[Federation] Reading this server's own library failed with HTTP {Status}", (int)response.StatusCode);
+                    return null;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+            }
+            finally
+            {
+                response?.Dispose();
+            }
         }
 
         /// <summary>
@@ -3062,12 +3210,34 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string? sortOrder,
             CancellationToken cancellationToken,
             [FromQuery] bool includeMediaSources = false,
-            [FromQuery] bool slim = false)
+            [FromQuery] bool slim = false,
+            [FromQuery] int? cursor = null,
+            [FromQuery] bool compact = false,
+            [FromQuery] bool index = false,
+            [FromQuery] string? ids = null)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null)
             {
                 return Unauthorized();
+            }
+
+            // index=true answers with [id, hash] pairs instead of items, so a
+            // friend can download only what changed; ids= then fetches those
+            // titles. Both always use the compact form the hash describes.
+            compact |= index;
+            List<Guid>? requestedIds = null;
+            if (!string.IsNullOrEmpty(ids))
+            {
+                requestedIds = PeerCatalogWire.ParseIds(ids);
+                if (requestedIds == null || index)
+                {
+                    return BadRequest(new { error = $"ids must be 1-{PeerCatalogWire.MaxIdsPerRequest} item ids and cannot be combined with index" });
+                }
+
+                limit = requestedIds.Count;
+                startIndex = null;
+                cursor = null;
             }
 
             var userId = ResolveInternalQueryUserId();
@@ -3121,6 +3291,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 queryParams.Add($"ParentId={Uri.EscapeDataString(parentId)}");
             }
 
+            if (requestedIds != null)
+            {
+                queryParams.Add("Ids=" + string.Join(",", requestedIds.Select(id => id.ToString("N"))));
+            }
+
             // No limit in the request means "everything", exactly as before: an
             // effectively-unbounded target keeps the loop running until the
             // internal source is exhausted.
@@ -3131,8 +3306,33 @@ namespace Jellyfin.Plugin.Federation.Api
             // StartIndex counts visible items, not raw rows. Starting the raw
             // query at this offset repeats items whenever earlier rows were
             // filtered out (and can keep imports paging forever).
-            var remainingSkip = Math.Max(0, startIndex ?? 0);
-            var cursor = 0;
+            // A caller that sends back the previous page's NextCursor resumes
+            // at that raw row instead. Re-reading and skipping every earlier
+            // row made each sync request cost more than the last, so a large
+            // library took quadratic time and its late pages timed out.
+            var remainingSkip = cursor.HasValue ? 0 : Math.Max(0, startIndex ?? 0);
+            var rawCursor = Math.Max(0, cursor ?? 0);
+
+            // Sync pages (no explicit sort) walk an id-sorted list of every
+            // matching item instead of Jellyfin's own paging. Without a sort,
+            // Jellyfin orders by SortName alone, and episodes share sort names
+            // across shows ("001 - 0001 - Pilot"); ties may come back in a
+            // different order for each offset, so whole runs of episodes were
+            // never sent and the friend pruned them as deleted. ids= requests
+            // use the same path, in the order asked for.
+            StableOrder? stable = requestedIds == null ? null : new StableOrder(requestedIds, new Dictionary<Guid, string>());
+            if (stable == null && string.IsNullOrEmpty(sortBy))
+            {
+                stable = await GetStableItemOrderAsync(userId.Value, mediaType, parentId, rawCursor == 0 && remainingSkip == 0, cancellationToken).ConfigureAwait(false);
+                if (stable == null)
+                {
+                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                }
+            }
+
+            var stableOrder = stable?.Ids;
+            var useRememberedHashes = index && includeMediaSources && stable != null;
+            var now = DateTime.UtcNow;
             var safetyPage = 0;
             var exhausted = false;
 
@@ -3149,36 +3349,111 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Internal pages are bounded independently of the caller's limit:
                 // fewer visible items than asked for just means another internal
                 // round, not an unbounded single query against our own API.
-                var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, InternalPeerItemPageSize);
+                var requestCount = (int)Math.Min((long)target - pageItems.Count + remainingSkip, stableOrder != null ? InternalIdsPerFetch : InternalPeerItemPageSize);
 
-                var pageParams = new List<string>(queryParams)
+                System.Text.Json.Nodes.JsonArray items;
+                List<(Guid Id, System.Text.Json.Nodes.JsonNode? Node, string? Hash)> rows;
+                if (stableOrder != null)
                 {
-                    $"StartIndex={cursor}",
-                    $"Limit={requestCount}"
-                };
+                    var slice = stableOrder.Skip(rawCursor).Take(requestCount).ToList();
+                    if (slice.Count == 0)
+                    {
+                        exhausted = true;
+                        break;
+                    }
 
-                var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
-                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+                    // A title whose remembered hash still matches its Etag needs no
+                    // full details at all.
+                    var remembered = new Dictionary<Guid, string>();
+                    if (useRememberedHashes)
+                    {
+                        foreach (var id in slice)
+                        {
+                            if (stable!.Etags.TryGetValue(id, out var etag)
+                                && IndexHashes.TryGetValue(id, out var known)
+                                && string.Equals(known.Etag, etag, StringComparison.Ordinal)
+                                && now - known.Computed < IndexHashLifetime)
+                            {
+                                remembered[id] = known.Hash;
+                            }
+                        }
+                    }
+
+                    var toFetch = slice.Where(id => !remembered.ContainsKey(id)).ToList();
+                    items = new System.Text.Json.Nodes.JsonArray();
+                    if (toFetch.Count > 0)
+                    {
+                        // The library and type filters stay on: a query without an item
+                        // type makes Jellyfin group results by PresentationUniqueKey,
+                        // which music items without online metadata share, so fetching
+                        // 70 albums by id returned one or two.
+                        var sliceParams = queryParams
+                            .Where(p => !p.StartsWith("Ids=", StringComparison.Ordinal))
+                            .Append("Ids=" + string.Join(",", toFetch.Select(id => id.ToString("N"))));
+                        var sliceJson = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", sliceParams)}", cancellationToken).ConfigureAwait(false);
+                        if (sliceJson?["Items"] is not System.Text.Json.Nodes.JsonArray sliceItems)
+                        {
+                            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                        }
+
+                        items = sliceItems;
+                    }
+
+                    var byId = new Dictionary<Guid, System.Text.Json.Nodes.JsonNode>();
+                    foreach (var node in items)
+                    {
+                        if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var nodeId))
+                        {
+                            byId.TryAdd(nodeId, node);
+                        }
+                    }
+
+                    // One row per position, in the stable order; an item deleted
+                    // since the list was taken is an empty row that still counts
+                    // as consumed.
+                    rows = slice.Select(id => (id, byId.TryGetValue(id, out var node) ? node : null, remembered.TryGetValue(id, out var hash) ? hash : null)).ToList();
+                }
+                else
                 {
-                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                    var pageParams = new List<string>(queryParams)
+                    {
+                        $"StartIndex={rawCursor}",
+                        $"Limit={requestCount}"
+                    };
+
+                    var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", pageParams)}", cancellationToken).ConfigureAwait(false);
+                    if (json?["Items"] is not System.Text.Json.Nodes.JsonArray pageArray)
+                    {
+                        return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
+                    }
+
+                    items = pageArray;
+                    if (items.Count == 0)
+                    {
+                        exhausted = true;
+                        break;
+                    }
+
+                    rows = items.Select(node => (Guid.Empty, node, (string?)null)).ToList();
                 }
 
-                if (items.Count == 0)
-                {
-                    exhausted = true;
-                    break;
-                }
-
-                var rawCount = items.Count;
+                var rawCount = rows.Count;
 
                 // Removing each kept node detaches it from the fetched page's
                 // array, so it can be re-parented into the response array below
                 // (a JsonNode may only ever have one parent).
-                foreach (var item in items.ToList())
+                var consumed = 0;
+                foreach (var (rowId, item, rememberedHash) in rows)
                 {
-                    if (item != null
-                        && Guid.TryParse(item["Id"]?.GetValue<string>(), out var itemGuid)
-                        && _peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
+                    consumed++;
+                    var itemGuid = rowId;
+                    if (rememberedHash == null
+                        && (item == null || !Guid.TryParse(item["Id"]?.GetValue<string>(), out itemGuid)))
+                    {
+                        continue;
+                    }
+
+                    if (_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
                     {
                         if (remainingSkip > 0)
                         {
@@ -3186,12 +3461,65 @@ namespace Jellyfin.Plugin.Federation.Api
                             continue;
                         }
 
+                        if (rememberedHash != null)
+                        {
+                            pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), rememberedHash));
+                            if (pageItems.Count >= target)
+                            {
+                                break;
+                            }
+
+                            continue;
+                        }
+
                         items.Remove(item);
+                        if (compact && item is System.Text.Json.Nodes.JsonObject compactable)
+                        {
+                            PeerCatalogWire.CompactItem(compactable);
+                            if (index)
+                            {
+                                var hash = PeerCatalogWire.ItemHash(compactable);
+                                if (useRememberedHashes && stable!.Etags.TryGetValue(itemGuid, out var etag))
+                                {
+                                    if (IndexHashes.Count >= IndexHashCapacity)
+                                    {
+                                        IndexHashes.Clear();
+                                    }
+
+                                    IndexHashes[itemGuid] = (etag, hash, now);
+                                }
+
+                                pageItems.Add(new System.Text.Json.Nodes.JsonArray(itemGuid.ToString("N"), hash));
+                                if (pageItems.Count >= target)
+                                {
+                                    break;
+                                }
+
+                                continue;
+                            }
+                        }
+
                         pageItems.Add(item);
+                        if (pageItems.Count >= target)
+                        {
+                            break;
+                        }
                     }
                 }
 
-                cursor += rawCount;
+                rawCursor += consumed;
+                if (stableOrder != null && rawCursor >= stableOrder.Count)
+                {
+                    exhausted = true;
+                    break;
+                }
+
+                if (pageItems.Count >= target)
+                {
+                    exhausted = stableOrder == null && consumed == rawCount && rawCount < requestCount;
+                    break;
+                }
+
                 if (rawCount < requestCount)
                 {
                     // The internal source returned fewer raw items than asked -
@@ -3216,17 +3544,24 @@ namespace Jellyfin.Plugin.Federation.Api
             // that caller stop after exactly one WAN round trip on the last
             // page. TotalRecordCount stays a page-length echo for old callers;
             // only new callers that read HasMore change behavior.
-            return new ContentResult
-            {
-                Content = new System.Text.Json.Nodes.JsonObject
+            var (body, contentEncoding) = PeerCatalogWire.Encode(
+                new System.Text.Json.Nodes.JsonObject
                 {
                     ["Items"] = pageItems,
                     ["TotalRecordCount"] = pageItems.Count,
-                    ["HasMore"] = !exhausted
+                    ["HasMore"] = !exhausted,
+                    ["NextCursor"] = rawCursor
                 }.ToJsonString(),
-                ContentType = "application/json",
-                StatusCode = StatusCodes.Status200OK
-            };
+                Request.Headers.AcceptEncoding.ToString());
+            Response.Headers.Vary = "Accept-Encoding";
+            if (contentEncoding != null)
+            {
+                // Jellyfin's own response compression is off for HTTPS, which is
+                // how friends usually connect. It skips an already-encoded body.
+                Response.Headers.ContentEncoding = contentEncoding;
+            }
+
+            return File(body, "application/json");
         }
 
         /// <summary>
@@ -3396,6 +3731,27 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Exchange this server's compact self-uptime blob for the caller's.
         /// Token-gated; no URLs or credentials in the payload.
         /// </summary>
+        /// <summary>
+        /// Server-to-server: a friend tells this server that its catalog changed,
+        /// so this server syncs that friend soon instead of at the next scheduled
+        /// sync. Authenticated with the friend's federation token; the notice
+        /// carries no data and only ever triggers this server's own normal sync.
+        /// </summary>
+        [HttpPost("Peer/CatalogChanged")]
+        [AllowAnonymous]
+        public IActionResult PeerCatalogChanged()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null || string.IsNullOrEmpty(caller.Id))
+            {
+                return Unauthorized();
+            }
+
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var scheduled = caller.Enabled && _syncService.OnFriendCatalogChanged(caller.Id, lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Accepted(new { scheduled });
+        }
+
         [HttpPost("Peer/AvailabilitySchedule")]
         [AllowAnonymous]
         public IActionResult ExchangeAvailabilitySchedule([FromBody] AvailabilityScheduleBlob? body)
@@ -3676,8 +4032,18 @@ namespace Jellyfin.Plugin.Federation.Api
 
         [HttpPost("Refresh")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> TriggerRefresh(CancellationToken cancellationToken)
+        public async Task<IActionResult> TriggerRefresh(CancellationToken cancellationToken, [FromQuery] bool background = false)
         {
+            if (background)
+            {
+                // The settings page polls Sync/Status instead of holding this
+                // request open for the whole sync, which a large library or a
+                // reverse proxy timeout used to cut off.
+                var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+                var started = _syncService.TryStartSyncAll(lifetime?.ApplicationStopping ?? CancellationToken.None);
+                return Ok(new { success = true, started, message = started ? "Sync started" : "A sync is already running" });
+            }
+
             var result = await _syncService.SyncAllAsync(cancellationToken).ConfigureAwait(false);
             return Ok(new { result.Success, result.Message, result.ItemCount, result.FailedSources, result.OperationId });
         }
@@ -3852,6 +4218,118 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return await Task.FromResult(Ok(new { success = true })).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Per friend library sync state for the settings page: what each library
+        /// will transfer (known before downloading), progress while a sync runs,
+        /// and how the last attempt ended.
+        /// </summary>
+        [HttpGet("Sync/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetSyncStatus()
+        {
+            _syncService.ForgetUnconfiguredLibraries(Plugin.Instance?.Configuration);
+            var status = _syncService.Status;
+            return Ok(new
+            {
+                running = status.Running,
+                startedUtc = status.StartedUtc,
+                finishedUtc = status.FinishedUtc,
+                libraries = status.Snapshot().Select(s => new
+                {
+                    key = s.Key,
+                    serverId = s.ServerId,
+                    serverName = s.ServerName,
+                    remoteLibraryName = s.RemoteLibraryName,
+                    localLibraryName = s.LocalLibraryName,
+                    state = s.State,
+                    mode = s.Mode,
+                    total = s.Total,
+                    toDownload = s.ToDownload,
+                    downloaded = s.Downloaded,
+                    toRemove = s.ToRemove,
+                    bytesReceived = s.BytesReceived,
+                    removed = s.Removed,
+                    waitingRemovals = s.WaitingRemovals,
+                    heldRemovals = s.HeldRemovals,
+                    error = s.Error,
+                    lastAttemptUtc = s.LastAttemptUtc,
+                    lastSuccessUtc = s.LastSuccessUtc,
+                    lastTotal = s.LastTotal
+                })
+            });
+        }
+
+        /// <summary>
+        /// The admin confirms a large removal that a sync held back (see
+        /// FederationSyncService.PruneSafely); a sync starts and carries it out.
+        /// </summary>
+        [HttpPost("Sync/ConfirmRemoval")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult ConfirmRemoval([FromBody] ConfirmRemovalBody? body)
+        {
+            _syncService.EnsureStatusLoaded();
+            var library = _syncService.Status.Snapshot().FirstOrDefault(s => string.Equals(s.Key, body?.Key, StringComparison.OrdinalIgnoreCase));
+            if (library == null || !_cache.ApprovePendingRemoval(FederationItemCache.RemovalKey(library.LocalLibraryName, library.ServerId)))
+            {
+                return BadRequest(new { success = false, message = "There is no held removal for this library any more." });
+            }
+
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var started = _syncService.TryStartSyncAll(lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Ok(new
+            {
+                success = true,
+                started,
+                message = started ? "Confirmed. The titles are removed by the sync that just started." : "Confirmed. The titles are removed by the next sync."
+            });
+        }
+
+        /// <summary>
+        /// Deletes everything in one friend library, recreates the library, and
+        /// downloads it again (see FederationSyncService.TryStartFullResync).
+        /// </summary>
+        [HttpPost("Sync/FullResync")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult FullResync([FromBody] FullResyncBody? body)
+        {
+            var mapping = Plugin.Instance?.Configuration?.LibraryMappings?
+                .FirstOrDefault(m => string.Equals(m.LocalLibraryName, body?.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+            if (mapping == null || string.IsNullOrWhiteSpace(mapping.LocalLibraryName))
+            {
+                return BadRequest(new { success = false, message = "This library is not configured any more." });
+            }
+
+            _syncService.EnsureStatusLoaded();
+            var provisioning = _provisioning;
+            var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+            var started = _syncService.TryStartFullResync(
+                mapping,
+                async ct =>
+                {
+                    // Only plugin-owned libraries are deleted; from a library of your
+                    // own only the plugin's folder is detached and attached again.
+                    await provisioning.RemoveLibraryAsync(mapping.LocalLibraryName).ConfigureAwait(false);
+
+                    // Use the settings as they are now: the library may have been
+                    // removed or changed while it was being emptied.
+                    var current = Plugin.Instance?.Configuration?.LibraryMappings?
+                        .FirstOrDefault(m => string.Equals(m.LocalLibraryName, mapping.LocalLibraryName, StringComparison.OrdinalIgnoreCase));
+                    if (current != null && current.Enabled && current.AutoProvision)
+                    {
+                        await provisioning.EnsureLibraryAsync(current, ct).ConfigureAwait(false);
+                    }
+                },
+                lifetime?.ApplicationStopping ?? CancellationToken.None);
+            return Ok(new
+            {
+                success = started,
+                started,
+                message = started
+                    ? "Full resync started: " + mapping.LocalLibraryName + " is emptied, recreated and downloaded again."
+                    : "A sync is running. Try again when it has finished."
+            });
         }
 
         [HttpGet("Progress/{operationId}")]
@@ -5232,6 +5710,19 @@ namespace Jellyfin.Plugin.Federation.Api
     public class SendFriendRequestBody
     {
         public string? Url { get; set; }
+
+        /// <summary>Share every library, including ones added later. Null keeps the old default.</summary>
+        public bool? ShareAll { get; set; }
+
+        /// <summary>Libraries to share when <see cref="ShareAll"/> is false; empty shares nothing.</summary>
+        public List<string>? FolderIds { get; set; }
+    }
+
+    public class AcceptFriendBody
+    {
+        public bool? ShareAll { get; set; }
+
+        public List<string>? FolderIds { get; set; }
     }
 
     public class CreatePoolBody
@@ -5340,7 +5831,17 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? Key { get; set; }
     }
 
-    public class UpdateSharingBody
+    public class ConfirmRemovalBody
+    {
+        public string? Key { get; set; }
+    }
+
+    public class FullResyncBody
+    {
+        public string? LocalLibraryName { get; set; }
+    }
+
+        public class UpdateSharingBody
     {
         public bool ShareAll { get; set; } = true;
 

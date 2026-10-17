@@ -119,6 +119,218 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SharingChosenBeforeSending_AppliesWhenTheFriendAccepts()
+    {
+        UseFakeHttp(_ => Json(HttpStatusCode.OK, new { success = true, serverName = "Anna" }));
+
+        var (sent, message) = await _service.SendFriendRequestAsync("http://anna.example", CancellationToken.None, sharing: new FriendSharing(false, new[] { "movies-lib" }));
+        Assert.True(sent, message);
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = outgoing.Id,
+            FromServerUrl = "http://anna.example",
+            FromServerName = "Anna",
+            FromServerId = "anna-1",
+            ApiKeyForYou = "key-for-us",
+            SupportsFederationToken = true
+        }));
+
+        var friend = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.False(friend.ShareAllLibraries);
+        Assert.Equal(new List<string> { "movies-lib" }, friend.SharedLibraryFolderIds);
+    }
+
+    [Fact]
+    public async Task EmptyRequest_SharesNothing_AndAcceptingWithAChoiceAppliesIt()
+    {
+        UseFakeHttp(_ => Json(HttpStatusCode.OK, new { success = true, serverName = "Ben" }));
+        await _service.SendFriendRequestAsync("http://ben.example", CancellationToken.None, sharing: new FriendSharing(false, Array.Empty<string>()));
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload { RequestId = outgoing.Id, FromServerUrl = "http://ben.example", ApiKeyForYou = "k", SupportsFederationToken = true }));
+        var ben = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.False(ben.ShareAllLibraries);
+        Assert.Empty(ben.SharedLibraryFolderIds);
+
+        _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest { Id = "in-1", RemoteServerUrl = "http://cara.example", RemoteServerName = "Cara", ApiKey = "k2" });
+        var (accepted, msg) = await _service.AcceptFriendRequestAsync("in-1", CancellationToken.None, new FriendSharing(false, new[] { "music-lib" }));
+        Assert.True(accepted, msg);
+        var cara = _plugin.Configuration.RemoteServers.Single(s => s.Url == "http://cara.example");
+        Assert.False(cara.ShareAllLibraries);
+        Assert.Equal(new List<string> { "music-lib" }, cara.SharedLibraryFolderIds);
+
+        // Without a choice (older pages and scripts) the old default stays.
+        _plugin.Configuration.IncomingFriendRequests.Add(new FriendRequest { Id = "in-2", RemoteServerUrl = "http://dan.example", RemoteServerName = "Dan", ApiKey = "k3" });
+        Assert.True((await _service.AcceptFriendRequestAsync("in-2", CancellationToken.None)).Success);
+        Assert.True(_plugin.Configuration.RemoteServers.Single(s => s.Url == "http://dan.example").ShareAllLibraries);
+    }
+
+    [Fact]
+    public async Task ReinstalledFriend_RequestFromKnownAddress_RenewsKeysOfTheExistingEntry()
+    {
+        var friend = new RemoteServer
+        {
+            Id = "friend-entry",
+            Name = "Flix",
+            Url = "http://flix.example",
+            ApiKey = "old-key-for-them",
+            IssuedApiKey = "old-key-from-them",
+            FederationId = "flix-identity-1",
+            Enabled = true,
+            ShareAllLibraries = false,
+            SharedLibraryFolderIds = new() { "movies" }
+        };
+        _plugin.Configuration.RemoteServers.Add(friend);
+        var posts = new List<string>();
+        UseFakeHttp(req =>
+        {
+            if (req.Method == HttpMethod.Post)
+            {
+                posts.Add(req.RequestUri!.ToString());
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        // The reinstalled server has a new identity and simply sends a friend request.
+        var result = await _service.ReceiveFriendRequestAsync(new FriendRequestPayload
+        {
+            RequestId = "reinstall-1",
+            FromServerUrl = "http://flix.example/",
+            FromServerName = "Flix",
+            FromServerId = "flix-identity-2",
+            ApiKeyForYou = "new-key-for-us",
+            SupportsFederationToken = true
+        }, CancellationToken.None);
+        Assert.True(result.Success);
+        var request = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+        Assert.Equal("friend-entry", request.ReplacesServerId);
+        Assert.True(request.IdentityChanged);
+
+        var (accepted, message) = await _service.AcceptFriendRequestAsync("reinstall-1", CancellationToken.None);
+
+        Assert.True(accepted, message);
+        var entry = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.Equal("friend-entry", entry.Id);
+        Assert.Equal("new-key-for-us", entry.ApiKey);
+        Assert.NotEqual("old-key-from-them", entry.IssuedApiKey);
+        Assert.False(string.IsNullOrEmpty(entry.IssuedApiKey));
+        Assert.Equal("flix-identity-2", entry.FederationId);
+        Assert.Equal(new List<string> { "movies" }, entry.SharedLibraryFolderIds);
+        Assert.False(entry.ShareAllLibraries);
+        Assert.Equal("http://flix.example/Plugins/Federation/Friends/Accept", Assert.Single(posts));
+        Assert.Empty(_plugin.Configuration.IncomingFriendRequests);
+    }
+
+    [Fact]
+    public async Task RequestFromAnUnknownAddress_IsANormalFriendRequest()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "friend-entry", Name = "Flix", Url = "http://flix.example", FederationId = "flix-identity-1", Enabled = true });
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var result = await _service.ReceiveFriendRequestAsync(new FriendRequestPayload
+        {
+            RequestId = "other-1",
+            FromServerUrl = "http://impostor.example",
+            FromServerName = "Flix",
+            FromServerId = "flix-identity-1",
+            ApiKeyForYou = "key",
+            SupportsFederationToken = true
+        }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        var request = Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+        Assert.Null(request.ReplacesServerId);
+    }
+
+    [Fact]
+    public async Task OurReconnect_GoesToTheStoredAddress_AndAcceptanceOnlyRenewsKeys()
+    {
+        var friend = new RemoteServer { Id = "friend-entry", Name = "Flix", Url = "http://flix.example", ApiKey = "old-out", IssuedApiKey = "old-in", FederationId = "flix-1", Enabled = true, Kind = ServerKind.Jellyfin };
+        _plugin.Configuration.RemoteServers.Add(friend);
+        var posts = new List<string>();
+        UseFakeHttp(req =>
+        {
+            posts.Add(req.RequestUri!.ToString());
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "Flix" });
+        });
+
+        var (sent, message) = await _service.ReconnectFriendAsync("friend-entry", CancellationToken.None);
+        Assert.True(sent, message);
+        Assert.Equal("http://flix.example/Plugins/Federation/Friends/Request", Assert.Single(posts));
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.Equal("friend-entry", outgoing.ReplacesServerId);
+
+        // The accept callback names a different address; only the keys may change.
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = outgoing.Id,
+            FromServerUrl = "http://attacker.example",
+            FromServerName = "Someone else",
+            FromServerId = "flix-2",
+            ApiKeyForYou = "new-out",
+            SupportsFederationToken = true
+        }));
+
+        var entry = Assert.Single(_plugin.Configuration.RemoteServers);
+        Assert.Equal("friend-entry", entry.Id);
+        Assert.Equal("http://flix.example", entry.Url);
+        Assert.Equal("Flix", entry.Name);
+        Assert.Equal("new-out", entry.ApiKey);
+        Assert.Equal(outgoing.ApiKey, entry.IssuedApiKey);
+        Assert.Equal("flix-2", entry.FederationId);
+        Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
+    }
+
+    [Fact]
+    public async Task SecondReconnectRequest_WhileOneIsPending_IsRefused()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "friend-entry", Name = "Flix", Url = "http://flix.example", Enabled = true });
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        FriendRequestPayload Payload(string id) => new() { RequestId = id, FromServerUrl = "http://flix.example", FromServerName = "Flix", FromServerId = "x", ApiKeyForYou = "k", SupportsFederationToken = true };
+
+        Assert.True((await _service.ReceiveFriendRequestAsync(Payload("r1"), CancellationToken.None)).Success);
+        Assert.False((await _service.ReceiveFriendRequestAsync(Payload("r2"), CancellationToken.None)).Success);
+        Assert.Single(_plugin.Configuration.IncomingFriendRequests);
+    }
+
+    [Fact]
+    public async Task InternalRelayKey_DeletedInJellyfin_IsReplaced_ValidKeyIsKept()
+    {
+        FederationFriendService.ResetRelayKeyCheckForTests();
+        try
+        {
+            var first = await _service.GetOrCreateInternalRelayApiKeyAsync();
+            Assert.Single(_apiKeys);
+            Assert.Equal(first, await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true));
+            Assert.Single(_apiKeys);
+
+            // An admin deletes the key under Dashboard > API Keys. Within the
+            // check interval the stored key is still used...
+            _apiKeys.Clear();
+            Assert.Equal(first, await _service.GetOrCreateInternalRelayApiKeyAsync());
+
+            // ...until a request is rejected and forces a check.
+            var renewed = await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true);
+            Assert.NotEqual(first, renewed);
+            Assert.Equal(renewed, Assert.Single(_apiKeys).AccessToken);
+            Assert.Equal(renewed, _plugin.Configuration.InternalRelayApiKey);
+
+            // After the interval a regular call checks again by itself.
+            _apiKeys.Clear();
+            FederationFriendService.ResetRelayKeyCheckForTests();
+            var again = await _service.GetOrCreateInternalRelayApiKeyAsync();
+            Assert.NotEqual(renewed, again);
+            Assert.Equal(again, Assert.Single(_apiKeys).AccessToken);
+        }
+        finally
+        {
+            FederationFriendService.ResetRelayKeyCheckForTests();
+        }
+    }
+
+    [Fact]
     public void GetOrCreateLocalFederationId_IsStableAcrossCalls()
     {
         var first = _service.GetOrCreateLocalFederationId();

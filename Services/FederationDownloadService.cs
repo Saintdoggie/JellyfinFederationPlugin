@@ -441,8 +441,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "This source is not currently available for download.", null, null);
             }
 
-            var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mp4" : entry.Metadata.Container.Trim().TrimStart('.');
-            var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
+            var fileName = SafeFileName(entry.Metadata.Name) + "." + SafeExtension(entry.Metadata.Container, "mp4");
             var separator = url.Contains('?', StringComparison.Ordinal) ? "&" : "?";
             var downloadUrl = $"{url}{separator}fileName={Uri.EscapeDataString(fileName)}";
 
@@ -598,13 +597,18 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (string.IsNullOrEmpty(destinationPath) || string.IsNullOrEmpty(partialPath))
                 {
-                    var extension = string.IsNullOrWhiteSpace(entry.Metadata.Container) ? "mkv" : entry.Metadata.Container.Trim('.');
-                    var fileName = SafeFileName(entry.Metadata.Name) + "." + extension;
+                    var fileName = SafeFileName(entry.Metadata.Name) + "." + SafeExtension(entry.Metadata.Container, "mkv");
                     destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
                     partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
                     job.DestinationPath = destinationPath;
                     job.PartialPath = partialPath;
                     PersistJob(job);
+                }
+
+                if (!AreJobPathsInsideRoot(downloadsRoot, destinationPath, partialPath))
+                {
+                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
+                    return;
                 }
 
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
@@ -725,6 +729,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     PersistJob(job);
                 }
 
+                if (!AreJobPathsInsideRoot(downloadsRoot, destinationPath, partialPath))
+                {
+                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
+                    return;
+                }
+
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
                 await TransferJobAsync(job, server, nativeItemId, bulk, "Downloading...", cancellationToken).ConfigureAwait(false);
@@ -789,6 +799,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     job.DestinationPath = committedPath;
                     job.PartialPath = partialPath;
                     PersistJob(job);
+                }
+
+                if (!AreJobPathsInsideRoot(downloadsRoot, committedPath, partialPath))
+                {
+                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
+                    return;
                 }
 
                 DownloadProgressTracker.SetDestinationPath(operationId, committedPath);
@@ -1265,6 +1281,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            // A persisted job's path is not trusted: never delete outside the
+            // downloads folder.
+            if (!IsDownloadedFilePath(path))
+            {
+                _logger.LogWarning("[Federation] Not removing partial file outside the downloads folder: {Path}", path);
+                return;
+            }
+
             try
             {
                 if (File.Exists(path))
@@ -1477,6 +1501,40 @@ namespace Jellyfin.Plugin.Federation.Services
             // filesystems with a 255-byte component limit.
             return safe.Length <= 120 ? safe : safe.Substring(0, 120).TrimEnd();
         }
+
+        /// <summary>
+        /// File extension derived from a remote container name. The container is
+        /// friend-supplied metadata, so anything but a short alphanumeric token
+        /// (e.g. "../../plugins/x.dll") falls back to <paramref name="fallback"/>.
+        /// Jellyfin may report a comma-separated list ("mov,mp4,m4a"); the first
+        /// entry is used.
+        /// </summary>
+        internal static string SafeExtension(string? container, string fallback)
+        {
+            var candidate = (container ?? string.Empty).Split(',')[0].Trim().TrimStart('.').ToLowerInvariant();
+            if (candidate.Length is 0 or > 10)
+            {
+                return fallback;
+            }
+
+            foreach (var c in candidate)
+            {
+                if (c is not ((>= 'a' and <= 'z') or (>= '0' and <= '9')))
+                {
+                    return fallback;
+                }
+            }
+
+            return candidate;
+        }
+
+        /// <summary>
+        /// Final guard before staging or committing a download: both paths must
+        /// resolve inside the downloads root. Covers jobs persisted by older
+        /// builds whose destination was built from unsanitized remote metadata.
+        /// </summary>
+        internal static bool AreJobPathsInsideRoot(string downloadsRoot, string? destinationPath, string? partialPath)
+            => IsPathInsideRoot(destinationPath, downloadsRoot) && IsPathInsideRoot(partialPath, downloadsRoot);
 
         internal static bool ValidateCompletedDownload(string? path)
         {

@@ -983,6 +983,26 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool Verified { get; set; }
 
         /// <summary>
+        /// Set when this request renews the keys of an existing friend (its
+        /// RemoteServer.Id) instead of creating a new one: the friend was
+        /// reinstalled, or one side lost its keys. Accepting updates that entry in
+        /// place, so libraries, sharing rules and synced titles stay.
+        /// </summary>
+        public string? ReplacesServerId { get; set; }
+
+        /// <summary>The requesting server reports a different identity than the friend had: reinstalled, or a different server.</summary>
+        public bool IdentityChanged { get; set; }
+
+        /// <summary>
+        /// For a request this server sent: what the new friend may see once they
+        /// accept, chosen before sending. Null keeps the old default (everything).
+        /// </summary>
+        public bool? ShareAllLibraries { get; set; }
+
+        /// <summary>Libraries shared with the new friend when <see cref="ShareAllLibraries"/> is false.</summary>
+        public List<string>? SharedLibraryFolderIds { get; set; }
+
+        /// <summary>
         /// Gets or sets the pool this request is introducing the recipient to, or
         /// null for an ordinary direct friend request. Set by
         /// <see cref="Services.FederationFriendService.SendPoolInviteAsync"/>; when

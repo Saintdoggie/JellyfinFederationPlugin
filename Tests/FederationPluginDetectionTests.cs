@@ -113,8 +113,11 @@ public class FederationPluginDetectionTests
         var (sync, cache, mapping, config) = BuildHarness(server, new ScriptedHandler(FederationProbe.NotFound, aliveProbeSucceeds: true));
         SeedExistingItem(cache, mapping, server.Id);
 
+        // Kept after the first sync that misses it, removed after the second.
         await InvokeRefreshMappingAsync(sync, mapping, config);
+        Assert.Single(cache.GetEntriesForMapping(mapping.LocalLibraryName));
 
+        await InvokeRefreshMappingAsync(sync, mapping, config);
         Assert.Empty(cache.GetEntriesForMapping(mapping.LocalLibraryName));
     }
 

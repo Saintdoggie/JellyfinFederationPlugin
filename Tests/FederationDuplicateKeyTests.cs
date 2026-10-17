@@ -15,7 +15,10 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// upserted under a provider key instead, orphaning the raw entry. Pruning could
 /// not remove it, because pruning only dropped raw entries whose remote id was
 /// no longer seen, and this one still is: it is the same item. The result was a
-/// library listing every affected title twice.
+/// library listing every affected title twice. The title now keeps the key it
+/// was first stored under, so no second entry appears at all: a new key would
+/// also give the title a new Jellyfin item id, deleting and recreating it (and
+/// every season and episode below a series).
 /// </summary>
 public class FederationDuplicateKeyTests
 {
@@ -34,7 +37,7 @@ public class FederationDuplicateKeyTests
 
         // Later sync: the same remote item now reports an imdb id.
         cache.UpsertByProviderId("Movies", "imdb", "tt3606756", dto, "serverA", remoteId, 0, "Movie");
-        Assert.Equal(2, cache.GetEntriesForMapping("Movies").Count());
+        Assert.Single(cache.GetEntriesForMapping("Movies"));
 
         // The item is still present on the remote, so it is "seen" this cycle -
         // which is precisely why the stale raw copy used to survive forever.
@@ -42,7 +45,7 @@ public class FederationDuplicateKeyTests
 
         var remaining = cache.GetEntriesForMapping("Movies").ToList();
         var single = Assert.Single(remaining);
-        Assert.Equal("Movies/imdb:tt3606756", single.Key);
+        Assert.Equal("Movies/raw/serverA/" + remoteId, single.Key);
     }
 
     [Fact]
@@ -61,13 +64,32 @@ public class FederationDuplicateKeyTests
         Assert.Single(cache.GetEntriesForMapping("Movies"));
 
         cache.UpsertRaw("Movies", "serverA", remoteId, dto, 0, "Movie");
-        Assert.Equal(2, cache.GetEntriesForMapping("Movies").Count());
+        Assert.Single(cache.GetEntriesForMapping("Movies"));
 
         cache.PruneServerSources("Movies", "serverA", new HashSet<Guid> { remoteId });
 
         var remaining = cache.GetEntriesForMapping("Movies").ToList();
         var single = Assert.Single(remaining);
-        Assert.Equal("Movies/raw/serverA/" + remoteId, single.Key);
+        Assert.Equal("Movies/imdb:tt3606756", single.Key);
+    }
+
+    [Fact]
+    public void ChangedProviderId_KeepsTheEntry_AndOtherServersStillMergeIntoIt()
+    {
+        var cache = NewCache();
+        var idA = Guid.NewGuid();
+        var idB = Guid.NewGuid();
+        cache.UpsertByProviderId("Shows", "tvdb", "100", new BaseItemDto { Id = idA, Name = "Show" }, "serverA", idA, 0, "Series");
+
+        // Server A's metadata corrects the match to a different tvdb id.
+        cache.UpsertByProviderId("Shows", "tvdb", "200", new BaseItemDto { Id = idA, Name = "Show" }, "serverA", idA, 0, "Series");
+        var entry = Assert.Single(cache.GetEntriesForMapping("Shows"));
+        Assert.Equal("Shows/tvdb:100", entry.Key);
+
+        // Server B reports the corrected id from the start and joins the same entry.
+        cache.UpsertByProviderId("Shows", "tvdb", "200", new BaseItemDto { Id = idB, Name = "Show" }, "serverB", idB, 0, "Series");
+        entry = Assert.Single(cache.GetEntriesForMapping("Shows"));
+        Assert.Equal(2, entry.GetSourcesSnapshot().Length);
     }
 
     [Fact]

@@ -197,6 +197,15 @@
                 #federationConfigPage .fed-userrule-result { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; padding: 0.22em 0; }
 
                 /* Library picker */
+                #federationConfigPage .fed-syncrow { padding: 0.6em 0.7em; margin: 0.4em 0; border-radius: 0.3em; background: rgba(128,128,128,0.06); }
+                #federationConfigPage .fed-syncrow-head { display: flex; flex-wrap: wrap; gap: 0.4em 0.8em; align-items: baseline; justify-content: space-between; }
+                #federationConfigPage .fed-syncstate { font-size: 0.9em; font-weight: 600; white-space: nowrap; }
+                #federationConfigPage .fed-syncstate-ok { color: var(--fed-ok-text); }
+                #federationConfigPage .fed-syncstate-busy { color: inherit; opacity: 0.85; }
+                #federationConfigPage .fed-syncstate-bad { color: var(--fed-err-text); }
+                #federationConfigPage .fed-syncrow-meta { opacity: 0.65; font-size: 0.85em; margin-top: 0.2em; }
+                #federationConfigPage .fed-syncrow-error { color: var(--fed-err-text); font-size: 0.9em; margin-top: 0.3em; line-height: 1.45; }
+                #federationConfigPage .fed-syncrow-note { color: var(--fed-warn-text); font-size: 0.85em; margin-top: 0.3em; line-height: 1.45; }
                 #federationConfigPage .fed-libgroup { margin: 1em 0; }
                 #federationConfigPage .fed-libgroup > strong { display: block; margin-bottom: 0.3em; }
                 #federationConfigPage .fed-librow { display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap; padding: 0.45em 0.6em; border-radius: 0.3em; cursor: pointer; }
@@ -519,16 +528,22 @@
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Add a friend</h3>
                     <p class="fieldDescription">
-                        Enter another Federation server's address and send a request. Once they accept, both servers add
-                        each other automatically — no API key to copy by hand.
+                        Send another Federation server a friend request. You choose what they can see of your library before
+                        the request leaves this server; once they accept, both servers add each other automatically.
                     </p>
 
-                    <div class="fed-inline">
-                        <div class="inputContainer fed-grow">
+                    <button is="emby-button" type="button" class="raised emby-button" data-fed-action="new-friend-open" id="fedNewFriendOpen">Create new friend request</button>
+                    <div id="fedNewFriend" class="fed-subcard" style="display:none;">
+                        <div class="inputContainer">
                             <label class="inputLabel" for="fedFriendUrl">Friend's server address</label>
                             <input type="text" id="fedFriendUrl" class="emby-input" placeholder="https://friend-jellyfin:8096" autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+                        <h4 class="fed-subhead">What they can see of my library</h4>
+                        <div id="fedNewFriendShare"></div>
+                        <div class="fed-inline" style="margin-top:0.8em;">
+                            <button is="emby-button" type="button" class="raised emby-button" data-fed-action="send-friend-request">Send friend request</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="new-friend-cancel">Cancel</button>
+                        </div>
                     </div>
                     <div id="fedFriendStatus" class="fed-srvstatus" style="display:none;"></div>
 
@@ -923,6 +938,15 @@
                             Cover art and details come from the friend's server (including custom posters), not from TMDb.
                         </p>
 
+                        <div id="fedSyncStatusCard">
+                            <h4 class="fed-subhead">Sync status</h4>
+                            <p class="fieldDescription">
+                                Every sync first asks each friend what it shares, so you see how much will change before anything is downloaded.
+                                After the first sync, only new or changed titles are downloaded.
+                            </p>
+                            <div id="fedSyncStatusList"><p class="fed-muted">Loading sync status…</p></div>
+                        </div>
+
                         <div id="fedLibraryPicker">
                             <p class="fieldDescription" id="fedPickerHint">Loading remote libraries…</p>
                             <div id="fedPickerList"></div>
@@ -1203,6 +1227,12 @@
                     };
                     var PICKER_TYPES = ['Movie', 'Series', 'MusicAlbum', 'MusicVideo', 'Video', 'Photo', 'Book', 'BoxSet'];
                     var CUSTOM_TYPES = ['Movie', 'Series', 'Season', 'Episode', 'MusicAlbum', 'Audio', 'MusicVideo', 'Book', 'Photo', 'PhotoAlbum', 'Video', 'Playlist', 'BoxSet'];
+                    // Readable names for the custom library type list; the values stay the item types.
+                    var CUSTOM_TYPE_LABELS = {
+                        Movie: 'Movies', Series: 'TV shows (with episodes)', Season: 'Seasons only', Episode: 'Episodes only',
+                        MusicAlbum: 'Music (albums with songs)', Audio: 'Music (songs, with their albums)', MusicVideo: 'Music videos',
+                        Book: 'Books', Photo: 'Photos', PhotoAlbum: 'Photo albums', Video: 'Videos', Playlist: 'Playlists', BoxSet: 'Collections'
+                    };
 
                     function getToken() {
                         try {
@@ -2215,6 +2245,11 @@
                                 }
 
                                 html += '<div style="margin-top:0.9em;">';
+                                if (!server.Kind) {
+                                    html += '<p class="fed-hint" style="margin:0 0 0.4em;">If syncing or playback with this friend stopped working because one of you reinstalled the plugin or lost its keys, Reconnect asks their admin to renew the keys. Libraries, sharing settings and synced titles stay.</p>';
+                                    html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="reconnect-friend" data-id="' + escapeHtml(server.Id) + '" data-name="' + escapeHtml(server.Name || server.Url || '') + '">Reconnect</button>';
+                                }
+
                                 html += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="remove-friend" data-i="' + i + '">Remove / unfriend</button>';
                                 html += '</div>';
                                 html += '</div>';
@@ -3017,6 +3052,88 @@
                         el.textContent = msg;
                     }
 
+                    var acceptChoosing = {};
+                    var shareChoices = {};
+
+                    // Library choice for a friendship that does not exist yet: a new
+                    // request, or accepting someone else's. Nothing is ticked, so a
+                    // friend sees none of this server's libraries until chosen here
+                    // or under Manage later.
+                    function renderShareChooser(group) {
+                        var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                        shareChoices[group] = choice;
+                        var html = '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChooseAll" data-group="' + escapeHtml(group) + '"' + (choice.ShareAll ? ' checked' : '') + ' /> Share all my libraries, including ones added later</label>';
+                        html += '<div class="fedChooseLibs" data-group="' + escapeHtml(group) + '" style="display:' + (choice.ShareAll ? 'none' : 'block') + ';margin:0.4em 0 0 0.2em;">';
+                        if (!localLibrariesCache) {
+                            html += '<p class="fed-muted">Loading your libraries…</p>';
+                        } else if (localLibrariesCache.length === 0) {
+                            html += '<p class="fed-muted">No libraries found.</p>';
+                        } else {
+                            localLibrariesCache.forEach(function (lib) {
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedChooseLib" data-group="' + escapeHtml(group) + '" data-lib="' + escapeHtml(lib.id) + '"' + (choice.FolderIds.indexOf(lib.id) !== -1 ? ' checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                            });
+                        }
+
+                        html += '<p class="fed-hint">Nothing ticked means they see none of your libraries. You can share more later under Manage.</p>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function readShareChooser(group) {
+                        var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                        return { ShareAll: !!choice.ShareAll, FolderIds: choice.FolderIds.slice() };
+                    }
+
+                    function showNewFriendDialog(open, url) {
+                        var panel = q('#fedNewFriend');
+                        var opener = q('#fedNewFriendOpen');
+                        if (!panel) {
+                            return;
+                        }
+
+                        panel.style.display = open ? 'block' : 'none';
+                        if (opener) {
+                            opener.style.display = open ? 'none' : '';
+                        }
+
+                        if (!open) {
+                            delete shareChoices['new'];
+                            return;
+                        }
+
+                        var urlEl = q('#fedFriendUrl');
+                        if (urlEl && url) {
+                            urlEl.value = url;
+                        }
+
+                        var renderChooser = function () {
+                            var target = q('#fedNewFriendShare');
+                            if (target) {
+                                target.innerHTML = renderShareChooser('new');
+                            }
+                        };
+                        renderChooser();
+                        loadLocalLibraries().then(renderChooser);
+                    }
+
+                    // What accepting a reconnect request does, and when to be careful.
+                    function renderReconnectNote(r) {
+                        if (!r || !r.Reconnect) {
+                            return '';
+                        }
+
+                        var html = '<p class="fed-hint">This is an existing friend asking to renew your friendship\'s keys, usually because their server was reinstalled or lost its keys. Accepting sends new keys only to the address you already have for them, and keeps your libraries, sharing settings and synced titles.</p>';
+                        if (r.IdentityChanged) {
+                            html += '<p class="fed-notice">This server\'s identity changed: it was reinstalled, or it is a different server answering at that address. Only accept if your friend told you they reinstalled.</p>';
+                        }
+
+                        if (!r.Verified) {
+                            html += '<p class="fed-notice">The request could not be confirmed with that address (a private network address cannot be checked). Make sure your friend actually sent it.</p>';
+                        }
+
+                        return html;
+                    }
+
                     function renderFriendRequests(data) {
                         var incoming = q('#fedFriendIncoming');
                         var outgoing = q('#fedFriendOutgoing');
@@ -3036,11 +3153,27 @@
                                 ih += '<div class="fed-server-head">';
                                 ih += '<span class="fed-dot' + (r.Verified ? ' fed-dot-ok' : '') + '"></span>';
                                 ih += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
+                                if (r.Reconnect) {
+                                    ih += '<span class="fed-pill">wants to reconnect</span>';
+                                }
+
                                 ih += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + (r.Verified ? ' · verified' : ' · unverified') + '</span>';
                                 ih += '<span class="fed-spacer"></span>';
-                                ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
+                                if (r.Reconnect) {
+                                    ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept</button>';
+                                } else {
+                                    ih += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend-choose" data-id="' + escapeHtml(r.Id) + '">Accept…</button>';
+                                }
+
                                 ih += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="reject-friend" data-id="' + escapeHtml(r.Id) + '">Reject</button>';
-                                ih += '</div></div>';
+                                ih += '</div>';
+                                ih += renderReconnectNote(r);
+                                if (!r.Reconnect && acceptChoosing[r.Id]) {
+                                    ih += '<div class="fed-subcard"><h4 class="fed-subhead">What ' + escapeHtml(r.RemoteServerName) + ' can see of my library</h4>'
+                                        + renderShareChooser('accept-' + r.Id)
+                                        + '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="accept-friend" data-id="' + escapeHtml(r.Id) + '">Accept and become friends</button></div>';
+                                }
+                                ih += '</div>';
                             });
                             incoming.innerHTML = ih;
                         }
@@ -3054,6 +3187,10 @@
                                 oh += '<div class="fed-server-head">';
                                 oh += '<span class="fed-dot"></span>';
                                 oh += '<strong>' + escapeHtml(r.RemoteServerName) + '</strong>';
+                                if (r.Reconnect) {
+                                    oh += '<span class="fed-pill">reconnect</span>';
+                                }
+
                                 oh += '<span class="fed-server-url">' + escapeHtml(r.RemoteServerUrl) + '</span>';
                                 oh += '<span class="fed-spacer"></span>';
                                 oh += '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="cancel-friend" data-id="' + escapeHtml(r.Id) + '">Cancel</button>';
@@ -3078,16 +3215,21 @@
                             return;
                         }
 
+                        var sharing = readShareChooser('new');
                         setFriendStatus('Sending…', 'info');
                         fedFetch('/Plugins/Federation/Friends/Send', {
                             method: 'POST',
-                            body: JSON.stringify({ Url: url })
+                            body: JSON.stringify({ Url: url, ShareAll: sharing.ShareAll, FolderIds: sharing.FolderIds })
                         })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             setFriendStatus(res.message, res.success ? 'ok' : 'err');
-                            if (res.success && urlEl) {
-                                urlEl.value = '';
+                            if (res.success) {
+                                if (urlEl) {
+                                    urlEl.value = '';
+                                }
+
+                                showNewFriendDialog(false);
                             }
 
                             loadFriendRequests();
@@ -3097,10 +3239,20 @@
 
                     function acceptFriendRequest(id) {
                         setFriendStatus('Confirming with your friend\'s server…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', { method: 'POST' })
+                        var chooser = q('.fedChooseLibs[data-group="accept-' + id + '"]');
+                        var sharing = chooser ? readShareChooser('accept-' + id) : null;
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', {
+                            method: 'POST',
+                            body: JSON.stringify(sharing ? { ShareAll: sharing.ShareAll, FolderIds: sharing.FolderIds } : {})
+                        })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
                             loadFriendRequests();
+                            if (res.success && /^Reconnected/.test(res.message || '')) {
+                                setFriendStatus(res.message, 'ok');
+                                return loadConfiguration(false);
+                            }
+
                             if (res.success) {
                                 loadPools();
                                 // loadConfiguration's own seenServerIds diff notices
@@ -4931,18 +5083,11 @@
                     }
 
                     function addDiscoveredFriend(url) {
-                        setDiscoveryStatus('Sending…', 'info');
-                        fedFetch('/Plugins/Federation/Friends/Send', {
-                            method: 'POST',
-                            body: JSON.stringify({ Url: url })
-                        })
-                        .then(function (r) { return readJson(r); })
-                        .then(function (res) {
-                            setDiscoveryStatus(res.message, res.success ? 'ok' : 'err');
-                            loadFriendRequests();
-                            searchDiscovery();
-                        })
-                        .catch(function (e) { setDiscoveryStatus('Failed: ' + e.message, 'err'); });
+                        // Same dialog as a new request, so the library choice is made
+                        // before anything is sent.
+                        switchTab('friends');
+                        showNewFriendDialog(true, url);
+                        setFriendStatus('Choose what they can see of your library, then send the request.', 'info');
                     }
 
                     /* ---------------- New-friend setup prompt ---------------- */
@@ -5855,7 +6000,7 @@
                             html += '<div class="fed-input-container"><label class="fed-label">Media type</label>';
                             html += '<select class="emby-select fed-select fedMapType" data-i="' + i + '">';
                             CUSTOM_TYPES.forEach(function (t) {
-                                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + t + '</option>';
+                                html += '<option value="' + t + '"' + (mp.MediaType === t ? ' selected' : '') + '>' + escapeHtml(CUSTOM_TYPE_LABELS[t] || t) + '</option>';
                             });
                             html += '</select></div>';
                             html += '</div>';
@@ -6062,6 +6207,175 @@
                     }
 
                     /* ---------------- Downloads ---------------- */
+
+                    /* sync-status:start */
+                    function syncTimeAgo(iso, now) {
+                        if (!iso) { return ''; }
+                        var mins = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60000));
+                        if (mins < 1) { return 'just now'; }
+                        if (mins < 60) { return mins + ' min ago'; }
+                        var hours = Math.round(mins / 60);
+                        return hours < 48 ? hours + ' h ago' : Math.round(hours / 24) + ' days ago';
+                    }
+
+                    function syncCount(n) {
+                        return Number(n || 0).toLocaleString('en-US');
+                    }
+
+                    // Plain-language state of one friend library: what it is doing,
+                    // what it found up front, and how the last attempt ended.
+                    function describeLibrarySync(lib, now) {
+                        var label;
+                        var tone = 'busy';
+                        var progress = null;
+                        switch (lib.state) {
+                            case 'checking':
+                                label = 'Checking what ' + (lib.serverName || 'the friend') + ' has…';
+                                break;
+                            case 'downloading':
+                                if (lib.mode === 'legacy' || lib.mode === 'external') {
+                                    label = 'Downloading all titles · ' + syncCount(lib.downloaded) + ' so far';
+                                } else if (lib.toDownload > 0) {
+                                    label = 'Downloading ' + syncCount(lib.downloaded) + ' of ' + syncCount(lib.toDownload);
+                                    progress = Math.min(1, lib.downloaded / lib.toDownload);
+                                } else {
+                                    label = 'Nothing new to download';
+                                }
+                                break;
+                            case 'ready':
+                                label = lib.mode === 'legacy' || lib.mode === 'external'
+                                    ? 'Checked · queued'
+                                    : (lib.toDownload > 0 || lib.toRemove > 0 ? 'Checked · queued' : 'Checked · no changes');
+                                break;
+                            case 'saving':
+                                label = 'Adding to Jellyfin…';
+                                break;
+                            case 'done':
+                                label = 'Up to date';
+                                tone = 'ok';
+                                break;
+                            case 'failed':
+                                label = 'Failed';
+                                tone = 'bad';
+                                break;
+                            default:
+                                label = lib.lastSuccessUtc ? 'Waiting · last synced ' + syncTimeAgo(lib.lastSuccessUtc, now) : 'Waiting for the next sync';
+                        }
+
+                        var facts = [];
+                        var total = lib.total != null ? lib.total : lib.lastTotal;
+                        if (total != null) { facts.push(syncCount(total) + ' items'); }
+                        var finished = lib.state === 'done' || lib.state === 'saving';
+                        if (lib.state === 'checking' || lib.state === 'waiting') {
+                            // Counts belong to the run that is about to start.
+                        } else if (finished) {
+                            // What the run did, not what it planned.
+                            facts.push(lib.downloaded > 0 ? syncCount(lib.downloaded) + ' downloaded' : 'no changes');
+                            if (lib.removed > 0) { facts.push(syncCount(lib.removed) + ' removed'); }
+                        } else if (lib.mode === 'changes' || lib.mode === 'full') {
+                            facts.push(syncCount(lib.toDownload) + ' to download');
+                            if (lib.toRemove > 0) { facts.push(syncCount(lib.toRemove) + ' to remove'); }
+                        }
+
+                        if (lib.bytesReceived > 0) { facts.push(formatBytes(lib.bytesReceived) + ' received'); }
+                        if (lib.lastSuccessUtc && lib.state !== 'waiting') { facts.push('last synced ' + syncTimeAgo(lib.lastSuccessUtc, now)); }
+                        if (!lib.lastSuccessUtc && lib.state === 'failed') { facts.push('never synced successfully'); }
+
+                        var note = '';
+                        var held = '';
+                        if (lib.heldRemovals > 0) {
+                            held = syncCount(lib.heldRemovals) + ' titles are no longer on ' + lib.serverName + '\'s server. Because that is a large part of this library, they were kept until you confirm. If they should be gone, remove them; otherwise check that ' + lib.serverName + '\'s library is complete.';
+                        } else if (lib.waitingRemovals > 0) {
+                            note = syncCount(lib.waitingRemovals) + ' titles are missing on ' + lib.serverName + '\'s server and will be removed at the next sync if they are still missing.';
+                        }
+
+                        if (lib.mode === 'legacy') {
+                            note = lib.serverName + ' runs an older Federation version, so every sync downloads the whole library. Updating the plugin there makes syncs much faster.';
+                        } else if (lib.mode === 'full' && lib.state !== 'done') {
+                            note = 'Downloading every title this time: first sync, changed settings here, or the daily full check.';
+                        }
+
+                        return { label: label, tone: tone, progress: progress, facts: facts, note: note, held: held, error: lib.state === 'failed' ? (lib.error || 'The sync failed. The Log tab has details.') : '' };
+                    }
+
+                    function renderSyncStatusHtml(data, now) {
+                        var libs = (data && data.libraries) || [];
+                        if (!libs.length) {
+                            return '<p class="fed-muted">No friend libraries are selected yet. Pick some below, save, and they will show up here after the next sync.</p>';
+                        }
+
+                        var html = '';
+                        var resyncOffered = {};
+                        libs.forEach(function (lib) {
+                            var d = describeLibrarySync(lib, now);
+                            html += '<div class="fed-syncrow" data-sync-key="' + escapeHtml(lib.key) + '">';
+                            html += '<div class="fed-syncrow-head"><span><strong>' + escapeHtml(lib.serverName) + '</strong> · '
+                                + escapeHtml(lib.remoteLibraryName) + ' <span class="fed-muted">→ ' + escapeHtml(lib.localLibraryName) + '</span></span>';
+                            html += '<span class="fed-syncstate fed-syncstate-' + d.tone + '">' + escapeHtml(d.label) + '</span></div>';
+                            if (d.progress != null) {
+                                html += '<div class="fed-plex-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(d.progress * 100) + '"><span style="width:' + Math.round(d.progress * 100) + '%"></span></div>';
+                            }
+
+                            if (d.facts.length) { html += '<div class="fed-syncrow-meta">' + escapeHtml(d.facts.join(' · ')) + '</div>'; }
+                            if (d.error) { html += '<div class="fed-syncrow-error">' + escapeHtml(d.error) + '</div>'; }
+                            if (d.note) { html += '<div class="fed-syncrow-note">' + escapeHtml(d.note) + '</div>'; }
+                            if (d.held) {
+                                html += '<div class="fed-syncrow-error">' + escapeHtml(d.held) + '</div>'
+                                    + '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="confirm-removal" data-sync-key="' + escapeHtml(lib.key) + '" data-count="' + escapeHtml(String(lib.heldRemovals)) + '">Remove ' + escapeHtml(syncCount(lib.heldRemovals)) + ' titles</button>';
+                            }
+                            // One per local library: it rebuilds the whole library, from every friend.
+                            var localKey = String(lib.localLibraryName || '').toLowerCase();
+                            if (localKey && !resyncOffered[localKey]) {
+                                resyncOffered[localKey] = true;
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat fed-btn-sm" data-fed-action="full-resync" data-library="' + escapeHtml(lib.localLibraryName) + '"'
+                                    + (data.running ? ' disabled title="Available when the current sync has finished"' : '') + '>Full resync of ' + escapeHtml(lib.localLibraryName) + '</button>';
+                            }
+                            html += '</div>';
+                        });
+                        return html;
+                    }
+
+                    // One-line summary for the banner at the top while a sync runs.
+                    function syncRunSummary(data) {
+                        var libs = (data && data.libraries) || [];
+                        var finished = libs.filter(function (l) { return l.state === 'done' || l.state === 'failed'; }).length;
+                        var checking = libs.some(function (l) { return l.state === 'checking'; });
+                        var toDownload = 0;
+                        var downloaded = 0;
+                        libs.forEach(function (l) { toDownload += l.toDownload || 0; downloaded += l.downloaded || 0; });
+                        var text = 'Syncing · ' + finished + ' of ' + libs.length + ' libraries finished';
+                        if (checking) {
+                            text += ' · checking what friends have';
+                        } else if (toDownload > 0) {
+                            text += ' · ' + syncCount(downloaded) + ' of ' + syncCount(toDownload) + ' titles downloaded';
+                        }
+
+                        return text;
+                    }
+                    /* sync-status:end */
+
+                    var syncStatusRunning = false;
+                    var syncStatusTick = 0;
+
+                    function loadSyncStatus() {
+                        return fedFetch('/Plugins/Federation/Sync/Status')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (data) {
+                            var list = q('#fedSyncStatusList');
+                            if (list) { list.innerHTML = renderSyncStatusHtml(data, Date.now()); }
+                            var wasRunning = syncStatusRunning;
+                            syncStatusRunning = !!(data && data.running);
+                            if (syncStatusRunning) {
+                                var banner = q('#fedSyncHealth');
+                                if (banner) { banner.innerHTML = '<div class="fed-synchealth">' + escapeHtml(syncRunSummary(data)) + '</div>'; }
+                            } else if (wasRunning) {
+                                setSaveMsg('Sync finished');
+                                loadStatus();
+                                loadDiagnostics();
+                            }
+                        })
+                        .catch(function () { /* status is informational; the next poll retries */ });
+                    }
 
                     function formatBytes(n) {
                         if (n == null || n === '') { return ''; }
@@ -6640,8 +6954,33 @@
                                 case 'send-friend-request':
                                     sendFriendRequest();
                                     break;
+                                case 'new-friend-open':
+                                    showNewFriendDialog(true);
+                                    break;
+                                case 'new-friend-cancel':
+                                    showNewFriendDialog(false);
+                                    break;
+                                case 'accept-friend-choose':
+                                    acceptChoosing[friendId] = true;
+                                    loadLocalLibraries().then(loadFriendRequests);
+                                    loadFriendRequests();
+                                    break;
                                 case 'accept-friend':
                                     acceptFriendRequest(friendId);
+                                    break;
+                                case 'reconnect-friend':
+                                    if (!window.confirm('Ask ' + (t.getAttribute('data-name') || 'this friend') + ' to renew your friendship\'s keys? Their admin has to accept. Nothing is removed here.')) {
+                                        break;
+                                    }
+
+                                    setFriendStatus('Sending a reconnect request…', 'info');
+                                    fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(t.getAttribute('data-id')) + '/Reconnect', { method: 'POST' })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) {
+                                        setFriendStatus(res.message || (res.success ? 'Reconnect request sent' : 'Could not send the reconnect request'), res.success ? 'ok' : 'err');
+                                        loadFriendRequests();
+                                    })
+                                    .catch(function (e) { setFriendStatus('Could not send the reconnect request: ' + e.message, 'err'); });
                                     break;
                                 case 'reject-friend':
                                     rejectFriendRequest(friendId);
@@ -6969,17 +7308,44 @@
                                     break;
                                 case 'refresh-cache':
                                     clearError();
-                                    setSaveMsg('Refreshing cache…');
-                                    fedFetch('/Plugins/Federation/Refresh', { method: 'POST' })
+                                    setSaveMsg('Starting sync…');
+                                    // Runs on the server in the background; progress per
+                                    // library comes from Sync/Status (see loadSyncStatus).
+                                    fedFetch('/Plugins/Federation/Refresh?background=true', { method: 'POST' })
                                     .then(function (r) { return readJson(r); })
                                     .then(function (res) {
-                                        var success = res.success !== undefined ? res.success : res.Success;
-                                        var message = res.message !== undefined ? res.message : res.Message;
-                                        setSaveMsg(message || (success === false ? 'Refresh failed' : 'Refresh complete'), success === false);
-                                        loadStatus();
-                                        loadDiagnostics();
+                                        setSaveMsg(res.started ? 'Sync started. Progress is shown per library on the Libraries tab.' : (res.message || 'A sync is already running'));
+                                        loadSyncStatus();
                                     })
-                                    .catch(function (err) { showError('Refresh failed: ' + err.message); setSaveMsg('Refresh failed', true); });
+                                    .catch(function (err) { showError('Sync could not start: ' + err.message); setSaveMsg('Sync could not start', true); });
+                                    break;
+                                case 'confirm-removal':
+                                    if (!window.confirm('Remove ' + (t.getAttribute('data-count') || 'these') + ' titles from this library? Watch progress on them is lost.')) {
+                                        break;
+                                    }
+
+                                    t.disabled = true;
+                                    fedFetch('/Plugins/Federation/Sync/ConfirmRemoval', { method: 'POST', body: JSON.stringify({ Key: t.getAttribute('data-sync-key') }) })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) { setSaveMsg(res.message || 'Confirmed'); loadSyncStatus(); })
+                                    .catch(function (err) { t.disabled = false; showError('Could not confirm the removal: ' + err.message); });
+                                    break;
+                                case 'full-resync':
+                                    var resyncName = t.getAttribute('data-library') || '';
+                                    if (!window.confirm('Full resync of "' + resyncName + '"?\n\nEverything your friends\' libraries put into it is deleted, the library is recreated (with its current type) and then downloaded again. Watch progress on these titles is lost, and the library is empty until the download finishes. Your own media is not touched.')) {
+                                        break;
+                                    }
+
+                                    t.disabled = true;
+                                    clearError();
+                                    fedFetch('/Plugins/Federation/Sync/FullResync', { method: 'POST', body: JSON.stringify({ LocalLibraryName: resyncName }) })
+                                    .then(function (r) { return readJson(r); })
+                                    .then(function (res) {
+                                        if (!res.started) { t.disabled = false; }
+                                        setSaveMsg(res.message || 'Full resync started', !res.started);
+                                        loadSyncStatus();
+                                    })
+                                    .catch(function (err) { t.disabled = false; showError('Full resync could not start: ' + err.message); });
                                     break;
                                 case 'open-log':
                                     switchTab('log');
@@ -7118,6 +7484,27 @@
                                 return;
                             }
 
+                            if (t.classList.contains('fedChooseAll') || t.classList.contains('fedChooseLib')) {
+                                var group = t.getAttribute('data-group');
+                                var choice = shareChoices[group] || { ShareAll: false, FolderIds: [] };
+                                shareChoices[group] = choice;
+                                if (t.classList.contains('fedChooseAll')) {
+                                    choice.ShareAll = t.checked;
+                                    var libsBox = q('.fedChooseLibs[data-group="' + group + '"]');
+                                    if (libsBox) {
+                                        libsBox.style.display = t.checked ? 'none' : 'block';
+                                    }
+                                } else {
+                                    var lib = t.getAttribute('data-lib');
+                                    choice.FolderIds = choice.FolderIds.filter(function (x) { return x !== lib; });
+                                    if (t.checked) {
+                                        choice.FolderIds.push(lib);
+                                    }
+                                }
+
+                                return;
+                            }
+
                             if (t.classList.contains('fedPickLib')) {
                                 var idx = parseInt(t.getAttribute('data-idx'), 10);
                                 if (pickerLibs[idx]) {
@@ -7245,6 +7632,7 @@
                     var watchingPollInterval = null;
                     var healthPollInterval = null;
                     var logPollInterval = null;
+                    var syncStatusPollInterval = null;
                     var activePage = null;
 
                     function stopPagePolling() {
@@ -7258,7 +7646,8 @@
                         clearInterval(watchingPollInterval);
                         clearInterval(healthPollInterval);
                         clearInterval(logPollInterval);
-                        downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = null;
+                        clearInterval(syncStatusPollInterval);
+                        downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = syncStatusPollInterval = null;
                         activePage = null;
                         stopWatchdog();
                     }
@@ -7306,6 +7695,11 @@
                         healthPollInterval = setInterval(function () { if (pageIsVisible()) { loadFriendHealth(false); } }, 60000);
                         loadLogs();
                         logPollInterval = setInterval(function () { if (pageIsVisible()) { loadLogs(); } }, 10000);
+                        loadSyncStatus();
+                        // Every 2 s while a sync runs (it may also be the scheduled one), every 30 s otherwise.
+                        syncStatusPollInterval = setInterval(function () {
+                            if (pageIsVisible() && (syncStatusRunning || ++syncStatusTick % 15 === 0)) { loadSyncStatus(); }
+                        }, 2000);
                     }
 
                     function onPageShow(e) {

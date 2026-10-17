@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -125,5 +128,56 @@ public sealed class FederationLogBufferTests
         Assert.Equal(total, snap[^1].Id);
         Assert.Equal($"n-{total}", snap[^1].Message);
         Assert.DoesNotContain(snap, e => e.Message == "n-1");
+    }
+
+    [Fact]
+    public void PluginLoggers_ReachTheLogTab_EvenWhenTheHostIgnoresAddedProviders()
+    {
+        // Jellyfin's Serilog factory drops ILoggerFactory.AddProvider calls.
+        var host = new RecordingLoggerFactory();
+        var services = new ServiceCollection();
+        services.AddSingleton<ILoggerFactory>(host);
+        services.AddSingleton<FederationLogBuffer>();
+        PluginServiceRegistrator.RegisterCapturingLoggers(services);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<ILogger<FederationSyncService>>()
+            .LogWarning("[Federation] sync warning {Value}", 42);
+
+        var entry = Assert.Single(provider.GetRequiredService<FederationLogBuffer>().Snapshot(null, 0, 200));
+        Assert.Equal("Warning", entry.Level);
+        Assert.Equal("[Federation] sync warning 42", entry.Message);
+        Assert.Contains("[Federation] sync warning 42", host.Messages);
+    }
+
+    private sealed class RecordingLoggerFactory : ILoggerFactory
+    {
+        public List<string> Messages { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(Messages);
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        private readonly List<string> _messages;
+
+        public RecordingLogger(List<string> messages) => _messages = messages;
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => _messages.Add(formatter(state, exception));
     }
 }

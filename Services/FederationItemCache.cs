@@ -21,7 +21,23 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationItemCache> _logger;
         private readonly ConcurrentDictionary<string, FederatedCacheEntry> _entries = new();
         private readonly ConcurrentDictionary<(string ServerId, Guid RemoteItemId), string> _remoteIndex = new();
+        private readonly ConcurrentDictionary<string, SyncIndexSnapshot> _syncIndexes = new(StringComparer.OrdinalIgnoreCase);
+
+        // Provider key -> the provider-keyed entry that already holds that title,
+        // recorded when an item's provider id changes after it was first stored.
+        private readonly ConcurrentDictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
+
+        // mapping|server -> titles that were missing from that friend's last
+        // complete sync, and whether a large removal is waiting for the admin.
+        private readonly ConcurrentDictionary<string, PendingRemoval> _pendingRemovals = new(StringComparer.OrdinalIgnoreCase);
         private string _cacheFilePath = string.Empty;
+
+        // Fingerprint of the file as last written or read, so an unchanged cache
+        // (13 MB for 12,600 items) is not rewritten after every sync.
+        private byte[]? _savedFingerprint;
+
+        /// <summary>Where the cache is stored; empty until initialized.</summary>
+        public string CacheFilePath => _cacheFilePath;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
 
         public FederationItemCache(ILogger<FederationItemCache> logger)
@@ -191,7 +207,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string itemType,
             string? parentKey = null)
         {
-            var key = BuildProviderKey(mappingName, providerName, providerId);
+            var key = StickyKey(mappingName, serverId, remoteItemId, BuildProviderKey(mappingName, providerName, providerId), itemType);
             var entry = _entries.AddOrUpdate(
                 key,
                 _ => CreateEntry(key, mappingName, itemType, remoteItem, serverId, remoteItemId, serverPriority),
@@ -209,6 +225,48 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// The key a remote item is stored under. A title keeps the key it was first
+        /// stored under even when its friend later reports a provider id (or a
+        /// different one): Jellyfin item ids derive from the key, so a new key
+        /// deleted and recreated the title - and for a series, every season and
+        /// episode below it, since their keys build on the series key - losing
+        /// watch state. A friend's metadata refresh adds TVDB/TMDB ids to a large
+        /// library over hours, so this happened to whole libraries.
+        /// </summary>
+        private string StickyKey(string mappingName, string serverId, Guid remoteItemId, string desiredKey, string itemType)
+        {
+            if (_remoteIndex.TryGetValue((serverId, remoteItemId), out var existingKey)
+                && !string.Equals(existingKey, desiredKey, StringComparison.OrdinalIgnoreCase)
+                && _entries.TryGetValue(existingKey, out var existing)
+                && existing.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existing.ItemType, itemType, StringComparison.OrdinalIgnoreCase)
+                && existing.GetSourcesSnapshot().Any(s => s.ServerId == serverId && s.RemoteItemId == remoteItemId))
+            {
+                // Other friends' copies of the same title can still merge into a
+                // provider-keyed entry through its new provider key. Raw entries are
+                // pruned by their one server, so nothing else may join them.
+                if (!IsRawKey(existingKey) && !IsRawKey(desiredKey) && !_entries.ContainsKey(desiredKey))
+                {
+                    _aliases[desiredKey] = existingKey;
+                }
+
+                return existingKey;
+            }
+
+            if (!IsRawKey(desiredKey)
+                && !_entries.ContainsKey(desiredKey)
+                && _aliases.TryGetValue(desiredKey, out var aliased)
+                && _entries.TryGetValue(aliased, out var target)
+                && target.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(target.ItemType, itemType, StringComparison.OrdinalIgnoreCase))
+            {
+                return aliased;
+            }
+
+            return desiredKey;
+        }
+
+        /// <summary>
         /// Upserts a raw cache entry (no provider id) keyed by server + remote item.
         /// </summary>
         public FederatedCacheEntry UpsertRaw(
@@ -220,7 +278,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string itemType,
             string? parentKey = null)
         {
-            var key = BuildRawKey(mappingName, serverId, remoteItemId);
+            var key = StickyKey(mappingName, serverId, remoteItemId, BuildRawKey(mappingName, serverId, remoteItemId), itemType);
             var entry = _entries.AddOrUpdate(
                 key,
                 _ => CreateEntry(key, mappingName, itemType, remoteItem, serverId, remoteItemId, serverPriority),
@@ -335,6 +393,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 _entries.TryRemove(k, out _);
             }
 
+            RemoveSyncIndexes(mappingName);
+
+            var removalPrefix = mappingName + "|";
+            foreach (var key in _pendingRemovals.Keys.Where(k => k.StartsWith(removalPrefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _pendingRemovals.TryRemove(key, out _);
+            }
+
             RemoveStaleIndexEntries();
         }
 
@@ -348,6 +414,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public int RemapMapping(string oldName, string newName)
         {
+            RemoveSyncIndexes(oldName);
+            RemoveSyncIndexes(newName);
             if (string.IsNullOrWhiteSpace(oldName)
                 || string.IsNullOrWhiteSpace(newName)
                 || oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
@@ -463,10 +531,98 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Clears the entire cache.
         /// </summary>
+        /// <summary>
+        /// The per-title hashes a friend's catalog index reported at the last
+        /// complete sync of one source, or null. Stored with the cache so the
+        /// hashes can never outlive the entries they vouch for.
+        /// </summary>
+        public SyncIndexSnapshot? GetSyncIndex(string key)
+            => _syncIndexes.TryGetValue(key, out var snapshot) ? snapshot : null;
+
+        public void SetSyncIndex(string key, SyncIndexSnapshot snapshot) => _syncIndexes[key] = snapshot;
+
+        public void RemoveSyncIndex(string key) => _syncIndexes.TryRemove(key, out _);
+
+        /// <summary>
+        /// Whether <paramref name="mappingName"/> currently holds the given remote
+        /// item - the condition for skipping its download as unchanged.
+        /// </summary>
+        public bool HoldsRemoteItem(string mappingName, string serverId, Guid remoteItemId)
+        {
+            var key = TryGetLocalKeyForRemoteItem(serverId, remoteItemId);
+            return key != null
+                && _entries.TryGetValue(key, out var entry)
+                && entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RemoveSyncIndexes(string mappingName)
+        {
+            var prefix = mappingName + "|";
+            foreach (var key in _syncIndexes.Keys.Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _syncIndexes.TryRemove(key, out _);
+            }
+        }
+
+        /// <summary>Every remote item id this mapping holds from one friend.</summary>
+        public HashSet<Guid> RemoteIdsHeldFor(string mappingName, string serverId)
+        {
+            var ids = new HashSet<Guid>();
+            foreach (var entry in _entries.Values)
+            {
+                if (!entry.MappingName.Equals(mappingName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                foreach (var source in entry.GetSourcesSnapshot())
+                {
+                    if (source.ServerId == serverId)
+                    {
+                        ids.Add(source.RemoteItemId);
+                    }
+                }
+            }
+
+            return ids;
+        }
+
+        public static string RemovalKey(string mappingName, string serverId) => mappingName + "|" + serverId;
+
+        public PendingRemoval? GetPendingRemoval(string key)
+            => _pendingRemovals.TryGetValue(key, out var pending) ? pending : null;
+
+        public void SetPendingRemoval(string key, PendingRemoval? pending)
+        {
+            if (pending == null || (pending.Missing.Count == 0 && !pending.Approved))
+            {
+                _pendingRemovals.TryRemove(key, out _);
+            }
+            else
+            {
+                _pendingRemovals[key] = pending;
+            }
+        }
+
+        /// <summary>The admin confirmed a held removal; the next sync carries it out.</summary>
+        public bool ApprovePendingRemoval(string key)
+        {
+            if (!_pendingRemovals.TryGetValue(key, out var pending) || pending.HeldCount == 0)
+            {
+                return false;
+            }
+
+            pending.Approved = true;
+            return true;
+        }
+
         public void Clear()
         {
             _entries.Clear();
             _remoteIndex.Clear();
+            _syncIndexes.Clear();
+            _aliases.Clear();
+            _pendingRemovals.Clear();
             _lastRefreshUtc = DateTime.MinValue;
         }
 
@@ -488,16 +644,28 @@ namespace Jellyfin.Plugin.Federation.Services
                     Directory.CreateDirectory(dir);
                 }
 
+                // Sorted so the same content always serializes to the same bytes.
                 var payload = new CachePayload
                 {
                     LastRefreshUtc = _lastRefreshUtc,
-                    Entries = _entries.Values.Select(e => e.Snapshot()).ToList()
+                    Entries = _entries.Values.Select(e => e.Snapshot()).OrderBy(e => e.Key, StringComparer.Ordinal).ToList(),
+                    SyncIndexes = _syncIndexes.Count == 0 ? null : _syncIndexes.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                    Aliases = _aliases.Count == 0 ? null : _aliases.Where(pair => _entries.ContainsKey(pair.Value)).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                    PendingRemovals = _pendingRemovals.Count == 0 ? null : _pendingRemovals.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
                 };
 
-                var json = JsonSerializer.Serialize(payload, CacheJsonOptions);
+                var json = JsonSerializer.SerializeToUtf8Bytes(payload, CacheJsonOptions);
+                var fingerprint = System.Security.Cryptography.SHA256.HashData(json);
+                if (_savedFingerprint != null && fingerprint.AsSpan().SequenceEqual(_savedFingerprint) && File.Exists(_cacheFilePath))
+                {
+                    _logger.LogDebug("[Federation] Cache unchanged; not rewriting {Path}", _cacheFilePath);
+                    return Task.CompletedTask;
+                }
+
                 var tempPath = _cacheFilePath + ".tmp";
-                File.WriteAllText(tempPath, json);
+                File.WriteAllBytes(tempPath, json);
                 File.Move(tempPath, _cacheFilePath, true);
+                _savedFingerprint = fingerprint;
                 _logger.LogDebug("[Federation] Cache saved to {Path} ({Count} entries)", _cacheFilePath, _entries.Count);
             }
             catch (Exception ex)
@@ -633,8 +801,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var json = File.ReadAllText(_cacheFilePath);
-                var payload = JsonSerializer.Deserialize<CachePayload>(json, CacheJsonOptions);
+                var bytes = File.ReadAllBytes(_cacheFilePath);
+                _savedFingerprint = System.Security.Cryptography.SHA256.HashData(bytes);
+                var payload = JsonSerializer.Deserialize<CachePayload>(bytes, CacheJsonOptions);
                 if (payload?.Entries != null)
                 {
                     // Playback validates exact server/item membership through this
@@ -653,6 +822,30 @@ namespace Jellyfin.Plugin.Federation.Services
                                 _remoteIndex[(source.ServerId, source.RemoteItemId)] = entry.Key;
                             }
                         }
+                    }
+                }
+
+                _pendingRemovals.Clear();
+                foreach (var pair in payload?.PendingRemovals ?? new Dictionary<string, PendingRemoval>())
+                {
+                    if (pair.Value?.Missing != null)
+                    {
+                        _pendingRemovals[pair.Key] = pair.Value;
+                    }
+                }
+
+                _aliases.Clear();
+                foreach (var pair in payload?.Aliases ?? new Dictionary<string, string>())
+                {
+                    _aliases[pair.Key] = pair.Value;
+                }
+
+                _syncIndexes.Clear();
+                foreach (var pair in payload?.SyncIndexes ?? new Dictionary<string, SyncIndexSnapshot>())
+                {
+                    if (pair.Value?.Items != null)
+                    {
+                        _syncIndexes[pair.Key] = pair.Value;
                     }
                 }
 
@@ -677,6 +870,12 @@ namespace Jellyfin.Plugin.Federation.Services
             public DateTime LastRefreshUtc { get; set; }
 
             public List<FederatedCacheEntry> Entries { get; set; } = new();
+
+            public Dictionary<string, SyncIndexSnapshot>? SyncIndexes { get; set; }
+
+            public Dictionary<string, string>? Aliases { get; set; }
+
+            public Dictionary<string, PendingRemoval>? PendingRemovals { get; set; }
         }
     }
 
@@ -1101,5 +1300,52 @@ namespace Jellyfin.Plugin.Federation.Services
         public string? Role { get; set; }
 
         public string? Type { get; set; }
+    }
+
+    /// <summary>
+    /// What one friend's catalog index said about one library and item type
+    /// at the last complete sync. See FederationSyncService's index sync.
+    /// </summary>
+    public class SyncIndexSnapshot
+    {
+        /// <summary>Receiver settings the stored results depend on; a change discards them.</summary>
+        public string Context { get; set; } = string.Empty;
+
+        /// <summary>When every title was last fetched in full; older than a day means fetch all again.</summary>
+        public DateTime FullRefreshUtc { get; set; }
+
+        public Dictionary<Guid, SyncIndexItem> Items { get; set; } = new();
+    }
+
+    public class SyncIndexItem
+    {
+        /// <summary>The friend's hash of the title as it was last fetched.</summary>
+        public string H { get; set; } = string.Empty;
+
+        /// <summary>The title was fetched and deliberately not imported (filtered or not owned).</summary>
+        public bool Skip { get; set; }
+
+        /// <summary>An episode's remote season, which its import also marks as present.</summary>
+        public Guid? Season { get; set; }
+
+        /// <summary>An episode's remote series; a changed series refetches its episodes.</summary>
+        public Guid? Series { get; set; }
+    }
+
+    /// <summary>
+    /// Titles a friend no longer listed at its last complete sync. A title is
+    /// removed only when it is missing twice in a row; a large removal waits for
+    /// the admin (see FederationSyncService.PruneSafelyAsync).
+    /// </summary>
+    public class PendingRemoval
+    {
+        public HashSet<Guid> Missing { get; set; } = new();
+
+        /// <summary>How many titles a held removal would take away; 0 when nothing is held.</summary>
+        public int HeldCount { get; set; }
+
+        public DateTime? HeldSinceUtc { get; set; }
+
+        public bool Approved { get; set; }
     }
 }
