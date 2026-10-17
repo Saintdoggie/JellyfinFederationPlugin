@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.186",
+        "changelog": "Friends sync much faster and more reliably, with thanks to Stephan Voeth (@svoeth), whose contribution is still under review, so please report any problems. After the first sync only new or changed titles are downloaded, large removals wait for you to confirm them, music syncs with its albums, songs and artists, friends shared individual libraries now see them, and the Libraries tab shows what each friend library is doing. You can choose what a new friend sees before sending or accepting a request, reconnect a friend after a reinstall, and fully resync one library. Also fixes a security hole where a malicious friend could make a download write a file outside the downloads folder.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-17T18:08:17Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.186/Jellyfin.Federation.zip",
+        "checksum": "b81eb5bc1ae87c10c29941bfa26c12c1"
+      },
+      {
         "version": "0.0.185",
         "changelog": "Coming from Plex? The Plex tab is now a three-step guide that brings your Plex movie and TV libraries into Jellyfin. Sign in with Plex, pick the libraries, and the plugin creates matching Jellyfin libraries over the same folders (or reuses ones you already have), with Plex's cover art, backdrops and descriptions. If Plex runs on another computer, drive or container, add a folder rewrite and check again. A match report shows how many titles found their Plex artwork. The new libraries are ordinary Jellyfin libraries, so sharing with friends and downloads keep working.",
         "targetAbi": "12.0.0.0",
