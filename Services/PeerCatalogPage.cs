@@ -8,6 +8,12 @@ using MediaBrowser.Model.Dto;
 namespace Jellyfin.Plugin.Federation.Services;
 
 /// <summary>Receiving-side protection when an older peer exports other friends' items.</summary>
+/// <summary>One page of a friend's catalog index (see RemoteServerClient.GetCatalogIndexPageAsync).</summary>
+public sealed record PeerCatalogIndexPage(bool Supported, IReadOnlyList<(Guid Id, string Hash)> Entries, bool HasMore, int NextCursor)
+{
+    public static readonly PeerCatalogIndexPage Unsupported = new(false, Array.Empty<(Guid, string)>(), false, 0);
+}
+
 internal static class PeerCatalogPage
 {
     internal sealed record Result(List<BaseItemDto> Items, int NextStartIndex);
@@ -17,9 +23,10 @@ internal static class PeerCatalogPage
     /// </summary>
     internal sealed class RemoteItemPage : List<BaseItemDto>
     {
-        public RemoteItemPage(IEnumerable<BaseItemDto> items, int? totalRecordCount, bool? hasMore = null)
+        public RemoteItemPage(IEnumerable<BaseItemDto> items, int? totalRecordCount, bool? hasMore = null, int? nextCursor = null)
             : base(items)
         {
+            NextCursor = nextCursor;
             TotalRecordCount = totalRecordCount;
             // Preferred paging signal once both sides run a version that sends
             // it: whether more rows exist after this page, independent of how
@@ -30,6 +37,13 @@ internal static class PeerCatalogPage
         public int? TotalRecordCount { get; }
 
         public bool? HasMore { get; }
+
+        /// <summary>
+        /// The peer's raw resume position after this page, when it sends one.
+        /// Passing it back lets the peer continue there instead of re-reading
+        /// and skipping every earlier row on each request.
+        /// </summary>
+        public int? NextCursor { get; }
 
         /// <summary>
         /// True when the remote's total says items remain after this page.

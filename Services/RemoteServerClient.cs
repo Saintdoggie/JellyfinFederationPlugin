@@ -126,6 +126,52 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public RemoteServer ServerConfig => _server;
 
+        private long _catalogBytesReceived;
+
+        /// <summary>
+        /// Why the last catalog request to this friend failed, in words, or null.
+        /// A 401 means the friend no longer accepts this server's key; anything
+        /// else carries the friend's own error message when it sent one.
+        /// </summary>
+        public string? LastCatalogFailure { get; private set; }
+
+        private async Task<bool> RecordCatalogFailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                LastCatalogFailure = null;
+                return false;
+            }
+
+            string? detail = null;
+            try
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                {
+                    detail = error.GetString();
+                }
+            }
+            catch (Exception)
+            {
+                // Not every failure has a JSON body.
+            }
+
+            var code = (int)response.StatusCode;
+            LastCatalogFailure = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
+                ? $"{_server.Name} no longer accepts this server's key. Use Reconnect on the Friends tab; their admin has to accept."
+                : $"{_server.Name} answered HTTP {code}" + (string.IsNullOrWhiteSpace(detail) ? "." : $": {detail}");
+            _logger.LogWarning("[Federation] Catalog request to {ServerName} failed: {Failure}", _server.Name, LastCatalogFailure);
+            return true;
+        }
+
+        /// <summary>Bytes received for catalog pages and title lists, as sent over the wire.</summary>
+        public long CatalogBytesReceived => Interlocked.Read(ref _catalogBytesReceived);
+
+        private void CountCatalogBytes(HttpResponseMessage response, string body)
+            => Interlocked.Add(ref _catalogBytesReceived, response.Content.Headers.ContentLength ?? System.Text.Encoding.UTF8.GetByteCount(body));
+
         /// <summary>
         /// Gets items from the remote server, including ProviderIds and People.
         /// Returns null when the request fails (callers must treat null as
@@ -146,7 +192,9 @@ namespace Jellyfin.Plugin.Federation.Services
             CancellationToken cancellationToken = default,
             string? localActingUserId = null,
             string? localActingUserName = null,
-            bool slim = false)
+            bool slim = false,
+            int? cursor = null,
+            IReadOnlyCollection<Guid>? ids = null)
         {
             try
             {
@@ -156,6 +204,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 // kept as a parameter only so existing call sites don't need
                 // updating, not because anything here still reads it.
                 var queryParams = new List<string>();
+
+                if (cursor.HasValue)
+                {
+                    queryParams.Add($"cursor={cursor.Value}");
+                }
+
+                if (ids != null && ids.Count > 0)
+                {
+                    queryParams.Add("ids=" + string.Join(",", ids.Select(id => id.ToString("N"))));
+                }
 
                 if (!string.IsNullOrEmpty(mediaType))
                 {
@@ -196,16 +254,23 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Jellyfin 12 exposes the file container on MediaSources,
                     // not necessarily on the catalog item's top-level DTO.
                     queryParams.Add("includeMediaSources=true");
+                    // Only the fields ParseItem reads (see PeerCatalogWire).
+                    queryParams.Add("compact=true");
                 }
 
                 var url = "/Plugins/Federation/Peer/Items" + (queryParams.Count > 0 ? $"?{string.Join("&", queryParams)}" : string.Empty);
 
                 _logger.LogDebug("[Federation] Requesting items from {ServerName}: {Url}", _server.Name, url);
 
-                var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken, acceptGzip: true).ConfigureAwait(false);
+                if (await RecordCatalogFailureAsync(response, cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                CountCatalogBytes(response, content);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
@@ -242,8 +307,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
+                int? nextCursor = null;
+                if (root.TryGetProperty("NextCursor", out var cursorProp) && cursorProp.TryGetInt32(out var cursorValue))
+                {
+                    nextCursor = cursorValue;
+                }
+
                 _logger.LogDebug("[Federation] Retrieved {Count} items from remote server {ServerName}", items.Count, _server.Name);
-                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount, hasMore);
+                return new PeerCatalogPage.RemoteItemPage(items, totalRecordCount, hasMore, nextCursor);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -252,6 +323,110 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting items from remote server {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Tells this friend that this server's catalog changed (see
+        /// FederationChangeNotifier). False when the friend did not take it,
+        /// including a friend whose version has no such endpoint.
+        /// </summary>
+        public async Task<bool> NotifyCatalogChangedAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var response = await _httpClient.PostAsync("/Plugins/Federation/Peer/CatalogChanged", new StringContent(string.Empty), cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not send a change notice to {ServerName}", _server.Name);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// One page of a friend's catalog index: [id, hash] per title it shares
+        /// with us (see PeerCatalogWire.ItemHash). Null when the request failed;
+        /// <see cref="PeerCatalogIndexPage.Supported"/> is false for a friend
+        /// running a version without the index, which answers with full items.
+        /// </summary>
+        public async Task<PeerCatalogIndexPage?> GetCatalogIndexPageAsync(
+            string? mediaType,
+            string? parentId,
+            int? cursor,
+            int limit,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var queryParams = new List<string> { "index=true", "includeMediaSources=true", $"limit={limit}" };
+                if (cursor.HasValue)
+                {
+                    queryParams.Add($"cursor={cursor.Value}");
+                }
+
+                if (!string.IsNullOrEmpty(mediaType))
+                {
+                    queryParams.Add($"mediaType={Uri.EscapeDataString(mediaType)}");
+                }
+
+                if (!string.IsNullOrEmpty(parentId))
+                {
+                    queryParams.Add($"parentId={Uri.EscapeDataString(parentId)}");
+                }
+
+                using var response = await SendGetAsync("/Plugins/Federation/Peer/Items?" + string.Join("&", queryParams), null, null, cancellationToken, acceptGzip: true).ConfigureAwait(false);
+                if (await RecordCatalogFailureAsync(response, cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
+
+                var content = await PeerCatalogWire.ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                CountCatalogBytes(response, content);
+                using var doc = JsonDocument.Parse(content);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("Items", out var itemsElement) || itemsElement.ValueKind != JsonValueKind.Array
+                    || !root.TryGetProperty("HasMore", out var hasMoreProp) || hasMoreProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                    || !root.TryGetProperty("NextCursor", out var cursorProp) || !cursorProp.TryGetInt32(out var nextCursor))
+                {
+                    return PeerCatalogIndexPage.Unsupported;
+                }
+
+                var entries = new List<(Guid Id, string Hash)>();
+                foreach (var entry in itemsElement.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Array)
+                    {
+                        // An older friend ignored index=true and sent full items.
+                        return PeerCatalogIndexPage.Unsupported;
+                    }
+
+                    if (entry.GetArrayLength() != 2
+                        || !Guid.TryParse(entry[0].GetString(), out var id)
+                        || entry[1].GetString() is not { Length: > 0 } hash)
+                    {
+                        _logger.LogWarning("[Federation] Malformed catalog index entry from {ServerName}", _server.Name);
+                        return null;
+                    }
+
+                    entries.Add((id, hash));
+                }
+
+                return new PeerCatalogIndexPage(true, entries, hasMoreProp.GetBoolean(), nextCursor);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Federation] Error getting the catalog index from {ServerName}", _server.Name);
                 return null;
             }
         }
@@ -1606,6 +1781,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 item.Album = albumProp.GetString();
             }
 
+            // A song's album on the friend, so it can be placed inside that album here.
+            if (itemElement.TryGetProperty("AlbumId", out var albumIdProp) && albumIdProp.ValueKind == JsonValueKind.String
+                && Guid.TryParse(albumIdProp.GetString(), out var albumId))
+            {
+                item.AlbumId = albumId;
+            }
+
             if (itemElement.TryGetProperty("AlbumArtist", out var albumArtistProp) && albumArtistProp.ValueKind != JsonValueKind.Null)
             {
                 item.AlbumArtist = albumArtistProp.GetString();
@@ -1733,15 +1915,26 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="IRemoteServerClientFactory"/>) outlives any single request
         /// and is reused across different local users.
         /// </summary>
-        private Task<HttpResponseMessage> SendGetAsync(string url, string? localActingUserId, string? localActingUserName, CancellationToken cancellationToken)
+        private Task<HttpResponseMessage> SendGetAsync(string url, string? localActingUserId, string? localActingUserName, CancellationToken cancellationToken, bool acceptGzip = false)
         {
-            if (string.IsNullOrEmpty(localActingUserId))
+            if (string.IsNullOrEmpty(localActingUserId) && !acceptGzip)
             {
                 return _httpClient.GetAsync(url, cancellationToken);
             }
 
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+            if (acceptGzip)
+            {
+                // Per request rather than on the shared client: the same client
+                // relays media, whose byte ranges must never be re-encoded.
+                request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("gzip"));
+            }
+
+            if (!string.IsNullOrEmpty(localActingUserId))
+            {
+                request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localActingUserId);
+            }
+
             if (!string.IsNullOrEmpty(localActingUserName))
             {
                 request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localActingUserName);

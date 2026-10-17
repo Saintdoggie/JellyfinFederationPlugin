@@ -105,6 +105,22 @@ public sealed class FederationArtworkServiceTests : IDisposable
     }
 
     [Fact]
+    public void EpisodeImages_AreFetchedScaledDown_PostersAtFullSize()
+    {
+        var id = Guid.NewGuid();
+        Assert.Equal(640, FederationArtworkService.MaxWidthFor("Episode"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Movie"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Series"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Season"));
+        Assert.Equal(
+            $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t%2B1&maxWidth=640",
+            FederationArtworkService.BuildPosterUrl("https://friend.example/", id, "t+1", 640));
+        Assert.Equal(
+            $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t",
+            FederationArtworkService.BuildPosterUrl("https://friend.example", id, "t", null));
+    }
+
+    [Fact]
     public async Task UnchangedPlexPoster_WithLocalImage_DoesNotFetchAgain()
     {
         var server = new RemoteServer { Id = "plex-same", Name = "Plex", Kind = ServerKind.Plex, Enabled = true };

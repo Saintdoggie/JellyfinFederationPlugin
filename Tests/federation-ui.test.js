@@ -655,7 +655,7 @@ function pagingHarness(kind, { fallback = false } = {}) {
     var browseRequestEpoch = 0, browseLoading = false, browseSelected = {}, browseSentinelObserver = null, browseFailed = false;
     var activeTab = kind, downloadView = 'select', document = {hidden:false};
     var activePage = {isConnected:true,classList:{contains:()=>false}};
-    var downloadsPollInterval, watchingPollInterval, healthPollInterval, logPollInterval;
+    var downloadsPollInterval, watchingPollInterval, healthPollInterval, logPollInterval, syncStatusPollInterval;
     var TAB_NAMES = ['friends','catalog','browse'], TAB_STORAGE_KEY = 'test', localStorage = {setItem:()=>{}};
     function qa() {return [];} function stopWatchdog() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
     function loadBrowseServers() {} function populateCatalogFriendPick() {}
@@ -901,13 +901,14 @@ test('catalog lazily loads the next page when the sentinel scrolls into view', a
 });
 
 // Jellyfin 12 disables X-Emby-Token by default. Exercise actual browser requests.
-test('refresh now reads camelCase success and message so failures are visible', () => {
+test('refresh now reports whether the background sync started and surfaces failures', () => {
   const refresh = configPage.match(/case 'refresh-cache':[\s\S]*?break;/);
   assert.ok(refresh, 'refresh-cache handler not found');
-  assert.match(refresh[0], /res\.success/);
+  assert.match(refresh[0], /res\.started/);
   assert.match(refresh[0], /res\.message/);
-  assert.match(refresh[0], /success === false/);
-  assert.match(refresh[0], /setSaveMsg\([^,]+,\s*success === false\)/);
+  assert.match(refresh[0], /showError\('Sync could not start: '/);
+  assert.match(refresh[0], /setSaveMsg\('Sync could not start', true\)/);
+  assert.match(refresh[0], /loadSyncStatus\(\)/);
 });
 
 function pickerHarness() {
@@ -1708,4 +1709,119 @@ test('guided Plex import posts the chosen libraries with only complete folder re
 
   const post = ui.posts.find((p) => p.apiPath === 'Import');
   assert.deepEqual(post.body, { SectionKeys: ['7'], PathMappings: [{ From: 'D:\\Media', To: '/mnt/media' }] });
+});
+
+function syncStatusFunctions() {
+  const block = configPage.match(/\/\* sync-status:start \*\/([\s\S]*?)\/\* sync-status:end \*\//);
+  assert.ok(block, 'sync status block not found');
+  const helpers = ['escapeHtml', 'formatBytes'].map((name) => {
+    const fn = configPage.match(new RegExp('function ' + name + '\\([\\s\\S]*?\\n {20}\\}\\n'));
+    assert.ok(fn, name + ' not found');
+    return fn[0];
+  }).join('\n');
+  return new Function('document', helpers + block[1] + '\nreturn { describeLibrarySync, renderSyncStatusHtml, syncRunSummary };')(new JSDOM('').window.document);
+}
+
+test('sync status shows per-library plan, progress, outcome and plain-language failures', () => {
+  const { describeLibrarySync, renderSyncStatusHtml, syncRunSummary } = syncStatusFunctions();
+  const now = Date.parse('2026-10-16T12:00:00Z');
+  const base = { key: 'k', serverName: 'Anna', remoteLibraryName: 'Movies', localLibraryName: 'Movies', toRemove: 0, bytesReceived: 0 };
+
+  const downloading = describeLibrarySync({ ...base, state: 'downloading', mode: 'changes', total: 12400, toDownload: 230, downloaded: 115, toRemove: 3 }, now);
+  assert.equal(downloading.label, 'Downloading 115 of 230');
+  assert.equal(downloading.progress, 0.5);
+  assert.deepEqual(downloading.facts, ['12,400 items', '230 to download', '3 to remove']);
+
+  const done = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 12400, toDownload: 0, downloaded: 0, bytesReceived: 2048, lastSuccessUtc: '2026-10-16T11:55:00Z' }, now);
+  assert.equal(done.label, 'Up to date');
+  assert.equal(done.tone, 'ok');
+  assert.deepEqual(done.facts, ['12,400 items', 'no changes', '2.0 KB received', 'last synced 5 min ago']);
+  const doneWithWork = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 50, toDownload: 7, downloaded: 7, toRemove: 2, removed: 2 }, now);
+  assert.deepEqual(doneWithWork.facts, ['50 items', '7 downloaded', '2 removed']);
+
+  const failed = describeLibrarySync({ ...base, state: 'failed', error: "Couldn't reach Anna, or it didn't answer as a Federation server. Titles already here were kept." }, now);
+  assert.equal(failed.tone, 'bad');
+  assert.match(failed.error, /Couldn't reach Anna/);
+  assert.ok(failed.facts.includes('never synced successfully'));
+
+  const legacy = describeLibrarySync({ ...base, state: 'downloading', mode: 'legacy', downloaded: 400, toDownload: 0 }, now);
+  assert.equal(legacy.label, 'Downloading all titles · 400 so far');
+  assert.match(legacy.note, /older Federation version/);
+
+  const checking = describeLibrarySync({ ...base, state: 'checking', toDownload: 0, downloaded: 0 }, now);
+  assert.equal(checking.label, 'Checking what Anna has…');
+
+  const ready = describeLibrarySync({ ...base, state: 'ready', mode: 'changes', total: 50, toDownload: 4, downloaded: 0 }, now);
+  assert.equal(ready.label, 'Checked · queued');
+  assert.deepEqual(ready.facts, ['50 items', '4 to download']);
+  assert.equal(describeLibrarySync({ ...base, state: 'ready', mode: 'changes', total: 50, toDownload: 0, downloaded: 0 }, now).label, 'Checked · no changes');
+
+  const waiting = describeLibrarySync({ ...base, state: 'done', mode: 'changes', total: 50, toDownload: 0, downloaded: 0, waitingRemovals: 3 }, now);
+  assert.match(waiting.note, /^3 titles are missing on Anna's server and will be removed at the next sync/);
+  const heldLib = { ...base, state: 'done', mode: 'changes', total: 500, toDownload: 0, downloaded: 0, heldRemovals: 120 };
+  assert.match(describeLibrarySync(heldLib, now).held, /^120 titles are no longer on Anna's server/);
+  const heldHtml = renderSyncStatusHtml({ libraries: [heldLib] }, now);
+  assert.match(heldHtml, /data-fed-action="confirm-removal" data-sync-key="k" data-count="120">Remove 120 titles<\/button>/);
+
+  const html = renderSyncStatusHtml({ libraries: [{ ...base, serverName: '<b>Anna</b>', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 }] }, now);
+  assert.ok(html.includes('&lt;b&gt;Anna&lt;/b&gt;'), 'friend names are escaped');
+  assert.match(renderSyncStatusHtml({ libraries: [] }, now), /No friend libraries are selected yet/);
+
+  // One full resync button per local library, even when several friends feed it.
+  const merged = renderSyncStatusHtml({ libraries: [
+    { ...base, key: 'a', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 },
+    { ...base, key: 'b', serverName: 'Ben', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 },
+    { ...base, key: 'c', localLibraryName: 'Music', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 }
+  ] }, now);
+  assert.equal((merged.match(/data-fed-action="full-resync"/g) || []).length, 2);
+  assert.match(merged, /data-fed-action="full-resync" data-library="Movies">Full resync of Movies<\/button>/);
+  assert.match(merged, /data-library="Music">Full resync of Music</);
+  assert.match(renderSyncStatusHtml({ running: true, libraries: [{ ...base, state: 'downloading', mode: 'changes', toDownload: 2, downloaded: 1 }] }, now), /data-fed-action="full-resync" data-library="Movies" disabled/);
+
+  assert.equal(
+    syncRunSummary({ libraries: [
+      { ...base, state: 'done', toDownload: 10, downloaded: 10 },
+      { ...base, state: 'downloading', toDownload: 30, downloaded: 5 }
+    ] }),
+    'Syncing · 1 of 2 libraries finished · 15 of 40 titles downloaded');
+});
+
+test('refresh starts a background sync and the page polls per-library status', () => {
+  assert.match(configPage, /\/Plugins\/Federation\/Refresh\?background=true/);
+  assert.match(configPage, /\/Plugins\/Federation\/Sync\/Status/);
+  assert.match(configPage, /id="fedSyncStatusList"/);
+  assert.match(configPage, /clearInterval\(syncStatusPollInterval\)/);
+});
+
+test('friend requests choose shared libraries before sending or accepting', () => {
+  assert.match(configPage, /data-fed-action="new-friend-open"[^>]*>Create new friend request</);
+  assert.match(configPage, /id="fedNewFriend" class="fed-subcard" style="display:none;"/);
+  const send = configPage.match(/function sendFriendRequest\(\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(send, 'sendFriendRequest not found');
+  assert.match(send[0], /readShareChooser\('new'\)/);
+  assert.match(send[0], /ShareAll: sharing\.ShareAll, FolderIds: sharing\.FolderIds/);
+  const accept = configPage.match(/function acceptFriendRequest\(id\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(accept, 'acceptFriendRequest not found');
+  assert.match(accept[0], /readShareChooser\('accept-' \+ id\)/);
+  assert.match(configPage, /data-fed-action="accept-friend-choose"/);
+  assert.match(configPage, /function addDiscoveredFriend\(url\) \{[\s\S]*?showNewFriendDialog\(true, url\)/);
+
+  const chooser = configPage.match(/function renderShareChooser\(group\) \{[\s\S]*?\n {20}\}/);
+  const reader = configPage.match(/function readShareChooser\(group\) \{[\s\S]*?\n {20}\}/);
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  const fns = new Function('document', 'var shareChoices = {}; var localLibrariesCache = [{ id: "m", name: "Movies" }, { id: "s", name: "Shows" }];\n'
+    + escape[0] + chooser[0] + reader[0] + '\nreturn { renderShareChooser, readShareChooser, shareChoices };')(new JSDOM('').window.document);
+  const html = fns.renderShareChooser('new');
+  assert.equal((html.match(/ checked/g) || []).length, 0, 'nothing is shared by default');
+  assert.match(html, /Share all my libraries, including ones added later/);
+  assert.match(html, /data-lib="m"[^>]*> Movies/);
+  assert.deepEqual(fns.readShareChooser('new'), { ShareAll: false, FolderIds: [] });
+  fns.shareChoices['new'].FolderIds.push('s');
+  assert.deepEqual(fns.readShareChooser('new'), { ShareAll: false, FolderIds: ['s'] });
+});
+
+test('custom library types have readable names, and music is recognisable', () => {
+  assert.match(configPage, /MusicAlbum: 'Music \(albums with songs\)'/);
+  assert.match(configPage, /Audio: 'Music \(songs, with their albums\)'/);
+  assert.match(configPage, /escapeHtml\(CUSTOM_TYPE_LABELS\[t\] \|\| t\)/);
 });

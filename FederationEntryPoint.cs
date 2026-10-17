@@ -29,6 +29,7 @@ namespace Jellyfin.Plugin.Federation
         private readonly WebClientInjector _webClientInjector;
         private readonly FederationAvailabilityService _availability;
         private readonly IHostApplicationLifetime _appLifetime;
+        private readonly FederationChangeNotifier _changeNotifier;
         private readonly IMediaSourceManager _mediaSources;
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly FederationLogBuffer _logBuffer;
@@ -54,8 +55,9 @@ namespace Jellyfin.Plugin.Federation
             WanBandwidthMonitor bandwidthMonitor,
             FederationLogBuffer logBuffer,
             AvailabilityScheduleStore availabilitySchedule,
-            Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
+            FederationChangeNotifier changeNotifier)
         {
+            _changeNotifier = changeNotifier;
             _logger = logger;
             _federationManager = federationManager;
             _provisioning = provisioning;
@@ -71,16 +73,13 @@ namespace Jellyfin.Plugin.Federation
             _availabilitySchedule = availabilitySchedule;
             FederationItemPersistenceService.AvailabilityOverride = availability;
             FederationItemPersistenceService.BandwidthOverride = bandwidthMonitor;
-            if (!_logBuffer.ProviderAttached)
-            {
-                loggerFactory.AddProvider(new FederationLoggerProvider(_logBuffer));
-                _logBuffer.ProviderAttached = true;
-            }
         }
 
         /// <inheritdoc />
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            // Friends are told about changes to this server's own catalog.
+            _changeNotifier.Start();
             _logger.LogInformation("Federation Plugin Entry Point started");
             _logger.LogInformation(
                 "[Federation] Fast-start probing: {State}",
@@ -294,7 +293,11 @@ namespace Jellyfin.Plugin.Federation
         }
 
         /// <inheritdoc />
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            _changeNotifier.Dispose();
+            return Task.CompletedTask;
+        }
 
         private async Task ApplyReachabilityRescanAsync(string serverId, bool online, CancellationToken cancellationToken)
         {

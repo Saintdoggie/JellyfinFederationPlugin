@@ -37,8 +37,6 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly Queue<FederationLogEntry> _entries = new();
         private long _nextId = 1;
 
-        public bool ProviderAttached { get; set; }
-
         public void Append(LogLevel level, string category, string message, Exception? exception)
         {
             if (string.IsNullOrEmpty(message) && exception == null)
@@ -183,31 +181,73 @@ namespace Jellyfin.Plugin.Federation.Services
     }
 
     /// <summary>
-    /// Captures log lines from this plugin's categories into
-    /// <see cref="FederationLogBuffer"/>. Attached once on plugin startup.
+    /// Wraps the host's logger factory for this plugin's own loggers: every
+    /// line still goes to Jellyfin's log, and lines from this plugin's
+    /// categories are also copied into <see cref="FederationLogBuffer"/>.
+    /// Jellyfin's Serilog factory ignores ILoggerFactory.AddProvider, so a
+    /// provider attached at startup never received anything.
     /// </summary>
-    public sealed class FederationLoggerProvider : ILoggerProvider
+    public sealed class FederationCapturingLoggerFactory : ILoggerFactory
     {
+        private readonly ILoggerFactory _inner;
         private readonly FederationLogBuffer _buffer;
 
-        public FederationLoggerProvider(FederationLogBuffer buffer)
+        public FederationCapturingLoggerFactory(ILoggerFactory inner, FederationLogBuffer buffer)
         {
+            _inner = inner;
             _buffer = buffer;
         }
 
         public ILogger CreateLogger(string categoryName)
         {
+            var logger = _inner.CreateLogger(categoryName);
             if (string.IsNullOrEmpty(categoryName)
                 || categoryName.IndexOf("Federation", StringComparison.OrdinalIgnoreCase) < 0)
             {
-                return NullLogger.Instance;
+                return logger;
             }
 
-            return new FederationCaptureLogger(_buffer, categoryName);
+            return new FederationTeeLogger(logger, new FederationCaptureLogger(_buffer, categoryName));
         }
+
+        public void AddProvider(ILoggerProvider provider) => _inner.AddProvider(provider);
 
         public void Dispose()
         {
+            // The wrapped factory belongs to the host.
+        }
+    }
+
+    internal sealed class FederationTeeLogger : ILogger
+    {
+        private readonly ILogger _host;
+        private readonly FederationCaptureLogger _capture;
+
+        public FederationTeeLogger(ILogger host, FederationCaptureLogger capture)
+        {
+            _host = host;
+            _capture = capture;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => _host.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) => _host.IsEnabled(logLevel) || _capture.IsEnabled(logLevel);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (_host.IsEnabled(logLevel))
+            {
+                _host.Log(logLevel, eventId, state, exception, formatter);
+            }
+
+            _capture.Log(logLevel, eventId, state, exception, formatter);
         }
     }
 
