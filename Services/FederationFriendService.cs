@@ -519,6 +519,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                // This friend answered: what it no longer lists (unshared, or
+                // friends-of-friends turned off) disappears here too.
+                foreach (var stale in DiscoveredServersCache.Where(kv => kv.Value.DiscoveredViaFriendId == friend.Id).Select(kv => kv.Key).ToList())
+                {
+                    DiscoveredServersCache.TryRemove(stale, out _);
+                }
+
                 foreach (var entry in entries)
                 {
                     if (string.IsNullOrEmpty(entry.Url) || !ConfigValidator.IsValidServerUrl(entry.Url))
@@ -537,10 +544,18 @@ namespace Jellyfin.Plugin.Federation.Services
                         Name = string.IsNullOrEmpty(entry.Name) ? normalizedUrl : entry.Name,
                         Url = normalizedUrl,
                         DiscoveredViaFriendName = friend.Name,
+                        DiscoveredViaFriendId = friend.Id,
                         LastSeenUtc = DateTime.UtcNow
                     };
                     found++;
                 }
+            }
+
+            // Servers found through a friend that was removed or switched off.
+            var askable = config.RemoteServers.Where(s => s.Enabled && s.Kind == ServerKind.Jellyfin).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var orphan in DiscoveredServersCache.Where(kv => !askable.Contains(kv.Value.DiscoveredViaFriendId)).Select(kv => kv.Key).ToList())
+            {
+                DiscoveredServersCache.TryRemove(orphan, out _);
             }
 
             return found;
@@ -2754,6 +2769,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets when this server was last seen in a discovery refresh.</summary>
         public DateTime LastSeenUtc { get; set; }
+
+        /// <summary>Gets or sets the id of the friend that listed this server (not sent to the browser).</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string DiscoveredViaFriendId { get; set; } = string.Empty;
     }
 
     /// <summary>What a new friend may see of this server, chosen before the friendship exists.</summary>

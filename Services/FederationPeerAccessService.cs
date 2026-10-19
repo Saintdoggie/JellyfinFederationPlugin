@@ -34,6 +34,49 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Whether <paramref name="caller"/> may see this server's local user
+        /// <paramref name="userId"/> in <c>Peer/Users</c>. Nobody is visible
+        /// unless shared through <see cref="RemoteServer.ShareAllUsers"/> or
+        /// <see cref="RemoteServer.SharedUserIds"/>.
+        /// </summary>
+        public static bool IsUserVisible(RemoteServer caller, Guid userId)
+        {
+            if (IsSharingExpired(caller))
+            {
+                return false;
+            }
+
+            if (caller.ShareAllUsers)
+            {
+                return true;
+            }
+
+            return (caller.SharedUserIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => Guid.TryParse(id, out var shared) && shared == userId);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="caller"/> may learn about this server's other
+        /// friend <paramref name="other"/> through <c>Friends/List</c>. Only
+        /// enabled Jellyfin friends can be introduced (a Plex server or
+        /// Companion cannot accept a friend request), never the caller itself.
+        /// </summary>
+        public static bool IsFriendVisible(RemoteServer caller, RemoteServer other)
+        {
+            if (IsSharingExpired(caller)
+                || !other.Enabled
+                || other.Kind != ServerKind.Jellyfin
+                || string.Equals(other.Id, caller.Id, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return caller.ShareAllFriends
+                || (caller.SharedFriendIds ?? new System.Collections.Generic.List<string>())
+                    .Contains(other.Id, StringComparer.Ordinal);
+        }
+
+        /// <summary>
         /// Whether <paramref name="libraryFolderId"/> (this server's own top-level
         /// library folder id, same id space as <see cref="RemoteServer.SharedLibraryFolderIds"/>)
         /// is visible to <paramref name="caller"/>, optionally narrowed further by
@@ -41,6 +84,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool IsLibraryVisible(RemoteServer caller, string? remoteUserId, string libraryFolderId)
         {
+            if (IsSharingExpired(caller) || IsLibraryShareExpired(caller, libraryFolderId))
+            {
+                return false;
+            }
+
             if (!caller.ShareAllLibraries
                 && !(caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
                     .Any(id => FolderIdsEqual(id, libraryFolderId)))
@@ -133,9 +181,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
+            if (IsSharingExpired(caller))
+            {
+                return false;
+            }
+
             if (!caller.ShareAllLibraries
-                && !libraryFolderIds.Value.Any(folderId => (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
-                    .Any(id => FolderIdsEqual(id, folderId))))
+                && !libraryFolderIds.Value.Any(folderId => !IsLibraryShareExpired(caller, folderId)
+                    && (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
+                        .Any(id => FolderIdsEqual(id, folderId))))
+            {
+                return false;
+            }
+
+            // Sharing everything, but some libraries have run out: an item in
+            // an expired library is hidden. "Any", not "all": the resolved ids
+            // also hold the library's physical folder, which never expires.
+            if (caller.ShareAllLibraries
+                && caller.LibraryShareExpiries?.Count > 0
+                && libraryFolderIds.Value.Any(folderId => IsLibraryShareExpired(caller, folderId)))
             {
                 return false;
             }
@@ -305,13 +369,31 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Whether everything shared with <paramref name="caller"/> has run out
+        /// (<see cref="RemoteServer.SharingExpiresUtc"/>).
+        /// </summary>
+        public static bool IsSharingExpired(RemoteServer caller, DateTime? nowUtc = null)
+            => caller.SharingExpiresUtc is { } expires && (nowUtc ?? DateTime.UtcNow) >= DateTime.SpecifyKind(expires, DateTimeKind.Utc);
+
+        /// <summary>
+        /// Whether sharing <paramref name="libraryFolderId"/> with
+        /// <paramref name="caller"/> has run out (<see cref="RemoteServer.LibraryShareExpiries"/>).
+        /// </summary>
+        public static bool IsLibraryShareExpired(RemoteServer caller, string? libraryFolderId, DateTime? nowUtc = null)
+        {
+            var now = nowUtc ?? DateTime.UtcNow;
+            return (caller.LibraryShareExpiries ?? new System.Collections.Generic.List<LibraryShareExpiry>())
+                .Any(e => FolderIdsEqual(e.FolderId, libraryFolderId) && now >= DateTime.SpecifyKind(e.ExpiresUtc, DateTimeKind.Utc));
+        }
+
+        /// <summary>
         /// Compares two library folder id strings for equality tolerant of
         /// formatting differences (with/without dashes, casing) - both are
         /// parsed as a <see cref="Guid"/> and compared by value when possible,
         /// falling back to an ordinal, case-insensitive string compare only if
         /// either side fails to parse as a Guid at all.
         /// </summary>
-        private static bool FolderIdsEqual(string? a, string? b)
+        internal static bool FolderIdsEqual(string? a, string? b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
             {

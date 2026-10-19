@@ -715,10 +715,10 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Gets this server's friends-of-friends list, if it has that feature enabled.
-        /// Returns null (not an empty list) when the remote is unreachable, doesn't
-        /// run Federation, or has the feature disabled - callers should treat that as
-        /// "nothing to discover here," not as an error worth surfacing.
+        /// Gets the friends this server shares with us for friends-of-friends
+        /// discovery: empty when it shares none or has the feature disabled, null
+        /// when it is unreachable or does not run Federation - callers should treat
+        /// null as "could not ask", not as an error worth surfacing.
         /// </summary>
         public async Task<List<FriendListEntry>?> GetFriendsListAsync(CancellationToken cancellationToken = default)
         {
@@ -732,11 +732,46 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendsListResponse>(content, JsonOpts);
-                return result?.AllowsIntroductions == true ? result.Friends : null;
+
+                // Answered but shares nothing (friends-of-friends off, or no
+                // friend shared with us): an empty list, so callers drop what
+                // this friend listed before. Null stays "could not ask".
+                return result?.AllowsIntroductions == true ? result.Friends ?? new List<FriendListEntry>() : new List<FriendListEntry>();
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[Federation] Could not get friends-of-friends list from {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets this friend's popularity list (their most played titles, counts
+        /// only) if they share it with this server. Returns null when the friend
+        /// cannot be reached, so a network blip never empties a collection; an
+        /// older friend without the endpoint answers as "not shared".
+        /// </summary>
+        public async Task<PopularTitlesResponse?> GetPopularTitlesAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Popular", cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return new PopularTitlesResponse();
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return JsonSerializer.Deserialize<PopularTitlesResponse>(content, JsonOpts) ?? new PopularTitlesResponse();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not get the popularity list from {ServerName}", _server.Name);
                 return null;
             }
         }
@@ -2078,6 +2113,28 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the minted token (null when not visible).</summary>
         public string? Token { get; set; }
+    }
+
+    /// <summary>
+    /// Response to a <c>GET /Plugins/Federation/Peer/Popular</c> request.
+    /// </summary>
+    public class PopularTitlesResponse
+    {
+        /// <summary>Gets or sets a value indicating whether the friend shares its popularity list with this server.</summary>
+        public bool Shared { get; set; }
+
+        /// <summary>Gets or sets the friend's most played titles, most played first.</summary>
+        public List<PopularTitle> Titles { get; set; } = new();
+    }
+
+    /// <summary>One entry in a <see cref="PopularTitlesResponse"/>.</summary>
+    public class PopularTitle
+    {
+        /// <summary>Gets or sets the title's item id on the friend's server.</summary>
+        public string Id { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets how often it was played in the last 30 days.</summary>
+        public int Plays { get; set; }
     }
 
     /// <summary>

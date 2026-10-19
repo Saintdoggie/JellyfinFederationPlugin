@@ -688,6 +688,77 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> SharedLibraryFolderIds { get; set; } = new List<string>();
 
         /// <summary>
+        /// Gets or sets a value indicating whether this friend may see every one
+        /// of this server's local user accounts (names, for their per-user
+        /// rules). False by default, also for friends made before this setting
+        /// existed: a friend sees no users unless shared here or in
+        /// <see cref="SharedUserIds"/>. Enforced by <c>Peer/Users</c>.
+        /// </summary>
+        public bool ShareAllUsers { get; set; }
+
+        /// <summary>
+        /// Gets or sets the ids (normalized "N" form) of this server's own local
+        /// users this friend may see when <see cref="ShareAllUsers"/> is false.
+        /// </summary>
+        public List<string> SharedUserIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this friend may see every one
+        /// of this server's other Jellyfin friends (name and address) for
+        /// friends-of-friends discovery. True by default, like
+        /// <see cref="ShareAllLibraries"/>; nothing is shared at all unless
+        /// <see cref="PluginConfiguration.AllowFriendsOfFriends"/> is on.
+        /// </summary>
+        public bool ShareAllFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the <see cref="Id"/>s of this server's other friends this
+        /// friend may see when <see cref="ShareAllFriends"/> is false.
+        /// </summary>
+        public List<string> SharedFriendIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets when everything shared with this friend stops being
+        /// shared (UTC), or null to share without an end date. After it the
+        /// friend sees nothing of this server, as if blocked; enforced at
+        /// request and stream time by <see cref="Services.FederationPeerAccessService"/>.
+        /// </summary>
+        public DateTime? SharingExpiresUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets end dates for individual shared libraries. An expired
+        /// library is no longer visible to this friend even when
+        /// <see cref="ShareAllLibraries"/> is on.
+        /// </summary>
+        public List<LibraryShareExpiry> LibraryShareExpiries { get; set; } = new List<LibraryShareExpiry>();
+
+        /// <summary>
+        /// Gets or sets how many of this server's titles this friend may stream
+        /// at the same time, or 0 for no limit. Downloads are not counted.
+        /// </summary>
+        public int MaxConcurrentStreams { get; set; }
+
+        /// <summary>
+        /// Gets or sets how many gigabytes this friend may stream or download
+        /// from this server per calendar month (UTC), or 0 for no limit.
+        /// </summary>
+        public int MonthlyDataCapGb { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this friend may ask which of
+        /// this server's titles are popular (play counts only, never who
+        /// watched). Off by default.
+        /// </summary>
+        public bool SharePopularity { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this server shows a
+        /// "Popular on ..." collection built from this friend's popularity list,
+        /// when the friend shares one. The friend decides whether to share it.
+        /// </summary>
+        public bool ShowPopularCollection { get; set; } = true;
+
+        /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
         /// </summary>
         public StreamingMode StreamingMode { get; set; } = StreamingMode.Direct;
@@ -823,6 +894,19 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// allows.
         /// </summary>
         Blocked = 3
+    }
+
+    /// <summary>
+    /// End date for sharing one library with a friend. A list entry rather
+    /// than a dictionary: the plugin configuration is XML-serialized.
+    /// </summary>
+    public class LibraryShareExpiry
+    {
+        /// <summary>Gets or sets the library folder id (same id space as <see cref="RemoteServer.SharedLibraryFolderIds"/>).</summary>
+        public string FolderId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets when sharing this library ends (UTC).</summary>
+        public DateTime ExpiresUtc { get; set; }
     }
 
     /// <summary>

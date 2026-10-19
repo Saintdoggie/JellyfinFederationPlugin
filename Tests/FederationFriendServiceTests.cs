@@ -378,6 +378,44 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshDiscoveredServersAsync_DropsServersAFriendNoLongerLists()
+    {
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var friendUrl = $"http://friend-{tag}.example";
+        var carla = $"http://carla-{tag}.example";
+        var dave = $"http://dave-{tag}.example";
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b-" + tag, Url = friendUrl, Name = "B", Enabled = true });
+        object answer = new { allowsIntroductions = true, friends = new[] { new { name = "Carla", url = carla }, new { name = "Dave", url = dave } } };
+        var reachable = true;
+        UseFakeHttp(req => reachable
+            ? Json(HttpStatusCode.OK, answer)
+            : throw new HttpRequestException("down"));
+        IEnumerable<string> Listed() => _service.SearchDiscoveredServers(tag).Select(d => d.Name).OrderBy(n => n);
+
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Equal(new[] { "Carla", "Dave" }, Listed());
+
+        answer = new { allowsIntroductions = true, friends = new[] { new { name = "Dave", url = dave } } };
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Equal(new[] { "Dave" }, Listed());
+
+        reachable = false;
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Equal(new[] { "Dave" }, Listed());
+
+        reachable = true;
+        answer = new { allowsIntroductions = false, friends = Array.Empty<object>() };
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Empty(Listed());
+
+        answer = new { allowsIntroductions = true, friends = new[] { new { name = "Dave", url = dave } } };
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        _plugin.Configuration.RemoteServers.RemoveAll(r => r.Id == "b-" + tag);
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Empty(Listed());
+    }
+
+    [Fact]
     public async Task DiscoverFriendsOfFriendsAsync_DiscoversNewFriend_AndSendsRequest()
     {
         _plugin.Configuration.AllowFriendsOfFriends = true;

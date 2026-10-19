@@ -1825,3 +1825,176 @@ test('custom library types have readable names, and music is recognisable', () =
   assert.match(configPage, /Audio: 'Music \(songs, with their albums\)'/);
   assert.match(configPage, /escapeHtml\(CUSTOM_TYPE_LABELS\[t\] \|\| t\)/);
 });
+
+test('friends see none of my users unless I pick them, and kept rules stay manageable', () => {
+  const block = configPage.match(/function renderUserSharingBlock\(server\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(block, 'renderUserSharingBlock not found');
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  const fns = new Function('document', 'var pendingUserSharing = {}; var localUsersCache = [{ id: "a", name: "<Anna>", isAdministrator: true }, { id: "b", name: "Ben" }];\n'
+    + 'function loadLocalUsers() {}\n' + escape[0] + block[0] + '\nreturn { renderUserSharingBlock, pendingUserSharing };')(new JSDOM('').window.document);
+
+  const fresh = fns.renderUserSharingBlock({ Id: 'f1' });
+  assert.equal((fresh.match(/ checked/g) || []).length, 0, 'no user is shared by default');
+  assert.match(fresh, /&lt;Anna&gt;/, 'user names are escaped');
+  assert.match(fresh, /data-fed-action="save-user-sharing"/);
+
+  const picked = fns.renderUserSharingBlock({ Id: 'f2', SharedUserIds: ['b'] });
+  assert.match(picked, /data-user="b" checked/);
+  assert.doesNotMatch(picked, /data-user="a" checked/);
+  assert.match(fns.renderUserSharingBlock({ Id: 'f3', ShareAllUsers: true }), /fedUserSharingAll"[^>]*checked/);
+
+  assert.match(configPage, /'\/Plugins\/Federation\/Friends\/' \+ encodeURIComponent\(serverId\) \+ '\/UserSharing'/);
+  assert.match(configPage, /case 'save-user-sharing':/);
+  assert.match(configPage, /no longer shown by them/);
+});
+
+test('friend activity card names friend servers, escapes titles, and hides when idle', () => {
+  const html = configPage.match(/function renderFriendActivity\(data\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(html, 'renderFriendActivity not found');
+  const helpers = ['formatActivityTime', 'formatActivityDuration'].map((n) => configPage.match(new RegExp('function ' + n + '\\([\\s\\S]*?\\n {20}\\}'))[0]).join('\n');
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  const dom = new JSDOM('<div id="fedFriendActivityCard" style="display:none"><div id="fedFriendActivityList"></div></div>');
+  const document = dom.window.document;
+  const render = new Function('document', 'function q(s) { return document.querySelector(s); }\n' + escape[0] + helpers + html[0] + '\nreturn renderFriendActivity;')(document);
+
+  render({ active: [], recent: [] });
+  assert.equal(document.querySelector('#fedFriendActivityCard').style.display, 'none');
+
+  render({
+    active: [{ friendName: "Bob's server", itemName: '<b>Heat</b>', isStreaming: true, transcoded: true, started: '2026-10-19T20:00:00Z' }],
+    recent: [{ friendName: 'Ann', itemName: 'Lost', isDownload: true, started: '2026-10-19T18:00:00Z', ended: '2026-10-19T18:45:00Z' }]
+  });
+  const text = document.querySelector('#fedFriendActivityList').innerHTML;
+  assert.equal(document.querySelector('#fedFriendActivityCard').style.display, '');
+  assert.match(text, /&lt;b&gt;Heat&lt;\/b&gt;/);
+  assert.match(text, /Watching — Bob's server/);
+  assert.match(text, /transcoded for their connection/);
+  assert.match(text, /Ann downloaded Lost \(45 min\)/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/FriendActivity'\)/);
+});
+
+test('friends list is shared with everyone by default, can be narrowed, and says when discovery is off', () => {
+  const block = configPage.match(/function renderFriendListSharingBlock\(server\) \{[\s\S]*?\n {20}\}/);
+  assert.ok(block, 'renderFriendListSharingBlock not found');
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  const make = (config) => new Function('document', 'currentConfig', 'var pendingFriendSharing = {};\n'
+    + escape[0] + block[0] + '\nreturn renderFriendListSharingBlock;')(new JSDOM('').window.document, config);
+  const servers = [
+    { Id: 'a', Name: 'Anna', Kind: 0 },
+    { Id: 'b', Name: '<Ben>', Kind: 0 },
+    { Id: 'p', Name: 'Plex', Kind: 1 },
+    { Id: 'c', Name: 'Companion', Kind: 2 }
+  ];
+
+  const off = make({ AllowFriendsOfFriends: false, RemoteServers: servers })({ Id: 'a' });
+  assert.match(off, /"Allow friends-of-friends" is off/);
+  assert.match(off, /fedFriendSharingAll"[^>]*checked/, 'everyone is shared by default');
+
+  const on = make({ AllowFriendsOfFriends: true, RemoteServers: servers });
+  const narrowed = on({ Id: 'a', ShareAllFriends: false, SharedFriendIds: ['b'] });
+  assert.doesNotMatch(narrowed, /fedFriendSharingAll"[^>]*checked/);
+  assert.match(narrowed, /data-friend="b" checked/);
+  assert.match(narrowed, /&lt;Ben&gt;/);
+  assert.doesNotMatch(narrowed, /data-friend="a"/, 'a friend is never offered itself');
+  assert.doesNotMatch(narrowed, /data-friend="p"|data-friend="c"/, 'Plex and Companion are never offered');
+  assert.match(configPage, /'\/Plugins\/Federation\/Friends\/' \+ encodeURIComponent\(serverId\) \+ '\/FriendSharing'/);
+  assert.match(configPage, /case 'save-friend-sharing':/);
+});
+
+function pageFunctions(names, prelude) {
+  const escape = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/)[0];
+  const bodies = names.map((n) => {
+    const m = configPage.match(new RegExp('function ' + n + '\\([^)]*\\) \\{[\\s\\S]*?\\n {20}\\}'));
+    assert.ok(m, n + ' not found');
+    return m[0];
+  }).join('\n');
+  const dom = new JSDOM('<div id="fedUsageContent"></div>');
+  const document = dom.window.document;
+  return new Function('document', 'function q(s) { return document.querySelector(s); }\n' + (prelude || '') + '\n' + escape + bodies
+    + '\nreturn { ' + names.join(', ') + ', document };')(document);
+}
+
+test('sharing end dates round-trip as the end of the chosen local day and are saved with sharing', () => {
+  const f = pageFunctions(['isoToDateInput', 'dateInputToIso']);
+  const iso = f.dateInputToIso('2026-12-24');
+  assert.equal(f.isoToDateInput(iso), '2026-12-24');
+  assert.equal(new Date(iso).getHours(), 23);
+  assert.equal(f.dateInputToIso(''), null);
+  assert.equal(f.isoToDateInput(null), '');
+
+  const save = configPage.match(/function saveSharing\(serverId\) \{[\s\S]*?\n {20}\}/)[0];
+  assert.match(save, /'\/Expiry'/);
+  assert.match(save, /ExpiresUtc: dateInputToIso\(pending\.Until\)/);
+  assert.match(configPage, /class="emby-input fed-input fedSharingUntil"/);
+  assert.match(configPage, /class="emby-input fed-input fedLibUntil"/);
+});
+
+test('limits and popular titles blocks show saved values and default to no limits and not sharing', () => {
+  const f = pageFunctions(['renderLimitsBlock', 'renderPopularBlock']);
+  const none = f.renderLimitsBlock({ Id: 's1' });
+  assert.match(none, /id="fedLimitStreams-s1"[^>]*value="0"/);
+  assert.match(none, /id="fedLimitData-s1"[^>]*value="0"/);
+  const set = f.renderLimitsBlock({ Id: 's1', MaxConcurrentStreams: 2, MonthlyDataCapGb: 500 });
+  assert.match(set, /value="2"/);
+  assert.match(set, /value="500"/);
+
+  const popular = f.renderPopularBlock({ Id: 's1', Name: '<Bob>' });
+  assert.doesNotMatch(popular, /id="fedSharePopular-s1" checked/, 'popularity is not shared by default');
+  assert.match(popular, /id="fedShowPopular-s1" checked/);
+  assert.match(popular, /Popular on &lt;Bob&gt;/);
+  assert.match(popular, /Never who watched/);
+  ['save-limits', 'save-popular', 'preview-friend'].forEach((a) => assert.match(configPage, new RegExp("case '" + a + "':")));
+});
+
+test('friend preview lists what they see, escaped, and says when sharing ended', () => {
+  const f = pageFunctions(['renderFriendPreview', 'formatActivityDate']);
+  const html = f.renderFriendPreview({
+    success: true,
+    name: 'Bob',
+    libraries: [
+      { name: 'Movies', visible: true, titles: 12 },
+      { name: '<Kids>', visible: false, expired: true, expiresUtc: '2026-01-01T00:00:00Z' },
+      { name: 'Music', visible: false }
+    ],
+    excludedTitles: ['Heat (1995)'],
+    globallyExcludedCount: 2,
+    users: ['anna'],
+    friendsOfFriendsEnabled: false,
+    userRules: [{ name: 'kid', mode: 'Blocked', allowDownload: false }],
+    allowDownloads: true,
+    maxConcurrentStreams: 2,
+    monthlyDataCapGb: 0
+  });
+  assert.match(html, /Libraries \(1 of 3\)/);
+  assert.match(html, /Movies — 12 titles/);
+  assert.match(html, /&lt;Kids&gt; — ended/);
+  assert.match(html, /Music — not shared/);
+  assert.match(html, /Heat \(1995\); 2 hidden from every friend/);
+  assert.match(html, /anna/);
+  assert.match(html, /friends-of-friends is off/);
+  assert.match(html, /kid — blocked, no downloads/);
+  assert.match(html, /up to 2 streams at once/);
+  assert.match(f.renderFriendPreview({ success: true, expired: true, expiresUtc: '2026-01-01T00:00:00Z', libraries: [] }), /they see nothing/);
+  assert.match(f.renderFriendPreview({ loading: true }), /Checking/);
+});
+
+test('usage tab shows per-friend totals, data limit progress, top titles and history', () => {
+  const f = pageFunctions(['renderUsage', 'formatGb', 'formatActivityDate', 'formatActivityTime', 'formatActivityDuration']);
+  f.renderUsage({ friends: [], recent: [] });
+  assert.match(f.document.querySelector('#fedUsageContent').innerHTML, /No friend has watched/);
+
+  f.renderUsage({
+    friends: [{ friendName: '<Bob>', stillFriend: true, hoursThisMonth: 3.5, sessionsThisMonth: 2, bytesThisMonth: 25e9, bytesLastMonth: 1e9, hoursLast30Days: 4, monthlyDataCapGb: 100, topTitles: [{ name: 'Heat', sessions: 2 }] },
+      { friendName: 'Ann', stillFriend: false, hoursThisMonth: 0, sessionsThisMonth: 0, bytesThisMonth: 0, bytesLastMonth: 0, hoursLast30Days: 0, monthlyDataCapGb: 0, topTitles: [] }],
+    topTitles: [{ name: 'Heat', sessions: 3, friends: 2 }],
+    recent: [{ friendName: 'Bob', itemName: 'Heat', started: '2026-10-19T18:00:00Z', ended: '2026-10-19T19:30:00Z', bytes: 4e9 }]
+  });
+  const html = f.document.querySelector('#fedUsageContent').innerHTML;
+  assert.match(html, /&lt;Bob&gt;/);
+  assert.match(html, /3\.5 h watched in 2 sessions/);
+  assert.match(html, /25 GB of 100 GB/);
+  assert.match(html, /aria-valuenow="25"/);
+  assert.match(html, /no longer a friend/);
+  assert.match(html, /Heat — 3 sessions, 2 friends/);
+  assert.match(html, /Bob watched Heat \(1 h 30 min, 4\.0 GB\)/);
+});

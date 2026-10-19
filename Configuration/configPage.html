@@ -172,6 +172,10 @@
                 #federationConfigPage .fed-pill { font-size: 0.85em; line-height: 1.4; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
                 #federationConfigPage .fed-pill-off { color: var(--fed-warn-text); opacity: 1; }
                 #federationConfigPage .fed-pill-pool { margin: 0 0.7em 0.3em 0; display: inline-block; }
+                #federationConfigPage .fed-preview-list { margin: 0.2em 0 0.6em; padding-left: 1.2em; }
+                #federationConfigPage .fed-preview-list li { margin: 0.15em 0; overflow-wrap: anywhere; }
+                #federationConfigPage .fed-usage-bar { height: 6px; border-radius: 3px; background: var(--fed-border-soft); overflow: hidden; margin: 0.2em 0 0.4em; }
+                #federationConfigPage .fed-usage-bar > div { height: 100%; background: var(--fed-accent); }
 
                 /* Per-friend management panel: a plain toggled block one level below
                    the friend row, with sharing and pools shown directly - only the
@@ -497,6 +501,12 @@
                 <div id="fedWatchingList"></div>
             </div>
 
+            <div class="verticalSection" id="fedFriendActivityCard" style="display:none;">
+                <h3 class="sectionTitle">Friends watching your media</h3>
+                <p class="fieldDescription">Friend servers playing or downloading your titles. Their users are never named. Each start and stop is also written to Jellyfin's own activity log (Dashboard → Activity).</p>
+                <div id="fedFriendActivityList"></div>
+            </div>
+
             <!--
                 Tabs split what used to be one long scroll into Friends / Pools /
                 Libraries / Advanced. The status strip above and the error/warning
@@ -521,6 +531,7 @@
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
                 <button id="fedTabStorage" aria-controls="fedPanelStorage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="storage" role="tab" aria-selected="false">Storage</button>
                 <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
+                <button id="fedTabUsage" aria-controls="fedPanelUsage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="usage" role="tab" aria-selected="false">Usage</button>
                 <button id="fedTabLog" aria-controls="fedPanelLog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="log" role="tab" aria-selected="false">Log <span id="fedLogBadge" class="fed-log-badge"></span></button>
             </div>
 
@@ -1102,6 +1113,14 @@
                 </div>
             </form>
 
+            <div id="fedPanelUsage" aria-labelledby="fedTabUsage" class="fed-tabpanel" data-tab-panel="usage" role="tabpanel">
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">How friends use your server</h3>
+                    <p class="fieldDescription">Friend servers watching and downloading your titles over the last 90 days. Their users are never named. Months are calendar months in UTC, the same as the data limits.</p>
+                    <div id="fedUsageContent"><p class="fed-muted">Loading…</p></div>
+                </div>
+            </div>
+
             <div id="fedPanelLog" aria-labelledby="fedTabLog" class="fed-tabpanel" data-tab-panel="log" role="tabpanel">
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Federation log</h3>
@@ -1169,6 +1188,19 @@
                     // loadConfiguration() trigger elsewhere on the page without
                     // needing its own local state machine.
                     var pendingSharing = {};
+
+                    // This server's own users (LocalUsers), and per-friend pending
+                    // choices of which of them that friend may see, keyed by server.Id.
+                    var localUsersCache = null;
+                    var localUsersLoading = false;
+                    var pendingUserSharing = {};
+
+                    // Per-friend pending choice of which of my other friends they
+                    // may see for friends-of-friends discovery, keyed by server.Id.
+                    var pendingFriendSharing = {};
+
+                    // Loaded "what does this friend see" previews, keyed by server.Id.
+                    var friendPreviews = {};
 
                     // Each friend's own local user list (fetched via GetRemoteUsers,
                     // the same endpoint originally added for picking a remote
@@ -1504,13 +1536,32 @@
                             // re-searched - same tradeoff pendingUserRuleEdits makes
                             // for RemoteUserAccessRule.ItemIds, for the same reason
                             // (no second round trip just to look up names already known).
-                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; })
+                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; }),
+                            Until: isoToDateInput(server.SharingExpiresUtc),
+                            LibraryUntil: (server.LibraryShareExpiries || []).reduce(function (acc, e) { acc[e.FolderId] = isoToDateInput(e.ExpiresUtc); return acc; }, {})
                         };
                         pendingSharing[server.Id] = pending;
+                        pending.LibraryUntil = pending.LibraryUntil || {};
 
                         var html = '<div class="fed-subcard">';
                         html += '<h4 class="fed-subhead">What ' + escapeHtml(server.Name || server.Url) + ' can see of my library</h4>';
+                        html += '<div class="fed-inline" style="margin-bottom:0.5em;">';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="preview-friend" data-id="' + escapeHtml(server.Id) + '">' + (friendPreviews[server.Id] ? 'Hide preview' : 'Preview what they see') + '</button>';
+                        html += '</div>';
+                        if (friendPreviews[server.Id]) {
+                            html += renderFriendPreview(friendPreviews[server.Id]);
+                        }
+
                         html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingAll" data-id="' + escapeHtml(server.Id) + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Share everything</label>';
+                        html += '<div class="fed-inline" style="margin:0.3em 0;">';
+                        html += '<label class="fed-label" for="fedSharingUntil-' + escapeHtml(server.Id) + '">Share until (optional)</label>';
+                        html += '<input type="date" id="fedSharingUntil-' + escapeHtml(server.Id) + '" class="emby-input fed-input fedSharingUntil" data-id="' + escapeHtml(server.Id) + '" value="' + escapeHtml(pending.Until || '') + '" style="max-width:12em;" />';
+                        html += '</div>';
+                        if (server.SharingExpiresUtc && new Date(server.SharingExpiresUtc).getTime() <= Date.now()) {
+                            html += '<p class="fed-hint fed-danger">Sharing with this friend ended on ' + escapeHtml(formatActivityDate(server.SharingExpiresUtc)) + '. They see nothing until you change or clear the date.</p>';
+                        } else {
+                            html += '<p class="fed-hint" style="margin-top:0;">After this day they see nothing of your server, as if blocked. Leave empty to share without an end date.</p>';
+                        }
 
                         // Enforced entirely by this plugin's own code on every
                         // request from this friend (see FederationPeerAccessService)
@@ -1524,11 +1575,14 @@
                         } else {
                             localLibrariesCache.forEach(function (lib) {
                                 var checked = pending.FolderIds.indexOf(lib.id) !== -1;
+                                html += '<div class="fed-inline">';
                                 html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingLib" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                                html += '<input type="date" class="emby-input fed-input fedLibUntil" aria-label="Share ' + escapeHtml(lib.name) + ' until" title="Share until (optional)" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" value="' + escapeHtml(pending.LibraryUntil[lib.id] || '') + '" style="max-width:12em;" />';
+                                html += '</div>';
                             });
                         }
 
-                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend.</p>';
+                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend. A date next to a library ends sharing it after that day.</p>';
                         html += '</div>';
 
                         if (server.Kind !== 1) {
@@ -1539,6 +1593,13 @@
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-download-access" data-id="' + escapeHtml(server.Id) + '">Save download permissions</button>';
                             html += '<div class="fed-srvstatus" id="fedDownloadAccessStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                             html += '</div>';
+                        }
+
+                        if (server.Kind === 0 || server.Kind === undefined) {
+                            html += renderUserSharingBlock(server);
+                            html += renderFriendListSharingBlock(server);
+                            html += renderLimitsBlock(server);
+                            html += renderPopularBlock(server);
                         }
 
                         html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
@@ -1581,6 +1642,326 @@
                         return html;
                     }
 
+                    function loadLocalUsers() {
+                        if (localUsersCache || localUsersLoading) {
+                            return;
+                        }
+
+                        localUsersLoading = true;
+                        fedFetch('/Plugins/Federation/LocalUsers')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (users) { localUsersCache = users || []; })
+                        .catch(function () { localUsersCache = []; })
+                        .then(function () { localUsersLoading = false; renderFriends(); });
+                    }
+
+                    // Which of this server's own users the friend may see by name
+                    // (Peer/Users). Nobody by default; the friend needs a name only
+                    // to set per-user rules for that person.
+                    function renderUserSharingBlock(server) {
+                        var pending = pendingUserSharing[server.Id] || {
+                            ShareAll: server.ShareAllUsers === true,
+                            UserIds: (server.SharedUserIds || []).slice()
+                        };
+                        pendingUserSharing[server.Id] = pending;
+
+                        var id = escapeHtml(server.Id);
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">Users they can see</label>';
+                        html += '<p class="fed-hint" style="margin-top:0;">By default this friend sees none of your users. Share a user\'s name only if their admin should be able to set rules for that person; what they watch is limited by the libraries above either way.</p>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedUserSharingAll" data-id="' + id + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Show all my users, including ones added later</label>';
+                        html += '<div class="fedUserSharingList" data-id="' + id + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.4em;">';
+                        if (!localUsersCache) {
+                            loadLocalUsers();
+                            html += '<p class="fed-muted">Loading your users…</p>';
+                        } else if (localUsersCache.length === 0) {
+                            html += '<p class="fed-muted">No users found.</p>';
+                        } else {
+                            localUsersCache.forEach(function (u) {
+                                var checked = pending.UserIds.indexOf(u.id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedUserSharingUser" data-id="' + id + '" data-user="' + escapeHtml(u.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(u.name) + (u.isAdministrator ? ' <span class="fed-pill">admin</span>' : '') + '</label>';
+                            });
+                        }
+                        html += '</div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-user-sharing" data-id="' + id + '">Save visible users</button>';
+                        html += '<div class="fed-srvstatus" id="fedUserSharingStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    // Which of my other Jellyfin friends this friend may see
+                    // (Friends/List). Everyone by default, like libraries; nothing
+                    // at all unless "Allow friends-of-friends" is on.
+                    function renderFriendListSharingBlock(server) {
+                        var pending = pendingFriendSharing[server.Id] || {
+                            ShareAll: server.ShareAllFriends !== false,
+                            FriendIds: (server.SharedFriendIds || []).slice()
+                        };
+                        pendingFriendSharing[server.Id] = pending;
+
+                        var others = ((currentConfig && currentConfig.RemoteServers) || []).filter(function (s) {
+                            return s.Id !== server.Id && (s.Kind === 0 || s.Kind === undefined);
+                        });
+                        var id = escapeHtml(server.Id);
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">Friends they can see</label>';
+                        if (!(currentConfig && currentConfig.AllowFriendsOfFriends === true)) {
+                            html += '<p class="fed-hint" style="margin-top:0;">"Allow friends-of-friends" is off (Advanced tab), so no friend sees your friends list. This choice applies once you turn it on.</p>';
+                        } else {
+                            html += '<p class="fed-hint" style="margin-top:0;">Friends they can see (name and address) can be suggested to them as new friends. Disabled friends and Plex servers are never shown.</p>';
+                        }
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedFriendSharingAll" data-id="' + id + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Show all my friends, including ones added later</label>';
+                        html += '<div class="fedFriendSharingList" data-id="' + id + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.4em;">';
+                        if (others.length === 0) {
+                            html += '<p class="fed-muted">You have no other friends yet.</p>';
+                        } else {
+                            others.forEach(function (o) {
+                                var checked = pending.FriendIds.indexOf(o.Id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedFriendSharingFriend" data-id="' + id + '" data-friend="' + escapeHtml(o.Id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(o.Name || o.Url) + (o.Enabled === false ? ' <span class="fed-pill fed-pill-off">disabled</span>' : '') + '</label>';
+                            });
+                        }
+                        html += '</div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-friend-sharing" data-id="' + id + '">Save visible friends</button>';
+                        html += '<div class="fed-srvstatus" id="fedFriendSharingStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function saveFriendListSharing(serverId) {
+                        var pending = pendingFriendSharing[serverId] || { ShareAll: true, FriendIds: [] };
+                        var status = q('#fedFriendSharingStatus-' + serverId);
+                        function show(msg, kind) {
+                            if (!status) { return; }
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        }
+                        show('Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/FriendSharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, FriendIds: pending.FriendIds })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            show(res.message || 'Friend list sharing saved.', res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                delete pendingFriendSharing[serverId];
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { show('Could not save friend list sharing: ' + e.message, 'err'); });
+                    }
+
+                    // Date inputs hold local days; the server stores the end of
+                    // that day as UTC.
+                    function isoToDateInput(iso) {
+                        if (!iso) {
+                            return '';
+                        }
+
+                        var d = new Date(iso);
+                        if (isNaN(d.getTime())) {
+                            return '';
+                        }
+
+                        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+                        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+                    }
+
+                    function dateInputToIso(value) {
+                        if (!value) {
+                            return null;
+                        }
+
+                        var d = new Date(value + 'T23:59:59');
+                        return isNaN(d.getTime()) ? null : d.toISOString();
+                    }
+
+                    function formatActivityDate(iso) {
+                        var d = new Date(iso);
+                        return isNaN(d.getTime()) ? '' : d.toLocaleDateString();
+                    }
+
+                    function formatGb(bytes) {
+                        var gb = (Number(bytes) || 0) / 1e9;
+                        return (gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)) + ' GB';
+                    }
+
+                    function postFriendSetting(serverId, path, payload, statusId, okText) {
+                        var status = q('#' + statusId);
+                        function show(msg, kind) {
+                            if (!status) { return; }
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        }
+                        show('Saving…', 'info');
+                        return fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/' + path, {
+                            method: 'POST',
+                            body: JSON.stringify(payload)
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            show((res && res.message) || okText, res && res.success ? 'ok' : 'err');
+                            if (res && res.success) {
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { show('Could not save: ' + e.message, 'err'); });
+                    }
+
+                    // Simultaneous streams and monthly data, enforced by this
+                    // server whenever the friend streams (0 = no limit).
+                    function renderLimitsBlock(server) {
+                        var id = escapeHtml(server.Id);
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">Limits</label>';
+                        html += '<div class="fed-inline">';
+                        html += '<div class="fed-input-container"><label class="fed-label" for="fedLimitStreams-' + id + '">Simultaneous streams</label>';
+                        html += '<input type="number" min="0" max="100" step="1" id="fedLimitStreams-' + id + '" class="emby-input fed-input" value="' + (server.MaxConcurrentStreams || 0) + '" style="max-width:8em;" /></div>';
+                        html += '<div class="fed-input-container"><label class="fed-label" for="fedLimitData-' + id + '">Data per month (GB)</label>';
+                        html += '<input type="number" min="0" step="1" id="fedLimitData-' + id + '" class="emby-input fed-input" value="' + (server.MonthlyDataCapGb || 0) + '" style="max-width:8em;" /></div>';
+                        html += '</div>';
+                        html += '<p class="fed-hint">0 means no limit. A title they are already watching keeps playing when the stream limit is reached; the data limit stops new requests until the next month (UTC). Downloads count toward data, not streams.</p>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-limits" data-id="' + id + '">Save limits</button>';
+                        html += '<div class="fed-srvstatus" id="fedLimitsStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function saveLimits(serverId) {
+                        var streams = parseInt((q('#fedLimitStreams-' + serverId) || {}).value, 10) || 0;
+                        var data = parseInt((q('#fedLimitData-' + serverId) || {}).value, 10) || 0;
+                        postFriendSetting(serverId, 'Limits', { MaxConcurrentStreams: Math.max(0, streams), MonthlyDataCapGb: Math.max(0, data) }, 'fedLimitsStatus-' + serverId, 'Limits saved.');
+                    }
+
+                    // Popularity goes both ways and each side decides for itself:
+                    // what I tell them, and whether I show what they tell me.
+                    function renderPopularBlock(server) {
+                        var id = escapeHtml(server.Id);
+                        var name = escapeHtml(server.Name || 'this friend');
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">Popular titles</label>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check" id="fedSharePopular-' + id + '" ' + (server.SharePopularity === true ? 'checked' : '') + ' /> Tell them what is popular on my server</label>';
+                        html += '<p class="fed-hint" style="margin-top:0;">Play counts of the last 30 days for titles they can already see. Never who watched.</p>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check" id="fedShowPopular-' + id + '" ' + (server.ShowPopularCollection !== false ? 'checked' : '') + ' /> Show a "Popular on ' + name + '" collection here when they share theirs</label>';
+                        html += '<p class="fed-hint" style="margin-top:0;">Updated after each sync. It only contains their titles you already have.</p>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-popular" data-id="' + id + '">Save popular titles</button>';
+                        html += '<div class="fed-srvstatus" id="fedPopularStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function savePopular(serverId) {
+                        postFriendSetting(serverId, 'Popular', {
+                            SharePopularity: !!(q('#fedSharePopular-' + serverId) || {}).checked,
+                            ShowPopularCollection: !!(q('#fedShowPopular-' + serverId) || {}).checked
+                        }, 'fedPopularStatus-' + serverId, 'Popular titles settings saved.');
+                    }
+
+                    function togglePreview(serverId) {
+                        if (friendPreviews[serverId]) {
+                            delete friendPreviews[serverId];
+                            renderFriends();
+                            return;
+                        }
+
+                        friendPreviews[serverId] = { loading: true };
+                        renderFriends();
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Preview')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) { friendPreviews[serverId] = res || { error: 'No answer.' }; renderFriends(); })
+                        .catch(function (e) { friendPreviews[serverId] = { error: e.message }; renderFriends(); });
+                    }
+
+                    // What one friend currently gets, as the server computes it
+                    // for their requests (Friends/{id}/Preview).
+                    function renderFriendPreview(p) {
+                        var html = '<div class="fed-subcard fed-preview" style="margin-bottom:0.8em;">';
+                        if (p.loading) {
+                            return html + '<p class="fed-muted">Checking what they see…</p></div>';
+                        }
+
+                        if (p.error || !p.success) {
+                            return html + '<p class="fed-muted">Could not build the preview: ' + escapeHtml(p.error || p.message || 'unknown error') + '</p></div>';
+                        }
+
+                        html += '<h4 class="fed-subhead">What ' + escapeHtml(p.name || 'they') + ' sees right now</h4>';
+                        if (p.expired) {
+                            html += '<p class="fed-hint fed-danger">Sharing ended on ' + escapeHtml(formatActivityDate(p.expiresUtc)) + ': they see nothing.</p>';
+                        } else if (p.expiresUtc) {
+                            html += '<p class="fed-hint">Everything below ends on ' + escapeHtml(formatActivityDate(p.expiresUtc)) + '.</p>';
+                        }
+
+                        if (p.enabled === false) {
+                            html += '<p class="fed-hint">This friend is switched off here; your sharing still applies to them.</p>';
+                        }
+
+                        var visibleLibs = (p.libraries || []).filter(function (l) { return l.visible; });
+                        html += '<label class="fed-label">Libraries (' + visibleLibs.length + ' of ' + (p.libraries || []).length + ')</label><ul class="fed-preview-list">';
+                        (p.libraries || []).forEach(function (l) {
+                            var detail = l.visible
+                                ? (l.titles == null ? 'shared' : l.titles + ' title' + (l.titles === 1 ? '' : 's')) + (l.expiresUtc ? ', until ' + formatActivityDate(l.expiresUtc) : '')
+                                : (l.expired ? 'ended ' + formatActivityDate(l.expiresUtc) : 'not shared');
+                            html += '<li' + (l.visible ? '' : ' class="fed-muted"') + '>' + escapeHtml(l.name) + ' — ' + escapeHtml(detail) + '</li>';
+                        });
+                        html += '</ul>';
+
+                        if ((p.excludedTitles || []).length > 0 || p.globallyExcludedCount > 0) {
+                            html += '<label class="fed-label">Hidden titles</label><p class="fed-hint">'
+                                + escapeHtml((p.excludedTitles || []).join(', '))
+                                + (p.globallyExcludedCount > 0 ? ((p.excludedTitles || []).length ? '; ' : '') + p.globallyExcludedCount + ' hidden from every friend' : '')
+                                + '</p>';
+                        }
+
+                        html += '<label class="fed-label">Your users</label><p class="fed-hint">'
+                            + (p.allUsers ? 'All of them' : ((p.users || []).length ? escapeHtml(p.users.join(', ')) : 'None')) + '</p>';
+                        html += '<label class="fed-label">Your friends</label><p class="fed-hint">'
+                            + (!p.friendsOfFriendsEnabled ? 'None (friends-of-friends is off)' : ((p.friends || []).length ? escapeHtml(p.friends.join(', ')) : 'None')) + '</p>';
+                        if ((p.userRules || []).length > 0) {
+                            html += '<label class="fed-label">Rules for their users</label><ul class="fed-preview-list">';
+                            p.userRules.forEach(function (r) {
+                                var modeLabel = { AllLibraries: 'all shared libraries', CertainLibraries: 'certain libraries', CertainItems: 'certain titles', Blocked: 'blocked' }[r.mode] || r.mode;
+                                html += '<li>' + escapeHtml(r.name) + ' — ' + escapeHtml(modeLabel) + (r.maxRating ? ', up to ' + escapeHtml(r.maxRating) : '') + (r.allowDownload === false ? ', no downloads' : '') + '</li>';
+                            });
+                            html += '</ul>';
+                        }
+
+                        html += '<label class="fed-label">Other</label><p class="fed-hint">'
+                            + (p.allowDownloads ? (p.allowBulkDownloads ? 'Downloads and bulk downloads allowed' : 'Single downloads allowed') : 'No downloads')
+                            + ' · ' + (p.maxConcurrentStreams ? 'up to ' + p.maxConcurrentStreams + ' streams at once' : 'no stream limit')
+                            + ' · ' + (p.monthlyDataCapGb ? p.monthlyDataCapGb + ' GB per month' : 'no data limit')
+                            + ' · ' + (p.sharePopularity ? 'sees what is popular here' : 'does not see what is popular here')
+                            + '</p>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function saveUserSharing(serverId) {
+                        var pending = pendingUserSharing[serverId] || { ShareAll: false, UserIds: [] };
+                        var status = q('#fedUserSharingStatus-' + serverId);
+                        function show(msg, kind) {
+                            if (!status) { return; }
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        }
+                        show('Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/UserSharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, UserIds: pending.UserIds })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            show(res.message || 'User sharing saved.', res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                delete pendingUserSharing[serverId];
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { show('Could not save user sharing: ' + e.message, 'err'); });
+                    }
+
                     function setSharingStatus(serverId, msg, kind) {
                         var el = q('#fedSharingStatus-' + serverId);
                         if (!el) {
@@ -1610,8 +1991,24 @@
                         })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
+                            if (!res.success) {
+                                return res;
+                            }
+
+                            var libraryExpiries = Object.keys(pending.LibraryUntil || {})
+                                .filter(function (lib) { return !!pending.LibraryUntil[lib]; })
+                                .map(function (lib) { return { FolderId: lib, ExpiresUtc: dateInputToIso(pending.LibraryUntil[lib]) }; });
+                            return fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Expiry', {
+                                method: 'POST',
+                                body: JSON.stringify({ ExpiresUtc: dateInputToIso(pending.Until), LibraryExpiries: libraryExpiries })
+                            })
+                            .then(function (r) { return readJson(r); })
+                            .then(function (expiryRes) { return expiryRes.success ? res : expiryRes; });
+                        })
+                        .then(function (res) {
                             setSharingStatus(serverId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
+                                delete friendPreviews[serverId];
                                 return loadConfiguration(true);
                             }
                         })
@@ -1788,12 +2185,22 @@
                             return html;
                         }
 
-                        if (cached.users.length === 0) {
-                            html += '<p class="fed-muted">No users found on their server.</p></div>';
+                        // Rules kept for people they no longer show (or never
+                        // showed, on a friend that has since hidden its user list)
+                        // stay listed so they can still be changed or removed.
+                        var listed = cached.users.slice();
+                        (server.RemoteUserAccessRules || []).forEach(function (r) {
+                            if (!listed.some(function (u) { return u.id === r.RemoteUserId; })) {
+                                listed.push({ id: r.RemoteUserId, name: (r.RemoteUserName || 'Unknown user') + ' (no longer shown by them)', isAdministrator: false });
+                            }
+                        });
+
+                        if (listed.length === 0) {
+                            html += '<p class="fed-muted">They haven\'t shown you any of their users. What you share above applies to all of them; to set rules for one person, ask their admin to show that user to you (Friends → you → Users they can see).</p></div>';
                             return html;
                         }
 
-                        cached.users.forEach(function (u) {
+                        listed.forEach(function (u) {
                             var key = ruleKey(server.Id, u.id);
                             var rule = existingUserRule(server, u.id);
                             var isOpen = expandedUserRuleEditors[key] === true;
@@ -1939,6 +2346,11 @@
 
                         var cached = remoteUsersCache[serverId];
                         var remoteUser = cached ? cached.users.filter(function (u) { return u.id === remoteUserId; })[0] : null;
+                        if (!remoteUser) {
+                            var ruleServer = (currentConfig.RemoteServers || []).filter(function (s) { return s.Id === serverId; })[0];
+                            var kept = ruleServer ? existingUserRule(ruleServer, remoteUserId) : null;
+                            remoteUser = kept ? { name: kept.RemoteUserName || '' } : null;
+                        }
 
                         setUserRuleStatus(key, 'Saving…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/RemoteUserRule', {
@@ -2097,6 +2509,14 @@
 
                         if (excludedCount > 0) {
                             parts.push(excludedCount + ' item' + (excludedCount === 1 ? '' : 's') + ' excluded');
+                        }
+
+                        if (server.SharingExpiresUtc) {
+                            parts.push((new Date(server.SharingExpiresUtc).getTime() <= Date.now() ? 'sharing ended ' : 'until ') + formatActivityDate(server.SharingExpiresUtc));
+                        }
+
+                        if (server.MaxConcurrentStreams > 0 || server.MonthlyDataCapGb > 0) {
+                            parts.push('limited');
                         }
 
                         return parts.join(' · ');
@@ -6528,6 +6948,144 @@
                         .then(function (r) { return readJson(r); })
                         .then(function (list) { renderWatching(list); })
                         .catch(function () { /* now-watching card is best-effort */ });
+                        loadFriendActivity();
+                    }
+
+                    function formatActivityTime(iso) {
+                        var d = new Date(iso);
+                        if (isNaN(d.getTime())) {
+                            return '';
+                        }
+
+                        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    }
+
+                    function formatActivityDuration(fromIso, toIso) {
+                        var ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+                        if (!(ms > 0)) {
+                            return '';
+                        }
+
+                        var minutes = Math.floor(ms / 60000);
+                        return minutes >= 60 ? Math.floor(minutes / 60) + ' h ' + (minutes % 60) + ' min' : (minutes < 1 ? 'under a minute' : minutes + ' min');
+                    }
+
+                    // Friend servers streaming this server's own titles
+                    // (FriendActivity). Shown only while there is something to show.
+                    function renderFriendActivity(data) {
+                        var card = q('#fedFriendActivityCard');
+                        var listEl = q('#fedFriendActivityList');
+                        if (!card || !listEl) { return; }
+
+                        var active = (data && data.active) || [];
+                        var recent = (data && data.recent) || [];
+                        if (active.length === 0 && recent.length === 0) {
+                            card.style.display = 'none';
+                            listEl.innerHTML = '';
+                            return;
+                        }
+
+                        card.style.display = '';
+                        var html = '';
+                        if (active.length === 0) {
+                            html += '<p class="fed-muted">No friend is watching your media right now.</p>';
+                        }
+
+                        active.forEach(function (a) {
+                            var what = a.isDownload ? 'Downloading' : (a.isStreaming ? 'Watching' : 'Paused or buffered');
+                            html += '<div class="fed-watching-row">'
+                                + '<div class="fed-watching-dot' + (a.isStreaming ? '' : ' fed-watching-paused') + '"></div>'
+                                + '<div class="fed-watching-info">'
+                                + '<div class="fed-watching-name">' + escapeHtml(a.itemName || 'A title') + '</div>'
+                                + '<div class="fed-hint">' + escapeHtml(what) + ' — ' + escapeHtml(a.friendName || 'a friend')
+                                + ' — since ' + escapeHtml(formatActivityTime(a.started))
+                                + (a.transcoded ? ' — transcoded for their connection' : '')
+                                + '</div></div></div>';
+                        });
+
+                        if (recent.length > 0) {
+                            html += '<label class="fed-label" style="margin-top:0.6em;">Recently</label>';
+                            recent.slice(0, 10).forEach(function (r) {
+                                html += '<div class="fed-hint">' + escapeHtml(formatActivityTime(r.started)) + ' — '
+                                    + escapeHtml(r.friendName || 'a friend') + (r.isDownload ? ' downloaded ' : ' watched ')
+                                    + escapeHtml(r.itemName || 'a title') + ' (' + escapeHtml(formatActivityDuration(r.started, r.ended)) + ')</div>';
+                            });
+                        }
+
+                        listEl.innerHTML = html;
+                    }
+
+                    // Usage tab (Usage endpoint): per friend this month, the
+                    // most watched titles and the session history.
+                    function renderUsage(data) {
+                        var el = q('#fedUsageContent');
+                        if (!el) { return; }
+
+                        var friends = (data && data.friends) || [];
+                        var top = (data && data.topTitles) || [];
+                        var recent = (data && data.recent) || [];
+                        if (friends.length === 0 && recent.length === 0) {
+                            el.innerHTML = '<p class="fed-muted">No friend has watched anything from your server yet.</p>';
+                            return;
+                        }
+
+                        var html = '<div class="fed-usage-friends">';
+                        friends.forEach(function (f) {
+                            var cap = f.monthlyDataCapGb > 0 ? ' of ' + f.monthlyDataCapGb + ' GB' : '';
+                            var pct = f.monthlyDataCapGb > 0 ? Math.min(100, Math.round(f.bytesThisMonth / (f.monthlyDataCapGb * 1e9) * 100)) : null;
+                            html += '<div class="fed-subcard">';
+                            html += '<h4 class="fed-subhead">' + escapeHtml(f.friendName || 'A former friend') + (f.stillFriend ? '' : ' <span class="fed-pill fed-pill-off">no longer a friend</span>') + '</h4>';
+                            html += '<p class="fed-hint">This month: ' + escapeHtml(String(f.hoursThisMonth)) + ' h watched in ' + f.sessionsThisMonth + ' session' + (f.sessionsThisMonth === 1 ? '' : 's')
+                                + ' · ' + escapeHtml(formatGb(f.bytesThisMonth)) + escapeHtml(cap)
+                                + ' · last month ' + escapeHtml(formatGb(f.bytesLastMonth))
+                                + ' · last 30 days ' + escapeHtml(String(f.hoursLast30Days)) + ' h</p>';
+                            if (pct !== null) {
+                                html += '<div class="fed-usage-bar" role="progressbar" aria-label="Monthly data used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div style="width:' + pct + '%;"></div></div>';
+                            }
+
+                            if ((f.topTitles || []).length > 0) {
+                                html += '<p class="fed-hint">Most watched: ' + f.topTitles.map(function (t) { return escapeHtml(t.name) + ' (' + t.sessions + ')'; }).join(', ') + '</p>';
+                            }
+
+                            html += '</div>';
+                        });
+                        html += '</div>';
+
+                        if (top.length > 0) {
+                            html += '<label class="fed-label" style="margin-top:0.8em;">Most watched by friends</label><ol class="fed-preview-list">';
+                            top.forEach(function (t) {
+                                html += '<li>' + escapeHtml(t.name) + ' — ' + t.sessions + ' session' + (t.sessions === 1 ? '' : 's') + ', ' + t.friends + ' friend' + (t.friends === 1 ? '' : 's') + '</li>';
+                            });
+                            html += '</ol>';
+                        }
+
+                        if (recent.length > 0) {
+                            html += '<label class="fed-label" style="margin-top:0.8em;">History</label>';
+                            recent.forEach(function (r) {
+                                html += '<div class="fed-hint">' + escapeHtml(formatActivityDate(r.started)) + ' ' + escapeHtml(formatActivityTime(r.started)) + ' — '
+                                    + escapeHtml(r.friendName || 'a friend') + (r.isDownload ? ' downloaded ' : ' watched ') + escapeHtml(r.itemName || 'a title')
+                                    + ' (' + escapeHtml(formatActivityDuration(r.started, r.ended)) + (r.bytes ? ', ' + escapeHtml(formatGb(r.bytes)) : '') + ')</div>';
+                            });
+                        }
+
+                        el.innerHTML = html;
+                    }
+
+                    function loadUsage() {
+                        fedFetch('/Plugins/Federation/Usage')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (data) { renderUsage(data); })
+                        .catch(function (e) {
+                            var el = q('#fedUsageContent');
+                            if (el) { el.innerHTML = '<p class="fed-muted">Could not load usage: ' + escapeHtml(e.message) + '</p>'; }
+                        });
+                    }
+
+                    function loadFriendActivity() {
+                        fedFetch('/Plugins/Federation/FriendActivity')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (data) { renderFriendActivity(data); })
+                        .catch(function () { /* friend activity card is best-effort */ });
                     }
 
                     /* ---------------- Hidden items ---------------- */
@@ -6818,7 +7376,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'plex', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'log'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'plex', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'usage', 'log'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
                     var activeTab = 'friends';
 
@@ -6849,6 +7407,10 @@
                         // every page load.
                         if (tab === 'plex') {
                             loadPlexSetup();
+                        }
+
+                        if (tab === 'usage') {
+                            loadUsage();
                         }
 
                         if (tab === 'catalog' && !catalogLoaded && !catalogLoading && !catalogFailed) {
@@ -7109,6 +7671,21 @@
                                     break;
                                 case 'save-download-access':
                                     saveDownloadAccess(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-user-sharing':
+                                    saveUserSharing(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-friend-sharing':
+                                    saveFriendListSharing(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-limits':
+                                    saveLimits(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-popular':
+                                    savePopular(t.getAttribute('data-id'));
+                                    break;
+                                case 'preview-friend':
+                                    togglePreview(t.getAttribute('data-id'));
                                     break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));
@@ -7533,6 +8110,77 @@
                                     libsDiv.style.display = t.checked ? 'none' : 'block';
                                 }
 
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSharingUntil') || t.classList.contains('fedLibUntil')) {
+                                var esid = t.getAttribute('data-id');
+                                var ep = pendingSharing[esid];
+                                if (ep) {
+                                    if (t.classList.contains('fedSharingUntil')) {
+                                        ep.Until = t.value;
+                                    } else {
+                                        ep.LibraryUntil = ep.LibraryUntil || {};
+                                        ep.LibraryUntil[t.getAttribute('data-lib')] = t.value;
+                                    }
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedFriendSharingAll')) {
+                                var fsid = t.getAttribute('data-id');
+                                var fp = pendingFriendSharing[fsid] || { ShareAll: true, FriendIds: [] };
+                                fp.ShareAll = t.checked;
+                                pendingFriendSharing[fsid] = fp;
+                                var friendsDiv = q('.fedFriendSharingList[data-id="' + fsid + '"]');
+                                if (friendsDiv) {
+                                    friendsDiv.style.display = t.checked ? 'none' : 'block';
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedFriendSharingFriend')) {
+                                var ffsid = t.getAttribute('data-id');
+                                var fid = t.getAttribute('data-friend');
+                                var ffp = pendingFriendSharing[ffsid] || { ShareAll: false, FriendIds: [] };
+                                var fpos = ffp.FriendIds.indexOf(fid);
+                                if (t.checked && fpos === -1) {
+                                    ffp.FriendIds.push(fid);
+                                } else if (!t.checked && fpos !== -1) {
+                                    ffp.FriendIds.splice(fpos, 1);
+                                }
+
+                                pendingFriendSharing[ffsid] = ffp;
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserSharingAll')) {
+                                var usid = t.getAttribute('data-id');
+                                var up = pendingUserSharing[usid] || { ShareAll: false, UserIds: [] };
+                                up.ShareAll = t.checked;
+                                pendingUserSharing[usid] = up;
+                                var usersDiv = q('.fedUserSharingList[data-id="' + usid + '"]');
+                                if (usersDiv) {
+                                    usersDiv.style.display = t.checked ? 'none' : 'block';
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserSharingUser')) {
+                                var uusid = t.getAttribute('data-id');
+                                var uid = t.getAttribute('data-user');
+                                var uup = pendingUserSharing[uusid] || { ShareAll: false, UserIds: [] };
+                                var upos = uup.UserIds.indexOf(uid);
+                                if (t.checked && upos === -1) {
+                                    uup.UserIds.push(uid);
+                                } else if (!t.checked && upos !== -1) {
+                                    uup.UserIds.splice(upos, 1);
+                                }
+
+                                pendingUserSharing[uusid] = uup;
                                 return;
                             }
 

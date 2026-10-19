@@ -4,6 +4,7 @@ using System.IO;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using Moq;
@@ -160,6 +161,83 @@ public sealed class FederationPeerAccessServiceTests : IDisposable
         Assert.True(service.IsItemVisible(perUser, "viewer", movie.Id));
         perUser.RemoteUserAccessRules[0].LibraryFolderIds = new List<string> { otherLibrary.Id.ToString("N") };
         Assert.False(service.IsItemVisible(perUser, "viewer", movie.Id));
+    }
+
+    [Fact]
+    public void ExpiredFriendship_HidesEveryLibraryAndItem()
+    {
+        var movie = new Movie { Id = Guid.NewGuid() };
+        SetItems(movie);
+        var service = new FederationPeerAccessService(_library.Object);
+        var friend = new RemoteServer { ShareAllLibraries = true, SharingExpiresUtc = DateTime.UtcNow.AddMinutes(-1) };
+
+        Assert.False(service.IsLibraryVisible(friend, null, "movies"));
+        Assert.False(service.IsItemVisible(friend, null, movie.Id, "movies"));
+
+        friend.SharingExpiresUtc = DateTime.UtcNow.AddDays(1);
+        Assert.True(service.IsLibraryVisible(friend, null, "movies"));
+        Assert.True(service.IsItemVisible(friend, null, movie.Id, "movies"));
+    }
+
+    [Fact]
+    public void ExpiredLibrary_IsHiddenWhileOtherLibrariesStay_AlsoWhenSharingEverything()
+    {
+        var movie = new Movie { Id = Guid.NewGuid() };
+        var show = new Series { Id = Guid.NewGuid() };
+        SetItems(movie, show);
+        var service = new FederationPeerAccessService(_library.Object);
+        var moviesId = Guid.NewGuid().ToString("N");
+        var expiry = new List<LibraryShareExpiry> { new() { FolderId = Guid.Parse(moviesId).ToString("D"), ExpiresUtc = DateTime.UtcNow.AddMinutes(-1) } };
+
+        foreach (var friend in new[]
+        {
+            new RemoteServer { ShareAllLibraries = true, LibraryShareExpiries = expiry },
+            new RemoteServer { ShareAllLibraries = false, SharedLibraryFolderIds = new List<string> { moviesId, "tv" }, LibraryShareExpiries = expiry }
+        })
+        {
+            Assert.False(service.IsLibraryVisible(friend, null, moviesId));
+            Assert.False(service.IsItemVisible(friend, null, movie.Id, moviesId));
+            Assert.True(service.IsLibraryVisible(friend, null, "tv"));
+            Assert.True(service.IsItemVisible(friend, null, show.Id, "tv"));
+        }
+    }
+
+    [Fact]
+    public void ExpiredLibrary_BlocksStreamsToo_WhereTheItemAlsoResolvesToItsPhysicalFolder()
+    {
+        // Stream-time checks resolve every id an item can match, which also
+        // includes the library's physical folder - an id that never expires.
+        var library = new CollectionFolder { Id = Guid.NewGuid() };
+        var physicalFolder = new CollectionFolder { Id = Guid.NewGuid() };
+        var movie = new Movie { Id = Guid.NewGuid() };
+        SetItems(movie);
+        _library.Setup(l => l.GetCollectionFolders(movie)).Returns(new List<Folder> { library, physicalFolder });
+        var service = new FederationPeerAccessService(_library.Object);
+        var friend = new RemoteServer
+        {
+            ShareAllLibraries = true,
+            LibraryShareExpiries = new List<LibraryShareExpiry> { new() { FolderId = library.Id.ToString("N"), ExpiresUtc = DateTime.UtcNow.AddMinutes(-1) } }
+        };
+
+        Assert.False(service.IsItemVisible(friend, null, movie.Id));
+        friend.LibraryShareExpiries[0].ExpiresUtc = DateTime.UtcNow.AddDays(1);
+        Assert.True(service.IsItemVisible(friend, null, movie.Id));
+    }
+
+    [Fact]
+    public void LibraryExpiryInTheFuture_KeepsSharing()
+    {
+        var movie = new Movie { Id = Guid.NewGuid() };
+        SetItems(movie);
+        var service = new FederationPeerAccessService(_library.Object);
+        var friend = new RemoteServer
+        {
+            ShareAllLibraries = false,
+            SharedLibraryFolderIds = new List<string> { "movies" },
+            LibraryShareExpiries = new List<LibraryShareExpiry> { new() { FolderId = "movies", ExpiresUtc = DateTime.UtcNow.AddDays(2) } }
+        };
+
+        Assert.True(service.IsItemVisible(friend, null, movie.Id, "movies"));
     }
 
     private void SetItems(params BaseItem[] items)

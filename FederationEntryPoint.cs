@@ -55,8 +55,12 @@ namespace Jellyfin.Plugin.Federation
             WanBandwidthMonitor bandwidthMonitor,
             FederationLogBuffer logBuffer,
             AvailabilityScheduleStore availabilitySchedule,
-            FederationChangeNotifier changeNotifier)
+            FederationChangeNotifier changeNotifier,
+            FederationFriendActivityService friendActivity)
         {
+            // Created at startup, not on first use, so plays by local users
+            // are counted for the popularity list from the start.
+            _ = friendActivity;
             _changeNotifier = changeNotifier;
             _logger = logger;
             _federationManager = federationManager;

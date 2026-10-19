@@ -135,6 +135,14 @@ remaining live Windows/Funnel/client checks.
 
 - [ ] Before promoting private sharing to stable, verify two separately approved Tailscale server computers: real HTTPS certificates, cross-account access, catalog/HEAD/Range/decoded media, access revocation, restart, direct/DERP behavior and receiving-side imports. Current sandbox uses a simulated network CLI; do not claim real private-network playback yet.
 
+## Friend privacy, limits and activity — shipped as 0.0.196
+
+- [x] Per friend: visible users (none by default), visible friends for discovery (all by default, only with friends-of-friends on), end dates for the friendship and per library, stream/data limits, popularity sharing (off by default) with "Popular on …" collections, "Preview what they see", friend viewing activity (card + Jellyfin activity log) and a Usage tab.
+- [x] 2026-10-20 validation: clean build, 991 .NET tests twice, 3 JS suites; two native Jellyfin 12 servers (`features.py` scenario, temporary under the session scratchpad) 27/27 checks, no Federation errors in either log. Live runs found and fixed: stale Discovery cache on the friend, expired library still streaming (physical folder id), usage lost at shutdown, deleted popular collection re-saved by Jellyfin's queued metadata save.
+- [ ] A refused stream (limit reached, sharing ended) shows on the friend's side as a failed playback; consider a readable reason in their client.
+- [ ] Data limit enforcement is per request: concurrent requests can overshoot a little before the next request is refused.
+- [ ] Friend activity entries have no Jellyfin user, so the dashboard lists them with alerts rather than user activity.
+
 ## Federation state and security
 
 - [ ] Make leaving a pool durable so a later stale pool notice cannot silently rejoin it.

@@ -254,6 +254,17 @@ namespace Jellyfin.Plugin.Federation
                 _logger.LogError(ex, "[Federation] Plugin uninstall: failed to remove federated items; some virtual items may be left behind");
             }
 
+            // "Popular on ..." collections hold federated items; remove them
+            // before the libraries those items live in.
+            try
+            {
+                (_serviceProvider.GetService(typeof(FederationPopularCollectionService)) as FederationPopularCollectionService)?.RemoveAll();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Plugin uninstall: could not remove the friends' popular collections");
+            }
+
             // Auto-provisioned libraries (and shadow media paths merged into a
             // pre-existing user library) were never cleaned up here - only the
             // items inside them were. LibraryProvisioningService.RemoveAllAsync
