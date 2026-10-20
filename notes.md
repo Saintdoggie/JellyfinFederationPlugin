@@ -342,3 +342,6 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   and that play converts here. RecordRefusal (2-min friend-wide backoff) is no longer called. A first attempt with per-title
   backoffs and retry detection was dropped at the user's request ("simplify it").
 
+- 2026-10-20: Released 0.0.191 (master fab48c4, asset md5 701d9c450082a395706c74d8a050fbcf verified). Deployed live:
+  0.0.190 plugin + config backed up to /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.190-20261020;
+  0.0.191 Active, startup sync 888 items, 0 ERR.
