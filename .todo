@@ -90,4 +90,4 @@ anonymous, only titles already shared with you; your Favorites tab gets "Favorit
 [x] Gate twice on frozen commit
 [x] Two-server fixture: device download (redirect + relay), CanDownload, friends' favorites section data
 [x] Version 0.0.188 (zip md5 4c4e574dfe8a4c0b208635b99775ce4a), release, master
-[ ] Deploy live (after release)
+[x] Deploy live: 0.0.188 Active on Jellyfin 12.2.0, startup sync 0 ERR (backup plugin-backup-federation-0.0.187-20261019)
