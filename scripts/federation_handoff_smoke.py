@@ -207,10 +207,15 @@ def smoke():
         first_source, first = qa.wait_for(handed_off, 'Handoff did not resume after switching it back on', seconds=200)
         first_variant = next(l for l in first.splitlines() if l and not l.startswith('#'))
         qa.request(on_source(first_variant), '', None, raw=True)
+        # A friend's title plays only from the friend: over its limit, the
+        # player gets the friend's refusal and the receiver converts nothing.
+        before = len(transcode_logs(config))
         _, second_source = negotiate(viewer, bitrate=1500000)
-        _, second = qa.request(base, second_source['TranscodingUrl'], viewer, raw=True)
-        qa.check(source_host not in second.decode(), 'Second session was handed off despite the owner limit of 1')
-        print('HANDOFF PASS: owner limit of 1 refuses a second concurrent session; the receiver converts it instead', flush=True)
+        qa.request(base, second_source['TranscodingUrl'], viewer, expected=429, raw=True)
+        qa.check(len(transcode_logs(config)) == before, 'The receiver converted a friend title itself')
+        # The play that is running stays with the owner.
+        qa.request(on_source(first_variant), '', None, raw=True)
+        print('HANDOFF PASS: owner limit of 1 refuses a second concurrent session; the player gets the refusal, the receiver never converts it', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError, StopIteration)) else f'{type(e).__name__}: {e}'
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None
