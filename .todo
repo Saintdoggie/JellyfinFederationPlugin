@@ -153,7 +153,7 @@ then had its segment requests 302'd to the friend once the 2 min ended (two tran
 [x] Friend offers to convert but fails (429 limit, 5xx, unreachable): the player gets that status; no local fallback, no 2-min friend-wide backoff
 [x] Friend answers 403 (switched off for us): mark not-offering until the next token says otherwise; that play converts here (whole play)
 [x] Gate 1081/170/133; two-server handoff 6/6 (limit stage now expects 429 to the player, no receiver ffmpeg)
-[ ] Release 0.0.191 + deploy
+[x] Release 0.0.191 (zip md5 701d9c450082a395706c74d8a050fbcf, master fab48c4); deployed live 2026-10-20 15:06 UTC, Active, startup sync 888 items 0 ERR (backup plugin-backup-federation-0.0.190-20261020)
 [ ] netflix++ side: The Wild Robot / Wonder Woman refused by netflix++ itself (handoff and DirectStream) at 14:36-14:42 UTC; ask its owner for their log
 [ ] Broker (~/hosting/media-stack/scripts/transcode-broker.py): an upstream HTTP error is turned into a dropped connection ("End of file" in ffmpeg); pass the status through and log it
 ## 6. Later (user asked: review only, do not implement)
