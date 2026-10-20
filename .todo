@@ -163,7 +163,7 @@ what its proxy tells it (http), an https page refuses them. Receiver-side fix, w
     GET Plugins/Federation/HandoffPlaylist?u= (anonymous; fetches only an enabled Jellyfin friend's exact EffectiveUrl + /Plugins/Federation/Peer/Play/*.m3u8)
 [x] 14 unit tests; gate 1095/170/133 twice; two-server handoff 6/6 (variant via relay). Note: handoff test needs TMPDIR off /tmp (tmpfs, Jellyfin wants 2 GiB free)
 [x] README redone by a subagent (current features, compatibility table, disclaimer kept top and bottom)
-[ ] Release 0.0.192 + deploy
+[x] Release 0.0.192 (md5 8961d3a7807c989d2156f5b081313389, master d96c998); deployed live 15:21 UTC, 888 items 0 ERR (backup plugin-backup-federation-0.0.191-20261020)
 [ ] Friend side (later): owner gateway could also use a public base the receiver sends, so other receivers on old versions benefit
 ## 6. Later (user asked: review only, do not implement)
 [x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.

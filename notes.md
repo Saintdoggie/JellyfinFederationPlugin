@@ -350,3 +350,4 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   reports as http. Receiver now rewrites them (HandoffPlaylistLinks) and relays nested playlists through
   Plugins/Federation/HandoffPlaylist so segment addresses are fixed too. Segments themselves go straight to the friend over https.
 
+- 2026-10-20: Released 0.0.192 (master d96c998, md5 8961d3a7807c989d2156f5b081313389 verified); deployed live, backup of 0.0.191 at /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.191-20261020; startup sync 888 items, 0 ERR.
