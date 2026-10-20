@@ -120,5 +120,6 @@ federation friends."
     were relayed as user pauses (now Wait/Go); stale pause after resume (state confirmed first);
     a Ready<->"pause when ready" loop (~1000 requests/run, now ~40); Jellyfin 12 sockets need ApiKey=.
 ## 10. Validation + release
-[ ] Gate twice on frozen commit; peer + handoff smokes; party smoke; older friend (0.0.188) unaffected
-[ ] Version 0.0.189, release, master, deploy live
+[x] Gate twice (1047 plugin, 170 Companion, 124 web); peer 7/7, handoff 6/6, party 8/8; older friend 0.0.188 and 0.0.187 pass
+[x] Version 0.0.189 (zip md5 050d90d62a385abd7371cbb3bef0fee3), release, master
+[ ] Deploy live
