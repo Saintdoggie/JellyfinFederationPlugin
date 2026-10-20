@@ -210,3 +210,10 @@ Started 2026-10-19 on branch `feature/favorites-and-downloads` from `origin/mast
 ## Log
 - 2026-10-19: 1025 plugin tests, 93 web UI tests pass (new: DeviceDownloadTests, FriendFavoritesTests,
   FriendFavoritesRouteTests, 4 UI tests). Peer smoke extended with device-download and favorites stages.
+- 2026-10-19: Found during review: cached download permits would hide a friend's later refusal
+  (viewer got a bare 403); permits are now asked fresh per press (no allowance cost for the same
+  title). Friend titles that only some viewers may see have no shared Path → LocationType Virtual;
+  CanDownload filter now covers Virtual as well as Remote (smoke checks it).
+- 2026-10-19: **Final validation on frozen commit 864d338**: gate passed (1025 plugin, 170 Companion,
+  120 UI tests, twice; receipt). Peer smoke 7/7 on 12.2; peer smoke with the source on released
+  0.0.187 passes (downloads relayed + named, refusal passed on, no favorites row); handoff smoke 6/6.
