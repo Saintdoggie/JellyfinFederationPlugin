@@ -327,3 +327,8 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   /config/qa-movies/QA Peer (2026)/QA Peer (2026).mkv, a new folder becomes library "QA Friends", a second
   copy is "QA Peer (2026) - <friend>.mkv", "folder:../escape" refused). Handoff 6/6, party 8/8, peer with
   the source on released 0.0.189 6/6 (no Peer/Viewers there: the reporter backs off quietly).
+- 2026-10-20: Released 0.0.190 (master 77ab9c6, asset md5 9cb488c7c77baf8ba9cdd67702c399da verified against the
+  manifest). Deployed live: backup of 0.0.189 plugin + config at
+  /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.189-20261020; 0.0.190 loaded Active,
+  startup sync 888 items, 0 ERR; /Plugins/Federation/ClientScript serves the new picker and Playback Info code.
+  Friends (netflix++, Inspired) need 0.0.190 for viewers/hardware; downloads and Playback Info work without them.
