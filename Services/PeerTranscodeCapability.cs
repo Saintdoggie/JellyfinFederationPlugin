@@ -18,6 +18,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly ConcurrentDictionary<string, (bool Supported, DateTime? RefusedUntil)> State = new(StringComparer.OrdinalIgnoreCase);
 
+        private static readonly ConcurrentDictionary<string, bool> SharedSegments = new(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>Clock, replaceable in tests.</summary>
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
@@ -51,7 +53,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 && state.Supported
                 && (state.RefusedUntil == null || state.RefusedUntil <= UtcNow());
 
+        /// <summary>Records whether the friend shares repeated segment requests (see <see cref="PlaybackTokenResponse.SharedSegments"/>).</summary>
+        public static void RecordSharedSegments(string? serverId, bool shared)
+        {
+            if (!string.IsNullOrEmpty(serverId))
+            {
+                SharedSegments[serverId] = shared;
+            }
+        }
+
+        /// <summary>
+        /// True when asking this friend for a segment early is safe: a second
+        /// request for it joins the first instead of restarting the conversion.
+        /// </summary>
+        public static bool HasSharedSegments(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && SharedSegments.TryGetValue(serverId, out var shared) && shared;
+
         /// <summary>Test hook.</summary>
-        internal static void Reset() => State.Clear();
+        internal static void Reset()
+        {
+            State.Clear();
+            SharedSegments.Clear();
+        }
     }
 }

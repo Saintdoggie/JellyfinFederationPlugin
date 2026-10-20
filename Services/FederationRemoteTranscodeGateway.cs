@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -35,6 +36,17 @@ namespace Jellyfin.Plugin.Federation.Services
     public sealed class FederationRemoteTranscodeGateway
     {
         private const int MaxPlaylistBytes = 8 * 1024 * 1024;
+
+        /// <summary>Largest segment held in memory to share between a request and its retries.</summary>
+        private const int MaxSharedSegmentBytes = 96 * 1024 * 1024;
+
+        /// <summary>How long a delivered segment is kept for a player's retry of it.</summary>
+        private static readonly TimeSpan SharedSegmentKeep = TimeSpan.FromMinutes(1);
+
+        /// <summary>How long a shared segment request may take (a slow 4K start included).</summary>
+        private static readonly TimeSpan SharedSegmentTimeout = TimeSpan.FromMinutes(5);
+
+        private static readonly ConcurrentDictionary<string, SharedFetch> SharedSegments = new(StringComparer.Ordinal);
 
         private static readonly HttpClient Loopback = new(new SocketsHttpHandler
         {
@@ -129,6 +141,46 @@ namespace Jellyfin.Plugin.Federation.Services
             var nativePath = path.ToNativePath(path.ItemId, path.MediaSourceId);
             var url = $"{loopbackBase.TrimEnd('/')}/{nativePath}{RemoteMediaPath.FilterQuery(request.Query)}";
             var isHead = HttpMethods.IsHead(request.Method);
+
+            if (path.Kind == RemoteMediaKind.HlsSegment && !isHead && !request.Headers.ContainsKey("Range"))
+            {
+                SharedSegment? shared;
+                try
+                {
+                    shared = await GetSharedSegmentAsync(url, internalRelayKey).WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // The player gave up waiting; the fetch carries on for its retry.
+                    return;
+                }
+
+                if (shared != null)
+                {
+                    ApplyCors(context);
+                    response.StatusCode = shared.Status;
+                    if (shared.ContentType != null)
+                    {
+                        response.ContentType = shared.ContentType;
+                    }
+
+                    response.Headers.CacheControl = "private, no-store";
+                    if (shared.Status >= 200 && shared.Status < 300)
+                    {
+                        response.ContentLength = shared.Body.Length;
+                        await response.Body.WriteAsync(shared.Body, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[Federation] Remote transcode: {Kind} for a friend answered HTTP {Status}", path.Kind, shared.Status);
+                    }
+
+                    return;
+                }
+
+                // Too large to share: relayed as a plain stream below (the
+                // segment exists by now, so this does not restart anything).
+            }
 
             using var upstreamRequest = new HttpRequestMessage(isHead ? HttpMethod.Head : HttpMethod.Get, url);
             upstreamRequest.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
@@ -231,6 +283,88 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>
+        /// One segment request to this server's Jellyfin, shared by every player
+        /// request for the same URL while it runs (and for a minute after).
+        /// Jellyfin restarts its converter whenever a segment is asked for before
+        /// the converter has written any (a start, or a seek); a player that gives
+        /// up after 20 s and asks again would restart it again, forever, whenever
+        /// the first segment takes longer than that. Here the retry waits for the
+        /// running request instead, and a player giving up does not cancel it.
+        /// Null when the segment is too large to hold in memory.
+        /// </summary>
+        private Task<SharedSegment?> GetSharedSegmentAsync(string url, string internalRelayKey)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var kv in SharedSegments)
+            {
+                if (kv.Value.Fetch.IsValueCreated && kv.Value.Fetch.Value.IsCompleted && now - kv.Value.StartedUtc > SharedSegmentKeep)
+                {
+                    SharedSegments.TryRemove(kv);
+                }
+            }
+
+            // Lazy: GetOrAdd may build two entries in a race, but only the stored
+            // one ever starts a request (a second request would restart ffmpeg).
+            var entry = SharedSegments.GetOrAdd(url, u => new SharedFetch(new Lazy<Task<SharedSegment?>>(() => FetchSegmentAsync(u, internalRelayKey)), now));
+            return entry.Fetch.Value;
+        }
+
+        private async Task<SharedSegment?> FetchSegmentAsync(string url, string internalRelayKey)
+        {
+            await Task.Yield();
+            try
+            {
+                using var timeout = new CancellationTokenSource(SharedSegmentTimeout);
+                using var upstreamRequest = new HttpRequestMessage(HttpMethod.Get, url);
+                upstreamRequest.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
+                upstreamRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                using var upstream = await Loopback.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+                var contentType = upstream.Content.Headers.ContentType?.ToString();
+                if (!upstream.IsSuccessStatusCode)
+                {
+                    Forget(url);
+                    return new SharedSegment((int)upstream.StatusCode, contentType, Array.Empty<byte>());
+                }
+
+                if (upstream.Content.Headers.ContentLength > MaxSharedSegmentBytes)
+                {
+                    Forget(url);
+                    return null;
+                }
+
+                await using var stream = await upstream.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                using var buffer = new MemoryStream();
+                var chunk = new byte[256 * 1024];
+                int read;
+                while ((read = await stream.ReadAsync(chunk, timeout.Token).ConfigureAwait(false)) > 0)
+                {
+                    if (buffer.Length + read > MaxSharedSegmentBytes)
+                    {
+                        Forget(url);
+                        return null;
+                    }
+
+                    buffer.Write(chunk, 0, read);
+                }
+
+                return new SharedSegment((int)upstream.StatusCode, contentType, buffer.ToArray());
+            }
+            catch (Exception ex)
+            {
+                Forget(url);
+                _logger.LogWarning("[Federation] Remote transcode: this server's Jellyfin did not deliver a segment for a friend: {Error}", ex.GetType().Name);
+                return new SharedSegment(StatusCodes.Status502BadGateway, null, Array.Empty<byte>());
+            }
+
+            // A failed attempt is not reused: the next request tries again.
+            void Forget(string key) => _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                SharedSegments.TryRemove(key, out _);
+            });
+        }
+
         private static async Task<string?> ReadLimitedAsync(HttpResponseMessage upstream, CancellationToken cancellationToken)
         {
             if (upstream.Content.Headers.ContentLength > MaxPlaylistBytes)
@@ -254,5 +388,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
         }
+
+        private sealed record SharedFetch(Lazy<Task<SharedSegment?>> Fetch, DateTime StartedUtc);
+
+        private sealed record SharedSegment(int Status, string? ContentType, byte[] Body);
     }
 }

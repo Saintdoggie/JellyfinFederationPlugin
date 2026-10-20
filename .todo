@@ -165,6 +165,19 @@ what its proxy tells it (http), an https page refuses them. Receiver-side fix, w
 [x] README redone by a subagent (current features, compatibility table, disclaimer kept top and bottom)
 [x] Release 0.0.192 (md5 8961d3a7807c989d2156f5b081313389, master d96c998); deployed live 15:21 UTC, 888 items 0 ERR (backup plugin-backup-federation-0.0.191-20261020)
 [ ] Friend side (later): owner gateway could also use a public base the receiver sends, so other receivers on old versions benefit
+## 0.0.193 — smoother, faster friend playback (2026-10-20)
+User: seeking broken when federating; slow starts; "find ways to improve it for better playback that's uninterrupted and faster start"; friend logs like local ones.
+Root cause of seek failures/slow starts (Jellyfin DynamicHlsController 1471-1520): a segment asked for before any exists restarts ffmpeg;
+hls.js retries after 20 s (6x) -> a converter slower than 20 s to its first segment is restarted forever.
+[x] Owner gateway: segment requests for the same URL share one loopback request (kept 1 min; a player abort doesn't cancel it)
+[x] Owner: playback tokens survive restarts (SHA-256 of tokens in federation-playback-tokens.json); netflix++ restart at 15:52 refused everything
+[x] Receiver: a 403 on handoff drops every cached token from that friend, re-mints and retries once (works with any friend version)
+[x] Receiver: prefetches the variant playlist for the relay and, when the friend advertises sharedSegments, starts its conversion early
+[x] Friend conversion logs: owner Peer/PlayLog (sessions that friend started; keys/tokens blanked; switch ShareConversionLogsWithFriends, default on);
+    receiver copies to its log folder as FFmpeg.Transcode-..._<friend>-<session>.log on relayed pings and after the stop
+[x] Playback Info: "Not shared by this server" instead of "converts on the CPU" for a friend without hardware info
+[x] Gate 1107/170/133 twice; two-server handoff 9/9 (new: early start, seek retry joins (2 starts: early + jump), log copy, owner restart)
+[ ] Release 0.0.193 + deploy; netflix++ must update for seeking/early start/logs/token persistence
 ## 6. Later (user asked: review only, do not implement)
 [x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.
     Read 2026-10-20 (release notes only, no code pulled). Their 0.0.177-0.0.186 are our own releases.

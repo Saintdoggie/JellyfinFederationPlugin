@@ -1,9 +1,14 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
@@ -31,7 +36,24 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>This server's relay route for nested playlists.</summary>
         public const string RelayRoute = "/Plugins/Federation/HandoffPlaylist";
 
+        /// <summary>How long a prefetched playlist waits for the player to ask for it.</summary>
+        internal static readonly TimeSpan PrefetchKeep = TimeSpan.FromSeconds(30);
+
         private static readonly Regex UriAttribute = new("URI=\"(?<uri>[^\"]*)\"", RegexOptions.Compiled);
+
+        private static readonly ConcurrentDictionary<string, (DateTime FetchedUtc, string Text, string ContentType)> Prefetched = new(StringComparer.Ordinal);
+
+        /// <summary>HTTP client for friend playlists (no redirects, no cookies).</summary>
+        public static HttpClient Http { get; } = new(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.None,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            UseCookies = false
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
 
         /// <summary>
         /// Rewrites the friend addresses in <paramref name="playlist"/>:
@@ -59,19 +81,127 @@ namespace Jellyfin.Plugin.Federation.Services
 
             string Map(string uri)
             {
-                var at = uri.IndexOf(GatewayPath, StringComparison.OrdinalIgnoreCase);
-                if (at < 0)
+                var friendUrl = ToPeer(uri, peerBase);
+                if (friendUrl == null)
                 {
                     return uri;
                 }
 
-                var friendUrl = peerBase.TrimEnd('/') + uri.Substring(at);
-                var pathOnly = friendUrl.Split('?')[0];
-                return pathOnly.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase)
-                    ? relayPrefix + Uri.EscapeDataString(friendUrl)
-                    : friendUrl;
+                return IsPlaylist(friendUrl) ? relayPrefix + Uri.EscapeDataString(friendUrl) : friendUrl;
             }
         }
+
+        /// <summary>A friend gateway address put on <paramref name="peerBase"/>, or null when it isn't one.</summary>
+        public static string? ToPeer(string uri, string peerBase)
+        {
+            var at = uri.IndexOf(GatewayPath, StringComparison.OrdinalIgnoreCase);
+            return at < 0 ? null : peerBase.TrimEnd('/') + uri.Substring(at);
+        }
+
+        /// <summary>
+        /// The first friend address in <paramref name="playlist"/>: the init
+        /// segment (<c>EXT-X-MAP</c>) when there is one, else the first entry.
+        /// </summary>
+        public static string? FirstUri(string playlist, string peerBase)
+        {
+            string? first = null;
+            foreach (var raw in playlist.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("#EXT-X-MAP", StringComparison.OrdinalIgnoreCase))
+                {
+                    var m = UriAttribute.Match(line);
+                    if (m.Success)
+                    {
+                        return ToPeer(m.Groups["uri"].Value, peerBase);
+                    }
+                }
+                else if (first == null && line.Length > 0 && !line.StartsWith('#'))
+                {
+                    first = ToPeer(line, peerBase);
+                }
+            }
+
+            return first;
+        }
+
+        /// <summary>A playlist prefetched for <paramref name="url"/>, taken once, or null.</summary>
+        public static (string Text, string ContentType)? TakePrefetched(string url)
+        {
+            if (Prefetched.TryRemove(url, out var hit) && DateTime.UtcNow - hit.FetchedUtc < PrefetchKeep)
+            {
+                return (hit.Text, hit.ContentType);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Right after the master playlist went to the player: fetches the
+        /// variant playlist it will ask for next (kept for the relay), and when
+        /// the friend shares repeated segment requests, asks for the first
+        /// segment so the friend's conversion starts while the player is still
+        /// on its way. The player's own request for it then joins that one. Saves
+        /// the player's round trips to the friend at start. Never throws.
+        /// </summary>
+        public static void WarmUp(string masterFromFriend, string peerBase, bool startConversion, ILogger logger)
+        {
+            var variantUrl = FirstUri(masterFromFriend, peerBase);
+            if (variantUrl == null || !IsPlaylist(variantUrl))
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var now = DateTime.UtcNow;
+                    foreach (var kv in Prefetched)
+                    {
+                        if (now - kv.Value.FetchedUtc > PrefetchKeep)
+                        {
+                            Prefetched.TryRemove(kv.Key, out _);
+                        }
+                    }
+
+                    using var response = await Http.GetAsync(variantUrl).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        return;
+                    }
+
+                    var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    Prefetched[variantUrl] = (DateTime.UtcNow, text, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
+
+                    var firstSegment = startConversion ? FirstUri(text, peerBase) : null;
+                    if (firstSegment == null || IsPlaylist(firstSegment))
+                    {
+                        return;
+                    }
+
+                    // Only the request has to arrive: the friend keeps converting
+                    // and holds the segment for the player once it is asked.
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    try
+                    {
+                        using var started = await Http.GetAsync(firstSegment, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected while the friend is still converting it.
+                    }
+
+                    logger.LogDebug("[Federation] Started the friend's conversion ahead of the player");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "[Federation] Could not warm up a friend's playback");
+                }
+            });
+        }
+
+        private static bool IsPlaylist(string url) => url.Split('?')[0].EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// The friend whose gateway <paramref name="url"/> addresses, or null when

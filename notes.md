@@ -351,3 +351,10 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   Plugins/Federation/HandoffPlaylist so segment addresses are fixed too. Segments themselves go straight to the friend over https.
 
 - 2026-10-20: Released 0.0.192 (master d96c998, md5 8961d3a7807c989d2156f5b081313389 verified); deployed live, backup of 0.0.191 at /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.191-20261020; startup sync 888 items, 0 ERR.
+- 2026-10-20 (0.0.193): seeking/slow-start root cause is Jellyfin restarting ffmpeg for any segment requested before one exists, combined with
+  hls.js's 20 s fragment timeout and retries. Owner gateway now coalesces identical segment requests (FederationRemoteTranscodeGateway
+  GetSharedSegmentAsync). netflix++ restarting (15:52) invalidated its in-memory playback tokens; our server kept reusing cached ones -> every
+  play refused until our Jellyfin was restarted at 15:55. Fixed both sides (token persistence as hashes; receiver re-mint on 403).
+  Early start: receiver fetches variant + first segment right after serving the master (only for friends advertising sharedSegments).
+  Handoff test needs TMPDIR=/home/cranky/.cache/jf-qa-tmp (tmpfs /tmp too small for Jellyfin's 2 GiB free-space check).
+
