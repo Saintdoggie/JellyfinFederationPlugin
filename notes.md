@@ -221,3 +221,42 @@ Started 2026-10-19 on branch `feature/favorites-and-downloads` from `origin/mast
   verified). Deployed live: backup of 0.0.187 plugin + config at
   /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.187-20261019; 0.0.188 loaded
   Active, startup sync refreshed both friends with 0 ERR.
+
+
+---
+
+# Notes — watch parties with friends (0.0.189 work)
+
+Started 2026-10-20 on branch `feature/watch-parties` from master (0.0.188).
+
+## What the user asked for
+"Group watch party at the same time watching the same federated media… at the top you usually
+create a group watch party, but with this you click on that but can make one with federation friends."
+
+## Design
+- Jellyfin SyncPlay is per server (in-memory groups, clients talk to their own server over the
+  websocket). Bridging keeps every client working unchanged: each server has a normal group; a
+  hidden "link" session (plugin ISessionController attached via SessionInfo.SessionControllers)
+  is a member and receives every SyncPlay message; ISyncPlayManager.HandleRequest lets it act.
+- Host = hub: the host's group holds one link per friend server + an "observer" link (label
+  "Watching with friends") that models the group for announcements; each friend's copy of the
+  party holds one link to the host. A friend's copy is created when its first viewer joins.
+- Discovery: host announces every 15 s (and on title change) to its friends; friends add
+  virtual entries to /SyncPlay/List (only when the viewer can open the playing title here) and
+  intercept /SyncPlay/Join for them (NewGroup with the viewer's session + link + Join to host).
+- Titles: PartyItemRef = owner refs (fid + item id on the owning server) + provider ids
+  (+ series ids/season/episode). Resolved to the own item, the federated copy, or a local file
+  with the same provider ids. Own titles not shared with that friend are described by kind only.
+- Relay rules (PartyLink, pure): real changes only (pause from playing, resume, seek, stop, queue),
+  each confirmed against the group's actual state (ISyncPlayManager.GetGroup) when read; echoes
+  recognised against the last agreed state. Loading: remote → host "Wait"/"Go" (host link
+  Buffer/Ready with IgnoreWait toggled); host loading → friends pause ("Wait") and resume on the
+  host's resume. Friends never make the host wait on the host, so no mutual waits.
+- Jellyfin quirks found: Idle→Waiting→Paused (initial load) emits no message to any member;
+  a Ready during Waiting is answered with "pause when ready" (CurrentSession); Unpause in Waiting
+  with ResumePlaying=true forces unloaded viewers to start (we send Pause then Unpause instead);
+  Jellyfin 12 websockets take `ApiKey=` (not `api_key=`) unless legacy auth is on.
+
+## Log
+- 2026-10-20: 1047 plugin tests (22 new WatchPartyTests), 97 web tests. federation_party_smoke.py
+  8/8 stages, three consecutive runs, ~30-50 SyncPlay requests per server per run.

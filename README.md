@@ -40,6 +40,17 @@ friend stays in control: "Allow this friend and their viewers to download my tit
 Friends tab, and per-viewer rules, turn it off. Without bulk permission each viewer can save
 30 titles an hour from that friend.
 
+## Watch parties with friends
+
+Watch together with viewers on a friend's server, using Jellyfin's own group watching
+(SyncPlay, the people icon at the top). Choose "New group with friends" there (or "Invite
+friends" when already in a group). Your friends' viewers find the party in their normal
+group list and join it like any group, from any app that supports group watching. Everyone
+plays their own server's copy of the title; play, pause, seeking and title changes are
+shared, and anyone loading or buffering pauses everyone until they're ready. Each viewer
+still needs their own access to what's playing. Switches: Advanced → "Watch parties with
+friends". Both servers need 0.0.189.
+
 ## Friends' favorites
 
 Your Favorites tab gets a "Favorites on (friend)" row per friend with the titles that friend's

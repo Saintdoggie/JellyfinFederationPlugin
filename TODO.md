@@ -1,5 +1,14 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.189 — watch parties with friends (2026-10-20)
+
+- [x] SyncPlay groups across servers: "New group with friends" / "Invite friends" in the group menu;
+      friends' viewers join from their normal group list; each server plays its own copy.
+- [x] Play/pause/seek/title changes shared; loading or buffering anywhere pauses everyone (Wait/Go handshake).
+- [x] Two-server test with scripted SyncPlay players: 8 stages incl. reversed roles, second joiner, title change.
+- [ ] Real-world check with real apps (web, Android) once both friends run 0.0.189.
+- [ ] Not covered: friends of friends (a party only reaches the host's direct friends), Plex/Companion sources.
+
 ## 0.0.188 — downloads to device and friends' favorites (2026-10-19)
 
 - [x] Any viewer can download a friend's title with their app's own Download button (web, Android,
@@ -50,7 +59,7 @@ User request (2026-09-06): federated content takes too long to start. Treat this
 - [ ] Map the complete playback architecture and propose the replacement design: source selection, metadata, authorization, transport/relay, Plex media mounts, buffering, transcoding, session lifecycle and watch-party synchronization. Document migration, compatibility and rollback before implementation; unrelated plugin systems are outside this rebuild unless a concrete dependency requires changes.
 - [ ] Measure Jellyfin-to-Jellyfin startup before changing the architecture: metadata lookup, authorization/token requests, source connection, first byte, client buffering and transcoding. Include controlled WAN conditions and the actual connection when available; Plex/Companion redesign is deferred.
 - [ ] Remove measured startup bottlenecks and unnecessary requests/hops while preserving current sharing checks, credential isolation, Range/seek behavior, cancellation and source fallback. Record comparable before/after timings; do not assume larger buffers improve startup.
-- [ ] Design and implement watch parties for federated content: assess Jellyfin SyncPlay integration first, then define supported clients and same-server versus cross-server participation, invitations, synchronized play/pause/seek, late joining and reconnects.
+- [x] (0.0.189) Design and implement watch parties for federated content: assess Jellyfin SyncPlay integration first, then define supported clients and same-server versus cross-server participation, invitations, synchronized play/pause/seek, late joining and reconnects.
 - [ ] Require each participant to have their own authorized access to the source media. Party membership must never grant access to another friend's imported library, expose credentials or bypass revoked sharing.
 - [ ] Test concurrent viewers, slow connections, buffering, seeking, disconnects, source outages and access revocation with bounded resource use. Keep independent playback reliable when party members stall or leave.
 - [ ] Keep this checklist updated with measured findings, implementation progress, validation evidence and remaining limitations so another model can take over safely. Do not publish streaming architecture changes before focused regressions and the applicable live playback matrix pass.
