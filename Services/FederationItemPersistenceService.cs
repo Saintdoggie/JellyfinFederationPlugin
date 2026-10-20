@@ -44,6 +44,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IItemPersistenceService _itemPersistence;
         private readonly ILogger<FederationItemPersistenceService> _logger;
         private readonly FederationLibraryManager _federationManager;
+        private readonly FederationVisibilityService? _visibility;
         private readonly FederationArtworkService? _artworkService;
         private readonly SemaphoreSlim _reconcileGate = new(1, 1);
 
@@ -55,13 +56,15 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<FederationItemPersistenceService> logger,
             FederationLibraryManager federationManager,
             IItemPersistenceService itemPersistence,
-            FederationArtworkService? artworkService = null)
+            FederationArtworkService? artworkService = null,
+            FederationVisibilityService? visibility = null)
         {
             _libraryManager = libraryManager;
             _itemPersistence = itemPersistence;
             _logger = logger;
             _federationManager = federationManager;
             _artworkService = artworkService;
+            _visibility = visibility;
         }
 
         /// <summary>
@@ -115,6 +118,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var desired = _federationManager.GetEntriesForMapping(mapping.LocalLibraryName).ToList();
+
+                // Friends' per-user rules, captured once for this pass: which local
+                // users each item must be hidden from (see FederationVisibilityService).
+                var visibility = _visibility?.TakeSnapshot(Plugin.Instance?.Configuration);
 
                 // A Library (CollectionFolder) does not query its own children by
                 // ParentId. Its Children/GetRecursiveChildren is overridden to union
@@ -397,6 +404,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var item = _federationManager.MaterializeItem(e);
+                    if (visibility != null)
+                    {
+                        item.Tags = FederationLibraryManager.ComposeTags(item.Tags, FederationLibraryManager.GetServerNameFromTags(item.Tags), visibility.HiddenTags(e));
+                    }
+
                     item.ParentId = parentEntry != null ? _federationManager.ComputeItemId(parentEntry) : itemParent.Id;
                     toCreate.Add((item, e, depth));
                 }
@@ -504,6 +516,24 @@ namespace Jellyfin.Plugin.Federation.Services
                             sourceMetadataChanged = true;
                         }
                     }
+                    // Who this title is hidden from. Applied to every item type
+                    // (a hidden series hides its seasons/episodes through Jellyfin's
+                    // inherited-tag filter) and regardless of whether the source is
+                    // online, since offline titles stay listed.
+                    if (visibility != null)
+                    {
+                        var tagsNow = x.Item.Tags ?? Array.Empty<string>();
+                        var visibilityTags = FederationLibraryManager.ComposeTags(
+                            tagsNow,
+                            FederationLibraryManager.GetServerNameFromTags(tagsNow),
+                            visibility.HiddenTags(entry));
+                        if (!tagsNow.SequenceEqual(visibilityTags))
+                        {
+                            x.Item.Tags = visibilityTags;
+                            sourceMetadataChanged = true;
+                        }
+                    }
+
                     if (!FederationLibraryManager.IsStreamableType(entry.ItemType))
                     {
                         if (sourceMetadataChanged) restamped.Add(x.Item);

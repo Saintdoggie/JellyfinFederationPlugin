@@ -71,125 +71,109 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="remoteItemId">The friend's own item id for the content.</param>
         public bool IsAllowed(RemoteServer? server, Guid? localUserId, string? mappingName, Guid remoteItemId)
         {
-            if (server == null)
+            if (server == null || localUserId == null || localUserId == Guid.Empty)
             {
                 return true;
             }
 
-            if (localUserId == null || localUserId == Guid.Empty)
+            if (Evaluate(server, localUserId.Value, mappingName, remoteItemId, _cache, out var reason))
             {
                 return true;
             }
 
-            var rule = server.FriendUserAccessRules?.FirstOrDefault(r =>
-                Guid.TryParse(r.RemoteUserId, out var ruleUserId) && ruleUserId == localUserId.Value);
+            _logger.LogInformation(
+                "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} ({Reason})",
+                localUserId,
+                remoteItemId,
+                server.Name,
+                reason);
+            return false;
+        }
+
+        /// <summary>
+        /// Finds the rule <paramref name="server"/>'s admin set for one of this
+        /// server's users. Ids are compared as Guids: the owner lists users in
+        /// "N" form, but a rule typed or stored in "D" form is the same user.
+        /// </summary>
+        public static RemoteUserAccessRule? FindRule(RemoteServer? server, Guid localUserId)
+            => server?.FriendUserAccessRules?.FirstOrDefault(r =>
+                Guid.TryParse(r.RemoteUserId, out var ruleUserId) && ruleUserId == localUserId);
+
+        /// <summary>
+        /// True when a rule can hide anything at all. A rule that only turns off
+        /// downloads (or an "all libraries" rule with nothing extra) never changes
+        /// what the user sees.
+        /// </summary>
+        public static bool RestrictsVisibility(RemoteUserAccessRule? rule)
+            => rule != null
+                && (rule.Mode != RemoteUserAccessMode.AllLibraries
+                    || !string.IsNullOrWhiteSpace(rule.MaxAllowedRating)
+                    || (rule.BlockedItemIds?.Count ?? 0) > 0);
+
+        /// <summary>
+        /// Pure, log-free evaluation of whether the friend's rule for
+        /// <paramref name="localUserId"/> lets them see/play
+        /// <paramref name="remoteItemId"/>. Shared by the playback checks
+        /// (<see cref="IsAllowed"/>) and by library hiding
+        /// (<see cref="FederationVisibilityService"/>), so what a user can see and
+        /// what they can play can never disagree. No rule means allowed: the
+        /// friend's server-level scope already governed what was synced.
+        /// </summary>
+        /// <param name="reason">Why it was refused; null when allowed.</param>
+        public static bool Evaluate(
+            RemoteServer server,
+            Guid localUserId,
+            string? mappingName,
+            Guid remoteItemId,
+            FederationItemCache? cache,
+            out string? reason)
+        {
+            reason = null;
+            var rule = FindRule(server, localUserId);
             if (rule == null)
             {
-                // No override for this specific user - fall back to the friend's
-                // existing server-level scope, which already governed whatever was
-                // fetched/materialized.
                 return true;
             }
 
             // Mirrors FederationPeerAccessService.IsItemOrAncestorListed: a series
             // block/allow also covers cached seasons and episodes.
-            if (IsRemoteItemOrAncestorListed(_cache, server.Id, remoteItemId, rule.BlockedItemIds))
+            if (IsRemoteItemOrAncestorListed(cache, server.Id, remoteItemId, rule.BlockedItemIds))
             {
-                _logger.LogInformation(
-                    "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-item block)",
-                    localUserId,
-                    remoteItemId,
-                    server.Name);
+                reason = "per-item block";
                 return false;
             }
 
+            bool allowed;
             switch (rule.Mode)
             {
                 case RemoteUserAccessMode.Blocked:
-                    _logger.LogInformation(
-                        "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (blocked by that friend's admin)",
-                        localUserId,
-                        remoteItemId,
-                        server.Name);
+                    reason = "blocked by that friend's admin";
                     return false;
-
-                case RemoteUserAccessMode.AllLibraries:
-                    // Even "allow everything" still respects the user's own rating
-                    // ceiling and download gate below.
-                    if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
-                    {
-                        var rating = TryResolveRating(server, remoteItemId);
-                        if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
-                        {
-                            _logger.LogInformation(
-                                "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-user rating ceiling {Ceiling})",
-                                localUserId,
-                                remoteItemId,
-                                server.Name,
-                                rule.MaxAllowedRating);
-                            return false;
-                        }
-                    }
-
-                    return true;
-
                 case RemoteUserAccessMode.CertainItems:
-                    var allowedItem = IsRemoteItemOrAncestorListed(_cache, server.Id, remoteItemId, rule.ItemIds);
-                    if (!allowedItem)
-                    {
-                        _logger.LogInformation(
-                            "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (not in their allowed item list)",
-                            localUserId,
-                            remoteItemId,
-                            server.Name);
-                    }
-                    else if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
-                    {
-                        var rating = TryResolveRating(server, remoteItemId);
-                        if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
-                        {
-                            _logger.LogInformation(
-                                "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-user rating ceiling {Ceiling})",
-                                localUserId,
-                                remoteItemId,
-                                server.Name,
-                                rule.MaxAllowedRating);
-                            return false;
-                        }
-                    }
-
-                    return allowedItem;
-
+                    allowed = IsRemoteItemOrAncestorListed(cache, server.Id, remoteItemId, rule.ItemIds);
+                    reason = allowed ? null : "not in their allowed item list";
+                    break;
                 case RemoteUserAccessMode.CertainLibraries:
-                    var allowedLibrary = IsInAllowedLibrary(server, mappingName, rule);
-                    if (!allowedLibrary)
-                    {
-                        _logger.LogInformation(
-                            "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (not in their allowed library list)",
-                            localUserId,
-                            remoteItemId,
-                            server.Name);
-                    }
-                    else if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
-                    {
-                        var rating = TryResolveRating(server, remoteItemId);
-                        if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
-                        {
-                            _logger.LogInformation(
-                                "[Federation] Blocking user {UserId} from item {ItemId} on {ServerName} (per-user rating ceiling {Ceiling})",
-                                localUserId,
-                                remoteItemId,
-                                server.Name,
-                                rule.MaxAllowedRating);
-                            return false;
-                        }
-                    }
-
-                    return allowedLibrary;
-
+                    allowed = IsInAllowedLibrary(server, mappingName, rule);
+                    reason = allowed ? null : "not in their allowed library list";
+                    break;
                 default:
-                    return true;
+                    // AllLibraries still respects the user's own rating ceiling.
+                    allowed = true;
+                    break;
             }
+
+            if (allowed && !string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
+            {
+                var rating = TryResolveRating(cache, server.Id, remoteItemId);
+                if (!IncomingContentFilterService.IsAllowedByRatingCeilings(rating, null, rule.MaxAllowedRating))
+                {
+                    reason = $"per-user rating ceiling {rule.MaxAllowedRating}";
+                    return false;
+                }
+            }
+
+            return allowed;
         }
 
         /// <summary>
@@ -341,8 +325,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (server != null && localUserId != null && localUserId != Guid.Empty)
             {
-                var rule = server.FriendUserAccessRules?.FirstOrDefault(r =>
-                    Guid.TryParse(r.RemoteUserId, out var ruleUserId) && ruleUserId == localUserId.Value);
+                var rule = FindRule(server, localUserId.Value);
                 if (rule != null && !rule.AllowDownload)
                 {
                     return false;
@@ -352,8 +335,13 @@ namespace Jellyfin.Plugin.Federation.Services
             return true;
         }
 
-        private string? TryResolveRating(RemoteServer server, Guid remoteItemId)
+        private static string? TryResolveRating(FederationItemCache? cache, string? serverId, Guid remoteItemId)
         {
+            if (cache == null || string.IsNullOrEmpty(serverId))
+            {
+                return null;
+            }
+
             try
             {
                 // An episode/season's own remote id was never upserted as its own
@@ -364,8 +352,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 // reconstruction at all. This fills in the one path that couldn't:
                 // a per-user MaxAllowedRating ceiling checked lazily, after the item
                 // is already cached, with only (server, remote item id) in hand.
-                var key = _cache.TryGetLocalKeyForRemoteItem(server.Id, remoteItemId);
-                return key == null ? null : _cache.GetEntryByKey(key)?.Metadata.OfficialRating;
+                var key = cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemId);
+                return key == null ? null : cache.GetEntryByKey(key)?.Metadata.OfficialRating;
             }
             catch
             {

@@ -66,6 +66,8 @@ namespace Jellyfin.Plugin.Federation.Services
         internal int SaveEveryBatches { get; set; } = 20;
 
         // A friend's change notice starts a sync of that friend at most this often.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pendingVisibilityRefresh = new(StringComparer.Ordinal);
+
         internal TimeSpan NotifiedSyncSpacing { get; set; } = TimeSpan.FromMinutes(5);
 
         // How long to wait before retrying when another sync is running.
@@ -74,6 +76,19 @@ namespace Jellyfin.Plugin.Federation.Services
         // Test seam for the sync a change notice starts.
         internal Func<string, CancellationToken, Task<SyncResult>>? NotifiedSyncOverride { get; set; }
 
+        /// <summary>When each friend last told us that what it shares with us changed (see <see cref="IsRemovalAuthoritative"/>).</summary>
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _sharingChangedUtc = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Each friend's shared library ids for the sync running now (null entry:
+        /// unknown, the request failed). Filled before any library is synced.
+        /// </summary>
+        private System.Collections.Concurrent.ConcurrentDictionary<string, HashSet<string>?>? _sharedLibrariesThisRun;
+
+        /// <summary>How long after a sharing notice missing titles from that friend are removed at once.</summary>
+        internal static readonly TimeSpan SharingNoticeWindow = TimeSpan.FromMinutes(15);
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> _spacingWaits = new(StringComparer.Ordinal);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastNotifiedSync = new(StringComparer.Ordinal);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pendingNotifiedSync = new(StringComparer.Ordinal);
 
@@ -237,8 +252,30 @@ namespace Jellyfin.Plugin.Federation.Services
         /// covered by the one already scheduled. Returns false when one is
         /// already scheduled.
         /// </summary>
-        public bool OnFriendCatalogChanged(string serverId, CancellationToken stoppingToken)
+        public bool OnFriendCatalogChanged(string serverId, CancellationToken stoppingToken, bool urgent = false)
         {
+            if (urgent)
+            {
+                // What the friend shares with us changed: titles we may no longer
+                // see must go now, so this skips the spacing below (a catalog
+                // notice minutes earlier would otherwise delay it). Still one at a
+                // time per friend; a queued urgent sync covers later notices.
+                _lastNotifiedSync.TryRemove(serverId, out _);
+                _sharingChangedUtc[serverId] = DateTime.UtcNow;
+                if (_spacingWaits.TryGetValue(serverId, out var waiting))
+                {
+                    // A notice already queued is waiting out the spacing: end the wait.
+                    try
+                    {
+                        waiting.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // It just finished waiting.
+                    }
+                }
+            }
+
             if (!_pendingNotifiedSync.TryAdd(serverId, 0))
             {
                 return false;
@@ -251,7 +288,20 @@ namespace Jellyfin.Plugin.Federation.Services
                     var since = DateTime.UtcNow - _lastNotifiedSync.GetValueOrDefault(serverId, DateTime.MinValue);
                     if (since < NotifiedSyncSpacing)
                     {
-                        await Task.Delay(NotifiedSyncSpacing - since, stoppingToken).ConfigureAwait(false);
+                        using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                        _spacingWaits[serverId] = wait;
+                        try
+                        {
+                            await Task.Delay(NotifiedSyncSpacing - since, wait.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                        {
+                            // An urgent (sharing) notice ended the wait early.
+                        }
+                        finally
+                        {
+                            _spacingWaits.TryRemove(serverId, out _);
+                        }
                     }
 
                     // Waits out a running sync instead of dropping the notice.
@@ -444,6 +494,215 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Pulls each Jellyfin friend's current per-user rules for this server's
+        /// users (see <c>Peer/UserRules</c>). A push that was lost - the friend
+        /// changed a rule while this server was down or unreachable - used to leave
+        /// the old copy enforced forever; this makes every sync self-correcting.
+        /// A failed or unsupported request keeps the stored rules. Never throws.
+        /// </summary>
+        private async Task PullFriendUserRulesAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
+        {
+            var friends = servers
+                .Where(s => s.Enabled && s.Kind == ServerKind.Jellyfin && !string.IsNullOrEmpty(s.ApiKey))
+                .ToList();
+            var results = await Task.WhenAll(friends.Select(async server =>
+            {
+                try
+                {
+                    var client = _clientFactory.GetClient(server);
+                    return (Server: server, Result: client == null ? null : await client.GetUserRulesAsync(cancellationToken).ConfigureAwait(false));
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not pull per-user rules from {Server}", server.Name);
+                    return (Server: server, Result: (PeerUserRulesResult?)null);
+                }
+            })).ConfigureAwait(false);
+
+            var changed = false;
+            foreach (var (server, result) in results)
+            {
+                if (result is not { Supported: true })
+                {
+                    continue;
+                }
+
+                var current = server.FriendUserAccessRules ?? new List<RemoteUserAccessRule>();
+                if (SameRules(current, result.Rules))
+                {
+                    continue;
+                }
+
+                server.FriendUserAccessRules = result.Rules.ToList();
+                changed = true;
+                _logger.LogInformation(
+                    "[Federation] {Server} has {Count} per-user rule(s) for this server's users (updated from their server)",
+                    server.Name,
+                    server.FriendUserAccessRules.Count);
+            }
+
+            if (changed)
+            {
+                Plugin.Instance?.SaveConfiguration();
+            }
+        }
+
+        /// <summary>
+        /// Re-applies friends' per-user rules to the library without contacting
+        /// anyone: restamps the hide tags on every mapping that uses
+        /// <paramref name="serverId"/> (all mappings when null) and updates user
+        /// policies. Runs in the background as soon as the sync lock is free, so a
+        /// rule change hides titles within seconds. Returns false when one is
+        /// already queued.
+        /// </summary>
+        public bool QueueVisibilityRefresh(string? serverId, CancellationToken stoppingToken)
+        {
+            if (!_pendingVisibilityRefresh.TryAdd(serverId ?? string.Empty, 0))
+            {
+                return false;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    for (var attempt = 0; attempt < 120; attempt++)
+                    {
+                        if (await _syncLock.WaitAsync(0, stoppingToken).ConfigureAwait(false))
+                        {
+                            try
+                            {
+                                _pendingVisibilityRefresh.TryRemove(serverId ?? string.Empty, out _);
+                                var config = Plugin.Instance?.Configuration;
+                                if (config == null)
+                                {
+                                    return;
+                                }
+
+                                var mappings = (config.LibraryMappings ?? new List<LibraryMapping>())
+                                    .Where(m => m.Enabled && (serverId == null
+                                        || m.RemoteLibrarySources?.Any(src => src.ServerId == serverId) == true
+                                        || m.RemoteServerIds.Contains(serverId)))
+                                    .ToList();
+                                foreach (var mapping in mappings)
+                                {
+                                    await _persistence.ReconcileMappingAsync(mapping, stoppingToken).ConfigureAwait(false);
+                                }
+
+                                await ApplyVisibilityPoliciesAsync(config, stoppingToken).ConfigureAwait(false);
+                                _logger.LogInformation("[Federation] Re-applied friends' per-user rules to {Count} librar(ies)", mappings.Count);
+                                return;
+                            }
+                            finally
+                            {
+                                _syncLock.Release();
+                            }
+                        }
+
+                        // A sync is running; it applies the rules itself, but may have
+                        // read them before this change arrived. Wait it out.
+                        await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Jellyfin is shutting down.
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Re-applying friends' per-user rules failed");
+                }
+                finally
+                {
+                    _pendingVisibilityRefresh.TryRemove(serverId ?? string.Empty, out _);
+                }
+            });
+            return true;
+        }
+
+        /// <summary>
+        /// Asks each Jellyfin friend which of its libraries it shares with us right
+        /// now (<c>Peer/Libraries</c>), for <see cref="IsRemovalAuthoritative"/>.
+        /// A failed request leaves that friend unknown; it never counts as "nothing
+        /// shared". Never throws.
+        /// </summary>
+        private async Task FetchSharedLibrariesAsync(IEnumerable<RemoteServer> servers, CancellationToken cancellationToken)
+        {
+            var run = new System.Collections.Concurrent.ConcurrentDictionary<string, HashSet<string>?>(StringComparer.Ordinal);
+            await Task.WhenAll(servers
+                .Where(s => s.Enabled && s.Kind == ServerKind.Jellyfin && !string.IsNullOrEmpty(s.ApiKey) && !string.IsNullOrEmpty(s.Id))
+                .Select(async server =>
+                {
+                    try
+                    {
+                        var client = _clientFactory.GetClient(server);
+                        var libraries = client == null ? null : await client.GetLibrariesAsync(cancellationToken).ConfigureAwait(false);
+                        run[server.Id] = libraries?
+                            .Select(l => NormalizeLibraryId(l.Id.ToString()))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "[Federation] Could not read which libraries {Server} shares", server.Name);
+                        run[server.Id] = null;
+                    }
+                })).ConfigureAwait(false);
+            _sharedLibrariesThisRun = run;
+        }
+
+        private static string NormalizeLibraryId(string? id)
+            => Guid.TryParse(id, out var g) ? g.ToString("N") : (id ?? string.Empty).ToLowerInvariant();
+
+        /// <summary>
+        /// True when titles this friend no longer lists in <paramref name="mapping"/>
+        /// were taken away on purpose, so they go now instead of after the usual
+        /// two-sync confirmation and large-removal hold (those brakes exist for
+        /// glitches, and made a revoked library linger, listed but unplayable).
+        /// On purpose means: the friend told us its sharing changed a moment ago,
+        /// or it answered that one of this mapping's libraries is no longer shared.
+        /// </summary>
+        internal bool IsRemovalAuthoritative(LibraryMapping mapping, RemoteServer server)
+        {
+            if (_sharingChangedUtc.TryGetValue(server.Id, out var noticed) && DateTime.UtcNow - noticed < SharingNoticeWindow)
+            {
+                return true;
+            }
+
+            var run = _sharedLibrariesThisRun;
+            if (run == null || !run.TryGetValue(server.Id, out var shared) || shared == null)
+            {
+                return false;
+            }
+
+            return (mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>())
+                .Where(s => s.ServerId == server.Id && !string.IsNullOrEmpty(s.RemoteLibraryId))
+                .Any(s => !shared.Contains(NormalizeLibraryId(s.RemoteLibraryId)));
+        }
+
+        internal static bool SameRules(IReadOnlyList<RemoteUserAccessRule> a, IReadOnlyList<RemoteUserAccessRule> b)
+            => System.Text.Json.JsonSerializer.Serialize(a) == System.Text.Json.JsonSerializer.Serialize(b);
+
+        /// <summary>
+        /// After items were restamped with hide tags, makes sure each restricted
+        /// user's policy actually blocks their tag (and nobody else's does).
+        /// </summary>
+        private async Task ApplyVisibilityPoliciesAsync(PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            if (_serviceProvider.GetService(typeof(FederationVisibilityService)) is FederationVisibilityService visibility)
+            {
+                await visibility.ApplyUserPoliciesAsync(config, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
         /// Refreshes all mappings from all configured remote servers.
         /// Failed servers leave their existing cache entries intact.
         /// </summary>
@@ -479,6 +738,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 BeginStatusRun(mappings, config, null);
                 await RefreshWanBandwidthAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
+                await PullFriendUserRulesAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
+                await FetchSharedLibrariesAsync(config.RemoteServers ?? new List<RemoteServer>(), cancellationToken).ConfigureAwait(false);
                 SyncProgressTracker.Update(operationId, 0, "Checking what each friend has");
                 await PlanAllAsync(mappings, config, null, cancellationToken).ConfigureAwait(false);
 
@@ -622,6 +883,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     Plugin.Instance?.SaveConfiguration();
                 }
 
+                await ApplyVisibilityPoliciesAsync(config, cancellationToken).ConfigureAwait(false);
                 await DiscoverFriendsOfFriendsAsync(cancellationToken).ConfigureAwait(false);
 
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
@@ -656,6 +918,7 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 _currentPlans = null;
+                _sharedLibrariesThisRun = null;
                 if (Status.Running)
                 {
                     Status.EndRun();
@@ -806,6 +1069,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 BeginStatusRun(mappings, config!, serverId);
                 await RefreshWanBandwidthAsync(new[] { server }, cancellationToken).ConfigureAwait(false);
+                await PullFriendUserRulesAsync(new[] { server }, cancellationToken).ConfigureAwait(false);
+                await FetchSharedLibrariesAsync(new[] { server }, cancellationToken).ConfigureAwait(false);
                 await PlanAllAsync(mappings, config!, serverId, cancellationToken).ConfigureAwait(false);
 
                 // Same one-time migrations as SyncAllAsync (see there for details). The
@@ -847,6 +1112,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     MarkMappingSaved(mapping);
                 }
 
+                await ApplyVisibilityPoliciesAsync(config!, cancellationToken).ConfigureAwait(false);
                 await _cache.SaveAsync(cancellationToken).ConfigureAwait(false);
                 var success = failedSources == 0;
                 var serverMessage = success
@@ -875,6 +1141,7 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 _currentPlans = null;
+                _sharedLibrariesThisRun = null;
                 if (Status.Running)
                 {
                     Status.EndRun();
@@ -1033,7 +1300,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
-                var pruned = PruneSafely(mapping, server, seenAcrossServer);
+                var pruned = PruneSafely(mapping, server, seenAcrossServer, IsRemovalAuthoritative(mapping, server));
                 if (pruned > 0)
                 {
                     _logger.LogInformation("[Federation] Pruned {Count} stale entries for {Server} in {Mapping}", pruned, server.Name, mapping.LocalLibraryName);
@@ -1054,9 +1321,35 @@ namespace Jellyfin.Plugin.Federation.Services
         /// misreading, not from a friend really deleting a tenth of a library.
         /// Returns how many entries were removed.
         /// </summary>
-        private int PruneSafely(LibraryMapping mapping, RemoteServer server, HashSet<Guid> seen)
+        private int PruneSafely(LibraryMapping mapping, RemoteServer server, HashSet<Guid> seen, bool authoritative = false)
         {
             var key = FederationItemCache.RemovalKey(mapping.LocalLibraryName, server.Id);
+            if (authoritative)
+            {
+                var revoked = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, seen);
+                _cache.SetPendingRemoval(key, new PendingRemoval());
+                if (revoked > 0)
+                {
+                    _logger.LogInformation(
+                        "[Federation] {Server} no longer shares {Count} title(s) in {Mapping}; removed them now",
+                        server.Name,
+                        revoked,
+                        mapping.LocalLibraryName);
+                }
+
+                foreach (var source in (mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>()).Where(s => s.ServerId == server.Id))
+                {
+                    Status.Update(StatusKey(mapping, source), s =>
+                    {
+                        s.Removed = revoked;
+                        s.WaitingRemovals = 0;
+                        s.HeldRemovals = 0;
+                    });
+                }
+
+                return revoked;
+            }
+
             var held = _cache.RemoteIdsHeldFor(mapping.LocalLibraryName, server.Id);
             var missingNow = held.Where(id => !seen.Contains(id)).ToHashSet();
             var pending = _cache.GetPendingRemoval(key) ?? new PendingRemoval();

@@ -332,11 +332,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// FederationChangeNotifier). False when the friend did not take it,
         /// including a friend whose version has no such endpoint.
         /// </summary>
-        public async Task<bool> NotifyCatalogChangedAsync(CancellationToken cancellationToken = default)
+        public async Task<bool> NotifyCatalogChangedAsync(CancellationToken cancellationToken = default, bool sharingChanged = false)
         {
             try
             {
-                using var response = await _httpClient.PostAsync("/Plugins/Federation/Peer/CatalogChanged", new StringContent(string.Empty), cancellationToken).ConfigureAwait(false);
+                // sharing=true: what we share with them changed, so they must sync
+                // now (no notice spacing) to drop titles they may no longer see.
+                // Older versions ignore the parameter and treat it as a catalog change.
+                var path = sharingChanged ? "/Plugins/Federation/Peer/CatalogChanged?sharing=true" : "/Plugins/Federation/Peer/CatalogChanged";
+                using var response = await _httpClient.PostAsync(path, new StringContent(string.Empty), cancellationToken).ConfigureAwait(false);
                 return response.IsSuccessStatusCode;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -347,6 +351,72 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogDebug(ex, "[Federation] Could not send a change notice to {ServerName}", _server.Name);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Relays a viewer's pause ping ("ping") or stop ("stop") for a session the
+        /// friend is converting (remote-transcode handoff; see <c>Peer/PlayControl</c>).
+        /// Best effort: false on any failure.
+        /// </summary>
+        public async Task<bool> SendPlayControlAsync(string playSessionId, string action, bool? isPaused, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var content = new StringContent(
+                    JsonSerializer.Serialize(new { PlaySessionId = playSessionId, Action = action, IsPaused = isPaused }),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+                using var response = await _httpClient.PostAsync("/Plugins/Federation/Peer/PlayControl", content, cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not send a playback {Action} to {ServerName}", action, _server.Name);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The friend's current per-user rules for this server's own users (see
+        /// <c>Peer/UserRules</c>). Pulled on every sync so a rule push that was
+        /// lost (friend offline, restart, older version at the time) can never
+        /// leave this server enforcing a stale copy. Returns
+        /// <see cref="PeerUserRulesResult.Unsupported"/> for a friend running a
+        /// version without the endpoint and null when the request failed; neither
+        /// may clear the rules already stored.
+        /// </summary>
+        public async Task<PeerUserRulesResult?> GetUserRulesAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/UserRules", cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return PeerUserRulesResult.Unsupported;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = JsonSerializer.Deserialize<PeerUserRulesBody>(content, JsonOpts);
+                return body?.Rules == null ? null : new PeerUserRulesResult(true, body.Rules);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not read {ServerName}'s per-user rules", _server.Name);
+                return null;
             }
         }
 
@@ -828,6 +898,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (string.IsNullOrEmpty(result?.Token))
                 {
                     return (null, null);
+                }
+
+                if (purpose == FederationTokenPurpose.Playback)
+                {
+                    PeerTranscodeCapability.Record(_server.Id, result.RemoteTranscode == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -1711,7 +1786,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             // Same reasoning as FederationMediaSourceProvider.FetchRemoteSourceAsync:
                             // the remote's per-stream Path is a path on *its* filesystem,
                             // meaningless (and needlessly disclosing) here.
-                            stream.Path = null;
+                            FederationLibraryManager.RedactStreamPath(stream);
                         }
 
                         item.MediaStreams = streams.ToArray();
@@ -2045,6 +2120,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Purpose echoed by newer peers for download-consent verification.</summary>
         public string? Purpose { get; set; }
+
+        /// <summary>
+        /// Whether this Playback token also opens the friend's remote-transcode
+        /// gateway (<c>Peer/Play</c>). Absent (null) from older friends.
+        /// </summary>
+        public bool? RemoteTranscode { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

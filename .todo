@@ -1,0 +1,52 @@
+# Federation 0.0.187 — direct remote transcode + access that actually hides
+# Branch: feature/direct-play-and-access (worktree ~/Documents/jf-direct), base origin/master 0.0.186
+# Legend: [ ] todo  [~] in progress  [x] done  [!] blocked/needs decision
+# Details, reasoning and evidence live in notes.md.
+
+## 0. Baseline
+[x] Worktree from origin/master 0.0.186 (user runs 0.0.186)
+[x] Baseline plugin tests: 960/960 pass
+[x] Clone Jellyfin server/web v12.0 source for reference (scratchpad, read-only)
+
+## 1. Remote transcode handoff (client <-> owner, receiver keeps session)
+### Owner side (server that has the media)
+[x] Config: RemoteServer.AllowRemoteTranscode (default true), PluginConfiguration.EnableRemoteTranscodeForFriends (default true), MaxRemoteTranscodesPerFriend (0 = unlimited)
+[x] PlaybackToken response advertises remoteTranscode capability for this caller
+[x] Gateway route Peer/Play/{token}/{**nativePath}
+    [x] strict allowlist of native paths (HLS master/main/segments, progressive stream, universal audio, subtitles, attachments)
+    [x] item id in path must equal token item; media source id must belong to item
+    [x] token re-validated every request (friend exists, enabled, item visible to that remote user)
+    [x] loopback relay, internal key in header only, never in query, strip ApiKey/api_key/token params
+    [x] playlist rewrite: every URI line + URI="" attribute -> absolute gateway URL, credentials stripped
+    [x] CORS (echo Origin, no cookies), Range passthrough, cancellation, no retry splicing
+    [x] concurrency limit per friend by distinct PlaySessionId (429 when exceeded)
+[x] Control route: ping + stop for play sessions this token started (bound, not guessable)
+### Receiver side (server the user is logged into)
+[x] Token client parses remoteTranscode flag; grant cache (user, source) -> server, remote item, token, capability
+[x] Provider: capability-aware source description (no capped progressive MP4 when peer can transcode; force transcode when over WAN cap)
+[x] Filter: HLS master/main -> fetch from owner, rewrite to absolute owner URLs, serve; fallback to local on any failure
+[x] Filter: progressive transcode/universal audio/segments -> 302 to owner gateway
+[x] Filter: subtitles/attachments -> fetched from owner (no whole-file pull through receiver)
+[x] Strip receiver ApiKey from forwarded params; clamp VideoBitrate to friend WAN cap
+[x] Mixed-content guard (https page never handed http owner URLs); scheme check like existing static redirect
+[x] Session bridge: PlaybackProgress -> ping owner (throttled), PlaybackStopped -> stop owner job
+[ ] Admin UI: toggles + per-friend "let them use my transcoder" + status of last handoff
+[x] Unit tests: RemoteTranscodeHandoffTests (31), FederationVisibilityServiceTests (14)
+
+## 2 + 3. Access that hides, not just blocks playback
+[~] Live config has zero rules: fixture save path works ("Saved.", delivered). Remaining suspect: admin UI flow — check in browser
+[x] Pull model: Peer/UserRules endpoint; receiver fetches its rules from each friend every sync (push stays as fast path)
+[x] Visibility tag service: per local user hidden tag, stamped on every hidden federated item (+ series/season/episodes), user policy BlockedTags maintained
+    [x] recompute after sync, on rule receipt, on startup; diff-only writes; remove tag when rule cleared
+    [x] covers Blocked / CertainLibraries / CertainItems / BlockedItemIds / per-user rating ceiling
+[x] Sharing change on owner -> notify friend (CatalogChanged) -> friend resync prunes libraries no longer shared
+[x] Verify sync prunes a library that disappears from Peer/Libraries (not treated as transient)
+[x] Rule delivery status: superseded by the pull model (every sync pulls the friend's rules)
+[x] Unit tests + two-server smoke (federation_peer_smoke.py) pass on 12.2
+
+## 4. Validation + release
+[ ] Full test suite x2, clean Release build
+[ ] Two-server disposable fixture: handoff HLS plays from owner, receiver bytes ~0; fallback works; revoke hides titles for that user only
+[ ] Version bump 0.0.187 across csproj/meta.json/manifest/tag/zip/checksum
+[ ] Commit, merge to master, push, GitHub release
+[ ] Deploy to live server (user's) — only after release passes

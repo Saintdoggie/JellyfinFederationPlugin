@@ -34,6 +34,20 @@ raw browser probe and measure converted playback. Use a separate `--output` path
 for each case to retain comparable reports. This is forced conversion of synthetic
 SDR media, not HDR tone mapping or automatic device-profile negotiation.
 
+## Two-server federation checks
+
+After a Release build:
+
+```sh
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py     # playback, per-user hiding, unshare, outage
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_handoff_smoke.py  # remote-transcode handoff end to end
+```
+
+Each creates two disposable Jellyfin containers on a private network, makes them friends and
+removes everything afterwards. The handoff check proves the owner converts, segments come from
+the owner without any receiver credential, the receiver runs no ffmpeg, subtitles come from the
+owner, stop frees the owner's job, a block cuts in-flight URLs, and opt-out/limit fall back.
+
 ## Build and release gates
 
 From the repository root:

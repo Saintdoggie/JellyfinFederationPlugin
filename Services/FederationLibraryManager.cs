@@ -1251,23 +1251,55 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public const string FederationTagName = "Federated";
 
+        /// <summary>Placeholder path given to a friend's external (sidecar) stream, see <see cref="RedactStreamPath"/>.</summary>
+        public const string ExternalStreamPathPrefix = "federation-external-stream:";
+
+        /// <summary>
+        /// Removes a friend's filesystem path from one of its streams. Streams inside
+        /// the file get null; an external one (a sidecar subtitle) gets a distinct
+        /// placeholder instead. Jellyfin maps a stream to an ffmpeg input index by
+        /// counting the streams that share its Path, so a null on the sidecar made it
+        /// count as part of the file and shifted every index by one: a transcode on
+        /// this server of any friend title with an external subtitle asked ffmpeg for
+        /// a stream that doesn't exist and failed.
+        /// </summary>
+        public static void RedactStreamPath(MediaStream stream)
+            => stream.Path = stream.IsExternal ? ExternalStreamPathPrefix + stream.Index.ToString(CultureInfo.InvariantCulture) : null;
+
         /// <summary>
         /// Builds a federated item's tag list: the constant
         /// <see cref="FederationTagName"/> first (see its doc comment), then the
         /// remote item's own tags, then a "🌐 ServerName" tag identifying the
         /// source server - replacing any previous tag of either known shape so
         /// re-materializing after a primary source change doesn't leave stale
-        /// server tags (or duplicate "Federated" markers) behind.
+        /// server tags (or duplicate "Federated" markers) behind. Hide tags
+        /// (<see cref="FederationVisibilityService"/>) the item already carries are
+        /// kept, sorted, at the end, so every tag writer produces the same order and
+        /// an unchanged item is never re-saved.
         /// </summary>
         public static string[] AppendServerTag(string[]? tags, string? serverName)
+            => ComposeTags(tags, serverName, (tags ?? Array.Empty<string>()).Where(FederationVisibilityService.IsHiddenTag));
+
+        /// <summary>
+        /// <see cref="AppendServerTag"/> with the hide tags replaced by
+        /// <paramref name="hiddenTags"/>: the one place an item's full federation
+        /// tag list is built.
+        /// </summary>
+        public static string[] ComposeTags(string[]? tags, string? serverName, IEnumerable<string> hiddenTags)
         {
             var kept = (tags ?? Array.Empty<string>())
                 .Where(t => !t.StartsWith(ServerTagPrefix, StringComparison.Ordinal)
-                    && !string.Equals(t, FederationTagName, StringComparison.OrdinalIgnoreCase));
-            var withMarker = kept.Prepend(FederationTagName);
-            return string.IsNullOrEmpty(serverName)
-                ? withMarker.ToArray()
-                : withMarker.Append(ServerTagPrefix + serverName).ToArray();
+                    && !string.Equals(t, FederationTagName, StringComparison.OrdinalIgnoreCase)
+                    && !FederationVisibilityService.IsHiddenTag(t));
+            var result = kept.Prepend(FederationTagName);
+            if (!string.IsNullOrEmpty(serverName))
+            {
+                result = result.Append(ServerTagPrefix + serverName);
+            }
+
+            return result
+                .Concat(hiddenTags.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.Ordinal))
+                .ToArray();
         }
 
         private const string ServerTagPrefix = "🌐 ";

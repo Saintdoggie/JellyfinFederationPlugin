@@ -86,6 +86,15 @@ Playback, authorization, and downloads:
   and progress. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
+- Remote-transcode handoff (0.0.187): `Services/RemoteMediaPath.cs` (allow-list
+  shared by both sides), `HlsPlaylistRewriter.cs`, `FederationRemoteTranscodeGateway.cs`
+  + controller `Peer/Play/{token}/{**path}` and `Peer/PlayControl` (owner);
+  `FederationRemoteTranscodeFilter.cs`, `PeerTranscodeCapability.cs`,
+  `PeerPlaybackGrants.cs`, `RemoteTranscodeHandoffs.cs`,
+  `RemoteTranscodeSessionBridge.cs` (receiver); `RemoteTranscodeSessionRegistry.cs`.
+- `Services/FederationVisibilityService.cs` — friend per-user rules hide titles via
+  a per-user BlockedTags tag; same decision function as playback
+  (`RemoteAccessControlService.Evaluate`).
 
 Friendship and connectivity:
 

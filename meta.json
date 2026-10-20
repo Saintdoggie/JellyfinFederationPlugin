@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.186",
-  "changelog": "Friends sync much faster and more reliably, with thanks to Stephan Voeth (@svoeth), whose contribution is still under review, so please report any problems. After the first sync only new or changed titles are downloaded, large removals wait for you to confirm them, music syncs with its albums, songs and artists, friends shared individual libraries now see them, and the Libraries tab shows what each friend library is doing. You can choose what a new friend sees before sending or accepting a request, reconnect a friend after a reinstall, and fully resync one library. Also fixes a security hole where a malicious friend could make a download write a file outside the downloads folder.",
+  "version": "0.0.187",
+  "changelog": "Friends' titles now convert on the friend's own server: when your viewer's device needs a converted stream, the friend's server converts its own copy (its GPU) and streams it straight to the player, while the viewer stays signed in to your server and their progress is saved there. The video no longer passes through your server; if the friend can't, your server converts as before. A friend's rules for one of your users (block, only some libraries or titles, rating limit) now hide those titles from that user everywhere instead of only refusing to play them, and rules are re-checked every sync so a missed update can't stick. Unsharing a library removes its titles from the friend right away. Also fixes friend titles with an external subtitle failing to convert. Both servers need this version for the direct conversion.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-17T18:08:17Z",
+  "timestamp": "2026-10-20T03:14:29Z",
   "imageUrl": "thumb.png"
 }

@@ -101,6 +101,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationAvailabilityService _availability;
         private readonly IAuthorizationContext _authorizationContext;
         private readonly FederationLogBuffer _logBuffer;
+        private readonly FederationRemoteTranscodeGateway _remoteTranscodeGateway;
+        private readonly RemoteTranscodeSessionRegistry _remoteTranscodeSessions;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -127,7 +129,9 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationQualityAdvisorService qualityAdvisor,
             FederationAvailabilityService availability,
             IAuthorizationContext authorizationContext,
-            FederationLogBuffer logBuffer)
+            FederationLogBuffer logBuffer,
+            FederationRemoteTranscodeGateway? remoteTranscodeGateway = null,
+            RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null)
         {
             _logger = logger;
             _syncService = syncService;
@@ -154,6 +158,8 @@ namespace Jellyfin.Plugin.Federation.Api
             _availability = availability;
             _authorizationContext = authorizationContext;
             _logBuffer = logBuffer;
+            _remoteTranscodeGateway = remoteTranscodeGateway ?? new FederationRemoteTranscodeGateway(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+            _remoteTranscodeSessions = remoteTranscodeSessions ?? new RemoteTranscodeSessionRegistry();
         }
 
         /// <summary>
@@ -306,6 +312,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
                         server.AllowDownloads = oldServer.AllowDownloads;
                         server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
+                        server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -426,6 +433,9 @@ namespace Jellyfin.Plugin.Federation.Api
                     // become visible to all of them again on the next unrelated
                     // config save - enforced in FederationPeerAccessService.IsItemVisible.
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
+                    config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
+                    config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
+                    config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
 
                     // Managed by the dedicated QualityUpgrades/Exclude endpoints,
                     // not serialized back by the main settings form.
@@ -1377,7 +1387,102 @@ namespace Jellyfin.Plugin.Federation.Api
                 body?.ShareAll ?? true,
                 body?.FolderIds ?? new List<string>(),
                 body?.ExcludedItemIds ?? new List<string>()).ConfigureAwait(false);
+            if (success)
+            {
+                NotifyFriendOfSharingChange(id);
+            }
+
             return Ok(new { success, message });
+        }
+
+        /// <summary>
+        /// Admin: whether this friend may convert our titles on this server for its
+        /// viewers (owner side of the remote-transcode handoff).
+        /// </summary>
+        [HttpPost("Friends/{id}/RemoteTranscode")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendRemoteTranscode(string id, [FromBody] RemoteTranscodeFriendBody? body)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null || body == null)
+            {
+                return Ok(new { success = false, message = "Friend not found." });
+            }
+
+            server.AllowRemoteTranscode = body.Allow;
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true, message = body.Allow ? "They can play your titles converted here." : "They convert your titles on their own server." });
+        }
+
+        /// <summary>Admin: the remote-transcode handoff settings, both directions.</summary>
+        [HttpGet("Settings/RemoteTranscode")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetRemoteTranscodeSettings()
+        {
+            var config = Plugin.Instance!.Configuration;
+            return Ok(new
+            {
+                config.EnableRemoteTranscodeForFriends,
+                config.MaxRemoteTranscodesPerFriend,
+                config.UseFriendsTranscoders,
+                Friends = (config.RemoteServers ?? new List<RemoteServer>())
+                    .Where(s => s.Kind == ServerKind.Jellyfin)
+                    .Select(s => new
+                    {
+                        s.Id,
+                        s.Name,
+                        s.AllowRemoteTranscode,
+                        TheyConvertForUs = PeerTranscodeCapability.IsAvailable(s.Id),
+                        ActiveHere = string.IsNullOrEmpty(s.FederationId) ? 0 : _remoteTranscodeSessions.ActiveCount(s.FederationId)
+                    })
+            });
+        }
+
+        /// <summary>Admin: saves the remote-transcode handoff settings.</summary>
+        [HttpPost("Settings/RemoteTranscode")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetRemoteTranscodeSettings([FromBody] RemoteTranscodeSettingsBody? body)
+        {
+            if (body == null)
+            {
+                return BadRequest();
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            config.EnableRemoteTranscodeForFriends = body.EnableRemoteTranscodeForFriends;
+            config.MaxRemoteTranscodesPerFriend = Math.Clamp(body.MaxRemoteTranscodesPerFriend, 0, 100);
+            config.UseFriendsTranscoders = body.UseFriendsTranscoders;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved." });
+        }
+
+        /// <summary>
+        /// Tells a friend that what we share with it changed, so it syncs now and
+        /// drops titles it may no longer see instead of listing them (unplayable)
+        /// until its next scheduled sync. Fire-and-forget: an unreachable friend
+        /// catches up on its own next sync.
+        /// </summary>
+        private void NotifyFriendOfSharingChange(string serverId)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId);
+            if (server is not { Enabled: true, Kind: ServerKind.Jellyfin } || string.IsNullOrEmpty(server.ApiKey))
+            {
+                return;
+            }
+
+            var client = _federationManager.GetClient(serverId);
+            if (client == null)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                if (!await client.NotifyCatalogChangedAsync(CancellationToken.None, sharingChanged: true).ConfigureAwait(false))
+                {
+                    _logger.LogInformation("[Federation] Could not tell {Server} that sharing changed; it will catch up on its next sync", server.Name);
+                }
+            });
         }
 
         /// <summary>
@@ -1413,7 +1518,24 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            _friends.ReceiveRemoteUserAccessRules(caller, payload);
+            if (_friends.ReceiveRemoteUserAccessRules(caller, payload))
+            {
+                // Hide (or unhide) titles now, not at the next scheduled sync: the
+                // policy flips immediately and the friend's own sync restamps its
+                // items with the new rules.
+                var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
+                var stopping = lifetime?.ApplicationStopping ?? CancellationToken.None;
+                if (HttpContext.RequestServices.GetService(typeof(FederationVisibilityService)) is FederationVisibilityService visibility)
+                {
+                    _ = visibility.ApplyUserPoliciesAsync(Plugin.Instance?.Configuration, stopping);
+                }
+
+                if (!string.IsNullOrEmpty(caller.Id))
+                {
+                    _syncService.QueueVisibilityRefresh(caller.Id, stopping);
+                }
+            }
+
             return Ok();
         }
 
@@ -2671,7 +2793,13 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 token,
                 expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(purpose)),
-                purpose = purpose.ToString()
+                purpose = purpose.ToString(),
+
+                // Tells the friend this token also opens Peer/Play (remote
+                // transcode) for this item. Older friends ignore it.
+                remoteTranscode = purpose == FederationTokenPurpose.Playback
+                    && Plugin.Instance?.Configuration?.EnableRemoteTranscodeForFriends == true
+                    && caller.AllowRemoteTranscode
             });
         }
 
@@ -2893,6 +3021,134 @@ namespace Jellyfin.Plugin.Federation.Api
 
             await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        /// <summary>
+        /// Remote-transcode gateway (owner side): a friend's player fetches the
+        /// native HLS playlist/segments, progressive stream, subtitles or fonts of
+        /// one of our items from here, so conversion runs on this server (its GPU,
+        /// its copy of the file) and the bytes skip the friend's server entirely.
+        /// The friend's server negotiated the request and the viewer stays signed
+        /// in there. <paramref name="token"/> is the item-scoped Playback token the
+        /// friend already holds for Direct play; every request re-checks it, the
+        /// friendship, this friend's transcode permission and current sharing for
+        /// that viewer, and only <see cref="RemoteMediaPath"/> shapes for exactly
+        /// that item are served.
+        /// </summary>
+        [HttpGet("Peer/Play/{token}/{**nativePath}")]
+        [HttpHead("Peer/Play/{token}/{**nativePath}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> RemoteTranscodeGateway(string token, string nativePath, CancellationToken cancellationToken)
+        {
+            if (!RemoteMediaPath.TryParse(nativePath, out var path) || path == null)
+            {
+                return NotFound();
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            var owner = ResolveRemoteTranscodeFriend(token, path.ItemId, out var remoteUserId);
+            if (owner == null)
+            {
+                Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (path.StartsWork)
+            {
+                var playSessionId = RemoteMediaPath.QueryValue(Request.Query, "PlaySessionId");
+                if (!string.IsNullOrEmpty(playSessionId)
+                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, RemoteMediaPath.QueryValue(Request.Query, "DeviceId"), config?.MaxRemoteTranscodesPerFriend ?? 0))
+                {
+                    _logger.LogInformation("[Federation] Remote transcode for {Friend} refused: their limit of {Limit} at once is reached", owner.Name, config?.MaxRemoteTranscodesPerFriend);
+                    Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
+                    return StatusCode(StatusCodes.Status429TooManyRequests);
+                }
+            }
+
+            var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
+            await _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), cancellationToken).ConfigureAwait(false);
+            return new EmptyResult();
+        }
+
+        /// <summary>CORS preflight for <see cref="RemoteTranscodeGateway"/>.</summary>
+        [HttpOptions("Peer/Play/{token}/{**nativePath}")]
+        [AllowAnonymous]
+        public IActionResult RemoteTranscodeGatewayPreflight(string token, string nativePath)
+        {
+            Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
+            return NoContent();
+        }
+
+        /// <summary>
+        /// Server-to-server: the friend's server relays its viewer's pause pings and
+        /// stop for a session converted here. Pings keep a paused HLS job alive (it
+        /// is killed 60 s after the last request otherwise, and resume would restart
+        /// it); stop frees the GPU immediately instead of after that timeout. Only
+        /// sessions this friend started through the gateway are touched.
+        /// </summary>
+        [HttpPost("Peer/PlayControl")]
+        [AllowAnonymous]
+        public async Task<IActionResult> RemoteTranscodeControl([FromBody] RemoteTranscodeControlRequest? request)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (string.IsNullOrWhiteSpace(request?.PlaySessionId) || request.PlaySessionId.Length > 128)
+            {
+                return BadRequest();
+            }
+
+            var transcodes = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Controller.MediaEncoding.ITranscodeManager)) as MediaBrowser.Controller.MediaEncoding.ITranscodeManager;
+            if (string.Equals(request.Action, "stop", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_remoteTranscodeSessions.TryEnd(caller.FederationId, request.PlaySessionId, out var deviceId))
+                {
+                    return NoContent();
+                }
+
+                if (transcodes != null)
+                {
+                    await transcodes.KillTranscodingJobs(deviceId ?? string.Empty, request.PlaySessionId, _ => true).ConfigureAwait(false);
+                }
+
+                return NoContent();
+            }
+
+            if (_remoteTranscodeSessions.TryPing(caller.FederationId, request.PlaySessionId))
+            {
+                transcodes?.PingTranscodingJob(request.PlaySessionId, request.IsPaused);
+            }
+
+            return NoContent();
+        }
+
+        /// <summary>
+        /// The friend a remote-transcode request is made for, or null when it must
+        /// be refused: the token must be a Playback token for exactly this item,
+        /// the friendship must still exist, remote transcoding must be on for this
+        /// server and that friend, and the viewer must still be allowed the item.
+        /// </summary>
+        private RemoteServer? ResolveRemoteTranscodeFriend(string? token, Guid itemGuid, out string? remoteUserId)
+        {
+            remoteUserId = null;
+            var config = Plugin.Instance?.Configuration;
+            if (config?.EnableRemoteTranscodeForFriends != true
+                || !_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var federationId, out var purpose, out remoteUserId)
+                || purpose != FederationTokenPurpose.Playback)
+            {
+                return null;
+            }
+
+            var owner = _friends.FindByFederationId(federationId);
+            // Not owner.Enabled: that switch is whether we pull from this friend,
+            // not whether we share with them (DirectStream doesn't check it either);
+            // sharing is IsItemVisible's job.
+            return owner is { AllowRemoteTranscode: true } && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid)
+                ? owner
+                : null;
         }
 
         /// <summary>
@@ -3660,6 +3916,26 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Server-to-server: the rules this server's admin set for the caller's own
+        /// users (block, narrow to libraries/items, rating ceiling, per-item hide).
+        /// The caller pulls this on every sync, so a lost
+        /// <c>Friends/RemoteUserRules</c> push can't leave it enforcing an old copy.
+        /// Only the caller's own rules are returned.
+        /// </summary>
+        [HttpGet("Peer/UserRules")]
+        [AllowAnonymous]
+        public IActionResult GetPeerUserRules()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            return Ok(new PeerUserRulesBody { Rules = caller.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>() });
+        }
+
+        /// <summary>
         /// Replaces a friend's old native <c>/Users</c> call
         /// (<see cref="Services.RemoteServerClient.GetUsersAsync"/>): this
         /// server's own local user accounts, so a friend's admin can pick one for
@@ -3739,7 +4015,7 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Peer/CatalogChanged")]
         [AllowAnonymous]
-        public IActionResult PeerCatalogChanged()
+        public IActionResult PeerCatalogChanged([FromQuery] bool sharing = false)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
             if (caller == null || string.IsNullOrEmpty(caller.Id))
@@ -3748,7 +4024,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
-            var scheduled = caller.Enabled && _syncService.OnFriendCatalogChanged(caller.Id, lifetime?.ApplicationStopping ?? CancellationToken.None);
+            var scheduled = caller.Enabled && _syncService.OnFriendCatalogChanged(caller.Id, lifetime?.ApplicationStopping ?? CancellationToken.None, urgent: sharing);
             return Accepted(new { scheduled });
         }
 
@@ -5643,6 +5919,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.ExcludedItemIds,
                 s.AllowDownloads,
                 s.AllowBulkDownloads,
+                s.AllowRemoteTranscode,
                 RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
                 {
                     r.RemoteUserId,
@@ -5793,6 +6070,39 @@ namespace Jellyfin.Plugin.Federation.Api
     public class QualityUpgradeExcludeBody
     {
         public string? ItemId { get; set; }
+    }
+
+    /// <summary>Body of <c>Friends/{id}/RemoteTranscode</c>.</summary>
+    public class RemoteTranscodeFriendBody
+    {
+        /// <summary>Gets or sets whether the friend may convert our titles here.</summary>
+        public bool Allow { get; set; }
+    }
+
+    /// <summary>Body of <c>Settings/RemoteTranscode</c>.</summary>
+    public class RemoteTranscodeSettingsBody
+    {
+        /// <summary>Gets or sets whether friends may convert our titles here.</summary>
+        public bool EnableRemoteTranscodeForFriends { get; set; } = true;
+
+        /// <summary>Gets or sets the per-friend concurrent session limit (0 = none).</summary>
+        public int MaxRemoteTranscodesPerFriend { get; set; }
+
+        /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
+        public bool UseFriendsTranscoders { get; set; } = true;
+    }
+
+    /// <summary>Body of <c>Peer/PlayControl</c>.</summary>
+    public class RemoteTranscodeControlRequest
+    {
+        /// <summary>Gets or sets the playback session converted on the owner.</summary>
+        public string? PlaySessionId { get; set; }
+
+        /// <summary>Gets or sets "ping" (default) or "stop".</summary>
+        public string? Action { get; set; }
+
+        /// <summary>Gets or sets whether the viewer paused (lets the owner throttle the encode).</summary>
+        public bool? IsPaused { get; set; }
     }
 
     public class IssuePlaybackTokenRequest
