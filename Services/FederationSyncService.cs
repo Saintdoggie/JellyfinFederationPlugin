@@ -531,6 +531,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                if (server.PeerAllowsDownloads != result.AllowDownloads || server.PeerSharesFavorites != result.ShareFavorites)
+                {
+                    server.PeerAllowsDownloads = result.AllowDownloads;
+                    server.PeerSharesFavorites = result.ShareFavorites;
+                    changed = true;
+                }
+
                 var current = server.FriendUserAccessRules ?? new List<RemoteUserAccessRule>();
                 if (SameRules(current, result.Rules))
                 {

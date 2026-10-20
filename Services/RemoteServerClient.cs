@@ -407,7 +407,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerUserRulesBody>(content, JsonOpts);
-                return body?.Rules == null ? null : new PeerUserRulesResult(true, body.Rules);
+                return body?.Rules == null ? null : new PeerUserRulesResult(true, body.Rules, body.AllowDownloads, body.ShareFavorites);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -416,6 +416,55 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[Federation] Could not read {ServerName}'s per-user rules", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The titles the friend's users favorited that this server's viewer
+        /// <paramref name="localUserId"/> may see (see <c>Peer/Favorites</c>). Null
+        /// when the request failed; <c>Shared = false</c> with null items for a
+        /// friend running a version without the endpoint.
+        /// </summary>
+        public async Task<PeerFavoritesBody?> GetFavoritesAsync(string localUserId, string? localUserName, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/Plugins/Federation/Peer/Favorites");
+                request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localUserId);
+                if (!string.IsNullOrEmpty(localUserName))
+                {
+                    request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localUserName);
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return new PeerFavoritesBody { Shared = false, Items = null };
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = JsonSerializer.Deserialize<PeerFavoritesBody>(content, JsonOpts);
+                if (body == null)
+                {
+                    return null;
+                }
+
+                body.Items ??= new List<PeerFavorite>();
+                return body;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not read {ServerName}'s favorites", _server.Name);
                 return null;
             }
         }
@@ -1152,6 +1201,88 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogWarning(ex, "Could not authorize a download for item {ItemId} from {ServerName}", remoteItemId, _server.Name);
                 return (null, "The source server could not be reached to authorize this download.");
+            }
+        }
+
+        /// <summary>
+        /// Asks the friend for a Download token bound to one of this server's
+        /// viewers, for saving a title to their own device. The friend applies its
+        /// download consent and its per-viewer rules to that viewer. Never throws
+        /// except on cancellation; a refusal carries the friend's own reason.
+        /// </summary>
+        public async Task<DeviceDownloadToken> GetDeviceDownloadTokenAsync(
+            string remoteItemId,
+            string localUserId,
+            string? localUserName,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/PlaybackToken")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { ItemId = remoteItemId, Purpose = "Download" }),
+                        System.Text.Encoding.UTF8,
+                        "application/json")
+                };
+                request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localUserId);
+                if (!string.IsNullOrEmpty(localUserName))
+                {
+                    request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localUserName);
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    string? error = null;
+                    int? retryAfter = null;
+                    try
+                    {
+                        var parsed = JsonSerializer.Deserialize<DownloadTokenErrorResponse>(body, JsonOpts);
+                        error = parsed?.Error;
+                        retryAfter = parsed?.RetryAfterSeconds;
+                    }
+                    catch (JsonException)
+                    {
+                        // A proxy's HTML error page; the stable message below is used.
+                    }
+
+                    var status = (int)response.StatusCode;
+                    return DeviceDownloadToken.Refused(
+                        status is 403 or 404 or 429 ? status : 502,
+                        error ?? (status == 403 || status == 404
+                            ? $"{_server.Name} doesn't allow downloading this title."
+                            : $"{_server.Name} couldn't authorize this download right now."),
+                        retryAfter);
+                }
+
+                var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
+                if (string.IsNullOrEmpty(result?.Token)
+                    || !string.Equals(result.Purpose, "Download", StringComparison.Ordinal))
+                {
+                    return DeviceDownloadToken.Refused(
+                        502,
+                        $"{_server.Name} runs an older Federation plugin that can't confirm download permission. Ask them to update.",
+                        null);
+                }
+
+                return new DeviceDownloadToken(
+                    result.Token,
+                    result.ExpiresUtc ?? DateTime.UtcNow.AddMinutes(15),
+                    result.DeviceDownload == true,
+                    200,
+                    null,
+                    null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Could not authorize a device download of {ItemId} from {ServerName}", remoteItemId, _server.Name);
+                return DeviceDownloadToken.Refused(502, $"{_server.Name} couldn't be reached to authorize this download.", null);
             }
         }
 
@@ -2126,11 +2257,42 @@ namespace Jellyfin.Plugin.Federation.Services
         /// gateway (<c>Peer/Play</c>). Absent (null) from older friends.
         /// </summary>
         public bool? RemoteTranscode { get; set; }
+
+        /// <summary>
+        /// Whether the friend's <c>DirectStream?download=true</c> names the file
+        /// itself, so a viewer can be sent there directly. Absent from older friends.
+        /// </summary>
+        public bool? DeviceDownload { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse
     {
         public string? Error { get; set; }
+
+        public int? RetryAfterSeconds { get; set; }
+    }
+
+    /// <summary>
+    /// A friend's answer to a device-download request (see
+    /// <see cref="RemoteServerClient.GetDeviceDownloadTokenAsync"/>).
+    /// </summary>
+    /// <param name="Token">The item- and viewer-scoped Download token; null when refused.</param>
+    /// <param name="ExpiresUtc">When the token stops working.</param>
+    /// <param name="FriendNamesFile">The friend names the file itself, so the viewer can go there directly.</param>
+    /// <param name="Status">200, or the HTTP status to answer the viewer with.</param>
+    /// <param name="Error">The friend's reason for refusing, safe to show the viewer.</param>
+    /// <param name="RetryAfterSeconds">When the friend's download limit frees up.</param>
+    public sealed record DeviceDownloadToken(
+        string? Token,
+        DateTime ExpiresUtc,
+        bool FriendNamesFile,
+        int Status,
+        string? Error,
+        int? RetryAfterSeconds)
+    {
+        /// <summary>A refusal.</summary>
+        public static DeviceDownloadToken Refused(int status, string error, int? retryAfterSeconds)
+            => new(null, DateTime.MinValue, false, status, error, retryAfterSeconds);
     }
 
     /// <summary>

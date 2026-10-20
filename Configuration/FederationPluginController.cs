@@ -103,6 +103,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationLogBuffer _logBuffer;
         private readonly FederationRemoteTranscodeGateway _remoteTranscodeGateway;
         private readonly RemoteTranscodeSessionRegistry _remoteTranscodeSessions;
+        private readonly FederationDeviceDownloadService? _deviceDownloads;
+        private readonly FederationFriendFavoritesService? _friendFavorites;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -131,7 +133,9 @@ namespace Jellyfin.Plugin.Federation.Api
             IAuthorizationContext authorizationContext,
             FederationLogBuffer logBuffer,
             FederationRemoteTranscodeGateway? remoteTranscodeGateway = null,
-            RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null)
+            RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null,
+            FederationDeviceDownloadService? deviceDownloads = null,
+            FederationFriendFavoritesService? friendFavorites = null)
         {
             _logger = logger;
             _syncService = syncService;
@@ -160,6 +164,8 @@ namespace Jellyfin.Plugin.Federation.Api
             _logBuffer = logBuffer;
             _remoteTranscodeGateway = remoteTranscodeGateway ?? new FederationRemoteTranscodeGateway(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
             _remoteTranscodeSessions = remoteTranscodeSessions ?? new RemoteTranscodeSessionRegistry();
+            _deviceDownloads = deviceDownloads;
+            _friendFavorites = friendFavorites;
         }
 
         /// <summary>
@@ -313,6 +319,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.AllowDownloads = oldServer.AllowDownloads;
                         server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
                         server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
+                        server.PeerAllowsDownloads = oldServer.PeerAllowsDownloads;
+                        server.PeerSharesFavorites = oldServer.PeerSharesFavorites;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -436,6 +444,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
                     config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
+                    config.ShareFavoritesWithFriends = existing.ShareFavoritesWithFriends;
+                    config.ShowFriendsFavorites = existing.ShowFriendsFavorites;
 
                     // Managed by the dedicated QualityUpgrades/Exclude endpoints,
                     // not serialized back by the main settings form.
@@ -1454,6 +1464,78 @@ namespace Jellyfin.Plugin.Federation.Api
             config.UseFriendsTranscoders = body.UseFriendsTranscoders;
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
+        }
+
+        /// <summary>
+        /// The signed-in viewer's "Favorites on (friend)" sections for the Favorites
+        /// tab: per friend, this server's ids for the titles that friend's users
+        /// favorited, limited to what this viewer can see here.
+        /// </summary>
+        [HttpGet("FriendFavorites")]
+        [Authorize]
+        public async Task<IActionResult> GetFriendFavorites(CancellationToken cancellationToken)
+        {
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            var enabled = Plugin.Instance?.Configuration?.ShowFriendsFavorites != false && _friendFavorites != null;
+            var sections = enabled
+                ? await _friendFavorites!.GetSectionsAsync(user, cancellationToken).ConfigureAwait(false)
+                : Array.Empty<FriendFavoritesSection>();
+            Response.Headers.CacheControl = "private, no-store";
+            return Ok(new
+            {
+                enabled,
+                sections = sections.Select(section => new
+                {
+                    serverId = section.ServerId,
+                    name = section.ServerName,
+                    itemIds = section.ItemIds.Select(id => id.ToString("N"))
+                })
+            });
+        }
+
+        /// <summary>Admin: the friends' favorites settings, both directions.</summary>
+        [HttpGet("Settings/Favorites")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetFavoritesSettings()
+        {
+            var config = Plugin.Instance!.Configuration;
+            return Ok(new
+            {
+                config.ShareFavoritesWithFriends,
+                config.ShowFriendsFavorites,
+                Friends = (config.RemoteServers ?? new List<RemoteServer>())
+                    .Where(s => s.Kind == ServerKind.Jellyfin)
+                    .Select(s => new { s.Id, s.Name, SharesFavorites = s.PeerSharesFavorites, AllowsDownloads = s.PeerAllowsDownloads })
+            });
+        }
+
+        /// <summary>Admin: saves the friends' favorites settings.</summary>
+        [HttpPost("Settings/Favorites")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFavoritesSettings([FromBody] FavoritesSettingsBody? body)
+        {
+            if (body == null)
+            {
+                return BadRequest();
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            var sharingChanged = config.ShareFavoritesWithFriends != body.ShareFavoritesWithFriends;
+            config.ShareFavoritesWithFriends = body.ShareFavoritesWithFriends;
+            config.ShowFriendsFavorites = body.ShowFriendsFavorites;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new
+            {
+                success = true,
+                message = sharingChanged
+                    ? "Saved. Friends see the change on their next sync."
+                    : "Saved."
+            });
         }
 
         /// <summary>
@@ -2637,27 +2719,14 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Resolves a browser-downloadable URL for a federated item, given its
-        /// local Jellyfin item id: the same proxy stream path playback already
-        /// uses (see <see cref="Stream"/> above), with <c>download=true</c> and a
-        /// filesystem-safe filename appended so the browser saves it to the
-        /// viewer's own device instead of playing it inline. The JSON <c>url</c>
-        /// is origin-relative so a phone or remote browser is not sent to this
-        /// server's loopback port. Distinct from
-        /// <see cref="StartDownload"/>, which downloads a permanent copy onto
-        /// *this server's* disk instead - this never touches server storage at
-        /// all, it just streams straight to whoever asked.
-        /// <para>
-        /// Deliberately <see cref="AuthorizeAttribute"/> alone rather than the
-        /// <c>RequiresElevation</c> every admin endpoint on this controller uses:
-        /// it returns a signed item-scoped capability for <see cref="Stream"/>,
-        /// after the download service has applied the source's download policy.
-        /// Requiring a normal Jellyfin login here prevents anonymous callers from
-        /// minting capabilities while still allowing ordinary viewers to use
-        /// "save this to my phone" without granting dashboard elevation. Honors
-        /// the acting user's <c>EnableContentDownloading</c> policy, resolved
-        /// from the session, never from a query string.
-        /// </para>
+        /// Where a viewer saves a friend's title to their device: Jellyfin's own
+        /// <c>/Items/{id}/Download</c>, which <see cref="FederationDeviceDownloadFilter"/>
+        /// answers for federated titles (straight from the friend when it can).
+        /// The path is origin-relative and carries no credential; the caller adds
+        /// its own Jellyfin auth as with any native download. Kept for older
+        /// injected web clients. Honors the acting user's
+        /// <c>EnableContentDownloading</c> policy, resolved from the session,
+        /// never from a query string.
         /// </summary>
         [HttpGet("DownloadUrl/{localItemId}")]
         [Authorize]
@@ -2669,16 +2738,24 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            var enableContentDownloading = user.HasPermission(PermissionKind.EnableContentDownloading);
-            var (success, message, url, fileName) = _downloadService.GetDownloadUrl(localItemId, enableContentDownloading);
-            if (!success)
+            if (!user.HasPermission(PermissionKind.EnableContentDownloading))
             {
-                return enableContentDownloading
-                    ? BadRequest(new { success, message })
-                    : StatusCode(StatusCodes.Status403Forbidden, new { success, message });
+                return StatusCode(StatusCodes.Status403Forbidden, new { success = false, message = "Downloading is turned off for your account." });
             }
 
-            return Ok(new { success, message, url, fileName });
+            if (!Guid.TryParse(localItemId, out var itemGuid)
+                || _libraryManager.GetItemById<MediaBrowser.Controller.Entities.BaseItem>(itemGuid, user) is not { } item
+                || FederationLibraryManager.GetFederationKey(item) == null)
+            {
+                return BadRequest(new { success = false, message = "This item isn't streamed from a friend's server." });
+            }
+
+            if (_deviceDownloads == null || !_deviceDownloads.CanOffer(user, item))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { success = false, message = "This friend doesn't allow downloading this title." });
+            }
+
+            return Ok(new { success = true, message = "OK", url = $"/Items/{itemGuid:N}/Download", fileName = (string?)null });
         }
 
         /// <summary>
@@ -2768,7 +2845,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 && purpose != FederationTokenPurpose.Image
                 && !_peerAccess.IsDownloadAllowedForRemoteUser(caller, remoteUserId))
             {
-                return StatusCode(StatusCodes.Status403Forbidden, new { error = "Downloads are not allowed for this friend." });
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    error = caller.AllowDownloads
+                        ? "Downloading from this server is turned off for your account."
+                        : "Downloads are not allowed for this friend."
+                });
             }
 
             if (purpose == FederationTokenPurpose.BulkDownload
@@ -2777,14 +2859,24 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status403Forbidden, new { error = "Bulk downloads are not enabled for this friend." });
             }
 
+            // A named viewer saving a title to their own device gets a personal
+            // allowance; a download with no viewer is the friend's server
+            // copying a title and keeps the small friend-wide limit.
+            var viewerBound = !string.IsNullOrWhiteSpace(remoteUserId);
             if (purpose == FederationTokenPurpose.Download
                 && !caller.AllowBulkDownloads
-                && !_playbackTokens.TryReserveOrdinaryDownload(caller.FederationId, itemGuid.ToString("N"), out var retryAfter))
+                && !(viewerBound
+                    ? _playbackTokens.TryReserveViewerDownload(caller.FederationId, remoteUserId!, itemGuid.ToString("N"), out var retryAfter)
+                    : _playbackTokens.TryReserveOrdinaryDownload(caller.FederationId, itemGuid.ToString("N"), out retryAfter)))
             {
+                var retrySeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+                Response.Headers.RetryAfter = retrySeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 return StatusCode(StatusCodes.Status429TooManyRequests, new
                 {
-                    error = "This friend has reached the small-download limit. Enable bulk downloads to allow a larger pull, or try again later.",
-                    retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))
+                    error = viewerBound
+                        ? "You've reached this friend's download limit for the hour. Try again later."
+                        : "This friend has reached the small-download limit. Enable bulk downloads to allow a larger pull, or try again later.",
+                    retryAfterSeconds = retrySeconds
                 });
             }
 
@@ -2792,8 +2884,13 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new
             {
                 token,
-                expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(purpose)),
+                expiresUtc = DateTime.UtcNow.Add(FederationPlaybackTokenService.GetLifetime(purpose, viewerBound)),
                 purpose = purpose.ToString(),
+
+                // Tells the friend DirectStream?download=true names the file
+                // itself (Content-Disposition), so a viewer can be sent here
+                // directly. Older friends ignore it.
+                deviceDownload = purpose == FederationTokenPurpose.Download,
 
                 // Tells the friend this token also opens Peer/Play (remote
                 // transcode) for this item. Older friends ignore it.
@@ -3008,6 +3105,15 @@ namespace Jellyfin.Plugin.Federation.Api
             if (!IsStreamTokenAuthorized(token, itemGuid, download))
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (download)
+            {
+                // A viewer's app or browser may be sent here directly to save the
+                // file; name it like Jellyfin's own download does.
+                Response.Headers.ContentDisposition = DeviceDownload.AttachmentHeader(
+                    DeviceDownload.OwnerFileName(_libraryManager.GetItemById(itemGuid)));
+                Response.Headers.CacheControl = "private, no-store";
             }
 
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
@@ -3932,7 +4038,37 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            return Ok(new PeerUserRulesBody { Rules = caller.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>() });
+            return Ok(new PeerUserRulesBody
+            {
+                Rules = caller.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>(),
+                AllowDownloads = caller.AllowDownloads,
+                ShareFavorites = Plugin.Instance?.Configuration?.ShareFavoritesWithFriends != false
+            });
+        }
+
+        /// <summary>
+        /// Server-to-server: which of this server's own titles its users favorited,
+        /// for the calling friend's "Favorites on (this server)" section. Titles
+        /// only, never who; only titles the named viewer on the friend may already
+        /// see; empty with <c>shared = false</c> when the admin turned it off.
+        /// </summary>
+        [HttpGet("Peer/Favorites")]
+        [AllowAnonymous]
+        public IActionResult GetPeerFavorites()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_friendFavorites == null)
+            {
+                return Ok(new PeerFavoritesBody { Shared = false, Items = new List<PeerFavorite>() });
+            }
+
+            Response.Headers.CacheControl = "private, no-store";
+            return Ok(_friendFavorites.GetSharedFavorites(caller, RequestingRemoteUserId()));
         }
 
         /// <summary>
@@ -6090,6 +6226,16 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool UseFriendsTranscoders { get; set; } = true;
+    }
+
+    /// <summary>Body of <c>Settings/Favorites</c>.</summary>
+    public class FavoritesSettingsBody
+    {
+        /// <summary>Gets or sets whether friends may see which of our titles our users favorited.</summary>
+        public bool ShareFavoritesWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether our Favorites tab shows friends' favorites.</summary>
+        public bool ShowFriendsFavorites { get; set; } = true;
     }
 
     /// <summary>Body of <c>Peer/PlayControl</c>.</summary>

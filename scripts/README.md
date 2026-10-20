@@ -39,7 +39,8 @@ SDR media, not HDR tone mapping or automatic device-profile negotiation.
 After a Release build:
 
 ```sh
-JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py     # playback, per-user hiding, unshare, outage
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py     # playback, per-user hiding, unshare, device downloads, friends' favorites, outage
+FEDERATION_SOURCE_DLL=<older plugin dll> JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py  # current receiver, older friend
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_handoff_smoke.py  # remote-transcode handoff end to end
 ```
 

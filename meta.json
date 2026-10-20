@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.187",
-  "changelog": "Friends' titles now convert on the friend's own server: when your viewer's device needs a converted stream, the friend's server converts its own copy (its GPU) and streams it straight to the player, while the viewer stays signed in to your server and their progress is saved there. The video no longer passes through your server; if the friend can't, your server converts as before. A friend's rules for one of your users (block, only some libraries or titles, rating limit) now hide those titles from that user everywhere instead of only refusing to play them, and rules are re-checked every sync so a missed update can't stick. Unsharing a library removes its titles from the friend right away. Also fixes friend titles with an external subtitle failing to convert. Both servers need this version for the direct conversion.",
+  "version": "0.0.188",
+  "changelog": "Anyone can now download a friend's title to their phone or computer with their app's normal Download button (web, Jellyfin for Android, Findroid, Swiftfin). The file comes straight from the friend's server with its real name; if that isn't possible your server passes it through, and interrupted downloads resume. The friend's download permission and per-viewer rules apply. New: friends' favorites. Your Favorites tab shows a \"Favorites on (friend)\" row per friend with the titles their users favorited (titles only, never who, only titles you can already open). Both can be turned off in Advanced. Fixes the old web \"Download to device\" option, which only worked on the server itself. Friends need 0.0.188 for direct downloads and favorites; with older friends downloads go through your server.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-20T03:14:29Z",
+  "timestamp": "2026-10-20T04:17:14Z",
   "imageUrl": "thumb.png"
 }

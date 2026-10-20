@@ -490,6 +490,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// as before.
         /// </summary>
         public bool UseFriendsTranscoders { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether friends may see which of this server's own titles
+        /// its users favorited: titles only, never who, and only titles already
+        /// shared with the viewer asking. Shown on their Favorites tab as
+        /// "Favorites on (this server)". Managed by <c>Settings/Favorites</c>,
+        /// preserved by the main Save.
+        /// </summary>
+        public bool ShareFavoritesWithFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether this server's Favorites tab shows a section per
+        /// friend with the titles that friend's users favorited. Managed by
+        /// <c>Settings/Favorites</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShowFriendsFavorites { get; set; } = true;
     }
 
     /// <summary>
@@ -817,6 +833,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// part of the library in one action.
         /// </summary>
         public bool AllowBulkDownloads { get; set; } = false;
+
+        /// <summary>
+        /// Gets or sets whether this friend lets our viewers download its titles
+        /// (its <see cref="AllowDownloads"/> for us), as last reported by its
+        /// <c>Peer/UserRules</c>. Null when unknown (an older friend): Download is
+        /// then offered and the friend decides when it's used.
+        /// </summary>
+        public bool? PeerAllowsDownloads { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether this friend shares which titles its users
+        /// favorited, as last reported by its <c>Peer/UserRules</c>. Null when
+        /// unknown (an older friend without <c>Peer/Favorites</c>).
+        /// </summary>
+        public bool? PeerSharesFavorites { get; set; }
     }
 
     /// <summary>

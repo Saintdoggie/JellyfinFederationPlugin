@@ -50,6 +50,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<LibraryProvisioningService>();
             serviceCollection.AddSingleton<FederationStreamHandler>();
             serviceCollection.AddSingleton<FederationDownloadService>();
+            serviceCollection.AddSingleton<FederationDeviceDownloadService>();
+            serviceCollection.AddSingleton<FederationFriendFavoritesService>();
             serviceCollection.AddSingleton<FederationPlaybackTokenService>();
             serviceCollection.AddSingleton<FederationUserSessionTokenService>();
             serviceCollection.AddSingleton<FederationPeerAccessService>();
@@ -81,6 +83,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationDirectStreamRedirectFilter>());
             serviceCollection.AddTransient<FederationRemoteTranscodeFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationRemoteTranscodeFilter>());
+            serviceCollection.AddTransient<FederationDeviceDownloadFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationDeviceDownloadFilter>());
+            serviceCollection.AddTransient<FederationCanDownloadFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationCanDownloadFilter>());
             serviceCollection.AddTransient<FederationLocalOnlyItemsFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationLocalOnlyItemsFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();

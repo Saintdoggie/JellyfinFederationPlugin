@@ -98,7 +98,25 @@
       // (.actionSheetMenuItem) - no rules of our own needed beyond a disabled
       // look while busy, since every other visual (icon, label, hover, focus)
       // already comes from that class.
-      '.federation-actionsheet-item[data-fed-state="busy"]{opacity:.65;pointer-events:none;}'
+      '.federation-actionsheet-item[data-fed-state="busy"]{opacity:.65;pointer-events:none;}',
+
+      // Friends' favorites rows on the Favorites tab: a sideways-scrolling row
+      // of plain cards under jellyfin-web's own section heading.
+      '.federation-favorites-row{display:flex;gap:1em;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;padding-top:.3em;padding-bottom:1.2em;}',
+      '.federation-fav-card{flex:0 0 auto;display:flex;flex-direction:column;gap:.25em;color:inherit;text-decoration:none;scroll-snap-align:start;border-radius:.3em;}',
+      '.federation-fav-portrait{width:clamp(7.5em,14vw,11em);}',
+      '.federation-fav-backdrop{width:clamp(13em,24vw,19em);}',
+      '.federation-fav-square{width:clamp(8.5em,15vw,12em);}',
+      '.federation-fav-art{display:block;position:relative;width:100%;border-radius:.3em;overflow:hidden;background:rgba(255,255,255,.07);}',
+      '.federation-fav-portrait .federation-fav-art{aspect-ratio:2/3;}',
+      '.federation-fav-backdrop .federation-fav-art{aspect-ratio:16/9;}',
+      '.federation-fav-square .federation-fav-art{aspect-ratio:1/1;}',
+      '.federation-fav-art img{display:block;width:100%;height:100%;object-fit:cover;}',
+      '.federation-fav-noart{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:.6em;opacity:.75;font-size:.9em;}',
+      '.federation-fav-title,.federation-fav-sub{display:block;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+      '.federation-fav-sub{opacity:.6;font-size:.9em;}',
+      '.federation-fav-card:hover .federation-fav-art,.federation-fav-card:focus-visible .federation-fav-art{outline:3px solid var(--theme-primary-color,#00a4dc);outline-offset:-3px;}',
+      '.federation-fav-card:focus-visible{outline:none;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -641,40 +659,6 @@
     }).catch(function () { /* the next progress poll tick reconciles state regardless */ });
   }
 
-  // Saves a copy straight to the viewer's own device - distinct from
-  // startDownload above, which downloads a permanent copy onto the *server's*
-  // disk instead. Resolves an item-scoped, signed stream URL
-  // via DownloadUrl, then triggers it through a throwaway <a download> click
-  // rather than fetching it into memory first - browsers stream a same-origin
-  // navigation like this straight to disk, exactly like any other download.
-  function downloadToDevice(button, itemId) {
-    setButtonState(button, 'busy', 'Preparing', 'Preparing download');
-
-    var token = getToken();
-    federationFetch('/Plugins/Federation/DownloadUrl/' + itemId, {
-      credentials: 'same-origin',
-      headers: token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}
-    })
-      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
-      .then(function (result) {
-        if (!result.ok || !result.data || !result.data.url) {
-          setButtonState(button, 'error', 'Download failed', (result.data && result.data.message) || 'Could not resolve download URL');
-          return;
-        }
-
-        var link = document.createElement('a');
-        link.href = result.data.url;
-        link.download = result.data.fileName || '';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setButtonState(button, 'default', 'Download to device', '');
-      })
-      .catch(function () {
-        setButtonState(button, 'error', 'Download failed', 'Could not resolve download URL');
-      });
-  }
-
   function startDownload(button, itemId) {
     setButtonState(button, 'busy', 'Starting', 'Starting download');
 
@@ -946,14 +930,10 @@
       }
 
       if (isFederated) {
+        // Saving to the viewer's own device is jellyfin-web's own Download
+        // entry: the server reports CanDownload for friends' titles and
+        // answers /Items/{id}/Download itself, the same as for every app.
         var active = loadActiveDownloads()[rawId];
-        var downloadToDeviceItem = makeActionSheetItem(
-          'file_download',
-          'Download to device',
-          'federation-download-device',
-          function (btn) { downloadToDevice(btn, rawId); });
-
-        scroller.insertBefore(downloadToDeviceItem, scroller.firstChild);
 
         if (currentUserIsAdmin) {
           if (active) {
@@ -1401,6 +1381,7 @@
     refreshDownloadRingsOnCards();
     updateDetailPageRing();
     renderOriginFilter();
+    renderFriendFavorites();
   }
 
   var scheduled = false;
@@ -1414,6 +1395,178 @@
       scheduled = false;
       scan();
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Friends' favorites
+  //
+  // Below the Favorites tab's own sections, one row per friend: "Favorites on
+  // <friend>", the titles that friend's users favorited (never who). The
+  // server only lists titles this viewer can open here, so every card plays
+  // like any other. Built from jellyfin-web's own section/heading classes;
+  // the row scrolls sideways like the native ones.
+  // ---------------------------------------------------------------------
+  var FRIEND_FAVORITES_TTL_MS = 5 * 60 * 1000;
+  var friendFavorites = { userId: '', at: 0, loading: false, html: '' };
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function currentUserId() {
+    try {
+      if (window.ApiClient && typeof window.ApiClient.getCurrentUserId === 'function') {
+        return window.ApiClient.getCurrentUserId() || '';
+      }
+    } catch (e) { /* not signed in yet */ }
+    return '';
+  }
+
+  function favoriteCardShape(item) {
+    if (item.Type === 'Episode' || item.Type === 'Video' || item.Type === 'MusicVideo') { return 'backdrop'; }
+    if (item.Type === 'Audio' || item.Type === 'MusicAlbum') { return 'square'; }
+    return 'portrait';
+  }
+
+  function favoriteImageUrl(item, shape) {
+    var tag = item.ImageTags && item.ImageTags.Primary;
+    if (!tag || !window.ApiClient || typeof window.ApiClient.getScaledImageUrl !== 'function') {
+      return '';
+    }
+
+    return window.ApiClient.getScaledImageUrl(item.Id, {
+      type: 'Primary',
+      tag: tag,
+      maxHeight: shape === 'portrait' ? 360 : 240,
+      quality: 90
+    });
+  }
+
+  function favoriteCardHtml(item, serverId) {
+    var shape = favoriteCardShape(item);
+    var image = favoriteImageUrl(item, shape);
+    var subtitle = item.Type === 'Episode'
+      ? (item.SeriesName || '')
+      : (item.Type === 'Audio' || item.Type === 'MusicAlbum')
+        ? (item.AlbumArtist || (item.Artists && item.Artists[0]) || '')
+        : (item.ProductionYear ? String(item.ProductionYear) : '');
+    var href = '#/details?id=' + encodeURIComponent(item.Id) + (serverId ? '&serverId=' + encodeURIComponent(serverId) : '');
+    return '<a class="federation-fav-card federation-fav-' + shape + '" href="' + href + '" data-id="' + escapeHtml(item.Id) + '" title="' + escapeHtml(item.Name) + '">'
+      + '<span class="federation-fav-art">'
+      + (image ? '<img loading="lazy" decoding="async" alt="" src="' + escapeHtml(image) + '">' : '<span class="federation-fav-noart">' + escapeHtml(item.Name) + '</span>')
+      + '</span>'
+      + '<span class="federation-fav-title">' + escapeHtml(item.Name) + '</span>'
+      + (subtitle ? '<span class="federation-fav-sub">' + escapeHtml(subtitle) + '</span>' : '')
+      + '</a>';
+  }
+
+  function friendFavoritesHtml(sections, itemsById, serverId) {
+    return sections.map(function (section) {
+      var cards = (section.itemIds || [])
+        .map(function (id) { return itemsById[normalizeId(id)]; })
+        .filter(Boolean)
+        .map(function (item) { return favoriteCardHtml(item, serverId); });
+      if (cards.length === 0) {
+        return '';
+      }
+
+      return '<div class="verticalSection federation-favorites-section" data-server-id="' + escapeHtml(section.serverId) + '">'
+        + '<div class="sectionTitleContainer sectionTitleContainer-cards padded-left">'
+        + '<h2 class="sectionTitle sectionTitle-cards">Favorites on ' + escapeHtml(section.name) + '</h2>'
+        + '</div>'
+        + '<div class="federation-favorites-row padded-left padded-right">' + cards.join('') + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  function loadFriendFavorites(userId) {
+    friendFavorites.loading = true;
+    federationFetch('/Plugins/Federation/FriendFavorites', { credentials: 'same-origin' })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('Friends\' favorites unavailable'); }
+        return res.json();
+      })
+      .then(function (data) {
+        var sections = (data && data.enabled !== false && data.sections) || [];
+        var ids = [];
+        sections.forEach(function (section) { (section.itemIds || []).forEach(function (id) { ids.push(id); }); });
+        if (ids.length === 0 || !window.ApiClient || typeof window.ApiClient.getItems !== 'function') {
+          return { sections: sections, items: [] };
+        }
+
+        return Promise.resolve(window.ApiClient.getItems(userId, {
+          Ids: ids.join(','),
+          Fields: 'PrimaryImageAspectRatio',
+          EnableImageTypes: 'Primary',
+          ImageTypeLimit: 1,
+          EnableTotalRecordCount: false
+        })).then(function (result) {
+          return { sections: sections, items: (result && result.Items) || [] };
+        });
+      })
+      .then(function (result) {
+        var itemsById = {};
+        result.items.forEach(function (item) { itemsById[normalizeId(item.Id)] = item; });
+        var serverId = '';
+        try { serverId = window.ApiClient.serverId(); } catch (e) { /* links still open on this server */ }
+        friendFavorites.html = friendFavoritesHtml(result.sections, itemsById, serverId);
+        friendFavorites.userId = userId;
+        friendFavorites.at = Date.now();
+      })
+      .catch(function () {
+        // Keep what was shown; try again on the next visit to the tab.
+        friendFavorites.at = Date.now() - FRIEND_FAVORITES_TTL_MS + 30 * 1000;
+      })
+      .then(function () {
+        friendFavorites.loading = false;
+        paintFriendFavorites();
+      });
+  }
+
+  function paintFriendFavorites() {
+    var tab = document.getElementById('favoritesTab');
+    if (!tab) {
+      return;
+    }
+
+    var host = tab.querySelector(':scope > .federation-friend-favorites');
+    if (!host) {
+      host = document.createElement('div');
+      host.className = 'federation-friend-favorites';
+      tab.appendChild(host);
+    }
+
+    if (host.getAttribute('data-html-at') !== String(friendFavorites.at)) {
+      host.innerHTML = friendFavorites.html;
+      host.setAttribute('data-html-at', String(friendFavorites.at));
+    }
+  }
+
+  function renderFriendFavorites() {
+    var tab = document.getElementById('favoritesTab');
+    if (!tab) {
+      return;
+    }
+
+    paintFriendFavorites();
+    var userId = currentUserId();
+    var visible = tab.classList.contains('is-active') || tab.offsetParent !== null;
+    if (!userId || !visible || friendFavorites.loading) {
+      return;
+    }
+
+    if (friendFavorites.userId !== userId) {
+      // Another viewer signed in on this browser: never show the last one's rows.
+      friendFavorites.html = '';
+      friendFavorites.at = 0;
+      paintFriendFavorites();
+    }
+
+    if (friendFavorites.userId !== userId || Date.now() - friendFavorites.at > FRIEND_FAVORITES_TTL_MS) {
+      loadFriendFavorites(userId);
+    }
   }
 
   // ---------------------------------------------------------------------

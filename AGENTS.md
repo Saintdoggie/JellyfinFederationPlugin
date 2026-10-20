@@ -82,8 +82,16 @@ Playback, authorization, and downloads:
 - `Services/RemoteAccessControlService.cs` — receiving-side enforcement of
   rules pushed by a friend for this server's local users.
 - `Services/FederationDownloadService.cs` and `DownloadProgressTracker.cs` —
-  device/server downloads, bounded batch transfers, partial-file validation,
-  and progress. The old quality replacement endpoint is retired; Storage
+  server downloads (copy to this server), bounded batch transfers, partial-file
+  validation, and progress.
+- Device downloads (0.0.188): `FederationCanDownloadFilter.cs` (CanDownload on
+  friends' titles), `FederationDeviceDownloadFilter.cs` (answers native
+  `/Items/{id}/Download`), `FederationDeviceDownloadService.cs` (who may, which
+  friend, viewer-bound Download permit), `DeviceDownload.cs` (file names, route).
+  Owner side: `DirectStream?download=true` names the file; viewer allowance in
+  `FederationPlaybackTokenService.TryReserveViewerDownload`.
+- `Services/FederationFriendFavoritesService.cs` — friends' favorites: owner
+  `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/federation-badge.js`. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
 - Remote-transcode handoff (0.0.187): `Services/RemoteMediaPath.cs` (allow-list

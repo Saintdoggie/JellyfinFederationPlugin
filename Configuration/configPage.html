@@ -1035,6 +1035,16 @@
                                 <div class="fed-srvstatus" id="fedRemoteTranscodeStatus" style="display:none;"></div>
                                 <div id="fedRemoteTranscodeFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
+                            <div class="fed-subcard" id="fedFavoritesCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Friends' favorites</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsFavorites" class="emby-checkbox fed-check" /> Show friends' favorites on my Favorites tab</label>
+                                <p class="fieldDescription">Adds a "Favorites on (friend)" row per friend under your viewers' own favorites, with the titles that friend's users favorited. Each viewer only sees titles they can already open here.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareFavoritesWithFriends" class="emby-checkbox fed-check" /> Share which of my titles my users favorited</label>
+                                <p class="fieldDescription">Friends see the titles only, never who favorited them, and only titles you already share with that viewer. Titles you get from other friends are never included.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-favorites">Save favorites settings</button>
+                                <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
+                                <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
+                            </div>
                             <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
                                 <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
                                 <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
@@ -1547,9 +1557,10 @@
 
                         if (server.Kind !== 1) {
                             html += '<div style="margin:.8em 0;padding:.75em 0;border-top:1px solid var(--fed-border-soft);border-bottom:1px solid var(--fed-border-soft);">';
-                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowDownloads !== false ? 'checked' : '') + ' /> Allow this friend to download individual files from my server</label>';
+                            html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowDownloads !== false ? 'checked' : '') + ' /> Allow this friend and their viewers to download my titles</label>';
+                            html += '<p class="fed-hint">Covers their viewers saving a title to their own phone or computer (straight from this server) and their admin copying a title to their server. Per-viewer rules can still turn it off for one person.</p>';
                             html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowBulkDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowBulkDownloads === true ? 'checked' : '') + ' /> Allow this friend to request bulk downloads</label>';
-                            html += '<p class="fed-hint">Bulk access is off by default. It is required when they select more than three files in one download action.</p>';
+                            html += '<p class="fed-hint">Bulk access is off by default. Without it, their server can copy three titles an hour and each of their viewers can save 30 titles an hour to their devices.</p>';
                             html += '<label class="fed-check-label" style="margin-top:.6em;"><input type="checkbox" class="fed-check fedAllowRemoteTranscode" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowRemoteTranscode !== false ? 'checked' : '') + ' /> Convert my titles here for their viewers (uses my GPU; video goes straight to their player)</label>';
                             html += '<div class="fed-srvstatus" id="fedRemoteTranscodeFriendStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-download-access" data-id="' + escapeHtml(server.Id) + '">Save download permissions</button>';
@@ -1678,6 +1689,42 @@
                             loadRemoteTranscodeSettings();
                         })
                         .catch(function (e) { showRemoteTranscodeStatus('#fedRemoteTranscodeStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function loadFavoritesSettings() {
+                        fedFetch('/Plugins/Federation/Settings/Favorites')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            q('#fedChkShowFriendsFavorites').checked = res.ShowFriendsFavorites !== false;
+                            q('#fedChkShareFavoritesWithFriends').checked = res.ShareFavoritesWithFriends !== false;
+                            var lines = (res.Friends || []).map(function (f) {
+                                var favorites = f.SharesFavorites === true ? 'shares its favorites'
+                                    : f.SharesFavorites === false ? 'doesn\'t share its favorites'
+                                        : 'favorites unknown until it updates and syncs';
+                                var downloads = f.AllowsDownloads === false ? ' · doesn\'t allow downloads' : '';
+                                return escapeHtml(f.Name) + ': ' + favorites + downloads;
+                            });
+                            q('#fedFavoritesFriends').innerHTML = lines.join('<br>');
+                        })
+                        .catch(function () { /* older server or offline; the card keeps its defaults */ });
+                    }
+
+                    function saveFavoritesSettings() {
+                        showRemoteTranscodeStatus('#fedFavoritesStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Settings/Favorites', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                ShowFriendsFavorites: q('#fedChkShowFriendsFavorites').checked,
+                                ShareFavoritesWithFriends: q('#fedChkShareFavoritesWithFriends').checked
+                            })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedFavoritesStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            loadFavoritesSettings();
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedFavoritesStatus', 'Could not save: ' + e.message, 'err'); });
                     }
 
                     function saveFriendRemoteTranscode(serverId, allow) {
@@ -6740,6 +6787,7 @@
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
                             q('#fedChkAdaptivePlayback').checked = currentConfig.EnableAdaptivePlayback === true;
                             loadRemoteTranscodeSettings();
+                            loadFavoritesSettings();
 
                             renderFriends();
                             loadFriendHealth(false);
@@ -7191,6 +7239,9 @@
                                     break;
                                 case 'save-remote-transcode':
                                     saveRemoteTranscodeSettings();
+                                    break;
+                                case 'save-favorites':
+                                    saveFavoritesSettings();
                                     break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));

@@ -34,8 +34,21 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private static readonly TimeSpan PlaybackTokenLifetime = TimeSpan.FromHours(24);
         private static readonly TimeSpan DownloadTokenLifetime = TimeSpan.FromMinutes(15);
+
+        // A viewer saving a title to their own device: the transfer can take
+        // hours and the app resumes it with fresh range requests on the same
+        // URL. Every request still re-checks friendship, sharing and download
+        // permission, so the longer life only covers the resume window.
+        private static readonly TimeSpan ViewerDownloadTokenLifetime = TimeSpan.FromHours(12);
         internal static readonly TimeSpan OrdinaryDownloadWindow = TimeSpan.FromHours(1);
         internal const int OrdinaryDownloadLimit = 3;
+
+        // Viewer downloads are personal (an episode or a season to a phone), so
+        // they get their own allowance instead of the friend-wide three items
+        // an hour meant for a friend's server copying titles. The friend-wide
+        // cap keeps a friend server from using made-up viewers as a bulk pull.
+        internal const int ViewerDownloadLimit = 30;
+        internal const int ViewerDownloadFriendLimit = 120;
 
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
         private readonly object _downloadGate = new();
@@ -71,7 +84,7 @@ namespace Jellyfin.Plugin.Federation.Services
             Prune();
 
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-            _tokens[token] = new Entry(remoteItemId, federationId, purpose, remoteUserId, DateTime.UtcNow + GetLifetime(purpose));
+            _tokens[token] = new Entry(remoteItemId, federationId, purpose, remoteUserId, DateTime.UtcNow + GetLifetime(purpose, !string.IsNullOrWhiteSpace(remoteUserId)));
             return token;
         }
 
@@ -87,14 +100,49 @@ namespace Jellyfin.Plugin.Federation.Services
             string federationId,
             string remoteItemId,
             out TimeSpan retryAfter)
+            => TryReserve(federationId, remoteItemId, OrdinaryDownloadLimit, out retryAfter);
+
+        /// <summary>
+        /// The allowance for one viewer on a friend's server saving titles to
+        /// their own device, when the friend has ordinary but not bulk
+        /// downloads: <see cref="ViewerDownloadLimit"/> distinct items per
+        /// viewer per rolling hour, and <see cref="ViewerDownloadFriendLimit"/>
+        /// across all of that friend's viewers. Re-authorizing an item already
+        /// counted (a resumed transfer) is always allowed.
+        /// </summary>
+        public bool TryReserveViewerDownload(
+            string federationId,
+            string remoteUserId,
+            string remoteItemId,
+            out TimeSpan retryAfter)
+        {
+            lock (_downloadGate)
+            {
+                var viewerBucket = federationId + "|viewer|" + remoteUserId.Trim().ToLowerInvariant();
+                var friendBucket = federationId + "|viewers";
+                var itemKey = remoteUserId.Trim().ToLowerInvariant() + "|" + remoteItemId;
+                if (!TryReserve(viewerBucket, remoteItemId, ViewerDownloadLimit, out retryAfter, commit: false)
+                    || !TryReserve(friendBucket, itemKey, ViewerDownloadFriendLimit, out retryAfter, commit: false))
+                {
+                    return false;
+                }
+
+                TryReserve(viewerBucket, remoteItemId, ViewerDownloadLimit, out _);
+                TryReserve(friendBucket, itemKey, ViewerDownloadFriendLimit, out _);
+                retryAfter = TimeSpan.Zero;
+                return true;
+            }
+        }
+
+        private bool TryReserve(string bucket, string remoteItemId, int limit, out TimeSpan retryAfter, bool commit = true)
         {
             var now = DateTime.UtcNow;
             lock (_downloadGate)
             {
-                if (!_ordinaryDownloads.TryGetValue(federationId, out var reservations))
+                if (!_ordinaryDownloads.TryGetValue(bucket, out var reservations))
                 {
                     reservations = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-                    _ordinaryDownloads[federationId] = reservations;
+                    _ordinaryDownloads[bucket] = reservations;
                 }
 
                 foreach (var expired in reservations
@@ -111,23 +159,38 @@ namespace Jellyfin.Plugin.Federation.Services
                     return true;
                 }
 
-                if (reservations.Count >= OrdinaryDownloadLimit)
+                if (reservations.Count >= limit)
                 {
                     var oldest = reservations.Values.Min();
                     retryAfter = (oldest + OrdinaryDownloadWindow) - now;
                     return false;
                 }
 
-                reservations[remoteItemId] = now;
+                if (commit)
+                {
+                    reservations[remoteItemId] = now;
+                }
+
                 retryAfter = TimeSpan.Zero;
                 return true;
             }
         }
 
         public static TimeSpan GetLifetime(FederationTokenPurpose purpose)
-            => purpose is FederationTokenPurpose.Download or FederationTokenPurpose.BulkDownload
-                ? DownloadTokenLifetime
-                : PlaybackTokenLifetime;
+            => GetLifetime(purpose, viewerBound: false);
+
+        /// <summary>
+        /// Token lifetime by purpose. An ordinary Download token minted for a
+        /// named viewer (a device download) lives long enough for the app to
+        /// resume an interrupted transfer; a server copy keeps the short life.
+        /// </summary>
+        public static TimeSpan GetLifetime(FederationTokenPurpose purpose, bool viewerBound)
+            => purpose switch
+            {
+                FederationTokenPurpose.Download when viewerBound => ViewerDownloadTokenLifetime,
+                FederationTokenPurpose.Download or FederationTokenPurpose.BulkDownload => DownloadTokenLifetime,
+                _ => PlaybackTokenLifetime
+            };
 
         /// <summary>
         /// DirectStream video/audio (and <c>download=true</c> file transfers).
