@@ -91,3 +91,38 @@ anonymous, only titles already shared with you; your Favorites tab gets "Favorit
 [x] Two-server fixture: device download (redirect + relay), CanDownload, friends' favorites section data
 [x] Version 0.0.188 (zip md5 4c4e574dfe8a4c0b208635b99775ce4a), release, master
 [x] Deploy live: 0.0.188 Active on Jellyfin 12.2.0, startup sync 0 ERR (backup plugin-backup-federation-0.0.187-20261019)
+
+
+# ======================================================================
+# Federation 0.0.189 — federated watch parties (SyncPlay with friends)
+# Branch: feature/watch-parties, base origin/master (0.0.188 + deploy record)
+# ======================================================================
+User: "group watch party at the same time watching the same federated media… at the top you
+usually create a group watch party, but with this you click on that but can make one with
+federation friends."
+
+## 8. Design (details in notes.md)
+[ ] Each server keeps a normal SyncPlay group; a hidden link session (custom ISessionController)
+    sits in it and relays play/pause/seek/stop/queue to the friend's linked group. Host = hub.
+[ ] Friends' viewers see the party in the native group list (/SyncPlay/List) and join natively
+    (/SyncPlay/Join) — every SyncPlay-capable app works, no new app needed.
+[ ] Titles are matched per server (owner id ↔ federated copy ↔ provider ids); each viewer still
+    needs their own access (SyncPlay's own access check + friend rules).
+[ ] Everyone waits for a joining server to load (like native SyncPlay); buffering anywhere pauses all.
+[ ] Host heartbeat every 5 s corrects drift / missed messages; link drops after 60 s silence.
+
+## 9. Build
+[x] Wire DTOs + item references (PartyItemRef) + mapper (own item / friend's item / provider ids)
+[x] Link controller (queue messages off the SyncPlay lock) + link state model + echo suppression (PartyLink.cs)
+[~] FederatedPartyService written + compiles; NOT yet exercised (no endpoints/filters wired, no tests)
+[ ] Peer endpoints: Peer/Party/Announce, Peer/Party/{id}/Join|Leave|Event|End
+[ ] Viewer endpoints: Party (new group with friends), Party/Share (current group), Party/Status
+[ ] SyncPlay List result filter (friends' parties) + Join action filter (create/join mirror)
+[~] Settings HostWatchPartiesWithFriends, JoinFriendsWatchParties added + preserved by Save; Advanced card still to do
+[ ] Web: "New group with friends" / "Invite friends" in the SyncPlay menu
+[ ] Unit tests: mapper, link decisions, echo suppression, filters, routes
+[ ] Two-server smoke with fake SyncPlay players (websocket): create, list, join, pause/seek/unpause both ways,
+    buffering wait, leave/teardown, blocked viewer can't see/join
+## 10. Validation + release
+[ ] Gate twice on frozen commit; peer + handoff smokes; party smoke; older friend (0.0.188) unaffected
+[ ] Version 0.0.189, release, master, deploy live

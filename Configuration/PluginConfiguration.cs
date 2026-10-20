@@ -506,6 +506,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <c>Settings/Favorites</c>, preserved by the main Save.
         /// </summary>
         public bool ShowFriendsFavorites { get; set; } = true;
+
+        /// <summary>Gets or sets whether this server's viewers can start watch parties with friends and friends may join them.</summary>
+        public bool HostWatchPartiesWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends' watch parties appear in this server's SyncPlay group list.</summary>
+        public bool JoinFriendsWatchParties { get; set; } = true;
     }
 
     /// <summary>
