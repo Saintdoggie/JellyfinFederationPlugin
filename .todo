@@ -122,4 +122,4 @@ federation friends."
 ## 10. Validation + release
 [x] Gate twice (1047 plugin, 170 Companion, 124 web); peer 7/7, handoff 6/6, party 8/8; older friend 0.0.188 and 0.0.187 pass
 [x] Version 0.0.189 (zip md5 050d90d62a385abd7371cbb3bef0fee3), release, master
-[ ] Deploy live
+[x] Deploy live: 0.0.189 Active on Jellyfin 12.2.0, startup sync 0 ERR (backup plugin-backup-federation-0.0.188-20261020)
