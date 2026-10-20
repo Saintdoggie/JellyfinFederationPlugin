@@ -260,3 +260,7 @@ create a group watch party, but with this you click on that but can make one wit
 ## Log
 - 2026-10-20: 1047 plugin tests (22 new WatchPartyTests), 97 web tests. federation_party_smoke.py
   8/8 stages, three consecutive runs, ~30-50 SyncPlay requests per server per run.
+- 2026-10-20: Released 0.0.189 (master 153a588, release asset md5 050d90d62a385abd7371cbb3bef0fee3
+  verified, manifest on master matches). Deployed live: backup of 0.0.188 plugin + config at
+  /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.188-20261020; 0.0.189
+  loaded Active, startup sync refreshed both friends with 0 ERR.
