@@ -782,8 +782,9 @@
                     <p class="fieldDescription">
                         Browse media held by connected servers and pull an exact title down to this server. Local-only
                         titles never appear here. An exclamation mark means Jellyfin already has a matching local copy,
-                        so review it before downloading another. Downloads land in the "Federation Downloads" library.
-                        Transfers resume automatically after a restart or if the source drops out.
+                        so review it before downloading another. Pick where downloads go under "Save to": your Movies or
+                        Shows library (the default), another library, a new folder of its own, or the separate
+                        "Federation Downloads" library. Transfers resume automatically after a restart or if the source drops out.
                     </p>
                     <div id="fedDownloadLiveStrip" class="fed-download-live" style="display:none;" role="status"></div>
                     <div class="fed-subtabs" role="tablist" aria-label="Download workspace">
@@ -820,6 +821,22 @@
                             </select>
                         </div>
                     </div>
+                    <div class="fed-download-toolbar" id="fedDownloadDestRow">
+                        <div class="fed-input-container fed-grow">
+                            <label class="fed-label" for="fedDownloadDest">Save to</label>
+                            <select class="emby-select fed-select" id="fedDownloadDest">
+                                <option value="auto">Matching library (Movies for films, Shows for episodes)</option>
+                            </select>
+                        </div>
+                        <div class="fed-input-container fed-grow" id="fedDownloadDestFolderWrap" style="display:none;">
+                            <label class="fed-label" for="fedDownloadDestFolder">New folder (name or full path)</label>
+                            <input type="text" class="emby-input" id="fedDownloadDestFolder" placeholder="From friends or /media/friends" />
+                        </div>
+                        <div class="fed-input-container">
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-download-dest">Make default</button>
+                        </div>
+                    </div>
+                    <div id="fedDownloadDestStatus" class="fed-srvstatus" role="status" style="display:none;"></div>
 
                     <div id="fedBrowseSeriesHeader" style="display:none;"></div>
                     <div id="fedBrowseStatus" class="fed-srvstatus" role="status" aria-live="polite" style="display:none;"></div>
@@ -1053,6 +1070,80 @@
                                 <p class="fieldDescription">Each viewer only sees a party when they can open what it's playing here. Viewers need Jellyfin's SyncPlay permission, as for any group.</p>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-watch-parties">Save watch party settings</button>
                                 <div class="fed-srvstatus" id="fedWatchPartyStatus" style="display:none;"></div>
+                            </div>
+                            <div class="fed-subcard" id="fedViewersCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Who is watching across friends</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsViewers" class="emby-checkbox fed-check" /> Show friends' viewers on my dashboard</label>
+                                <p class="fieldDescription">When someone on a friend's server watches one of your titles, it shows under Active devices like a viewer connected to you: the title, how far in, paused or playing, and how it plays. They appear as "name (friend)" and nothing is added to your users' watch history.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareViewersWithFriends" class="emby-checkbox fed-check" /> Tell friends what my viewers watch of theirs</label>
+                                <p class="fieldDescription">Sends the viewer's name, device, position and pause state to the friend whose title it is, so it shows on their dashboard. Nothing is sent about your own titles.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-viewers">Save viewer settings</button>
+                                <div class="fed-srvstatus" id="fedViewersStatus" style="display:none;"></div>
+                            </div>
+                            <div class="fed-subcard" id="fedHardwareCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Conversion hardware</h4>
+                                <p class="fieldDescription" id="fedHardwareLocal">This server: …</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareHardware" class="emby-checkbox fed-check" /> Let friends see what this server converts with</label>
+                                <p class="fieldDescription">GPU and CPU model and which codecs run in hardware. Shown in a viewer's Playback Info, and used by friends who turn on the choice below.</p>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedSelHardwareMode">How this server's hardware is described</label>
+                                    <select is="emby-select" id="fedSelHardwareMode" class="emby-select-withcolor emby-select">
+                                        <option value="auto">Read from Jellyfin's playback settings</option>
+                                        <option value="manual">Describe it myself (for conversions sent to another machine)</option>
+                                    </select>
+                                </div>
+                                <div id="fedHardwareManual" style="display:none;">
+                                    <label class="fed-check-label"><input type="checkbox" id="fedChkHardwareOffloaded" class="emby-checkbox fed-check" /> Conversions run on a separate machine</label>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel" for="fedTxtHardwareGpu">GPU that converts</label>
+                                        <input type="text" id="fedTxtHardwareGpu" class="emby-input" placeholder="e.g. Radeon RX 9070 XT" />
+                                    </div>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel" for="fedTxtHardwareCpu">CPU of that machine (optional)</label>
+                                        <input type="text" id="fedTxtHardwareCpu" class="emby-input" placeholder="e.g. Ryzen 9 7900X" />
+                                    </div>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel" for="fedNumHardwareThreads">Its CPU threads (0 = unknown)</label>
+                                        <input type="number" id="fedNumHardwareThreads" class="emby-input" min="0" max="1024" step="1" />
+                                    </div>
+                                    <p class="fieldDescription">Decodes in hardware:
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwDecode" value="h264" /> H.264</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwDecode" value="hevc" /> HEVC</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwDecode" value="hevc10" /> HEVC 10-bit</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwDecode" value="av1" /> AV1</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwDecode" value="vp9" /> VP9</label>
+                                    </p>
+                                    <p class="fieldDescription">Encodes in hardware:
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwEncode" value="h264" /> H.264</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwEncode" value="hevc" /> HEVC</label>
+                                        <label class="fed-check-label" style="display:inline-flex;"><input type="checkbox" class="emby-checkbox fed-check fedHwEncode" value="av1" /> AV1</label>
+                                    </p>
+                                </div>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkSmartPlacement" class="emby-checkbox fed-check" /> Pick who converts a friend's title by hardware</label>
+                                <p class="fieldDescription">Normally the friend converts their own titles, so only the smaller converted stream crosses the internet. With this on, this server converts instead when the friend's hardware falls short of the minimum below for that title (or the friend is at its conversion limit) and this server meets it. It never does when the connection can't carry the original file.</p>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedSelMin4k">Minimum to convert 4K</label>
+                                    <select is="emby-select" id="fedSelMin4k" class="emby-select-withcolor emby-select">
+                                        <option value="full">Hardware decode and encode</option>
+                                        <option value="encode">Hardware encode</option>
+                                        <option value="any">Anything, even CPU only</option>
+                                    </select>
+                                </div>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedSelMinHd">Minimum to convert 720p to 1440p</label>
+                                    <select is="emby-select" id="fedSelMinHd" class="emby-select-withcolor emby-select">
+                                        <option value="full">Hardware decode and encode</option>
+                                        <option value="encode">Hardware encode</option>
+                                        <option value="any">Anything, even CPU only</option>
+                                    </select>
+                                </div>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedNumCpuCountsAsEncode">CPU threads that count as a hardware encoder (0 = never)</label>
+                                    <input type="number" id="fedNumCpuCountsAsEncode" class="emby-input" min="0" max="1024" step="1" />
+                                </div>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-hardware">Save hardware settings</button>
+                                <div class="fed-srvstatus" id="fedHardwareStatus" style="display:none;"></div>
+                                <div id="fedHardwareFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
                             <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
                                 <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
@@ -1745,6 +1836,99 @@
                             loadWatchPartySettings();
                         })
                         .catch(function (e) { showRemoteTranscodeStatus('#fedWatchPartyStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function loadViewerSettings() {
+                        fedFetch('/Plugins/Federation/Settings/Viewers')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            q('#fedChkShowFriendsViewers').checked = res.ShowFriendsViewers !== false;
+                            q('#fedChkShareViewersWithFriends').checked = res.ShareViewersWithFriends !== false;
+                        })
+                        .catch(function () { /* older server or offline; the card keeps its defaults */ });
+                    }
+
+                    function saveViewerSettings() {
+                        showRemoteTranscodeStatus('#fedViewersStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Settings/Viewers', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                ShowFriendsViewers: q('#fedChkShowFriendsViewers').checked,
+                                ShareViewersWithFriends: q('#fedChkShareViewersWithFriends').checked
+                            })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedViewersStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            loadViewerSettings();
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedViewersStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function setCodecChecks(selector, codecs) {
+                        var wanted = codecs || [];
+                        Array.prototype.slice.call(qa(selector)).forEach(function (box) { box.checked = wanted.indexOf(box.value) >= 0; });
+                    }
+
+                    function checkedCodecs(selector) {
+                        return Array.prototype.slice.call(qa(selector))
+                            .filter(function (box) { return box.checked; })
+                            .map(function (box) { return box.value; });
+                    }
+
+                    function loadHardwareSettings() {
+                        fedFetch('/Plugins/Federation/Settings/Hardware')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            q('#fedHardwareLocal').textContent = 'This server: ' + (res.local || 'unknown');
+                            q('#fedChkShareHardware').checked = res.ShareTranscodeHardware !== false;
+                            q('#fedSelHardwareMode').value = res.TranscodeHardwareMode === 'manual' ? 'manual' : 'auto';
+                            q('#fedHardwareManual').style.display = res.TranscodeHardwareMode === 'manual' ? '' : 'none';
+                            q('#fedChkHardwareOffloaded').checked = res.TranscodeHardwareOffloaded === true;
+                            q('#fedTxtHardwareGpu').value = res.ManualTranscodeGpu || '';
+                            q('#fedTxtHardwareCpu').value = res.ManualTranscodeCpu || '';
+                            q('#fedNumHardwareThreads').value = res.ManualTranscodeCpuThreads || 0;
+                            setCodecChecks('.fedHwDecode', res.ManualHardwareDecodeCodecs);
+                            setCodecChecks('.fedHwEncode', res.ManualHardwareEncodeCodecs);
+                            q('#fedChkSmartPlacement').checked = res.SmartTranscodePlacement === true;
+                            q('#fedSelMin4k').value = res.PlacementMinimum4k || 'full';
+                            q('#fedSelMinHd').value = res.PlacementMinimumHd || 'encode';
+                            q('#fedNumCpuCountsAsEncode').value = res.PlacementCpuThreadsCountAsEncode != null ? res.PlacementCpuThreadsCountAsEncode : 16;
+                            var friends = res.friends || [];
+                            q('#fedHardwareFriends').innerHTML = friends.map(function (f) {
+                                return escapeHtml(f.name) + ': ' + escapeHtml(f.hardware || 'not shared (or an older version)');
+                            }).join('<br>');
+                        })
+                        .catch(function () { /* older server or offline; the card keeps its defaults */ });
+                    }
+
+                    function saveHardwareSettings() {
+                        showRemoteTranscodeStatus('#fedHardwareStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Settings/Hardware', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                ShareTranscodeHardware: q('#fedChkShareHardware').checked,
+                                SmartTranscodePlacement: q('#fedChkSmartPlacement').checked,
+                                TranscodeHardwareMode: q('#fedSelHardwareMode').value,
+                                TranscodeHardwareOffloaded: q('#fedChkHardwareOffloaded').checked,
+                                ManualTranscodeGpu: q('#fedTxtHardwareGpu').value,
+                                ManualTranscodeCpu: q('#fedTxtHardwareCpu').value,
+                                ManualTranscodeCpuThreads: parseInt(q('#fedNumHardwareThreads').value, 10) || 0,
+                                ManualHardwareDecodeCodecs: checkedCodecs('.fedHwDecode'),
+                                ManualHardwareEncodeCodecs: checkedCodecs('.fedHwEncode'),
+                                PlacementMinimum4k: q('#fedSelMin4k').value,
+                                PlacementMinimumHd: q('#fedSelMinHd').value,
+                                PlacementCpuThreadsCountAsEncode: parseInt(q('#fedNumCpuCountsAsEncode').value, 10) || 0
+                            })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedHardwareStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            loadHardwareSettings();
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedHardwareStatus', 'Could not save: ' + e.message, 'err'); });
                     }
 
                     function saveFavoritesSettings() {
@@ -4002,6 +4186,54 @@
                     var browseFailed = false;
                     var downloadView = 'select';
 
+                    function loadDownloadDestinations() {
+                        fedFetch('/Plugins/Federation/Download/Destinations')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            var select = q('#fedDownloadDest');
+                            if (!select) { return; }
+                            var html = '<option value="auto">Matching library (Movies for films, Shows for episodes)</option>';
+                            (res.options || []).forEach(function (o) {
+                                html += '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(o.name) + ' (' + escapeHtml(o.path) + ')</option>';
+                            });
+                            html += '<option value="separate">Federation Downloads (separate library)</option>';
+                            html += '<option value="folder:">New folder…</option>';
+                            select.innerHTML = html;
+                            var current = res.defaultDestination || 'auto';
+                            if (current.indexOf('folder:') === 0) {
+                                select.value = 'folder:';
+                                q('#fedDownloadDestFolder').value = current.substring('folder:'.length);
+                            } else {
+                                select.value = current;
+                                if (select.value !== current) { select.value = 'auto'; }
+                            }
+                            q('#fedDownloadDestFolderWrap').style.display = select.value === 'folder:' ? '' : 'none';
+                        })
+                        .catch(function () { /* older server: downloads keep going to the default */ });
+                    }
+
+                    // The destination picked under "Save to", or null when a new
+                    // folder was picked without a name.
+                    function selectedDownloadDestination() {
+                        var select = q('#fedDownloadDest');
+                        if (!select) { return 'auto'; }
+                        if (select.value !== 'folder:') { return select.value || 'auto'; }
+                        var folder = (q('#fedDownloadDestFolder').value || '').trim();
+                        return folder ? 'folder:' + folder : null;
+                    }
+
+                    function saveDownloadDestination() {
+                        var value = selectedDownloadDestination();
+                        if (!value) { showRemoteTranscodeStatus('#fedDownloadDestStatus', 'Type a folder name or path first.', 'err'); return; }
+                        fedFetch('/Plugins/Federation/Settings/DownloadDestination', { method: 'POST', body: JSON.stringify({ Destination: value }) })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedDownloadDestStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedDownloadDestStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
                     function setDownloadView(view) {
                         downloadView = view === 'activity' ? 'activity' : 'select';
                         var selectView = q('#fedDownloadSelectView');
@@ -4496,6 +4728,8 @@
                     function downloadSelectedBrowseItems() {
                         var items = browseSelectionItems();
                         if (items.length === 0) { return; }
+                        var destination = selectedDownloadDestination();
+                        if (!destination) { setBrowseStatus('Type a name or path for the new folder under "Save to".', 'err'); return; }
                         var sourceServerId = browseState.serverId;
                         var requestEpoch = browseRequestEpoch;
                         var isBulk = items.length > 3;
@@ -4509,7 +4743,18 @@
                             method: 'POST',
                             body: JSON.stringify({
                                 ServerId: sourceServerId,
-                                Items: items.map(function (item) { return { ItemId: item.id, Name: item.name }; })
+                                Destination: destination,
+                                Items: items.map(function (item) {
+                                    return {
+                                        ItemId: item.id,
+                                        Name: item.name,
+                                        Type: item.type || null,
+                                        Year: item.year || null,
+                                        SeriesName: item.seriesName || null,
+                                        Season: item.parentIndexNumber != null ? item.parentIndexNumber : null,
+                                        Episode: item.indexNumber != null ? item.indexNumber : null
+                                    };
+                                })
                             })
                         })
                         .then(function (r) {
@@ -6826,6 +7071,9 @@
                             loadRemoteTranscodeSettings();
                             loadFavoritesSettings();
                             loadWatchPartySettings();
+                            loadDownloadDestinations();
+                            loadViewerSettings();
+                            loadHardwareSettings();
 
                             renderFriends();
                             loadFriendHealth(false);
@@ -7284,6 +7532,15 @@
                                 case 'save-watch-parties':
                                     saveWatchPartySettings();
                                     break;
+                                case 'save-download-dest':
+                                    saveDownloadDestination();
+                                    break;
+                                case 'save-viewers':
+                                    saveViewerSettings();
+                                    break;
+                                case 'save-hardware':
+                                    saveHardwareSettings();
+                                    break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));
                                     break;
@@ -7578,6 +7835,16 @@
 
                             if (t.classList.contains('fedPlexImportPick')) {
                                 updatePlexImportButton();
+                                return;
+                            }
+
+                            if (t.id === 'fedSelHardwareMode') {
+                                q('#fedHardwareManual').style.display = t.value === 'manual' ? '' : 'none';
+                                return;
+                            }
+
+                            if (t.id === 'fedDownloadDest') {
+                                q('#fedDownloadDestFolderWrap').style.display = t.value === 'folder:' ? '' : 'none';
                                 return;
                             }
 

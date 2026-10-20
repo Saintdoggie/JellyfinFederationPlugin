@@ -264,3 +264,66 @@ create a group watch party, but with this you click on that but can make one wit
   verified, manifest on master matches). Deployed live: backup of 0.0.188 plugin + config at
   /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.188-20261020; 0.0.189
   loaded Active, startup sync refreshed both friends with 0 ERR.
+
+---
+
+# Notes — download destination, friends' viewers, Playback Info, hardware (0.0.190 work)
+
+Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0.0.189).
+
+## What the user asked for
+1. Server downloads of federated titles go to a folder you pick: the Movies folder or a new
+   folder; default Movies.
+2. When someone on a friend's server watches something of yours, you see it like a directly
+   connected viewer: what, how far in, etc.
+3. Optional: servers share hardware (GPU/CPU) so a program decides whether the friend or this
+   server converts (e.g. a friend with an RX 550). Minimums per codec/quality, CPU minimum.
+   User's caveat: their own conversions run on another PC, so auto-detected hardware is wrong
+   for them. "Maybe this will add more problems than fixes."
+4. Playback Info (player menu) shows connection info for federated titles.
+5. Later, review only: the svoeth fork's releases (end of .todo).
+
+## Design
+- Downloads: `DownloadDestinations` (pure). Choices `auto` (library matching the title's type,
+  first folder that isn't the plugin's own: live Movies = /media/movies + plugin federation
+  folder), `library:<name>`, `folder:<name|/path>` (bare name made beside the matching library's
+  folder; becomes its own library of the title's type; a path inside an existing library's
+  folder just uses that library), `separate` (old Federation Downloads). Films land as
+  "Name (Year)/Name (Year).ext", episodes "Series/Season NN/Series SNNEMM.ext", a second copy of
+  a film as "Name (Year) - <friend>.ext" (Jellyfin's version naming). Partial file sits beside the
+  final one (atomic move), write-probed first (a read-only folder fails clearly instead of
+  pausing forever). Confinement: job paths must be inside the job's TargetRoot; partial deletes
+  only *.partial inside the downloads root or TargetRoot. Old queued jobs keep the downloads root.
+- Downloaded copies outside the downloads folder are never shared onward: `DownloadedFileRegistry`
+  (JSON in plugin data) covers the gap before the scan stamps FederationDownloadedFrom.
+- Friends' viewers: viewer side `FederationViewerReporter` listens to PlaybackStart/Progress/
+  Stopped, maps the played media source to the friend's copy (item id = primary; else hash of
+  friend+remote id), posts `Peer/Viewers` (start/stop at once, progress every 15 s or on pause,
+  route change or a seek > 10 s; one ordered queue; 10 min backoff for friends without the route).
+  Owner side `FederationRemoteViewerService` checks the friend may see the title for that viewer
+  (per-user rules), creates a user-less session (LogSessionActivity with null user is supported
+  in Jellyfin 12.2; key = client+device+empty user, so never merges with a real session) and
+  drives OnPlaybackStart/Progress/Stopped, so the dashboard shows it natively. No user = no
+  watch history or activity log entries on the owner. Device id = the viewer's own device id so
+  a handoff conversion (which asks with that id) attaches its TranscodingInfo. 90 s silence ends it.
+- Playback Info: `GET Playback/Connection` with no args finds the calling device's session;
+  the play session id comes from the reporter (players don't expose it) for handoff lookup.
+  Web re-adds a "Federation" block after jellyfin-web's 1 s re-render (scan() runs on mutations).
+- Hardware: `TranscodeHardwareInfo` via `Peer/Hardware` (models + codec lists + running count +
+  per-friend limit; share switch default on). Auto = Jellyfin's encoding settings (live server:
+  vaapi on a Ryzen 5 5500 / RX 580, which is NOT what converts); manual = the admin describes the
+  machine that converts (offloaded, GPU, CPU, codecs). Placement (default OFF): friend converts
+  unless it falls short of the minimum for the source (4K: hardware decode+encode; 720-1440p:
+  hardware encode; CPU with >= 16 threads counts as an encoder) or is at its limit, AND this
+  server meets it and is better, AND the link carries the original (never pull an over-cap
+  original). Otherwise unchanged behaviour. Converting here = no grant recorded (and a stale
+  grant forgotten), so FederationRemoteTranscodeFilter leaves the transcode local.
+
+## Log
+- 2026-10-20: 1081 plugin tests (34 new in DownloadsViewersHardwareTests), 133 web tests (9 new), gate passes twice.
+  Two-server on Jellyfin 12.2: peer smoke 9/9 first run (new stages: friend's viewer shown on the owner's
+  /Sessions as "qa-viewer (friend)" with no user id, position/pause/stop, not for a blocked viewer, not with
+  the owner's switch off; Playback/Connection; Peer/Hardware 401 without a friend key; downloads land as
+  /config/qa-movies/QA Peer (2026)/QA Peer (2026).mkv, a new folder becomes library "QA Friends", a second
+  copy is "QA Peer (2026) - <friend>.mkv", "folder:../escape" refused). Handoff 6/6, party 8/8, peer with
+  the source on released 0.0.189 6/6 (no Peer/Viewers there: the reporter backs off quietly).

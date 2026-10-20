@@ -123,3 +123,47 @@ federation friends."
 [x] Gate twice (1047 plugin, 170 Companion, 124 web); peer 7/7, handoff 6/6, party 8/8; older friend 0.0.188 and 0.0.187 pass
 [x] Version 0.0.189 (zip md5 050d90d62a385abd7371cbb3bef0fee3), release, master
 [x] Deploy live: 0.0.189 Active on Jellyfin 12.2.0, startup sync 0 ERR (backup plugin-backup-federation-0.0.188-20261020)
+
+
+# 0.0.190 — download destination, friends' viewers on dashboard, playback connection info, transcode placement
+## 1. Server download destination
+[x] Pick where a server download goes: an existing library (default: Movies for films, Shows for episodes) or a new folder (becomes its own library)
+[x] Movies land as "Name (Year)/Name (Year).ext", episodes as "Series/Season NN/Series SNNEMM.ext" so the library identifies them
+[x] Paths confined to the chosen library's folders; partial files never deleted outside them
+## 2. Friends' viewers on the owner's dashboard
+[x] Receiver reports start/progress/stop of its viewers' federated plays to the owner (throttled)
+[x] Owner shows each as a session (title, position, paused, play method, "bob (netflix++)"), ends it on stop or silence
+[x] Settings: share our viewers with friends; show friends' viewers
+## 3. Playback Info: federation connection section
+[x] Endpoint describing the connection for a play session (friend, route, who converts, latency, friend's hardware)
+[x] Web: extra "Federation" block in the player's Playback Info panel
+## 4. Transcode placement by hardware (optional, off by default)
+[x] Servers share transcode hardware (auto from Jellyfin encoding settings, or manual for offloaded transcoding like ours)
+[x] Receiver picks owner vs itself against per-quality minimums; owner stays the default
+## 5. Validation + release
+[x] Unit tests (34 new) + web tests (9 new); gate 1081 plugin / 170 Companion / 133 web
+[x] Two-server on 12.2: peer 9/9 (new: friends' viewers on owner dashboard, Playback Info, hardware, download destinations), handoff 6/6, party 8/8, older friend on 0.0.189 6/6
+[ ] Release 0.0.190, master, deploy
+## 6. Later (user asked: review only, do not implement)
+[x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.
+    Read 2026-10-20 (release notes only, no code pulled). Their 0.0.177-0.0.186 are our own releases.
+    From 0.0.187 (15-19 Oct) they number their own work 0.0.187-0.0.196, colliding with ours
+    (their 0.0.190 != our 0.0.190) -> confusing if anyone mixes catalogs.
+    Already have (ours, often more complete): change notices between friends, retry/resume downloads,
+      per-library sync status, background refresh, removal held over two syncs, path-escape fix on
+      server downloads, "friends watching your titles" (ours: native dashboard sessions, 0.0.190),
+      new-friend prompt choosing libraries.
+    New to us, possibly useful (NOT built; user wants to discuss first):
+      - Per-friend privacy: friends see your users only if you share them ("Users they can see")
+      - Choose which of your friends each friend can discover (friends-of-friends control)
+      - Sharing end date (whole friendship or per library)
+      - Per-friend limits: simultaneous streams, monthly data
+      - "Preview what they see" (owner views the catalog as a given friend gets it)
+      - Usage tab: per-friend totals, most-watched titles; playback in Jellyfin's activity log
+      - "Popular on <friend>" collection from shared play counts (like our friends' favorites)
+      - Reconnect: renew keys from a new request at the same address, keep libraries/settings;
+        auto-replace the server's own internal key when Jellyfin stops recognising it (one-way 503s)
+      - Full resync button per friend library; safer library removal during a sync
+      - Music: 416 on range -> fetch whole file; albums/artists synced with songs; type change moves songs
+      - "Cannot access a disposed object" when saving settings during a sync (check we don't have it)
+      - Large removals (>25 titles and >10%) wait for admin confirmation

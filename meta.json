@@ -5,8 +5,8 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.189",
-  "changelog": "Watch parties with friends: in the group (SyncPlay) menu at the top, choose \"New group with friends\" (or \"Invite friends\" in a group). Your friends' viewers find the party in their own group list and join it like any group, from any app that supports group watching, while everyone plays their own server's copy. Play, pause, seeking and title changes are shared, and anyone loading or buffering pauses everyone until they're ready. Each viewer still needs access to what's playing. Switches under Advanced. Both servers need 0.0.189.",
+  "version": "0.0.190",
+  "changelog": "Server downloads go where you choose: your Movies or Shows library (the default), another library, a new folder of its own, or the separate Federation Downloads library, named so Jellyfin identifies them. Friends' viewers watching your titles show on your dashboard like your own (title, how far in, paused), and the player's Playback Info shows how a friend's title reaches you. Optional: servers share their conversion hardware, and you can let hardware decide who converts a friend's title (off by default). Both servers need 0.0.190 for the viewer and hardware parts.",
   "targetAbi": "12.0.0.0",
   "timestamp": "2026-10-20T07:52:47Z",
   "imageUrl": "thumb.png"

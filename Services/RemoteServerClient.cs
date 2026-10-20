@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -425,11 +426,49 @@ namespace Jellyfin.Plugin.Federation.Services
         /// the HTTP status, or 0 when the friend couldn't be reached. Never throws
         /// except on cancellation.
         /// </summary>
-        public async Task<int> PostPartyAsync(string relativePath, object body, CancellationToken cancellationToken = default)
+        public Task<int> PostPartyAsync(string relativePath, object body, CancellationToken cancellationToken = default)
+            => PostPeerAsync("Party/" + relativePath.TrimStart('/'), body, cancellationToken);
+
+        /// <summary>
+        /// Reads a small JSON document from the friend's <c>Peer/{relativePath}</c>.
+        /// Returns the HTTP status (0 when unreachable) and the body on 200.
+        /// </summary>
+        public async Task<(int Status, T? Body)> GetPeerJsonAsync<T>(string relativePath, CancellationToken cancellationToken = default)
+            where T : class
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/Party/" + relativePath.TrimStart('/'))
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/Plugins/Federation/Peer/" + relativePath.TrimStart('/'));
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var status = (int)response.StatusCode;
+                if (status != 200)
+                {
+                    return (status, null);
+                }
+
+                var body = await response.Content.ReadFromJsonAsync<T>(PartyJson, cancellationToken).ConfigureAwait(false);
+                return (status, body);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not read Peer/{Path} from {ServerName}", relativePath, _server.Name);
+                return (0, null);
+            }
+        }
+
+        /// <summary>
+        /// Posts a small JSON message to the friend's <c>Peer/{relativePath}</c>.
+        /// Returns the HTTP status, or 0 when the friend couldn't be reached.
+        /// </summary>
+        public async Task<int> PostPeerAsync(string relativePath, object body, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/" + relativePath.TrimStart('/'))
                 {
                     Content = new StringContent(JsonSerializer.Serialize(body, PartyJson), System.Text.Encoding.UTF8, "application/json")
                 };
@@ -442,7 +481,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} for a watch party", _server.Name);
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} at Peer/{Path}", _server.Name, relativePath);
                 return 0;
             }
         }

@@ -7,6 +7,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -264,6 +265,60 @@ def smoke():
             qa.check(not favorite_ids(viewer), 'Friends\' favorites shown after this server turned them off')
             qa.request(base, '/Plugins/Federation/Settings/Favorites', admin, {'ShareFavoritesWithFriends':True,'ShowFriendsFavorites':True})
             print('PEER PASS: friends\' favorites: titles only, per viewer visibility, owner and receiver switches', flush=True)
+            stage = 'friends\' viewers on the owner\'s dashboard'
+            receiver_name = source_settings['RemoteServers'][0]['Name']
+            native_id = native['Id'].replace('-', '').lower()
+            def owner_view():
+                sessions = qa.request(source_base, '/Sessions', source_admin)
+                return next((s for s in sessions if (s.get('NowPlayingItem') or {}).get('Id', '').replace('-', '').lower() == native_id), None)
+            ticks = 10_000_000
+            play = {'ItemId': item_id, 'MediaSourceId': item_id, 'PlaySessionId': 'qa-play-1', 'PositionTicks': 30 * ticks,
+                'PlayMethod': 'DirectPlay', 'CanSeek': True, 'IsPaused': False}
+            qa.request(base, '/Sessions/Playing', viewer, play, expected=204)
+            shown = qa.wait_for(owner_view, 'Friend\'s viewer not shown on the owner\'s dashboard')
+            qa.check(shown['UserName'] == f'qa-viewer ({receiver_name})', f'Friend viewer labelled {shown.get("UserName")!r}')
+            qa.check(shown.get('UserId') in (None, '', '00000000000000000000000000000000', '00000000-0000-0000-0000-000000000000'), 'Friend viewer was tied to a local user')
+            qa.check(receiver_name in (shown.get('DeviceName') or ''), 'Device line does not say which friend')
+            qa.check(abs(shown['PlayState']['PositionTicks'] - 30 * ticks) < 15 * ticks, 'Owner shows the wrong position')
+            qa.check(shown['PlayState'].get('PlayMethod') in ('DirectPlay', 'DirectStream'), 'Owner shows the wrong play method')
+            qa.request(base, '/Sessions/Playing/Progress', viewer, {**play, 'PositionTicks': 95 * ticks, 'IsPaused': True}, expected=204)
+            qa.wait_for(lambda: (owner_view() or {}).get('PlayState', {}).get('IsPaused') or None, 'Pause not shown on the owner\'s dashboard')
+            qa.check(abs(owner_view()['PlayState']['PositionTicks'] - 95 * ticks) < 2 * ticks, 'Seek not shown on the owner\'s dashboard')
+            connection = qa.request(base, '/Plugins/Federation/Playback/Connection', viewer)
+            qa.check(connection.get('federated') and connection.get('friend') == settings['RemoteServers'][0]['Name'], f'Playback Info connection wrong: {connection}')
+            qa.check(connection.get('route') in ('direct', 'relay') and connection.get('routeText'), 'Playback Info has no route')
+            qa.check(connection.get('friendHardware'), 'Playback Info lacks the friend\'s shared hardware')
+            qa.request(base, f'/Plugins/Federation/Playback/Connection?itemId={native_id}', viewer, expected=404, raw=True)
+            qa.request(base, '/Sessions/Playing/Stopped', viewer, {**play, 'PositionTicks': 96 * ticks}, expected=204)
+            qa.wait_for(lambda: owner_view() is None or None, 'Friend viewer still shown after stopping')
+            qa.request(source_base, '/Plugins/Federation/Peer/Viewers', {}, {'Key': 'x', 'ItemId': native['Id']}, expected=401, raw=True)
+            qa.request(source_base, '/Plugins/Federation/Peer/Hardware', {}, expected=401, raw=True)
+            hardware = qa.request(base, '/Plugins/Federation/Settings/Hardware', admin)
+            qa.check(hardware['friends'] and hardware['friends'][0]['hardware'], 'Friend hardware not listed for the admin')
+            # A viewer the owner blocked from the title is never shown.
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries','BlockedItemIds':[native['Id']]})['success'], 'Per-item block failed')
+            qa.wait_for(lambda: viewer_sees() == (0, 0, 0) or None, 'Per-item block did not hide the title')
+            try:
+                qa.request(base, '/Sessions/Playing', viewer, {**play, 'PlaySessionId': 'qa-play-blocked'}, expected=204)
+            except RuntimeError:
+                pass  # Jellyfin may refuse the report itself; either way nothing may reach the owner.
+            time.sleep(4)
+            qa.check(owner_view() is None, 'A viewer the owner blocked from the title is shown on its dashboard')
+            qa.request(base, '/Sessions/Playing', admin, {**play, 'PlaySessionId': 'qa-play-2'}, expected=204)
+            qa.wait_for(lambda: (owner_view() or {}).get('UserName', '').startswith('qa-admin') or None, 'Admin viewer not shown on the owner\'s dashboard')
+            qa.request(base, '/Sessions/Playing/Stopped', admin, {**play, 'PlaySessionId': 'qa-play-2'}, expected=204)
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer restore failed')
+            qa.wait_for(lambda: viewer_sees() == (1, 1, 1) or None, 'Unblocked viewer did not get the title back')
+            qa.request(source_base, '/Plugins/Federation/Settings/Viewers', source_admin, {'ShareViewersWithFriends': True, 'ShowFriendsViewers': False})
+            qa.request(base, '/Sessions/Playing', viewer, {**play, 'PlaySessionId': 'qa-play-3'}, expected=204)
+            qa.wait_for(lambda: (qa.request(base, '/Plugins/Federation/Playback/Connection', viewer).get('federated')) or None, 'Viewer not playing')
+            time.sleep(4)
+            qa.check(owner_view() is None, 'Friend viewer shown although the owner turned it off')
+            qa.request(base, '/Sessions/Playing/Stopped', viewer, {**play, 'PlaySessionId': 'qa-play-3'}, expected=204)
+            qa.request(source_base, '/Plugins/Federation/Settings/Viewers', source_admin, {'ShareViewersWithFriends': True, 'ShowFriendsViewers': True})
+            print('PEER PASS: friends\' viewers show on the owner\'s dashboard (name (friend), position, pause, stop), not for blocked viewers or with the owner\'s switch off; Playback Info connection; hardware shared', flush=True)
         stage = 'disable, outage, cache retention and stable recovery'
         settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
         settings['RemoteServers'][0]['Enabled'] = False
@@ -295,6 +350,45 @@ def smoke():
         sources = qa.wait_for(playable_again, 'Recovered source never became playable')
         qa.check(qa.request(*target(sources[0]['Path']), viewer, raw=True)[1]==payload, 'Recovery playback failed')
         print('PEER PASS: viewer-only revocation, old URL denial, disabled/offline hiding, catalog retention and stable-ID recovery', flush=True)
+        if not OLD_SOURCE:
+            # Last: a server download replaces the friend's title with the local file.
+            stage = 'server downloads land in the chosen library'
+            (config / 'qa-movies').mkdir()
+            qa.request(base, '/Library/VirtualFolders?name=QA%20Movies&collectionType=movies&refreshLibrary=false', admin,
+                {'LibraryOptions':{'PathInfos':[{'Path':'/config/qa-movies'}],'EnableRealtimeMonitor':False,'EnableInternetProviders':False}}, expected=204)
+            destinations = qa.request(base, '/Plugins/Federation/Download/Destinations', admin)
+            qa.check(destinations['defaultDestination'] == 'auto', 'Default destination is not the matching library')
+            qa.check(any(o['id'] == 'library:QA Movies' and o['path'] == '/config/qa-movies' for o in destinations['options']), 'QA Movies not offered')
+            qa.check(not any('/plugins/' in o['path'].lower() for o in destinations['options']), 'The plugin\'s own folders are offered')
+            qa.request(base, '/Plugins/Federation/Download/Destinations', viewer, expected=403, raw=True)
+            qa.request(base, '/Plugins/Federation/Settings/DownloadDestination', admin, {'Destination': 'library:Nope'}, expected=400, raw=True)
+            def finished(operation):
+                def check():
+                    progress = qa.request(base, f'/Plugins/Federation/Download/Progress/{operation}', admin)
+                    return progress if progress.get('isComplete') else None
+                done = qa.wait_for(check, 'Server download did not finish')
+                qa.check(done.get('success'), f'Server download failed: {done.get("status")}')
+            started = qa.request(base, '/Plugins/Federation/Download', admin, {'ItemId': item_id})
+            finished(started['operationId'])
+            landed = config / 'qa-movies' / 'QA Peer (2026)' / 'QA Peer (2026).mkv'
+            qa.check(landed.exists() and landed.read_bytes() == payload, 'Download did not land as Movies/Name (Year)/Name (Year).mkv')
+            qa.check(not list((config / 'qa-movies').rglob('*.partial')), 'A partial file was left behind')
+            started = qa.request(base, '/Plugins/Federation/Browse/Download', admin, {'ServerId': friend, 'ItemId': native['Id'],
+                'Name': 'QA Peer', 'Type': 'Movie', 'Year': 2026, 'Destination': 'folder:QA Friends'})
+            finished(started['operationId'])
+            fresh = config / 'QA Friends' / 'QA Peer (2026)' / 'QA Peer (2026).mkv'
+            qa.check(fresh.exists() and fresh.read_bytes() == payload, 'New-folder download did not land beside the Movies folder')
+            folders = qa.request(base, '/Library/VirtualFolders', admin)
+            qa.check(any(f['Name'] == 'QA Friends' and '/config/QA Friends' in (f.get('Locations') or []) for f in folders), 'The new folder did not become a library')
+            started = qa.request(base, '/Plugins/Federation/Browse/Download', admin, {'ServerId': friend, 'ItemId': native['Id'],
+                'Name': 'QA Peer', 'Type': 'Movie', 'Year': 2026, 'Destination': 'library:QA Movies'})
+            finished(started['operationId'])
+            qa.check((config / 'qa-movies' / 'QA Peer (2026)' / f'QA Peer (2026) - {settings["RemoteServers"][0]["Name"]}.mkv').exists(),
+                'A second copy was not saved as a version')
+            refused = qa.request(base, '/Plugins/Federation/Browse/Download', admin, {'ServerId': friend, 'ItemId': native['Id'],
+                'Name': 'QA Peer', 'Destination': 'folder:../escape'}, expected=400)
+            qa.check(not refused.get('success'), 'An escaping folder was accepted')
+            print('PEER PASS: server downloads go to the matching library as Name (Year)/Name (Year).ext, to a new folder made into a library, a second copy as a version; bad destinations refused', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError)) else type(e).__name__
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None

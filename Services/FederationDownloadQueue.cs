@@ -41,6 +41,30 @@ namespace Jellyfin.Plugin.Federation.Services
 
         public string? PartialPath { get; set; }
 
+        /// <summary>Gets or sets the destination the admin picked (see <see cref="DownloadDestinations"/>); null means the configured default.</summary>
+        public string? Destination { get; set; }
+
+        /// <summary>Gets or sets the folder this job may write in, fixed on its first run. Null on jobs from older versions: the downloads folder.</summary>
+        public string? TargetRoot { get; set; }
+
+        /// <summary>Gets or sets the library that should scan the file; null for the separate downloads library.</summary>
+        public string? TargetLibrary { get; set; }
+
+        /// <summary>Gets or sets the library to create for a new folder, once the file is in place.</summary>
+        public string? CreateLibrary { get; set; }
+
+        public string? CreateType { get; set; }
+
+        public string? ItemType { get; set; }
+
+        public int? Year { get; set; }
+
+        public string? SeriesName { get; set; }
+
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
+
         public bool Bulk { get; set; }
 
         public DateTime StartedUtc { get; set; } = DateTime.UtcNow;

@@ -28,6 +28,20 @@ public sealed class AdaptiveSourceRanking
         }
     }
 
+    /// <summary>The last measured round trip to the server, when a recent probe succeeded.</summary>
+    public double? LatencyMs(string serverId)
+    {
+        if (!_observations.TryGetValue(serverId, out var observation))
+        {
+            return null;
+        }
+
+        lock (observation)
+        {
+            return Fresh(observation.HealthAt, _clock.GetUtcNow()) ? observation.LatencyMs : null;
+        }
+    }
+
     // Count at most one relay stall per server per 10 seconds. Many viewers
     // experiencing the same outage must not multiply the penalty indefinitely.
     public void ObserveStall(string serverId)

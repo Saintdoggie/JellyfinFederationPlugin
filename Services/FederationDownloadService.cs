@@ -104,7 +104,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal static bool IsDownloadedFilePath(string? path)
         {
-            return IsPathInsideRoot(path, GetDownloadsRoot());
+            return IsPathInsideRoot(path, GetDownloadsRoot()) || DownloadedFileRegistry.Contains(path);
         }
 
         /// <summary>
@@ -162,7 +162,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// a whole movie can take far longer than a single HTTP request should be held
         /// open for.
         /// </summary>
-        public (bool Success, string Message, string? OperationId) StartDownload(string localItemId)
+        public (bool Success, string Message, string? OperationId) StartDownload(string localItemId, string? destination = null)
         {
             if (!Guid.TryParse(localItemId, out var itemGuid))
             {
@@ -211,6 +211,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, $"Downloads from {srcServer.Name} are disabled (Catalog → {srcServer.Name} → Download access).", null);
             }
 
+            var details = new DownloadDetails(destination, entry.ItemType, entry.Metadata.ProductionYear, entry.Metadata.SeriesName, entry.Metadata.ParentIndexNumber, entry.Metadata.IndexNumber);
+            if (CheckDestination(details) is { } destinationError)
+            {
+                return (false, destinationError, null);
+            }
+
             var job = NewJob(
                 DownloadJob.KindFederated,
                 localItemId,
@@ -220,6 +226,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 key,
                 localItemId,
                 bulk: false);
+            Apply(job, details);
             EnqueueAndStart(job, ct => RunDownloadAsync(job, itemGuid, entry, source, ct));
 
             return (true, "Download started.", job.OperationId);
@@ -238,7 +245,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string serverId,
             string nativeItemId,
             string itemName,
-            bool bulk = false)
+            bool bulk = false,
+            DownloadDetails? details = null)
         {
             if (string.IsNullOrWhiteSpace(serverId) || string.IsNullOrWhiteSpace(nativeItemId))
             {
@@ -286,6 +294,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Already downloading.", null);
             }
 
+            if (CheckDestination(details) is { } destinationError)
+            {
+                return (false, destinationError, null);
+            }
+
             var job = NewJob(
                 DownloadJob.KindBrowse,
                 dedupeKey,
@@ -295,6 +308,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 federationKey: null,
                 localItemId: null,
                 bulk);
+            Apply(job, details);
             EnqueueAndStart(job, ct => RunBrowseDownloadAsync(job, server, nativeItemId, itemName, bulk, ct));
 
             return (true, "Download started.", job.OperationId);
@@ -379,6 +393,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 federationKey: null,
                 localItemId,
                 bulk: false);
+
+            // The better copy goes in the same library as the one it replaces.
+            Apply(job, new DownloadDetails(
+                LibraryHolding(item.Path),
+                item.GetBaseItemKind().ToString(),
+                item.ProductionYear,
+                (item as MediaBrowser.Controller.Entities.TV.Episode)?.SeriesName,
+                item.ParentIndexNumber,
+                item.IndexNumber));
             EnqueueAndStart(job, ct => RunQualityReplaceAsync(job, itemGuid, server, nativeItemId, item.Name, ct));
 
             return (true, "Download started.", job.OperationId);
@@ -402,7 +425,7 @@ namespace Jellyfin.Plugin.Federation.Services
             if (job != null)
             {
                 FailPermanently(job, "Cancelled.");
-                DeletePartialFile(job.PartialPath);
+                DeletePartialFile(job, job.PartialPath);
                 return (true, "Cancelled.");
             }
 
@@ -522,30 +545,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var downloadsRoot = GetDownloadsRoot();
-                if (string.IsNullOrEmpty(downloadsRoot))
+                var targetError = PrepareTarget(job, entry.Metadata.Name, SafeExtension(entry.Metadata.Container, "mkv"), srcServer.Name);
+                if (targetError != null)
                 {
-                    FailPermanently(job, "Plugin data path unavailable.");
+                    FailPermanently(job, targetError);
                     return;
                 }
 
-                Directory.CreateDirectory(downloadsRoot);
-
-                if (string.IsNullOrEmpty(destinationPath) || string.IsNullOrEmpty(partialPath))
-                {
-                    var fileName = SafeFileName(entry.Metadata.Name) + "." + SafeExtension(entry.Metadata.Container, "mkv");
-                    destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
-                    job.DestinationPath = destinationPath;
-                    job.PartialPath = partialPath;
-                    PersistJob(job);
-                }
-
-                if (!AreJobPathsInsideRoot(downloadsRoot, destinationPath, partialPath))
-                {
-                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
-                    return;
-                }
+                destinationPath = job.DestinationPath!;
+                partialPath = job.PartialPath!;
 
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
@@ -569,7 +577,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 partialPath = null;
 
                 await StampDownloadedCopyAsync(destinationPath, source.ServerId).ConfigureAwait(false);
-                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
+                await FinishTargetAsync(job).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
 
                 var item = _libraryManager.GetItemById(itemGuid);
@@ -641,35 +649,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var downloadsRoot = GetDownloadsRoot();
-                if (string.IsNullOrEmpty(downloadsRoot))
+                var targetError = PrepareTarget(job, itemName, "mkv", server.Name);
+                if (targetError != null)
                 {
-                    FailPermanently(job, "Plugin data path unavailable.");
+                    FailPermanently(job, targetError);
                     return;
                 }
 
-                Directory.CreateDirectory(downloadsRoot);
-
-                if (string.IsNullOrEmpty(destinationPath) || string.IsNullOrEmpty(partialPath))
-                {
-                    // The remote's real container isn't known up front the way
-                    // RunDownloadAsync's federated-entry path knows it from synced
-                    // metadata - mkv is a safe default container extension for
-                    // whatever bytes come back; Jellyfin's own library scan probes
-                    // the actual codecs regardless of the extension.
-                    var fileName = SafeFileName(itemName) + ".mkv";
-                    destinationPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(destinationPath) + "." + operationId + ".partial");
-                    job.DestinationPath = destinationPath;
-                    job.PartialPath = partialPath;
-                    PersistJob(job);
-                }
-
-                if (!AreJobPathsInsideRoot(downloadsRoot, destinationPath, partialPath))
-                {
-                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
-                    return;
-                }
+                destinationPath = job.DestinationPath!;
+                partialPath = job.PartialPath!;
 
                 DownloadProgressTracker.SetDestinationPath(operationId, destinationPath);
 
@@ -684,7 +672,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 partialPath = null;
 
                 await StampDownloadedCopyAsync(destinationPath, server.Id).ConfigureAwait(false);
-                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
+                await FinishTargetAsync(job).ConfigureAwait(false);
                 _libraryManager.QueueLibraryScan();
 
                 _logger.LogInformation("[Federation] Browse-downloaded {Name} from {Server} to {Path}", itemName, server.Name, destinationPath);
@@ -718,30 +706,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var downloadsRoot = GetDownloadsRoot();
-                if (string.IsNullOrEmpty(downloadsRoot))
+                var targetError = PrepareTarget(job, itemName, "mkv", server.Name);
+                if (targetError != null)
                 {
-                    FailPermanently(job, "Plugin data path unavailable.");
+                    FailPermanently(job, targetError);
                     return;
                 }
 
-                Directory.CreateDirectory(downloadsRoot);
-
-                if (string.IsNullOrEmpty(committedPath) || string.IsNullOrEmpty(partialPath))
-                {
-                    var fileName = SafeFileName(itemName) + ".mkv";
-                    committedPath = GetUniqueDestinationPath(downloadsRoot, fileName);
-                    partialPath = Path.Combine(downloadsRoot, "." + Path.GetFileName(committedPath) + "." + operationId + ".partial");
-                    job.DestinationPath = committedPath;
-                    job.PartialPath = partialPath;
-                    PersistJob(job);
-                }
-
-                if (!AreJobPathsInsideRoot(downloadsRoot, committedPath, partialPath))
-                {
-                    FailPermanently(job, "Refusing to write a download outside the downloads folder.");
-                    return;
-                }
+                committedPath = job.DestinationPath!;
+                partialPath = job.PartialPath!;
 
                 DownloadProgressTracker.SetDestinationPath(operationId, committedPath);
 
@@ -761,7 +734,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 // Make the destination library ready before touching the old item.
                 // A failure here leaves both the committed new file and old copy.
-                await EnsureDownloadsLibraryAsync(downloadsRoot).ConfigureAwait(false);
+                await FinishTargetAsync(job).ConfigureAwait(false);
 
                 // Re-resolve the exact approved id immediately before deletion;
                 // never retain and act on the object captured before a long download.
@@ -812,7 +785,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     _logger.LogError(ex, "[Federation] Quality-replace failed for {Name}", itemName);
                     FailPermanently(job, "Replacement failed: " + ex.Message + preservation);
-                    DeletePartialFile(partialPath);
+                    DeletePartialFile(job, partialPath);
                 }
             }
             finally
@@ -844,6 +817,41 @@ namespace Jellyfin.Plugin.Federation.Services
                 resumeFrom,
                 progress,
                 cancellationToken);
+        }
+
+        /// <summary>Checks a requested destination before anything is queued. Null when fine.</summary>
+        private string? CheckDestination(DownloadDetails? details)
+        {
+            if (string.IsNullOrWhiteSpace(details?.Destination))
+            {
+                return null;
+            }
+
+            var target = DownloadDestinations.Resolve(details.Destination, details.ItemType, _libraryManager.GetVirtualFolders(), Plugin.Instance?.DataFolderPath, GetDownloadsRoot());
+            return target.Error;
+        }
+
+        private static void Apply(DownloadJob job, DownloadDetails? details)
+        {
+            if (details == null)
+            {
+                return;
+            }
+
+            job.Destination = string.IsNullOrWhiteSpace(details.Destination) ? null : details.Destination.Trim();
+            job.ItemType = details.ItemType;
+            job.Year = details.Year;
+            job.SeriesName = details.SeriesName;
+            job.Season = details.Season;
+            job.Episode = details.Episode;
+        }
+
+        /// <summary>"library:Movies" for the library whose folder holds <paramref name="path"/>, else null (the default).</summary>
+        private string? LibraryHolding(string? path)
+        {
+            var folder = _libraryManager.GetVirtualFolders()?
+                .FirstOrDefault(vf => (vf.Locations ?? Array.Empty<string>()).Any(l => IsPathInsideRoot(path, l)));
+            return folder == null ? null : DownloadDestinations.LibraryPrefix + folder.Name;
         }
 
         private DownloadJob NewJob(
@@ -1152,7 +1160,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogInformation("[Federation] Download cancelled for {Name}", itemName);
                 FailPermanently(job, cancelledMessage ?? "Cancelled.");
-                DeletePartialFile(partialPath);
+                DeletePartialFile(job, partialPath);
                 return;
             }
 
@@ -1165,7 +1173,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             _logger.LogError(ex, "[Federation] Download failed for {Name}", itemName);
             FailPermanently(job, "Download failed: " + ex.Message);
-            DeletePartialFile(partialPath);
+            DeletePartialFile(job, partialPath);
         }
 
         private static bool IsTransientDownloadFailure(Exception ex)
@@ -1210,16 +1218,19 @@ namespace Jellyfin.Plugin.Federation.Services
             return url + separator + "federationDownload=true&federationBulk=" + (bulk ? "true" : "false");
         }
 
-        private void DeletePartialFile(string? path)
+        private void DeletePartialFile(DownloadJob job, string? path)
         {
             if (string.IsNullOrEmpty(path))
             {
                 return;
             }
 
-            // A persisted job's path is not trusted: never delete outside the
-            // downloads folder.
-            if (!IsDownloadedFilePath(path))
+            // A persisted job's path is not trusted: only ever delete a
+            // ".partial" file inside the downloads folder or the job's own
+            // destination folder.
+            var insideTarget = !string.IsNullOrEmpty(job.TargetRoot) && IsPathInsideRoot(path, job.TargetRoot);
+            if (!path.EndsWith(".partial", StringComparison.Ordinal)
+                || !(IsPathInsideRoot(path, GetDownloadsRoot()) || insideTarget))
             {
                 _logger.LogWarning("[Federation] Not removing partial file outside the downloads folder: {Path}", path);
                 return;
@@ -1257,6 +1268,11 @@ namespace Jellyfin.Plugin.Federation.Services
         private async Task StampDownloadedCopyAsync(string destinationPath, string origin)
         {
             RememberPendingDownload(destinationPath, origin);
+
+            // Outside the downloads folder the path alone no longer says "a
+            // friend's copy", and the stamp only lands after the scan: remember
+            // the file so it is never offered back to friends in between.
+            DownloadedFileRegistry.Add(destinationPath);
 
             BaseItem? item;
             try
@@ -1357,6 +1373,113 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Fixes where a job writes, on its first run: the admin's choice (or
+        /// the configured default) resolved to a library folder, laid out the way
+        /// Jellyfin names films and episodes. Resumed jobs keep their paths;
+        /// jobs from older versions stay in the downloads folder. Returns an
+        /// error for the admin, or null.
+        /// </summary>
+        private string? PrepareTarget(DownloadJob job, string name, string extension, string? sourceLabel)
+        {
+            var downloadsRoot = GetDownloadsRoot();
+            if (!string.IsNullOrEmpty(job.DestinationPath) && !string.IsNullOrEmpty(job.PartialPath))
+            {
+                job.TargetRoot ??= downloadsRoot;
+            }
+            else
+            {
+                var target = DownloadDestinations.Resolve(
+                    job.Destination ?? Plugin.Instance?.Configuration?.DownloadDestination,
+                    job.ItemType,
+                    _libraryManager.GetVirtualFolders(),
+                    Plugin.Instance?.DataFolderPath,
+                    downloadsRoot);
+                if (!target.Ok)
+                {
+                    return target.Error;
+                }
+
+                if (string.IsNullOrEmpty(target.Root))
+                {
+                    return "Plugin data path unavailable.";
+                }
+
+                var (subfolder, fileName) = DownloadDestinations.Layout(
+                    new DownloadNaming(name, job.Year, job.ItemType, job.SeriesName, job.Season, job.Episode, extension),
+                    target.IsSeparate);
+                var directory = string.IsNullOrEmpty(subfolder) ? target.Root : Path.Combine(target.Root, subfolder);
+                try
+                {
+                    Directory.CreateDirectory(directory);
+                    var probe = Path.Combine(directory, ".federation-write-test-" + job.OperationId);
+                    File.WriteAllBytes(probe, Array.Empty<byte>());
+                    File.Delete(probe);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    return $"This server can't write to {directory} ({ex.Message}). Pick another destination.";
+                }
+
+                var destination = GetUniqueDestinationPath(directory, fileName, sourceLabel);
+                job.TargetRoot = target.Root;
+                job.TargetLibrary = target.IsSeparate ? null : target.LibraryName;
+                job.CreateLibrary = target.CreateLibrary;
+                job.CreateType = target.CreateType?.ToString();
+                job.DestinationPath = destination;
+                job.PartialPath = Path.Combine(directory, "." + Path.GetFileName(destination) + "." + job.OperationId + ".partial");
+                PersistJob(job);
+            }
+
+            if (!AreJobPathsInsideRoot(job.TargetRoot!, job.DestinationPath, job.PartialPath))
+            {
+                return "Refusing to write a download outside its destination folder.";
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(job.PartialPath!)!);
+            DownloadProgressTracker.SetDestinationPath(job.OperationId, job.DestinationPath!);
+            return null;
+        }
+
+        /// <summary>
+        /// Makes sure a library scans the finished file: the separate downloads
+        /// library, or the new library made for a new folder. An existing
+        /// library already covers its own folders.
+        /// </summary>
+        private async Task FinishTargetAsync(DownloadJob job)
+        {
+            if (string.IsNullOrEmpty(job.TargetLibrary))
+            {
+                await EnsureDownloadsLibraryAsync(job.TargetRoot ?? GetDownloadsRoot()).ConfigureAwait(false);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(job.CreateLibrary) || string.IsNullOrEmpty(job.TargetRoot))
+            {
+                return;
+            }
+
+            var existing = _libraryManager.GetVirtualFolders()?
+                .FirstOrDefault(vf => string.Equals(vf.Name, job.CreateLibrary, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                if (!HasLocation(existing, job.TargetRoot))
+                {
+                    _libraryManager.AddMediaPath(existing.Name, new MediaPathInfo { Path = job.TargetRoot });
+                }
+
+                return;
+            }
+
+            var type = Enum.TryParse<CollectionTypeOptions>(job.CreateType, true, out var parsed) ? parsed : CollectionTypeOptions.movies;
+            await _libraryManager.AddVirtualFolder(
+                job.CreateLibrary,
+                type,
+                new LibraryOptions { PathInfos = new[] { new MediaPathInfo { Path = job.TargetRoot } } },
+                refreshLibrary: false).ConfigureAwait(false);
+            _logger.LogInformation("[Federation] Made library {Name} for downloads in {Path}", job.CreateLibrary, job.TargetRoot);
         }
 
         private async Task EnsureDownloadsLibraryAsync(string downloadsRoot)
@@ -1538,7 +1661,12 @@ namespace Jellyfin.Plugin.Federation.Services
             return false;
         }
 
-        private static string GetUniqueDestinationPath(string directory, string fileName)
+        /// <summary>
+        /// A free file name in <paramref name="directory"/>. When the name is
+        /// taken (another version of the same film), the friend's name is added
+        /// the way Jellyfin groups versions: "Name (2021) - netflix++.mkv".
+        /// </summary>
+        internal static string GetUniqueDestinationPath(string directory, string fileName, string? versionLabel = null)
         {
             var candidate = Path.Combine(directory, fileName);
             if (!File.Exists(candidate))
@@ -1548,6 +1676,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var stem = Path.GetFileNameWithoutExtension(fileName);
             var extension = Path.GetExtension(fileName);
+            if (!string.IsNullOrWhiteSpace(versionLabel))
+            {
+                stem += " - " + DownloadDestinations.SafeComponent(versionLabel, "friend");
+                candidate = Path.Combine(directory, stem + extension);
+                if (!File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
             for (var suffix = 2; suffix < 10_000; suffix++)
             {
                 candidate = Path.Combine(directory, $"{stem} ({suffix}){extension}");
@@ -1560,4 +1697,7 @@ namespace Jellyfin.Plugin.Federation.Services
             throw new IOException("Could not allocate a unique destination filename.");
         }
     }
+
+    /// <summary>Where a download goes and what it is, for naming it on disk.</summary>
+    public sealed record DownloadDetails(string? Destination, string? ItemType, int? Year, string? SeriesName, int? Season, int? Episode);
 }

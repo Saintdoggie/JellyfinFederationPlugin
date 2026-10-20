@@ -120,7 +120,22 @@
 
       // Watch-party status line (bottom centre, solid colours).
       '.federation-party-notice{position:fixed;left:50%;bottom:5em;transform:translateX(-50%);max-width:min(32em,calc(100vw - 2em));padding:.7em 1.1em;border-radius:.4em;background:rgba(20,22,26,.96);color:#fff;z-index:100000;opacity:0;pointer-events:none;transition:opacity .2s;}',
-      '.federation-party-notice[data-show="1"]{opacity:1;}'
+      '.federation-party-notice[data-show="1"]{opacity:1;}',
+
+      // "Download to this server" destination picker (solid colours).
+      '.federation-dest-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1em;}',
+      '.federation-dest{width:min(30em,100%);max-height:calc(100vh - 2em);overflow:auto;background:#202226;color:#fff;border-radius:.5em;padding:1.2em 1.3em;box-shadow:0 .5em 2em rgba(0,0,0,.5);}',
+      '.federation-dest h3{margin:0 0 .8em;font-size:1.2em;font-weight:500;}',
+      '.federation-dest label{display:flex;gap:.7em;align-items:flex-start;padding:.45em .3em;border-radius:.3em;cursor:pointer;}',
+      '.federation-dest label:hover{background:rgba(255,255,255,.06);}',
+      '.federation-dest input[type=radio]{margin-top:.25em;}',
+      '.federation-dest-path{display:block;opacity:.6;font-size:.85em;word-break:break-all;}',
+      '.federation-dest-new{width:100%;box-sizing:border-box;margin:.2em 0 0;padding:.45em .6em;border-radius:.3em;border:1px solid #555;background:#15171a;color:#fff;font:inherit;}',
+      '.federation-dest-remember{margin-top:.6em;opacity:.85;}',
+      '.federation-dest-error{color:#ff8a80;min-height:1.2em;margin:.4em 0 0;font-size:.9em;}',
+      '.federation-dest-actions{display:flex;justify-content:flex-end;gap:.6em;margin-top:.8em;}',
+      '.federation-dest-actions button{padding:.5em 1.1em;border-radius:.3em;border:0;font:inherit;cursor:pointer;background:#33363c;color:#fff;}',
+      '.federation-dest-actions .federation-dest-go{background:var(--theme-primary-color,#00a4dc);}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -663,7 +678,133 @@
     }).catch(function () { /* the next progress poll tick reconciles state regardless */ });
   }
 
-  function startDownload(button, itemId) {
+  // Asks where a server download should go: each library with a folder of
+  // its own, the separate Federation Downloads library, or a new folder. The
+  // configured default is preselected; resolves null when cancelled.
+  function chooseDownloadDestination() {
+    return federationFetch('/Plugins/Federation/Download/Destinations', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : { defaultDestination: 'auto', options: [] }; })
+      .catch(function () { return { defaultDestination: 'auto', options: [] }; })
+      .then(function (data) {
+        return new Promise(function (resolve) {
+          var current = data.defaultDestination || 'auto';
+          var choices = [{ id: 'auto', name: 'Matching library', path: 'Movies for films, Shows for episodes' }]
+            .concat((data.options || []).map(function (o) { return { id: o.id, name: o.name, path: o.path }; }))
+            .concat([{ id: 'separate', name: 'Federation Downloads', path: 'A separate library, kept apart from your own titles' }]);
+          var isNewFolder = current.indexOf('folder:') === 0;
+          if (!isNewFolder && !choices.some(function (c) { return c.id === current; })) { current = 'auto'; }
+
+          var backdrop = document.createElement('div');
+          backdrop.className = 'federation-dest-backdrop';
+          var box = document.createElement('div');
+          box.className = 'federation-dest';
+          box.setAttribute('role', 'dialog');
+          box.setAttribute('aria-modal', 'true');
+          var title = document.createElement('h3');
+          title.textContent = 'Download to this server';
+          box.appendChild(title);
+
+          function addChoice(id, name, sub) {
+            var label = document.createElement('label');
+            var radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = 'federation-dest';
+            radio.value = id;
+            radio.checked = isNewFolder ? id === 'folder:' : id === current;
+            var text = document.createElement('span');
+            text.textContent = name;
+            var path = document.createElement('span');
+            path.className = 'federation-dest-path';
+            path.textContent = sub || '';
+            text.appendChild(path);
+            label.appendChild(radio);
+            label.appendChild(text);
+            box.appendChild(label);
+            return label;
+          }
+
+          choices.forEach(function (c) { addChoice(c.id, c.name, c.path); });
+          var newLabel = addChoice('folder:', 'New folder', 'A name (made next to your Movies folder) or a full path. It becomes its own library.');
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'federation-dest-new';
+          input.placeholder = 'e.g. From friends or /media/friends';
+          input.value = isNewFolder ? current.substring('folder:'.length) : '';
+          newLabel.querySelector('span').appendChild(input);
+          input.addEventListener('focus', function () { newLabel.querySelector('input[type=radio]').checked = true; });
+
+          var remember = document.createElement('label');
+          remember.className = 'federation-dest-remember';
+          var rememberBox = document.createElement('input');
+          rememberBox.type = 'checkbox';
+          var rememberText = document.createElement('span');
+          rememberText.textContent = 'Use this for every download';
+          remember.appendChild(rememberBox);
+          remember.appendChild(rememberText);
+          box.appendChild(remember);
+
+          var error = document.createElement('div');
+          error.className = 'federation-dest-error';
+          box.appendChild(error);
+
+          var actions = document.createElement('div');
+          actions.className = 'federation-dest-actions';
+          var cancel = document.createElement('button');
+          cancel.type = 'button';
+          cancel.textContent = 'Cancel';
+          var go = document.createElement('button');
+          go.type = 'button';
+          go.className = 'federation-dest-go';
+          go.textContent = 'Download';
+          actions.appendChild(cancel);
+          actions.appendChild(go);
+          box.appendChild(actions);
+          backdrop.appendChild(box);
+          document.body.appendChild(backdrop);
+
+          function close(value) {
+            document.removeEventListener('keydown', onKey, true);
+            if (backdrop.parentNode) { backdrop.parentNode.removeChild(backdrop); }
+            resolve(value);
+          }
+
+          function onKey(e) {
+            if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+          }
+
+          document.addEventListener('keydown', onKey, true);
+          backdrop.addEventListener('click', function (e) { if (e.target === backdrop) { close(null); } });
+          cancel.addEventListener('click', function () { close(null); });
+          go.addEventListener('click', function () {
+            var picked = box.querySelector('input[name="federation-dest"]:checked');
+            var value = picked ? picked.value : 'auto';
+            if (value === 'folder:') {
+              var folder = input.value.trim();
+              if (!folder) { error.textContent = 'Type a folder name or path.'; input.focus(); return; }
+              value = 'folder:' + folder;
+            }
+
+            if (!rememberBox.checked) { close(value); return; }
+            go.disabled = true;
+            federationFetch('/Plugins/Federation/Settings/DownloadDestination', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ Destination: value })
+            })
+              .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+              .then(function (r) {
+                if (!r.ok) { go.disabled = false; error.textContent = (r.body && r.body.message) || 'Could not save that destination.'; return; }
+                close(value);
+              })
+              .catch(function () { go.disabled = false; error.textContent = 'Could not save that destination.'; });
+          });
+          setTimeout(function () { go.focus(); }, 0);
+        });
+      });
+  }
+
+  function startDownload(button, itemId, destination) {
     setButtonState(button, 'busy', 'Starting', 'Starting download');
 
     var token = getToken();
@@ -671,22 +812,25 @@
       method: 'POST',
       credentials: 'same-origin',
       headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'MediaBrowser Token="' + encodeURIComponent(token) + '"' } : {}),
-      body: JSON.stringify({ ItemId: itemId })
+      body: JSON.stringify({ ItemId: itemId, Destination: destination || null })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.operationId) {
           var msg = (result.data && result.data.message) || 'Could not start download';
           setButtonState(button, 'error', 'Download failed', msg);
+          notifyParty(msg);
           return;
         }
 
+        notifyParty('Downloading to this server. It shows up in the library once it finishes.');
         button.setAttribute('data-operation-id', result.data.operationId);
         setActiveDownload(itemId, result.data.operationId, '');
         pollDownloadProgress(itemId, result.data.operationId, button);
       })
       .catch(function () {
         setButtonState(button, 'error', 'Download failed', 'Could not start download');
+        notifyParty('Could not start the download.');
       });
   }
 
@@ -954,7 +1098,11 @@
               'cloud_download',
               'Download to this server',
               'federation-download-server',
-              function (btn) { startDownload(btn, rawId); }), scroller.firstChild);
+              function (btn) {
+                chooseDownloadDestination().then(function (destination) {
+                  if (destination) { startDownload(btn, rawId, destination); }
+                });
+              }), scroller.firstChild);
           }
 
           var hideItem = makeActionSheetItem(
@@ -1388,6 +1536,103 @@
     renderOriginFilter();
     renderFriendFavorites();
     injectSyncPlayMenu();
+    injectPlaybackConnection();
+  }
+
+  // ---------------------------------------------------------------------
+  // Playback Info panel (player menu → Playback Info): a "Federation" block
+  // for friends' titles with the friend, how the stream travels, who converts
+  // it and why, the link, and the hardware involved. jellyfin-web re-renders
+  // the panel every second (replacing its contents), which re-runs scan(), so
+  // the block is simply put back each time. The server works out what this
+  // device is playing; the answer is refreshed every 10 seconds.
+  // ---------------------------------------------------------------------
+  var connection = { data: null, fetchedAt: 0, pending: false, panel: null };
+
+  function injectPlaybackConnection() {
+    var stats = document.querySelector('.playerStats:not(.hide) .playerStats-stats');
+    if (!stats) {
+      connection.panel = null;
+      return;
+    }
+
+    if (connection.panel !== stats) {
+      // Newly opened panel: forget the previous title's answer.
+      connection.panel = stats;
+      connection.data = null;
+      connection.fetchedAt = 0;
+    }
+
+    if (!connection.pending && Date.now() - connection.fetchedAt > 10000) {
+      connection.pending = true;
+      federationFetch('/Plugins/Federation/Playback/Connection', { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .catch(function () { return null; })
+        .then(function (data) {
+          connection.pending = false;
+          connection.fetchedAt = Date.now();
+          connection.data = data;
+          if (connection.panel) { renderPlaybackConnection(connection.panel); }
+        });
+    }
+
+    renderPlaybackConnection(stats);
+  }
+
+  function playbackConnectionRows(data) {
+    if (!data || !data.federated) {
+      return null;
+    }
+
+    var rows = [['Friend', data.friend], ['Route', data.routeText]];
+    if (data.placement) { rows.push(['Who converts', data.placement]); }
+    if (typeof data.latencyMs === 'number') { rows.push(['Round trip', Math.round(data.latencyMs) + ' ms']); }
+    if (typeof data.linkMbps === 'number') { rows.push(['Link speed', data.linkMbps.toFixed(data.linkMbps < 10 ? 1 : 0) + ' Mbps']); }
+    if (typeof data.capMbps === 'number') { rows.push(['Bitrate cap', data.capMbps + ' Mbps']); }
+    if (data.friendHardware) { rows.push([data.friend + ' converts with', data.friendHardware]); }
+    if (data.thisServerHardware) { rows.push(['This server converts with', data.thisServerHardware]); }
+    if (data.alsoOn && data.alsoOn.length) { rows.push(['Also on', data.alsoOn.join(', ')]); }
+    return rows;
+  }
+
+  function renderPlaybackConnection(stats) {
+    var existing = stats.querySelector('.federation-stats');
+    var rows = playbackConnectionRows(connection.data);
+    if (!rows) {
+      if (existing) { existing.parentNode.removeChild(existing); }
+      return;
+    }
+
+    var signature = JSON.stringify(rows);
+    if (existing && existing.getAttribute('data-signature') === signature) {
+      return;
+    }
+
+    // Same classes as jellyfin-web's own sections, so it looks native.
+    var block = document.createElement('div');
+    block.className = 'federation-stats';
+    block.setAttribute('data-signature', signature);
+    function row(label, value, header) {
+      var line = document.createElement('div');
+      line.className = header ? 'playerStats-stat playerStats-stat-header' : 'playerStats-stat';
+      var l = document.createElement('div');
+      l.className = 'playerStats-stat-label';
+      l.textContent = label;
+      var v = document.createElement('div');
+      v.className = 'playerStats-stat-value';
+      v.textContent = value || '';
+      line.appendChild(l);
+      line.appendChild(v);
+      block.appendChild(line);
+    }
+
+    row('Federation', '', true);
+    rows.forEach(function (r) { row(r[0], r[1], false); });
+    if (existing) {
+      existing.parentNode.replaceChild(block, existing);
+    } else {
+      stats.appendChild(block);
+    }
   }
 
   var scheduled = false;
