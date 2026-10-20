@@ -42,6 +42,7 @@ After a Release build:
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py     # playback, per-user hiding, unshare, device downloads, friends' favorites, outage
 FEDERATION_SOURCE_DLL=<older plugin dll> JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_peer_smoke.py  # current receiver, older friend
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_handoff_smoke.py  # remote-transcode handoff end to end
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_party_smoke.py    # watch parties across two servers (scripted SyncPlay players)
 ```
 
 Each creates two disposable Jellyfin containers on a private network, makes them friends and

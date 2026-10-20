@@ -90,6 +90,12 @@ Playback, authorization, and downloads:
   friend, viewer-bound Download permit), `DeviceDownload.cs` (file names, route).
   Owner side: `DirectStream?download=true` names the file; viewer allowance in
   `FederationPlaybackTokenService.TryReserveViewerDownload`.
+- Watch parties (0.0.189): `FederatedPartyService.cs` (parties, links, heartbeat,
+  peer messages), `PartyLink.cs` (pure relay rules: echo suppression, Wait/Go
+  loading handshake, ground-truth state; unit tested), `PartyItemMapper.cs`
+  (title matching across servers), `PartyWire.cs`, `FederatedPartyFilters.cs`
+  (adds friends' parties to `/SyncPlay/List`, answers `/SyncPlay/Join`). E2E:
+  `scripts/federation_party_smoke.py` with `scripts/syncplay_player.py`.
 - `Services/FederationFriendFavoritesService.cs` — friends' favorites: owner
   `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/federation-badge.js`. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.

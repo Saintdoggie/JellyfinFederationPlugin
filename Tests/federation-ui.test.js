@@ -1922,3 +1922,82 @@ test("admin page has the friends' favorites switches wired to their own settings
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/Favorites', \{\s*method: 'POST'/);
   assert.match(configPage, /loadRemoteTranscodeSettings\(\);\s*loadFavoritesSettings\(\);/);
 });
+
+function makeSyncPlayMenu(menuIds, status, groups = []) {
+  const items = menuIds.map((id) => '<button class="listItem actionSheetMenuItem" data-id="' + id + '">' + id + '</button>').join('');
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div class="dialog syncPlayGroupMenu"><h1 class="actionSheetTitle">qa-admin\'s group</h1><div class="actionSheetScroller">' + items + '</div></div>'
+      + '</body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/home' }
+  );
+  const posts = [];
+  dom.window.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    getCurrentUserId: () => 'u1',
+    accessToken: () => 'test-token',
+    getSyncPlayGroups: () => Promise.resolve({ json: () => Promise.resolve(groups) })
+  };
+  dom.window.fetch = (url, options) => {
+    const u = String(url);
+    let data = {};
+    if (u.includes('ClientCatalog')) data = { items: {}, unavailableIds: [] };
+    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false };
+    if (u.includes('/Party/Status/')) data = status;
+    if (options && options.method === 'POST') { posts.push({ url: u, body: JSON.parse(options.body || '{}') }); data = { success: true, message: 'Friends can join from their group list.' }; }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  return { dom, posts };
+}
+
+test('group menu offers "New group with friends" next to "New group" for viewers who may host', async () => {
+  const { dom, posts } = makeSyncPlayMenu(['new-group'], { shared: false, hostedHere: false, friends: [], canHost: true });
+  await settleMany();
+  const item = dom.window.document.querySelector('.federation-party-item');
+  assert.ok(item);
+  assert.equal(item.textContent.trim(), 'New group with friends');
+  // Empty data-id: the menu's own handler just closes (an unknown id would be "joined").
+  assert.equal(item.getAttribute('data-id'), '');
+  assert.equal(item.previousElementSibling.getAttribute('data-id'), 'new-group');
+  item.click();
+  await settleMany();
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].url, /\/Plugins\/Federation\/Party$/);
+  dom.window.close();
+});
+
+test('group menu hides the friends entry from viewers who may not host', async () => {
+  const { dom } = makeSyncPlayMenu(['new-group'], { shared: false, hostedHere: false, friends: [], canHost: false });
+  await settleMany();
+  assert.equal(dom.window.document.querySelector('.federation-party-item'), null);
+  dom.window.close();
+});
+
+test('inside a group the menu offers "Invite friends", or says who it is shared with', async () => {
+  const groups = [{ GroupId: 'g1', GroupName: "qa-admin's group", Participants: ['qa-admin'] }];
+  const invite = makeSyncPlayMenu(['settings', 'leave-group'], { shared: false, hostedHere: false, friends: [], canHost: true }, groups);
+  await settleMany();
+  const item = invite.dom.window.document.querySelector('.federation-party-item');
+  assert.equal(item.textContent.trim(), 'Invite friends');
+  assert.equal(item.nextElementSibling.getAttribute('data-id'), 'leave-group');
+  item.click();
+  await settleMany();
+  assert.deepEqual(invite.posts[0].body, { GroupId: 'g1' });
+  invite.dom.window.close();
+
+  const shared = makeSyncPlayMenu(['leave-group'], { shared: true, hostedHere: true, friends: ['netflix++'], canHost: true }, groups);
+  await settleMany();
+  assert.equal(shared.dom.window.document.querySelector('.federation-party-item').textContent.trim(), 'Watching with netflix++');
+  shared.dom.window.close();
+});
+
+test("admin page has the watch party switches wired to their own settings route", () => {
+  assert.ok(configPage.includes('id="fedChkHostWatchParties"'));
+  assert.ok(configPage.includes('id="fedChkJoinWatchParties"'));
+  assert.match(configPage, /case 'save-watch-parties':\s*saveWatchPartySettings\(\);/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/WatchParties', \{\s*method: 'POST'/);
+  assert.match(configPage, /loadFavoritesSettings\(\);\s*loadWatchPartySettings\(\);/);
+});
