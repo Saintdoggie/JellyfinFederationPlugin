@@ -284,6 +284,9 @@ public class DownloadsViewersHardwareTests
         var cpuOnly = TranscodeHardware.Local(new PluginConfiguration(), new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.none }, 0);
         Assert.Empty(cpuOnly.HardwareEncode);
         Assert.Contains("converts on the CPU", cpuOnly.Describe(), StringComparison.Ordinal);
+
+        // A friend that shares nothing (before 0.0.190) is not guessed to be CPU-only.
+        Assert.Equal("Not shared by this server", new TranscodeHardwareInfo().Describe());
     }
 
     [Fact]
