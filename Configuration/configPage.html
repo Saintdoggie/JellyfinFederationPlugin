@@ -1045,6 +1045,15 @@
                                 <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
                                 <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
+                            <div class="fed-subcard" id="fedWatchPartyCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Watch parties with friends</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkHostWatchParties" class="emby-checkbox fed-check" /> Let my viewers start watch parties with friends</label>
+                                <p class="fieldDescription">Adds "New group with friends" and "Invite friends" to the group (SyncPlay) menu. Friends' viewers join from their own group list and watch their own server's copy in step with yours. Play, pause and seeking are shared; anyone buffering pauses everyone.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkJoinWatchParties" class="emby-checkbox fed-check" /> Show friends' watch parties in my group list</label>
+                                <p class="fieldDescription">Each viewer only sees a party when they can open what it's playing here. Viewers need Jellyfin's SyncPlay permission, as for any group.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-watch-parties">Save watch party settings</button>
+                                <div class="fed-srvstatus" id="fedWatchPartyStatus" style="display:none;"></div>
+                            </div>
                             <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
                                 <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
                                 <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
@@ -1708,6 +1717,34 @@
                             q('#fedFavoritesFriends').innerHTML = lines.join('<br>');
                         })
                         .catch(function () { /* older server or offline; the card keeps its defaults */ });
+                    }
+
+                    function loadWatchPartySettings() {
+                        fedFetch('/Plugins/Federation/Settings/WatchParties')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            q('#fedChkHostWatchParties').checked = res.HostWatchPartiesWithFriends !== false;
+                            q('#fedChkJoinWatchParties').checked = res.JoinFriendsWatchParties !== false;
+                        })
+                        .catch(function () { /* older server or offline; the card keeps its defaults */ });
+                    }
+
+                    function saveWatchPartySettings() {
+                        showRemoteTranscodeStatus('#fedWatchPartyStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Settings/WatchParties', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                HostWatchPartiesWithFriends: q('#fedChkHostWatchParties').checked,
+                                JoinFriendsWatchParties: q('#fedChkJoinWatchParties').checked
+                            })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedWatchPartyStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            loadWatchPartySettings();
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedWatchPartyStatus', 'Could not save: ' + e.message, 'err'); });
                     }
 
                     function saveFavoritesSettings() {
@@ -6788,6 +6825,7 @@
                             q('#fedChkAdaptivePlayback').checked = currentConfig.EnableAdaptivePlayback === true;
                             loadRemoteTranscodeSettings();
                             loadFavoritesSettings();
+                            loadWatchPartySettings();
 
                             renderFriends();
                             loadFriendHealth(false);
@@ -7242,6 +7280,9 @@
                                     break;
                                 case 'save-favorites':
                                     saveFavoritesSettings();
+                                    break;
+                                case 'save-watch-parties':
+                                    saveWatchPartySettings();
                                     break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));

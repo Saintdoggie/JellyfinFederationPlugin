@@ -229,6 +229,24 @@ namespace Jellyfin.Plugin.Federation.Services
             return actions;
         }
 
+        /// <summary>
+        /// Takes in the group's actual state, read from Jellyfin. Needed because some
+        /// state changes reach no member at all (a group that loaded from idle into
+        /// paused sends nothing). Returns true when this completes a remote server's
+        /// first load, which must be reported to the host.
+        /// </summary>
+        public bool RefreshState(GroupStateType state, DateTime now)
+        {
+            if (Local.State != state)
+            {
+                Local.SetState(state, now);
+            }
+
+            var result = new PartyObservation();
+            CheckLoaded(result);
+            return result.ReportReady;
+        }
+
         /// <summary>The link's own Ready report for the current title and position.</summary>
         public PartyAction ReadyAction()
             => new(PartyActionKind.Ready, PositionTicks: Local.PositionTicks, PlaylistItemId: Local.PlayingPlaylistItemId);

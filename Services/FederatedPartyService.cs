@@ -594,6 +594,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var now = DateTime.UtcNow;
             var observation = link.Logic.Observe(message, now);
+            if (link.Peer == null && observation.SendQueue && _hosted.Values.FirstOrDefault(p => p.Observer == link) is { } announced)
+            {
+                // A new title: friends' lists must show (or hide) the party for it now.
+                AnnounceAll(announced);
+            }
             if (link.Peer != null && !(link.Logic.Role == PartyLinkRole.RemoteSide && !link.Logic.Initialized))
             {
                 foreach (var e in observation.Forward)
@@ -711,6 +716,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            if (RefreshState(link))
+            {
+                SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
+            }
+
             var wasInitialized = link.Logic.Initialized;
             foreach (var action in link.Logic.Plan(applied, mapped, now))
             {
@@ -721,11 +731,63 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            if (link.Logic.Role == PartyLinkRole.RemoteSide && !wasInitialized && link.Logic.Initialized && !link.Logic.AwaitingLoad)
+            if (link.Logic.Role == PartyLinkRole.RemoteSide && !wasInitialized && link.Logic.Initialized)
             {
-                // Nothing to load here (or nothing this server has): don't keep the host waiting.
-                SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
+                if (link.Logic.AwaitingLoad)
+                {
+                    WatchLoad(link, DateTime.UtcNow);
+                }
+                else
+                {
+                    // Nothing to load here (or nothing this server has): don't keep the host waiting.
+                    SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
+                }
             }
+        }
+
+        /// <summary>
+        /// Reads the group's actual state into the link (see <see cref="PartyLink.RefreshState"/>).
+        /// True when that finished this server's first load.
+        /// </summary>
+        private bool RefreshState(LinkHandle link)
+        {
+            if (link.Closed)
+            {
+                return false;
+            }
+
+            var info = _syncPlay.GetGroup(link.Bridge, link.GroupId);
+            return info != null && link.Logic.RefreshState(info.State, DateTime.UtcNow);
+        }
+
+        /// <summary>
+        /// Checks twice a second until this server's viewers have loaded the party's
+        /// title, then tells the host, which is holding everyone until then.
+        /// </summary>
+        private void WatchLoad(LinkHandle link, DateTime since)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(500).ConfigureAwait(false);
+                Post(() =>
+                {
+                    if (link.Closed || !link.Logic.AwaitingLoad)
+                    {
+                        return Task.CompletedTask;
+                    }
+
+                    if (RefreshState(link))
+                    {
+                        SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
+                    }
+                    else if (DateTime.UtcNow - since < HoldTimeout)
+                    {
+                        WatchLoad(link, since);
+                    }
+
+                    return Task.CompletedTask;
+                });
+            });
         }
 
         /// <summary>
@@ -895,6 +957,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         status = 0;
                     }
+                }
+
+                if (status is < 200 or >= 300)
+                {
+                    _logger.LogInformation("[Federation] Watch party message {Path} to {Friend} failed (HTTP {Status})", path.Split('/').Last(), peer.Name, status);
+                }
+                else
+                {
+                    _logger.LogDebug("[Federation] Watch party message {Path} to {Friend} delivered", path.Split('/').Last(), peer.Name);
                 }
 
                 if (done != null)

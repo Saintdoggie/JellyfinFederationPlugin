@@ -116,7 +116,11 @@
       '.federation-fav-title,.federation-fav-sub{display:block;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
       '.federation-fav-sub{opacity:.6;font-size:.9em;}',
       '.federation-fav-card:hover .federation-fav-art,.federation-fav-card:focus-visible .federation-fav-art{outline:3px solid var(--theme-primary-color,#00a4dc);outline-offset:-3px;}',
-      '.federation-fav-card:focus-visible{outline:none;}'
+      '.federation-fav-card:focus-visible{outline:none;}',
+
+      // Watch-party status line (bottom centre, solid colours).
+      '.federation-party-notice{position:fixed;left:50%;bottom:5em;transform:translateX(-50%);max-width:min(32em,calc(100vw - 2em));padding:.7em 1.1em;border-radius:.4em;background:rgba(20,22,26,.96);color:#fff;z-index:100000;opacity:0;pointer-events:none;transition:opacity .2s;}',
+      '.federation-party-notice[data-show="1"]{opacity:1;}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -886,7 +890,8 @@
       file_download: 'M11 3h2v10l4-4 1.4 1.4L12 17l-6.4-6.6L7 9l4 4V3ZM5 19h14v2H5v-2Z',
       cloud_download: 'M19.35 10.04A7.49 7.49 0 0 0 5.3 6.25 5.5 5.5 0 0 0 6 17h13a4.5 4.5 0 0 0 .35-6.96ZM11 17v-6H8l4-5 4 5h-3v6h-2Z',
       cloud_off: 'M6 5l6 6 6-6 1 1-6 6 6 6-1 1-6-6-6 6-1-1 6-6-6-6 1-1Z',
-      visibility: 'M12 5C7 5 3 8 1 12c2 4 6 7 11 7s9-3 11-7c-2-4-6-7-11-7Zm0 2c4 0 7 2 9 5-2 3-5 5-9 5s-7-2-9-5c2-3 5-5 9-5Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'
+      visibility: 'M12 5C7 5 3 8 1 12c2 4 6 7 11 7s9-3 11-7c-2-4-6-7-11-7Zm0 2c4 0 7 2 9 5-2 3-5 5-9 5s-7-2-9-5c2-3 5-5 9-5Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
+      groups: 'M16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 2c-2.7 0-8 1.3-8 4v3h16v-3c0-2.7-5.3-4-8-4Zm8 0c-.3 0-.7 0-1.1.1 1.3.9 2.1 2.2 2.1 3.9v3h7v-3c0-2.7-5.3-4-8-4Z'
     };
     return '<svg viewBox="0 0 24 24" fill="currentColor" focusable="false" aria-hidden="true"><path d="' + (paths[name] || paths.file_download) + '"></path></svg>';
   }
@@ -1382,6 +1387,7 @@
     updateDetailPageRing();
     renderOriginFilter();
     renderFriendFavorites();
+    injectSyncPlayMenu();
   }
 
   var scheduled = false;
@@ -1394,6 +1400,122 @@
     requestAnimationFrame(function () {
       scheduled = false;
       scan();
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Watch parties with friends
+  //
+  // Extra entries in jellyfin-web's own SyncPlay group menu (the people icon at
+  // the top): "New group with friends" next to "New group", and "Invite
+  // friends" / "Shared with friends" once in a group. Friends' parties need no
+  // entry here: the server lists them in the menu itself and joining works
+  // like any group. Entries carry an empty data-id so the menu's own handler
+  // just closes it (an unknown id would be treated as a group to join).
+  // ---------------------------------------------------------------------
+  var partyNotice = null;
+
+  function notifyParty(text) {
+    if (!partyNotice) {
+      partyNotice = document.createElement('div');
+      partyNotice.className = 'federation-party-notice';
+      partyNotice.setAttribute('role', 'status');
+      document.body.appendChild(partyNotice);
+    }
+
+    partyNotice.textContent = text;
+    partyNotice.setAttribute('data-show', '1');
+    clearTimeout(partyNotice.hideTimer);
+    partyNotice.hideTimer = setTimeout(function () { partyNotice.setAttribute('data-show', '0'); }, 5000);
+  }
+
+  function partyRequest(path, body) {
+    return federationFetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      credentials: 'same-origin',
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) { return { ok: res.ok, data: data || {} }; });
+    });
+  }
+
+  function currentGroupId(title) {
+    if (!window.ApiClient || typeof window.ApiClient.getSyncPlayGroups !== 'function') {
+      return Promise.resolve(null);
+    }
+
+    return Promise.resolve(window.ApiClient.getSyncPlayGroups())
+      .then(function (res) { return res && typeof res.json === 'function' ? res.json() : res; })
+      .then(function (groups) {
+        var match = (groups || []).filter(function (g) { return g.GroupName === title; });
+        return match.length === 1 ? match[0].GroupId : null;
+      })
+      .catch(function () { return null; });
+  }
+
+  function injectSyncPlayMenu() {
+    var sheet = document.querySelector('.syncPlayGroupMenu');
+    var scroller = sheet && sheet.querySelector('.actionSheetScroller');
+    if (!scroller || scroller.getAttribute('data-federation-party') === '1') {
+      return;
+    }
+
+    scroller.setAttribute('data-federation-party', '1');
+    var newGroup = scroller.querySelector('[data-id="new-group"]');
+    var leave = scroller.querySelector('[data-id="leave-group"]');
+    if (!newGroup && !leave) {
+      return;
+    }
+
+    if (newGroup) {
+      partyRequest('/Plugins/Federation/Party/Status/00000000000000000000000000000000').then(function (status) {
+        if (!status.ok || !status.data.canHost || !newGroup.isConnected) {
+          return;
+        }
+
+        var item = makeActionSheetItem('groups', 'New group with friends', '', function () {
+          partyRequest('/Plugins/Federation/Party', {}).then(function (result) {
+            notifyParty(result.data.message || (result.ok ? 'Friends can join from their group list.' : 'The watch party could not be started.'));
+          });
+        });
+        item.classList.add('federation-party-item');
+        newGroup.parentNode.insertBefore(item, newGroup.nextSibling);
+      });
+      return;
+    }
+
+    var titleEl = sheet.querySelector('.actionSheetTitle');
+    var title = titleEl ? titleEl.textContent : '';
+    currentGroupId(title).then(function (groupId) {
+      if (!groupId || !leave.isConnected) {
+        return null;
+      }
+
+      return partyRequest('/Plugins/Federation/Party/Status/' + encodeURIComponent(groupId)).then(function (status) {
+        if (!status.ok || !leave.isConnected) {
+          return;
+        }
+
+        var item;
+        if (status.data.shared) {
+          var friends = (status.data.friends || []).join(', ');
+          item = makeActionSheetItem('groups', status.data.hostedHere
+            ? (friends ? 'Watching with ' + friends : 'Shared with friends')
+            : 'Hosted by ' + (friends || 'a friend'), '', function () {});
+        } else if (status.data.canHost) {
+          item = makeActionSheetItem('groups', 'Invite friends', '', function () {
+            partyRequest('/Plugins/Federation/Party/Share', { GroupId: groupId }).then(function (result) {
+              notifyParty(result.data.message || (result.ok ? 'Friends can join from their group list.' : 'Could not invite friends.'));
+            });
+          });
+        }
+
+        if (item) {
+          item.classList.add('federation-party-item');
+          leave.parentNode.insertBefore(item, leave);
+        }
+      });
     });
   }
 

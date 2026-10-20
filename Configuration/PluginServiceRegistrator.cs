@@ -90,6 +90,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationDeviceDownloadFilter>());
             serviceCollection.AddTransient<FederationCanDownloadFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationCanDownloadFilter>());
+            serviceCollection.AddTransient<FederatedPartyFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederatedPartyFilter>());
             serviceCollection.AddTransient<FederationLocalOnlyItemsFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationLocalOnlyItemsFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();

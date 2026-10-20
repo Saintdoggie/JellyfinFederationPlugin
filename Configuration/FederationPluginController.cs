@@ -105,6 +105,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly RemoteTranscodeSessionRegistry _remoteTranscodeSessions;
         private readonly FederationDeviceDownloadService? _deviceDownloads;
         private readonly FederationFriendFavoritesService? _friendFavorites;
+        private readonly FederatedPartyService? _parties;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -135,7 +136,8 @@ namespace Jellyfin.Plugin.Federation.Api
             FederationRemoteTranscodeGateway? remoteTranscodeGateway = null,
             RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null,
             FederationDeviceDownloadService? deviceDownloads = null,
-            FederationFriendFavoritesService? friendFavorites = null)
+            FederationFriendFavoritesService? friendFavorites = null,
+            FederatedPartyService? parties = null)
         {
             _logger = logger;
             _syncService = syncService;
@@ -166,6 +168,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _remoteTranscodeSessions = remoteTranscodeSessions ?? new RemoteTranscodeSessionRegistry();
             _deviceDownloads = deviceDownloads;
             _friendFavorites = friendFavorites;
+            _parties = parties;
         }
 
         /// <summary>
@@ -1499,6 +1502,174 @@ namespace Jellyfin.Plugin.Federation.Api
                 })
             });
         }
+
+        /// <summary>
+        /// The signed-in viewer starts a SyncPlay group shared with friends ("New group
+        /// with friends" in the group menu). Their app is told it joined the group the
+        /// same way as for a normal new group.
+        /// </summary>
+        [HttpPost("Party")]
+        [Authorize]
+        public async Task<IActionResult> CreateParty([FromBody] PartyCreateBody? body)
+        {
+            var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null || info == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { success = false, message = "Watch parties are unavailable." });
+            }
+
+            var result = await _parties.CreateAsync(user, info, RemoteIp(), body?.Name).ConfigureAwait(false);
+            return PartyAnswer(result);
+        }
+
+        /// <summary>The signed-in viewer shares the group they're in with friends ("Invite friends").</summary>
+        [HttpPost("Party/Share")]
+        [Authorize]
+        public async Task<IActionResult> ShareParty([FromBody] PartyShareBody? body)
+        {
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null || body == null || body.GroupId == Guid.Empty)
+            {
+                return BadRequest(new { success = false, message = "No group given." });
+            }
+
+            return PartyAnswer(await _parties.ShareAsync(user, body.GroupId).ConfigureAwait(false));
+        }
+
+        /// <summary>Whether a group is shared with friends, for the group menu.</summary>
+        [HttpGet("Party/Status/{groupId}")]
+        [Authorize]
+        public async Task<IActionResult> GetPartyStatus(Guid groupId)
+        {
+            if (_parties == null)
+            {
+                return Ok(new { shared = false, hostedHere = false, friends = Array.Empty<string>(), canHost = false });
+            }
+
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            var (shared, hostedHere, friends) = await _parties.StatusAsync(groupId).ConfigureAwait(false);
+            var canHost = Plugin.Instance?.Configuration?.HostWatchPartiesWithFriends != false
+                && user?.SyncPlayAccess == Jellyfin.Database.Implementations.Enums.SyncPlayUserAccessType.CreateAndJoinGroups;
+            return Ok(new { shared, hostedHere, friends, canHost });
+        }
+
+        /// <summary>Admin: the watch-party settings, both directions.</summary>
+        [HttpGet("Settings/WatchParties")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetWatchPartySettings()
+        {
+            var config = Plugin.Instance!.Configuration;
+            return Ok(new { config.HostWatchPartiesWithFriends, config.JoinFriendsWatchParties });
+        }
+
+        /// <summary>Admin: saves the watch-party settings.</summary>
+        [HttpPost("Settings/WatchParties")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetWatchPartySettings([FromBody] WatchPartySettingsBody? body)
+        {
+            if (body == null)
+            {
+                return BadRequest();
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            config.HostWatchPartiesWithFriends = body.HostWatchPartiesWithFriends;
+            config.JoinFriendsWatchParties = body.JoinFriendsWatchParties;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved." });
+        }
+
+        /// <summary>Server-to-server: a friend announces a watch party (or that it ended).</summary>
+        [HttpPost("Peer/Party/Announce")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerPartyAnnounce([FromBody] PartyAnnouncement? body)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null || body == null)
+            {
+                return NotFound();
+            }
+
+            return StatusCode(await _parties.ReceiveAnnouncementAsync(caller, body).ConfigureAwait(false));
+        }
+
+        /// <summary>Server-to-server: a friend's server joins a party this server hosts.</summary>
+        [HttpPost("Peer/Party/{partyId}/Join")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerPartyJoin(Guid partyId, [FromBody] PartyMembership? body)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null)
+            {
+                return NotFound();
+            }
+
+            return StatusCode(await _parties.ReceiveJoinAsync(caller, partyId, body ?? new PartyMembership()).ConfigureAwait(false));
+        }
+
+        /// <summary>Server-to-server: a friend's server leaves a party this server hosts.</summary>
+        [HttpPost("Peer/Party/{partyId}/Leave")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerPartyLeave(Guid partyId)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null)
+            {
+                return NotFound();
+            }
+
+            return StatusCode(await _parties.ReceiveLeaveAsync(caller, partyId).ConfigureAwait(false));
+        }
+
+        /// <summary>Server-to-server: play/pause/seek/queue between two linked party groups.</summary>
+        [HttpPost("Peer/Party/{partyId}/Event")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerPartyEvent(Guid partyId, [FromBody] PartyEvent? body)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_parties == null || body == null)
+            {
+                return NotFound();
+            }
+
+            return StatusCode(await _parties.ReceiveEventAsync(caller, partyId, body).ConfigureAwait(false));
+        }
+
+        private IActionResult PartyAnswer(PartyResult result)
+            => StatusCode(result.Status, new { success = result.Status == 200, message = result.Message, groupId = result.GroupId?.ToString("N") });
+
+        private string RemoteIp() => HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
 
         /// <summary>Admin: the friends' favorites settings, both directions.</summary>
         [HttpGet("Settings/Favorites")]
@@ -6228,6 +6399,30 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool UseFriendsTranscoders { get; set; } = true;
+    }
+
+    /// <summary>Body of <c>Party</c>.</summary>
+    public class PartyCreateBody
+    {
+        /// <summary>Gets or sets the group name (optional).</summary>
+        public string? Name { get; set; }
+    }
+
+    /// <summary>Body of <c>Party/Share</c>.</summary>
+    public class PartyShareBody
+    {
+        /// <summary>Gets or sets the SyncPlay group to share.</summary>
+        public Guid GroupId { get; set; }
+    }
+
+    /// <summary>Body of <c>Settings/WatchParties</c>.</summary>
+    public class WatchPartySettingsBody
+    {
+        /// <summary>Gets or sets whether viewers here can start parties with friends.</summary>
+        public bool HostWatchPartiesWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends' parties appear in the group list here.</summary>
+        public bool JoinFriendsWatchParties { get; set; } = true;
     }
 
     /// <summary>Body of <c>Settings/Favorites</c>.</summary>
