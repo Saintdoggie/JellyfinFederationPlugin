@@ -30,7 +30,7 @@
 [x] Strip receiver ApiKey from forwarded params; clamp VideoBitrate to friend WAN cap
 [x] Mixed-content guard (https page never handed http owner URLs); scheme check like existing static redirect
 [x] Session bridge: PlaybackProgress -> ping owner (throttled), PlaybackStopped -> stop owner job
-[ ] Admin UI: toggles + per-friend "let them use my transcoder" + status of last handoff
+[x] Admin UI: Advanced → "Who converts friends' video" card (+ per-friend status), Friends tab per-friend switch
 [x] Unit tests: RemoteTranscodeHandoffTests (31), FederationVisibilityServiceTests (14)
 
 ## 2 + 3. Access that hides, not just blocks playback
@@ -45,8 +45,8 @@
 [x] Unit tests + two-server smoke (federation_peer_smoke.py) pass on 12.2
 
 ## 4. Validation + release
-[ ] Full test suite x2, clean Release build
-[ ] Two-server disposable fixture: handoff HLS plays from owner, receiver bytes ~0; fallback works; revoke hides titles for that user only
-[ ] Version bump 0.0.187 across csproj/meta.json/manifest/tag/zip/checksum
+[x] Full gate on frozen commit 72c5c61: 1006 plugin + 170 Companion + 116 UI tests, twice, receipt written
+[x] Two-server fixtures on frozen commit: peer smoke 5/5 (12.2), handoff smoke 6/6 on 12.2 and 12.0
+[x] Version 0.0.187: csproj, meta.json, manifest (md5 2e033381b2395192f46d0cbbdce02dbd), zip = DLL+meta+logo+thumb
 [ ] Commit, merge to master, push, GitHub release
 [ ] Deploy to live server (user's) — only after release passes
