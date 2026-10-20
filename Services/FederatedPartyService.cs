@@ -395,8 +395,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var creator = party.Creator;
                 var link = await CreateLinkAsync(partyId, PartyLinkRole.HostSide, caller, creator, LinkLabel(membership?.Participants, caller.Name), party.GroupId).ConfigureAwait(false);
-                link.Logic.HoldReady = true;
-                link.HoldSince = DateTime.UtcNow;
+                link.Logic.Holding = true;
+                link.Logic.HoldingSince = DateTime.UtcNow;
                 party.Links[caller.Id] = link;
                 _logger.LogInformation("[Federation] {Friend} joined watch party {Party}", caller.Name, party.Name);
 
@@ -406,7 +406,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     if (!link.Closed && link.Logic.Local.Playlist.Count == 0)
                     {
-                        link.Logic.HoldReady = false;
+                        link.Logic.Holding = false;
                         Execute(link, new IgnoreWaitGroupRequest(true));
                         SendEvent(link, BuildSnapshotEvent(link, PartyEventKind.Snapshot));
                     }
@@ -433,7 +433,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public Task<int> ReceiveEventAsync(RemoteServer caller, Guid partyId, PartyEvent e)
             => RunAsync(() =>
             {
-                if (e == null || !PartyEventKind.All.Contains(e.Kind) && e.Kind != "Members")
+                if (e == null || !(PartyEventKind.All.Contains(e.Kind) || e.Kind is "Members" or PartyLink.Wait or PartyLink.Go))
                 {
                     return Task.FromResult(400);
                 }
@@ -593,7 +593,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var now = DateTime.UtcNow;
-            var observation = link.Logic.Observe(message, now);
+            var observation = link.Logic.Observe(message, ActualState(link), now);
             if (link.Peer == null && observation.SendQueue && _hosted.Values.FirstOrDefault(p => p.Observer == link) is { } announced)
             {
                 // A new title: friends' lists must show (or hide) the party for it now.
@@ -615,11 +615,6 @@ namespace Jellyfin.Plugin.Federation.Services
             if (observation.AutoReady && link.Logic.Local.Playlist.Count > 0)
             {
                 Execute(link, link.Logic.ReadyAction());
-            }
-
-            if (observation.ReportReady)
-            {
-                SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
             }
 
             if (observation.Left)
@@ -716,48 +711,50 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            if (RefreshState(link))
-            {
-                SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
-            }
-
+            Refresh(link);
             var wasInitialized = link.Logic.Initialized;
             foreach (var action in link.Logic.Plan(applied, mapped, now))
             {
                 Execute(link, action);
-                if (action.Kind == PartyActionKind.Ready)
-                {
-                    Execute(link, new IgnoreWaitGroupRequest(true));
-                }
             }
 
             if (link.Logic.Role == PartyLinkRole.RemoteSide && !wasInitialized && link.Logic.Initialized)
             {
-                if (link.Logic.AwaitingLoad)
+                if (link.Logic.WaitSent)
                 {
                     WatchLoad(link, DateTime.UtcNow);
                 }
                 else
                 {
                     // Nothing to load here (or nothing this server has): don't keep the host waiting.
-                    SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
+                    SendEvent(link, new PartyEvent { Kind = PartyLink.Go });
                 }
             }
         }
 
+        /// <summary>The group's actual state from Jellyfin, or the link's last view when it can't be read.</summary>
+        private GroupStateType ActualState(LinkHandle link)
+            => (link.Closed ? null : _syncPlay.GetGroup(link.Bridge, link.GroupId))?.State ?? link.Logic.Local.State;
+
         /// <summary>
-        /// Reads the group's actual state into the link (see <see cref="PartyLink.RefreshState"/>).
-        /// True when that finished this server's first load.
+        /// Brings the link in line with the group's actual state (some changes reach no
+        /// member) and sends what that change means to the linked server.
         /// </summary>
-        private bool RefreshState(LinkHandle link)
+        private void Refresh(LinkHandle link)
         {
             if (link.Closed)
             {
-                return false;
+                return;
             }
 
-            var info = _syncPlay.GetGroup(link.Bridge, link.GroupId);
-            return info != null && link.Logic.RefreshState(info.State, DateTime.UtcNow);
+            var observation = link.Logic.Refresh(ActualState(link), DateTime.UtcNow);
+            if (link.Peer != null)
+            {
+                foreach (var e in observation.Forward)
+                {
+                    SendEvent(link, e);
+                }
+            }
         }
 
         /// <summary>
@@ -771,16 +768,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 await Task.Delay(500).ConfigureAwait(false);
                 Post(() =>
                 {
-                    if (link.Closed || !link.Logic.AwaitingLoad)
+                    if (link.Closed || !link.Logic.WaitSent)
                     {
                         return Task.CompletedTask;
                     }
 
-                    if (RefreshState(link))
-                    {
-                        SendEvent(link, new PartyEvent { Kind = PartyEventKind.Ready });
-                    }
-                    else if (DateTime.UtcNow - since < HoldTimeout)
+                    Refresh(link);
+                    if (link.Logic.WaitSent && DateTime.UtcNow - since < HoldTimeout)
                     {
                         WatchLoad(link, since);
                     }
@@ -861,6 +855,21 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private void Execute(LinkHandle link, PartyAction action)
         {
+            if (action.Kind == PartyActionKind.Hold)
+            {
+                // Make the group wait for the link: the friend's viewers are loading.
+                Execute(link, new IgnoreWaitGroupRequest(false));
+                Execute(link, new BufferGroupRequest(DateTime.UtcNow, action.PositionTicks, false, action.PlaylistItemId));
+                return;
+            }
+
+            if (action.Kind == PartyActionKind.Ready && link.Logic.Role == PartyLinkRole.HostSide && link.Peer != null)
+            {
+                Execute(link, new ReadyGroupRequest(DateTime.UtcNow, action.PositionTicks, false, action.PlaylistItemId));
+                Execute(link, new IgnoreWaitGroupRequest(true));
+                return;
+            }
+
             IGroupPlaybackRequest request = action.Kind switch
             {
                 PartyActionKind.SetQueue => new PlayGroupRequest(action.Queue ?? Array.Empty<Guid>(), action.Index, action.PositionTicks),
@@ -1001,12 +1010,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    if (link.Logic.HoldReady && now - link.HoldSince > HoldTimeout)
+                    if (link.Logic.Holding && now - link.Logic.HoldingSince > HoldTimeout)
                     {
                         _logger.LogInformation("[Federation] {Friend} took too long to load; watch party {Party} continues without waiting", link.Peer?.Name, party.Name);
-                        link.Logic.HoldReady = false;
-                        Execute(link, link.Logic.ReadyAction());
-                        Execute(link, new IgnoreWaitGroupRequest(true));
+                        Execute(link, link.Logic.Release(now));
                     }
 
                     var heartbeat = BuildSnapshotEvent(link, PartyEventKind.Heartbeat);
@@ -1225,8 +1232,6 @@ namespace Jellyfin.Plugin.Federation.Services
             public RemoteServer? Peer { get; }
 
             public PartyBridgeController? Controller { get; set; }
-
-            public DateTime HoldSince { get; set; }
 
             public DateTime LastPeerSuccess { get; set; } = DateTime.UtcNow;
 

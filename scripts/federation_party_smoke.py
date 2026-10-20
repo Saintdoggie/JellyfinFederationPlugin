@@ -45,6 +45,8 @@ def smoke():
             '--entrypoint', '/usr/lib/jellyfin-ffmpeg/ffmpeg', qa.JELLYFIN_IMAGE]
         qa.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=10', '-f', 'lavfi', '-i',
             'sine=frequency=440:sample_rate=48000', '-t', '180', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', movie])
+        qa.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10', '-f', 'lavfi', '-i',
+            'sine=frequency=660:sample_rate=48000', '-t', '120', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', media / 'QA Party Two (2026).mkv'])
         qa.run(['podman', 'network', 'create', network])
         servers = []
         for name in names:
@@ -76,10 +78,12 @@ def smoke():
             {'LibraryOptions':{'PathInfos':[{'Path':'/media'}],'EnableRealtimeMonitor':False,'EnableInternetProviders':False}}, expected=204)
         def movies(base, headers):
             return qa.request(base, '/Items?Recursive=true&IncludeItemTypes=Movie', headers)['Items']
-        native = qa.wait_for(lambda: movies(source['base'], source['admin']), 'Source did not scan media')[0]
+        natives = qa.wait_for(lambda: (lambda m: m if len(m) == 2 else None)(movies(source['base'], source['admin'])), 'Source did not scan media')
+        native = next(m for m in natives if m['Name'].startswith('QA Party') and 'Two' not in m['Name'])
+        native_two = next(m for m in natives if 'Two' in m['Name'])
 
         stage = 'friendship and catalog'
-        for user in ('qa-bob', 'qa-carol'):
+        for user in ('qa-bob', 'qa-carol', 'qa-dave'):
             qa.request(friend['base'], '/Users/New', friend['admin'], {'Name': user})
         sent = qa.request(friend['base'], '/Plugins/Federation/Friends/Send', friend['admin'], {'Url': f'http://{names[0]}:8096'})
         qa.check(sent['success'], 'Friend request failed')
@@ -100,13 +104,14 @@ def smoke():
         def refreshed():
             qa.request(friend['base'], '/Plugins/Federation/Refresh', friend['admin'], {})
             return movies(friend['base'], friend['admin'])
-        imported = qa.wait_for(refreshed, 'Friend catalog did not import')[0]
-        imported_id = imported['Id'].replace('-', '').lower()
+        imported_all = qa.wait_for(lambda: (lambda m: m if len(m) == 2 else None)(refreshed()), 'Friend catalog did not import')
+        imported_id = next(m for m in imported_all if 'Two' not in m['Name'])['Id'].replace('-', '').lower()
+        imported_two = next(m for m in imported_all if 'Two' in m['Name'])['Id'].replace('-', '').lower()
         users = {u['Name']: u['Id'] for u in qa.request(friend['base'], '/Users', friend['admin'])}
         qa.check(qa.request(source['base'], f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source['admin'],
             {'RemoteUserId': users['qa-carol'], 'RemoteUserName': 'qa-carol', 'Mode': 'AllLibraries', 'BlockedItemIds': [native['Id']]})['success'], 'Carol rule failed')
-        qa.wait_for(lambda: not movies(friend['base'], {'Authorization': 'MediaBrowser Token="' + friend['login']('qa-carol', '', 'carol-check')['AccessToken'] + '"'}) or None,
-            'Blocked viewer still sees the title')
+        carol_headers = {'Authorization': 'MediaBrowser Token="' + friend['login']('qa-carol', '', 'carol-check')['AccessToken'] + '"'}
+        qa.wait_for(lambda: all('Two' in m['Name'] for m in movies(friend['base'], carol_headers)) or None, 'Blocked viewer still sees the title')
 
         stage = 'viewers open their apps'
         def player(server, user, pw, device):
@@ -117,6 +122,7 @@ def smoke():
         alice = player(source, 'qa-admin', source['password'], 'alice-player')
         bob = player(friend, 'qa-bob', '', 'bob-player')
         carol = player(friend, 'qa-carol', '', 'carol-player')
+        dave = player(friend, 'qa-dave', '', 'dave-player')
         time.sleep(1.5)
 
         stage = 'host starts a party with friends'
@@ -140,6 +146,10 @@ def smoke():
             a, b = alice.snapshot(), bob.snapshot()
             return (a['playing'] == playing and b['playing'] == playing
                     and b['item'] == imported_id and abs(a['position'] - b['position']) <= tolerance) and (a, b)
+        def in_step_item(friend_item, playing=True, tolerance=2.0):
+            a, b = alice.snapshot(), bob.snapshot()
+            return (a['playing'] == playing and b['playing'] == playing
+                    and b['item'] == friend_item and abs(a['position'] - b['position']) <= tolerance) and (a, b)
         a, b = wait(lambda: in_step(), 'Joined viewer did not play in step with the host', 60)
         qa.check(bob.group_id and bob.group_id != alice.group_id, 'Friend viewer is not in their own server\'s group')
         print(f'PARTY PASS: joined natively; friend plays its own copy, both playing {abs(a["position"]-b["position"]):.2f}s apart', flush=True)
@@ -152,6 +162,21 @@ def smoke():
         alice.unpause()
         wait(lambda: in_step(), 'Host resume did not resume the friend')
         print('PARTY PASS: friend pause -> host paused; host seek -> friend at same spot; host resume -> both playing in step', flush=True)
+
+        stage = 'a second friend viewer joins the running party'
+        mirror = wait(lambda: [g for g in listed(dave) if g['GroupId'].replace('-', '') == bob.group_id.replace('-', '')], 'Friend\'s copy of the party not in the native list')[0]
+        dave.join(mirror['GroupId'])
+        wait(lambda: in_step() and dave.snapshot()['playing'] and dave.snapshot()['item'] == imported_id
+             and abs(dave.snapshot()['position'] - alice.snapshot()['position']) <= 2, 'Second friend viewer not in step', 60)
+        dave.leave()
+        print('PARTY PASS: a second viewer on the friend\'s server joins the running party from the normal list and plays in step', flush=True)
+
+        stage = 'the friend\'s viewer changes the title'
+        bob.set_queue([imported_two])
+        wait(lambda: alice.snapshot()['item'] == native_two['Id'].replace('-', '').lower() and in_step_item(imported_two), 'Host did not follow the friend\'s new title', 60)
+        bob.set_queue([imported_id], 0, 90 * TICKS)
+        wait(lambda: in_step() and alice.snapshot()['item'] == native['Id'].replace('-', '').lower(), 'Host did not follow back to the first title', 60)
+        print('PARTY PASS: a title change on the friend\'s server switches the host to its own copy, and back', flush=True)
 
         stage = 'buffering anywhere waits for everyone'
         bob.buffering()
@@ -172,6 +197,24 @@ def smoke():
         alice.leave()
         wait(lambda: not listed(bob), 'Ended party still listed on the friend', 40)
         print('PARTY PASS: friend leaving removes them from the host group; host leaving ends the party for friends', flush=True)
+
+        stage = 'the friend hosts, this side joins with its own original'
+        def listed_on_source(p):
+            return [g for g in p.groups() if ' · ' in g['GroupName']]
+        hosted = bob.request('/Plugins/Federation/Party', {})
+        qa.check(hosted and hosted.get('success'), f'Friend could not host: {hosted}')
+        wait(lambda: bob.group_id, 'Friend host not in its group')
+        bob.set_queue([imported_id])
+        wait(lambda: bob.snapshot()['playing'], 'Friend-hosted group did not play')
+        reverse = wait(lambda: [g for g in listed_on_source(alice) if g['State'] == 'Playing'], 'Friend\'s party not listed on the source')[0]
+        alice.join(reverse['GroupId'])
+        wait(lambda: in_step() and alice.snapshot()['item'] == native['Id'].replace('-', '').lower(), 'Source viewer not in step with the friend-hosted party', 60)
+        alice.pause()
+        wait(lambda: in_step(playing=False, tolerance=1.5), 'Pause on the joining side did not reach the friend host')
+        alice.leave()
+        bob.leave()
+        wait(lambda: not [g for g in alice.groups() if g['GroupId'] == reverse['GroupId']], 'Ended friend party still listed', 40)
+        print('PARTY PASS: reversed roles: the friend hosts its federated copy, this server joins with its own original, pause follows back', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError)) else type(e).__name__ + ': ' + str(e)
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None

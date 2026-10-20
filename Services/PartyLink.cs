@@ -36,16 +36,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Stop.</summary>
         Stop,
 
-        /// <summary>Report the link itself ready, so the group doesn't wait on it.</summary>
-        Ready
+        /// <summary>Report the link ready and stop being waited for.</summary>
+        Ready,
+
+        /// <summary>Make the group wait for the link (the linked server's viewers are loading).</summary>
+        Hold
     }
 
     /// <summary>One request the link makes in its own group.</summary>
     /// <param name="Kind">What to do.</param>
     /// <param name="Queue">The new queue for SetQueue.</param>
     /// <param name="Index">The playing index for SetQueue, or the target index for SetItem.</param>
-    /// <param name="PositionTicks">Position for SetQueue/Seek/Ready.</param>
-    /// <param name="PlaylistItemId">Target for SetItem, current title for Ready.</param>
+    /// <param name="PositionTicks">Position for SetQueue/Seek/Ready/Hold.</param>
+    /// <param name="PlaylistItemId">Target for SetItem, current title for Ready/Hold.</param>
     public sealed record PartyAction(
         PartyActionKind Kind,
         IReadOnlyList<Guid>? Queue = null,
@@ -62,7 +65,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets or sets a value indicating whether the local queue changed and must be sent as a Snapshot.</summary>
         public bool SendQueue { get; set; }
 
-        /// <summary>Gets or sets a value indicating whether the link should report itself ready.</summary>
+        /// <summary>Gets or sets a value indicating whether the link should report itself ready (it isn't holding the group).</summary>
         public bool AutoReady { get; set; }
 
         /// <summary>Gets or sets a value indicating whether the link is no longer in its group.</summary>
@@ -70,21 +73,37 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets a value indicating whether someone joined or left the group.</summary>
         public bool MembersChanged { get; set; }
-
-        /// <summary>Gets or sets a value indicating whether a joining remote server just finished loading (remote side).</summary>
-        public bool ReportReady { get; set; }
     }
 
     /// <summary>
     /// One link of a watch party: a hidden member of this server's SyncPlay group that
-    /// stands for the linked server's viewers. It keeps a model of what its group is
-    /// doing (from the messages Jellyfin sends every member) and of the last state both
-    /// servers agreed on, so a change made on one side is sent once and its echo from
-    /// the other side is recognised and dropped. Pure logic: no Jellyfin calls, so
-    /// every rule here is unit tested.
+    /// stands for the linked server's viewers. Pure logic (no Jellyfin calls) so every
+    /// rule is unit tested.
     /// </summary>
+    /// <remarks>
+    /// What crosses between servers:
+    /// <list type="bullet">
+    /// <item>Real changes: a pause, a resume, a seek, a stop, a new queue or title. A
+    /// group's state is always confirmed against Jellyfin's actual state before a change
+    /// is sent, so a moment-old pause can't undo a resume that already happened.</item>
+    /// <item>Loading, from a friend's server to the host: "Wait" while its viewers load or
+    /// buffer, "Go" when they're ready. The host's group waits for the link meanwhile,
+    /// exactly as it waits for any of its own viewers.</item>
+    /// <item>Loading, from the host to friends: "Wait" pauses their copies until the host
+    /// resolves, then its resume (or pause) is sent as usual. Friends never make the
+    /// host's link wait on them in return, so two servers can't wait on each other.</item>
+    /// </list>
+    /// The last state both ends agreed on (<see cref="Synced"/>) recognises the echo of
+    /// a change coming back from the other side, which is dropped.
+    /// </remarks>
     public sealed class PartyLink
     {
+        /// <summary>Wire kind: the linked server's viewers are loading (or the host is).</summary>
+        public const string Wait = "Wait";
+
+        /// <summary>Wire kind: the linked server's viewers finished loading.</summary>
+        public const string Go = "Go";
+
         /// <summary>A pause is the same pause when the positions are this close.</summary>
         internal static readonly long PauseTolerance = TimeSpan.FromSeconds(2).Ticks;
 
@@ -118,52 +137,60 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets the last state both servers agreed on.</summary>
         public PartySyncedState Synced { get; } = new();
 
-        /// <summary>Gets or sets a value indicating whether (host side) the link holds the group until the friend has loaded.</summary>
-        public bool HoldReady { get; set; }
+        /// <summary>
+        /// Gets or sets a value indicating whether (host side) the group waits for this link
+        /// because the friend's viewers are loading. True from the moment a friend's server
+        /// joins until it has loaded.
+        /// </summary>
+        public bool Holding { get; set; }
+
+        /// <summary>Gets or sets when <see cref="Holding"/> started.</summary>
+        public DateTime HoldingSince { get; set; }
 
         /// <summary>Gets or sets a value indicating whether (remote side) the first snapshot from the host was applied.</summary>
         public bool Initialized { get; set; }
 
-        /// <summary>Gets or sets a value indicating whether (remote side) the host is still waiting for this server to load.</summary>
-        public bool AwaitingLoad { get; set; }
+        /// <summary>Gets or sets a value indicating whether (remote side) this copy is paused because the host is loading.</summary>
+        public bool PausedForHost { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether (remote side) a Wait was sent and its Go is still owed.</summary>
+        public bool WaitSent { get; set; }
 
         /// <summary>
-        /// Takes in one message Jellyfin sent the link as a group member and decides what
-        /// to tell the linked server.
+        /// Takes in one message Jellyfin sent the link as a group member, together with the
+        /// group's actual state right now, and decides what to tell the linked server.
         /// </summary>
-        public PartyObservation Observe(object message, DateTime now)
+        public PartyObservation Observe(object message, GroupStateType actual, DateTime now)
         {
             var result = new PartyObservation();
             switch (message)
             {
                 case SendCommand command:
-                    ObserveCommand(command, now, result);
+                    ObserveCommand(command, actual, now, result);
                     break;
                 case GroupUpdate<PlayQueueUpdate> { Data: { } queue }:
                     ObserveQueue(queue, now, result);
-                    break;
-                case GroupUpdate<GroupStateUpdate> { Data: { } state }:
-                    Local.SetState(state.State, now);
-                    if (state.State == GroupStateType.Waiting)
-                    {
-                        result.AutoReady = true;
-                    }
-
-                    CheckLoaded(result);
                     break;
                 case GroupUpdate<string> update when update.Type is GroupUpdateType.UserJoined or GroupUpdateType.UserLeft:
                     result.MembersChanged = true;
                     break;
                 case GroupUpdate<string> update when update.Type is GroupUpdateType.GroupLeft or GroupUpdateType.NotInGroup or GroupUpdateType.GroupDoesNotExist:
                     result.Left = true;
-                    break;
+                    return result;
             }
 
-            if (HoldReady)
-            {
-                result.AutoReady = false;
-            }
+            Settle(actual, now, result);
+            return result;
+        }
 
+        /// <summary>
+        /// Takes in the group's actual state when no message arrived (some changes reach no
+        /// member at all, such as a group that loaded from idle into paused).
+        /// </summary>
+        public PartyObservation Refresh(GroupStateType actual, DateTime now)
+        {
+            var result = new PartyObservation();
+            Settle(actual, now, result);
             return result;
         }
 
@@ -179,7 +206,14 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 case PartyEventKind.Pause:
                     Synced.Pause(e.PositionTicks, now);
-                    if (Local.State is GroupStateType.Playing or GroupStateType.Waiting)
+                    PausedForHost = false;
+                    if (Holding)
+                    {
+                        // The friend's viewers finished loading into a pause.
+                        actions.Add(new PartyAction(PartyActionKind.Pause));
+                        actions.Add(Release(now));
+                    }
+                    else if (Local.State is GroupStateType.Playing or GroupStateType.Waiting)
                     {
                         actions.Add(new PartyAction(PartyActionKind.Pause));
                     }
@@ -191,12 +225,22 @@ namespace Jellyfin.Plugin.Federation.Services
                     break;
                 case PartyEventKind.Unpause:
                     Synced.Unpause(e.PositionTicks, now);
-
-                    // A group still waiting for its own viewers resumes by itself when
-                    // they're ready; forcing it would start them unloaded.
+                    PausedForHost = false;
                     if (Local.State == GroupStateType.Paused)
                     {
                         actions.Add(new PartyAction(PartyActionKind.Unpause));
+                    }
+                    else if (Local.State == GroupStateType.Waiting)
+                    {
+                        // Pause first so the resume means "resume once everyone here has
+                        // loaded" rather than "start now even if they haven't".
+                        actions.Add(new PartyAction(PartyActionKind.Pause));
+                        actions.Add(new PartyAction(PartyActionKind.Unpause));
+                    }
+
+                    if (Holding)
+                    {
+                        actions.Add(Release(now));
                     }
 
                     break;
@@ -216,43 +260,182 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     break;
+                case Wait when Role == PartyLinkRole.HostSide:
+                    if (!Holding && Local.Playlist.Count > 0)
+                    {
+                        Holding = true;
+                        HoldingSince = now;
+                        actions.Add(new PartyAction(PartyActionKind.Hold, PositionTicks: Local.PositionAt(now), PlaylistItemId: Local.PlayingPlaylistItemId));
+                    }
+
+                    break;
+                case Wait when Role == PartyLinkRole.RemoteSide:
+                    // The host is loading: pause here until it resolves.
+                    if (Local.State is GroupStateType.Playing or GroupStateType.Waiting)
+                    {
+                        PausedForHost = true;
+                        Synced.Pause(Local.PositionAt(now), now);
+                        actions.Add(new PartyAction(PartyActionKind.Pause));
+                    }
+
+                    break;
+                case Go:
+                case PartyEventKind.Ready:
+                    if (Role == PartyLinkRole.HostSide && Holding)
+                    {
+                        actions.Add(Release(now));
+                    }
+
+                    break;
                 case PartyEventKind.Snapshot:
                 case PartyEventKind.Heartbeat:
                     PlanSnapshot(e, mappedQueue, now, actions);
-                    break;
-                case PartyEventKind.Ready when Role == PartyLinkRole.HostSide && HoldReady:
-                    HoldReady = false;
-                    actions.Add(ReadyAction());
                     break;
             }
 
             return actions;
         }
 
-        /// <summary>
-        /// Takes in the group's actual state, read from Jellyfin. Needed because some
-        /// state changes reach no member at all (a group that loaded from idle into
-        /// paused sends nothing). Returns true when this completes a remote server's
-        /// first load, which must be reported to the host.
-        /// </summary>
-        public bool RefreshState(GroupStateType state, DateTime now)
-        {
-            if (Local.State != state)
-            {
-                Local.SetState(state, now);
-            }
-
-            var result = new PartyObservation();
-            CheckLoaded(result);
-            return result.ReportReady;
-        }
-
         /// <summary>The link's own Ready report for the current title and position.</summary>
         public PartyAction ReadyAction()
             => new(PartyActionKind.Ready, PositionTicks: Local.PositionTicks, PlaylistItemId: Local.PlayingPlaylistItemId);
 
+        /// <summary>Stops holding the group (host side) and reports ready.</summary>
+        public PartyAction Release(DateTime now)
+        {
+            Holding = false;
+            return ReadyAction();
+        }
+
         /// <summary>The local queue as this server's item ids, in order.</summary>
         public IReadOnlyList<Guid> LocalQueue() => Local.Playlist.Select(p => p.ItemId).ToList();
+
+        /// <summary>
+        /// Brings the model in line with the group's actual state and decides what a
+        /// change of state means for the linked server.
+        /// </summary>
+        private void Settle(GroupStateType actual, DateTime now, PartyObservation result)
+        {
+            var previous = Local.State;
+            if (actual != previous)
+            {
+                Local.SetState(actual, now);
+            }
+
+            if (actual == GroupStateType.Waiting)
+            {
+                if (previous != GroupStateType.Waiting)
+                {
+                    // The group now waits for everyone to load the title, the link
+                    // included, unless the link is the one holding it. Only on entering:
+                    // while it waits, Jellyfin answers each Ready with "pause when ready".
+                    result.AutoReady = !Holding && Local.Playlist.Count > 0;
+                    EnterWaiting(previous, now, result);
+                }
+
+                return;
+            }
+
+            if (previous == GroupStateType.Waiting || (previous == GroupStateType.Idle && actual != GroupStateType.Idle))
+            {
+                LeaveWaiting(actual, now, result);
+                return;
+            }
+
+            if (Role == PartyLinkRole.RemoteSide && actual == GroupStateType.Playing)
+            {
+                // Someone here pressed play: the host's earlier "wait" no longer applies.
+                PausedForHost = false;
+            }
+
+            if (previous == GroupStateType.Paused && actual == GroupStateType.Playing)
+            {
+                ForwardUnpause(Local.PositionTicks, now, result);
+            }
+            else if (previous == GroupStateType.Playing && actual == GroupStateType.Paused)
+            {
+                ForwardPause(Local.PositionAt(now), now, result);
+            }
+        }
+
+        private void EnterWaiting(GroupStateType previous, DateTime now, PartyObservation result)
+        {
+            if (Role == PartyLinkRole.RemoteSide)
+            {
+                // This server's viewers are loading (a seek, a new title, a buffering
+                // player): the host holds everyone until they're done. A pause the host
+                // itself asked for doesn't count.
+                if (Initialized && !WaitSent && !PausedForHost)
+                {
+                    WaitSent = true;
+                    result.Forward.Add(new PartyEvent { Kind = Wait });
+                }
+
+                return;
+            }
+
+            // Host side: the host is loading. Friends pause until it resolves, except
+            // the friend this link is holding for (it's loading too).
+            if (previous == GroupStateType.Playing && !Holding && Synced.IsPlaying == true)
+            {
+                Synced.Pause(Local.PositionAt(now), now);
+                result.Forward.Add(new PartyEvent { Kind = Wait });
+            }
+        }
+
+        private void LeaveWaiting(GroupStateType actual, DateTime now, PartyObservation result)
+        {
+            if (Role == PartyLinkRole.RemoteSide && (WaitSent || PausedForHost))
+            {
+                // Done loading. If the host made this copy pause, the host decides what
+                // happens next; otherwise tell it whether this side resolved to playing
+                // or to a pause.
+                var owedGo = WaitSent;
+                WaitSent = false;
+                if (PausedForHost)
+                {
+                    if (owedGo)
+                    {
+                        result.Forward.Add(new PartyEvent { Kind = Go });
+                    }
+
+                    return;
+                }
+
+                if (actual == GroupStateType.Playing)
+                {
+                    if (Synced.IsPlaying == true)
+                    {
+                        result.Forward.Add(new PartyEvent { Kind = Go });
+                    }
+                    else
+                    {
+                        Synced.Unpause(Local.PositionTicks, now);
+                        result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Unpause, PositionTicks = Local.PositionTicks });
+                    }
+                }
+                else if (Synced.IsPlaying != false)
+                {
+                    Synced.Pause(Local.PositionTicks, now);
+                    result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Pause, PositionTicks = Local.PositionTicks });
+                }
+                else
+                {
+                    result.Forward.Add(new PartyEvent { Kind = Go });
+                }
+
+                return;
+            }
+
+            if (actual == GroupStateType.Paused)
+            {
+                ForwardPause(Local.PositionTicks, now, result);
+            }
+            else if (actual == GroupStateType.Playing)
+            {
+                ForwardUnpause(Local.PositionTicks, now, result);
+            }
+        }
 
         private void PlanSnapshot(PartyEvent e, IReadOnlyList<Guid>? mappedQueue, DateTime now, List<PartyAction> actions)
         {
@@ -262,13 +445,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            var first = Role == PartyLinkRole.RemoteSide && !Initialized;
             if (mappedQueue == null || mappedQueue.Count == 0)
             {
                 // Nothing here to play (or an empty queue): nothing to follow.
-                if (Role == PartyLinkRole.RemoteSide && !Initialized && e.Kind == PartyEventKind.Snapshot)
+                if (first)
                 {
                     Initialized = true;
-                    AwaitingLoad = false;
                     Synced.SetQueue(mappedQueue ?? Array.Empty<Guid>(), snapshot.Index);
                 }
 
@@ -287,7 +470,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 Synced.Pause(snapshot.PositionTicks, now);
             }
 
-            var first = Role == PartyLinkRole.RemoteSide && !Initialized;
             if (!sameQueue)
             {
                 actions.Add(new PartyAction(PartyActionKind.SetQueue, mappedQueue, index, snapshot.PositionTicks));
@@ -306,15 +488,23 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             else if (e.Kind == PartyEventKind.Heartbeat)
             {
+                if (snapshot.Stable && !WaitSent)
+                {
+                    // The host has settled, so any pause it asked for is over.
+                    PausedForHost = false;
+                }
+
                 PlanCorrection(snapshot, now, actions);
                 return;
             }
 
             if (first)
             {
-                // Load paused; the host resumes everyone together once this server is ready.
+                // Load paused and owe the host a Go: it holds everyone until this server
+                // has loaded, then resumes everyone together.
                 Initialized = true;
-                AwaitingLoad = true;
+                PausedForHost = true;
+                WaitSent = true;
                 actions.Add(new PartyAction(PartyActionKind.Pause));
             }
         }
@@ -322,7 +512,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private void PlanCorrection(PartySnapshot snapshot, DateTime now, List<PartyAction> actions)
         {
             if (!snapshot.Stable
-                || AwaitingLoad
+                || PausedForHost
+                || WaitSent
                 || Local.State is GroupStateType.Waiting or GroupStateType.Idle
                 || now - Local.StateSince < SettleTime)
             {
@@ -330,50 +521,38 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var playing = Local.State == GroupStateType.Playing;
-            if (snapshot.IsPlaying != playing)
-            {
-                if (Math.Abs(Local.PositionAt(now) - snapshot.PositionTicks) > (snapshot.IsPlaying ? PlayingDrift : PausedDrift))
-                {
-                    actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: snapshot.PositionTicks));
-                }
-
-                actions.Add(new PartyAction(snapshot.IsPlaying ? PartyActionKind.Unpause : PartyActionKind.Pause));
-                return;
-            }
-
-            var drift = Math.Abs(Local.PositionAt(now) - snapshot.PositionTicks);
-            if (drift > (playing ? PlayingDrift : PausedDrift))
+            if (Math.Abs(Local.PositionAt(now) - snapshot.PositionTicks) > (snapshot.IsPlaying ? PlayingDrift : PausedDrift))
             {
                 actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: snapshot.PositionTicks));
             }
+
+            if (snapshot.IsPlaying != playing)
+            {
+                actions.Add(new PartyAction(snapshot.IsPlaying ? PartyActionKind.Unpause : PartyActionKind.Pause));
+            }
         }
 
-        private void ObserveCommand(SendCommand command, DateTime now, PartyObservation result)
+        private void ObserveCommand(SendCommand command, GroupStateType actual, DateTime now, PartyObservation result)
         {
             var position = command.PositionTicks ?? 0;
             switch (command.Command)
             {
                 case SendCommandType.Unpause:
                     Local.Play(position, command.When, now);
-                    if (Synced.IsPlaying != true)
-                    {
-                        Synced.Unpause(position, now);
-                        result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Unpause, PositionTicks = position });
-                    }
-
                     break;
                 case SendCommandType.Pause:
-                    Local.Pause(position, now);
-                    if (Synced.IsPlaying != false || Math.Abs(Synced.PositionAt(now) - position) > PauseTolerance)
+                    Local.Pause(position, now, keepState: true);
+                    if (actual == GroupStateType.Paused && Local.State == GroupStateType.Playing)
                     {
-                        Synced.Pause(position, now);
-                        result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Pause, PositionTicks = position });
+                        // A pause from playing (no loading in between): someone pressed pause.
+                        Local.SetState(GroupStateType.Paused, now);
+                        ForwardPause(position, now, result);
                     }
 
                     break;
                 case SendCommandType.Seek:
                     Local.Seek(position, now);
-                    result.AutoReady = true;
+                    result.AutoReady = !Holding;
                     if (Math.Abs(Synced.PositionAt(now) - position) > SeekTolerance)
                     {
                         Synced.Seek(position, now);
@@ -391,8 +570,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     break;
             }
-
-            CheckLoaded(result);
         }
 
         private void ObserveQueue(PlayQueueUpdate queue, DateTime now, PartyObservation result)
@@ -401,37 +578,38 @@ namespace Jellyfin.Plugin.Federation.Services
             Local.Index = queue.PlayingItemIndex;
             Local.Shuffle = queue.ShuffleMode;
             Local.Repeat = queue.RepeatMode;
-            if (queue.IsPlaying)
-            {
-                Local.Play(queue.StartPositionTicks, now, now);
-            }
-            else
-            {
-                Local.Pause(queue.StartPositionTicks, now, keepState: true);
-            }
-
+            Local.PositionTicks = queue.StartPositionTicks;
+            Local.At = now;
             if (queue.Reason is PlayQueueUpdateReason.NewPlaylist or PlayQueueUpdateReason.SetCurrentItem
                 or PlayQueueUpdateReason.NextItem or PlayQueueUpdateReason.PreviousItem)
             {
-                // The group now waits for everyone to load the title, the link included.
-                result.AutoReady = Local.State != GroupStateType.Idle || Local.Playlist.Count > 0;
+                // A new title resets everyone to loading, the link included.
+                result.AutoReady = !Holding && Local.Playlist.Count > 0;
             }
 
             var ids = LocalQueue();
             if (!Synced.SameQueue(ids, Local.Index))
             {
                 Synced.SetQueue(ids, Local.Index);
-                Synced.Stopped = false;
                 result.SendQueue = true;
             }
         }
 
-        private void CheckLoaded(PartyObservation result)
+        private void ForwardPause(long position, DateTime now, PartyObservation result)
         {
-            if (Role == PartyLinkRole.RemoteSide && AwaitingLoad && Local.State is GroupStateType.Paused or GroupStateType.Playing)
+            if (Synced.IsPlaying != false || Math.Abs(Synced.PositionAt(now) - position) > PauseTolerance)
             {
-                AwaitingLoad = false;
-                result.ReportReady = true;
+                Synced.Pause(position, now);
+                result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Pause, PositionTicks = position });
+            }
+        }
+
+        private void ForwardUnpause(long position, DateTime now, PartyObservation result)
+        {
+            if (Synced.IsPlaying != true)
+            {
+                Synced.Unpause(position, now);
+                result.Forward.Add(new PartyEvent { Kind = PartyEventKind.Unpause, PositionTicks = position });
             }
         }
     }
@@ -482,7 +660,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 StateSince = now;
             }
 
-            if (state != GroupStateType.Playing)
+            if (state != GroupStateType.Playing && IsPlaying)
             {
                 PositionTicks = PositionAt(now);
                 At = now;
@@ -493,7 +671,6 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Playback runs from <paramref name="position"/> starting at <paramref name="when"/>.</summary>
         public void Play(long position, DateTime when, DateTime now)
         {
-            SetState(GroupStateType.Playing, now);
             PositionTicks = position;
             At = when;
             IsPlaying = true;
@@ -512,12 +689,12 @@ namespace Jellyfin.Plugin.Federation.Services
             IsPlaying = false;
         }
 
-        /// <summary>Jumped to <paramref name="position"/>; the group now waits for everyone.</summary>
+        /// <summary>Jumped to <paramref name="position"/>.</summary>
         public void Seek(long position, DateTime now)
         {
-            SetState(GroupStateType.Waiting, now);
             PositionTicks = position;
             At = now;
+            IsPlaying = false;
         }
     }
 
