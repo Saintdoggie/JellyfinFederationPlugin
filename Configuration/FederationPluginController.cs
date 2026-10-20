@@ -446,6 +446,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
                     config.ShareFavoritesWithFriends = existing.ShareFavoritesWithFriends;
                     config.ShowFriendsFavorites = existing.ShowFriendsFavorites;
+                    config.HostWatchPartiesWithFriends = existing.HostWatchPartiesWithFriends;
+                    config.JoinFriendsWatchParties = existing.JoinFriendsWatchParties;
 
                     // Managed by the dedicated QualityUpgrades/Exclude endpoints,
                     // not serialized back by the main settings form.

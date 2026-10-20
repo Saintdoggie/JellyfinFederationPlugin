@@ -421,6 +421,33 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Sends one watch-party message to the friend (<c>Peer/Party/...</c>). Returns
+        /// the HTTP status, or 0 when the friend couldn't be reached. Never throws
+        /// except on cancellation.
+        /// </summary>
+        public async Task<int> PostPartyAsync(string relativePath, object body, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/Party/" + relativePath.TrimStart('/'))
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(body, PartyJson), System.Text.Encoding.UTF8, "application/json")
+                };
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                return (int)response.StatusCode;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} for a watch party", _server.Name);
+                return 0;
+            }
+        }
+
+        /// <summary>
         /// The titles the friend's users favorited that this server's viewer
         /// <paramref name="localUserId"/> may see (see <c>Peer/Favorites</c>). Null
         /// when the request failed; <c>Shared = false</c> with null items for a
@@ -2182,6 +2209,8 @@ namespace Jellyfin.Plugin.Federation.Services
         // wasted a full remote round trip that could never succeed, then fell back
         // to local ffprobe discovery instead of the fast, accurate codec info the
         // remote had been correctly sending back the whole time.
+        private static readonly JsonSerializerOptions PartyJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
             PropertyNameCaseInsensitive = true,

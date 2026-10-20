@@ -52,6 +52,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationDownloadService>();
             serviceCollection.AddSingleton<FederationDeviceDownloadService>();
             serviceCollection.AddSingleton<FederationFriendFavoritesService>();
+            serviceCollection.AddSingleton<PartyItemMapper>();
+            serviceCollection.AddSingleton<FederatedPartyService>();
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederatedPartyService>());
             serviceCollection.AddSingleton<FederationPlaybackTokenService>();
             serviceCollection.AddSingleton<FederationUserSessionTokenService>();
             serviceCollection.AddSingleton<FederationPeerAccessService>();
