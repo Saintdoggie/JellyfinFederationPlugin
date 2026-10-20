@@ -13,6 +13,7 @@ receiver converting (old behaviour) instead of failing.
 Only containers/network created here are touched; production is never used.
 """
 import json
+import re
 import os
 from pathlib import Path
 import secrets
@@ -21,11 +22,20 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 import federation_metadata_smoke as qa
 
 
 def transcode_logs(config):
-    return sorted((config / 'log').glob('FFmpeg.Transcode-*.log'))
+    # This server's own conversions; copies of a friend's log of a play it
+    # converted (they start with "Conversion log from friend") don't count.
+    return sorted(p for p in (config / 'log').glob('FFmpeg.Transcode-*.log')
+                  if not p.read_text(errors='replace').startswith('Conversion log from friend'))
+
+
+def friend_logs(config):
+    return sorted(p for p in (config / 'log').glob('FFmpeg.Transcode-*.log')
+                  if p.read_text(errors='replace').startswith('Conversion log from friend'))
 
 
 def container_log(name):
@@ -132,8 +142,13 @@ def smoke():
 
         stage = 'handoff: playlist from the owner, segments straight from the owner'
         before = len(transcode_logs(config))
+        owner_before = len(transcode_logs(source_config))
         play_session, source = negotiate(viewer)
         _, master = qa.request(base, source['TranscodingUrl'], viewer, raw=True)
+        # The receiver starts the owner's conversion as soon as the master
+        # playlist went out, before the player asks for a segment.
+        qa.wait_for(lambda: len(transcode_logs(source_config)) > owner_before or None,
+                    'The owner did not start converting ahead of the player', seconds=20)
         master = master.decode()
         qa.check(viewer_token not in master and 'ApiKey' not in master and 'api_key' not in master, 'A credential reached the playlist')
         variant_url = next(l for l in master.splitlines() if l and not l.startswith('#'))
@@ -149,8 +164,32 @@ def smoke():
         _, segment = qa.request(on_source(segment_url), '', None, raw=True)
         qa.check(len(segment) > 10000 and segment[0] == 0x47, 'First segment is not MPEG-TS video')
         qa.check(len(transcode_logs(config)) == before, 'The receiving server ran a transcode itself')
-        qa.check(transcode_logs(source_config), 'The owner did not transcode')
+        qa.check(len(transcode_logs(source_config)) == owner_before + 1, 'The player\'s first segment restarted the conversion the receiver had started')
         print(f'HANDOFF PASS: receiver negotiated, owner converted; {len(segment)} byte first segment fetched from the owner with no receiver credential; receiver ran no ffmpeg', flush=True)
+
+        stage = 'seek: a retried segment joins the running conversion instead of restarting it'
+        # A fresh play jumping straight to a far segment: nothing is converted
+        # for it yet, so the owner must start there. The player gives up after
+        # 0.3 s and asks again; that retry must join the running conversion, not
+        # restart it (Jellyfin restarts whenever no segment exists yet).
+        owner_before = len(transcode_logs(source_config))
+        _, seek_source = negotiate(viewer, bitrate=2800000)
+        _, seek_master = qa.request(base, seek_source['TranscodingUrl'], viewer, raw=True)
+        seek_variant_url = next(l for l in seek_master.decode().splitlines() if l and not l.startswith('#'))
+        _, seek_variant = qa.request(base, seek_variant_url, None, raw=True)
+        segments = [l for l in seek_variant.decode().splitlines() if l and not l.startswith('#')]
+        far = on_source(segments[-2])
+        try:
+            urllib.request.urlopen(far, timeout=0.3).read()
+        except Exception:
+            pass  # the player giving up before the segment is ready
+        _, seeked = qa.request(far, '', None, raw=True)
+        qa.check(len(seeked) > 10000 and seeked[0] == 0x47, 'Seeked segment is not MPEG-TS video')
+        # Expected: the receiver's early start of segment 0, then one start for
+        # the jump. A third would be the retry restarting it.
+        restarts = len(transcode_logs(source_config)) - owner_before
+        qa.check(restarts <= 2, f'The retried segment restarted the owner conversion again ({restarts} starts)')
+        print(f'HANDOFF PASS: a seek starts the owner conversion {restarts} time(s); the player\'s retry of that segment joins it', flush=True)
 
         stage = 'subtitles come from the owner'
         subtitle = next((s for s in source.get('MediaStreams', []) if s.get('Type') == 'Subtitle' and s.get('DeliveryUrl')), None)
@@ -171,6 +210,13 @@ def smoke():
         # the play (LastPlayedDate) rather than a resume point.
         qa.check((resume.get('UserData') or {}).get('LastPlayedDate'), 'Playback was not recorded on the receiver')
         print(f'HANDOFF PASS: stop relayed, owner job ended after {time.monotonic() - started:.1f}s; playback recorded on the receiver', flush=True)
+
+        stage = 'the owner\'s conversion log of the play lands in the receiver\'s logs'
+        copied = qa.wait_for(lambda: friend_logs(config) or None, 'No friend conversion log in the receiver logs', seconds=30)
+        text = copied[-1].read_text(errors='replace')
+        qa.check('ffmpeg' in text.lower() and 'Stream mapping' in text, 'Copied log is not the owner ffmpeg log')
+        qa.check(not re.search(r'(?i)(token|api_?key)=(?!REDACTED)[0-9a-z]{16,}', text), 'A credential reached the copied log')
+        print(f'HANDOFF PASS: owner conversion log copied into the receiver logs ({copied[-1].name}), credentials blanked', flush=True)
 
         stage = 'revoking the viewer cuts the owner stream'
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
@@ -221,6 +267,16 @@ def smoke():
         # The play that is running stays with the owner.
         qa.request(base, first_variant, None, raw=True)
         print('HANDOFF PASS: owner limit of 1 refuses a second concurrent session; the player gets the refusal, the receiver never converts it', flush=True)
+
+        stage = 'owner restart: plays keep handing off without restarting the receiver'
+        qa.check(qa.request(source_base, '/Plugins/Federation/Settings/RemoteTranscode', source_admin,
+            {'EnableRemoteTranscodeForFriends': True, 'MaxRemoteTranscodesPerFriend': 0, 'UseFriendsTranscoders': True})['success'], 'Unlimit failed')
+        qa.run(['podman', 'restart', '-t', '5', names[0]])
+        qa.wait_for(lambda: qa.request(source_base, '/System/Info/Public'), 'Owner did not come back')
+        time.sleep(3)
+        _, after_restart = handed_off() or (None, '')
+        qa.check('HandoffPlaylist' in after_restart, 'After the owner restarted, the receiver could not hand off with its stored tokens')
+        print('HANDOFF PASS: after the owner restarts, the next play hands off at once (tokens kept / refreshed)', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError, StopIteration)) else f'{type(e).__name__}: {e}'
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None

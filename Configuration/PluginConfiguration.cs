@@ -476,6 +476,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool EnableRemoteTranscodeForFriends { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets a value indicating whether a friend whose viewer's play this
+        /// server converts may fetch that play's conversion log (credentials
+        /// blanked), so it shows in the friend's own logs.
+        /// </summary>
+        public bool ShareConversionLogsWithFriends { get; set; } = true;
+
+        /// <summary>
         /// Gets or sets how many playback sessions one friend may convert here at
         /// once (0 = no limit). A session over the limit is refused, and the
         /// friend's server converts it itself instead.

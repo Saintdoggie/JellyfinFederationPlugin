@@ -20,6 +20,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>How long a session stays known for control calls (a long pause).</summary>
         internal static readonly TimeSpan KnownWindow = TimeSpan.FromHours(12);
 
+        /// <summary>How long a stopped session stays known, so its final log can be fetched.</summary>
+        internal static readonly TimeSpan EndedWindow = TimeSpan.FromMinutes(30);
+
         private readonly ConcurrentDictionary<(string Friend, string Session), Entry> _sessions = new();
 
         /// <summary>Clock, replaceable in tests.</summary>
@@ -30,7 +33,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// would start a new session beyond <paramref name="limit"/> (0 = none).
         /// Returns false when refused.
         /// </summary>
-        public bool TryTouch(string friendFederationId, string playSessionId, string? deviceId, int limit)
+        public bool TryTouch(string friendFederationId, string playSessionId, string? deviceId, int limit, Guid itemId = default)
         {
             Prune();
             var key = (friendFederationId, playSessionId.ToLowerInvariant());
@@ -39,6 +42,12 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 existing.LastSeenUtc = now;
                 existing.DeviceId ??= deviceId;
+                existing.Ended = false;
+                if (existing.ItemId == Guid.Empty)
+                {
+                    existing.ItemId = itemId;
+                }
+
                 return true;
             }
 
@@ -47,14 +56,33 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            _sessions[key] = new Entry { DeviceId = deviceId, LastSeenUtc = now };
+            _sessions[key] = new Entry { DeviceId = deviceId, LastSeenUtc = now, StartedUtc = now, ItemId = itemId };
+            return true;
+        }
+
+        /// <summary>
+        /// The title and start time of a session this friend started here (also
+        /// for a while after it stopped), for finding its conversion log. False
+        /// when this friend never started it.
+        /// </summary>
+        public bool TryGetForLog(string friendFederationId, string playSessionId, out Guid itemId, out DateTime startedUtc)
+        {
+            itemId = Guid.Empty;
+            startedUtc = default;
+            if (!_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) || entry.ItemId == Guid.Empty)
+            {
+                return false;
+            }
+
+            itemId = entry.ItemId;
+            startedUtc = entry.StartedUtc;
             return true;
         }
 
         /// <summary>Marks a known session as alive (a pause ping). False when unknown.</summary>
         public bool TryPing(string friendFederationId, string playSessionId)
         {
-            if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry))
+            if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
             {
                 entry.LastSeenUtc = UtcNow();
                 return true;
@@ -70,8 +98,12 @@ namespace Jellyfin.Plugin.Federation.Services
         public bool TryEnd(string friendFederationId, string playSessionId, out string? deviceId)
         {
             deviceId = null;
-            if (_sessions.TryRemove((friendFederationId, playSessionId.ToLowerInvariant()), out var entry))
+            // Kept (marked ended) so the friend can still fetch the finished
+            // conversion log; it no longer counts toward the limit.
+            if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
             {
+                entry.Ended = true;
+                entry.LastSeenUtc = UtcNow();
                 deviceId = entry.DeviceId;
                 return true;
             }
@@ -83,15 +115,15 @@ namespace Jellyfin.Plugin.Federation.Services
         public int ActiveCount(string friendFederationId)
         {
             var since = UtcNow() - ActiveWindow;
-            return _sessions.Count(kv => kv.Key.Friend == friendFederationId && kv.Value.LastSeenUtc >= since);
+            return _sessions.Count(kv => kv.Key.Friend == friendFederationId && !kv.Value.Ended && kv.Value.LastSeenUtc >= since);
         }
 
         private void Prune()
         {
-            var cutoff = UtcNow() - KnownWindow;
+            var now = UtcNow();
             foreach (var kv in _sessions)
             {
-                if (kv.Value.LastSeenUtc < cutoff)
+                if (kv.Value.LastSeenUtc < now - (kv.Value.Ended ? EndedWindow : KnownWindow))
                 {
                     _sessions.TryRemove(kv.Key, out _);
                 }
@@ -103,6 +135,12 @@ namespace Jellyfin.Plugin.Federation.Services
             public string? DeviceId { get; set; }
 
             public DateTime LastSeenUtc { get; set; }
+
+            public DateTime StartedUtc { get; set; }
+
+            public Guid ItemId { get; set; }
+
+            public bool Ended { get; set; }
         }
     }
 }

@@ -356,6 +356,34 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// The conversion log of a play this friend converts for one of our
+        /// viewers (<c>Peer/PlayLog</c>), or null when there is none yet, the
+        /// friend doesn't share it, or runs a version without it.
+        /// </summary>
+        public async Task<string?> GetPlayLogAsync(string playSessionId, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/PlayLog?playSessionId=" + Uri.EscapeDataString(playSessionId), cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode != System.Net.HttpStatusCode.OK)
+                {
+                    return null;
+                }
+
+                return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not get a conversion log from {ServerName}", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Relays a viewer's pause ping ("ping") or stop ("stop") for a session the
         /// friend is converting (remote-transcode handoff; see <c>Peer/PlayControl</c>).
         /// Best effort: false on any failure.
@@ -1018,6 +1046,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (purpose == FederationTokenPurpose.Playback)
                 {
                     PeerTranscodeCapability.Record(_server.Id, result.RemoteTranscode == true);
+                    PeerTranscodeCapability.RecordSharedSegments(_server.Id, result.SharedSegments == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -1459,6 +1488,32 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             ItemPlaybackTokenCache.TryRemove($"{serverId}:{remoteItemId}:{localUserId ?? string.Empty}", out _);
+        }
+
+        /// <summary>
+        /// Drops every token this server holds from <paramref name="serverId"/>
+        /// (item playback tokens and viewer session tokens). Used when the friend
+        /// refuses one: after a restart a friend before 0.0.193 forgets every token
+        /// it gave out, and reusing cached ones would refuse every play until they
+        /// ran out.
+        /// </summary>
+        public static void InvalidatePlaybackTokens(string serverId)
+        {
+            if (string.IsNullOrEmpty(serverId))
+            {
+                return;
+            }
+
+            var prefix = serverId + ":";
+            foreach (var key in ItemPlaybackTokenCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                ItemPlaybackTokenCache.TryRemove(key, out _);
+            }
+
+            foreach (var key in UserSessionTokenCache.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                UserSessionTokenCache.TryRemove(key, out _);
+            }
         }
 
         /// <summary>
@@ -2331,6 +2386,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// itself, so a viewer can be sent there directly. Absent from older friends.
         /// </summary>
         public bool? DeviceDownload { get; set; }
+
+        /// <summary>
+        /// Whether the friend's gateway shares a repeated segment request with the
+        /// running one (0.0.193+), so starting its conversion early is safe.
+        /// </summary>
+        public bool? SharedSegments { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

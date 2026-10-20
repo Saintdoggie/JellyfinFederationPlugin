@@ -47,6 +47,19 @@ public class HandoffPlaylistLinksTests
         Assert.Equal(playlist, HandoffPlaylistLinks.Rewrite(playlist, "https://friend.example", Relay));
     }
 
+    [Fact]
+    public void FirstUri_PrefersTheInitSegment_ThenTheFirstEntry_OnTheFriendAddress()
+    {
+        var withMap = "#EXTM3U\n#EXT-X-MAP:URI=\"http://10.0.0.5:8096/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/-1.mp4?x=1\"\n#EXTINF:3,\nhttp://10.0.0.5:8096/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/0.mp4?x=1";
+        Assert.Equal("https://friend.example/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/-1.mp4?x=1", HandoffPlaylistLinks.FirstUri(withMap, "https://friend.example"));
+
+        var ts = "#EXTM3U\n#EXTINF:3,\nhttp://x/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/0.ts?x=1\n#EXTINF:3,\nhttp://x/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/1.ts?x=1";
+        Assert.Equal("https://friend.example/Plugins/Federation/Peer/Play/T/videos/a/hls1/main/0.ts?x=1", HandoffPlaylistLinks.FirstUri(ts, "https://friend.example/"));
+
+        Assert.Null(HandoffPlaylistLinks.FirstUri("#EXTM3U\nsegment0.ts", "https://friend.example"));
+        Assert.Null(HandoffPlaylistLinks.TakePrefetched("https://friend.example/never-fetched.m3u8"));
+    }
+
     [Theory]
     [InlineData("https://friend.example/Plugins/Federation/Peer/Play/TOK/videos/abc/main.m3u8?a=1", true)]
     [InlineData("https://FRIEND.example/plugins/federation/peer/play/TOK/videos/abc/main.m3u8", true)]

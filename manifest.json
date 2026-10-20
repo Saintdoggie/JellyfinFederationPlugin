@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.193",
+        "changelog": "Smoother, faster playback of friends' titles that the friend converts. Seeking works: a player asking again for a segment that is still being made now waits for it instead of making the friend's server restart its conversion (which could repeat forever on a slow start). Plays start sooner: your server starts the friend's conversion and fetches the next playlist while the player is still on its way. A friend restarting no longer refuses every play: your server gets fresh playback tokens and retries, and tokens now survive a restart. The friend's conversion log of each play is copied into your Dashboard \u2192 Logs (the friend can turn this off). Playback Info says \"Not shared\" for a friend that doesn't share its hardware. Seeking, the faster start and the logs need the friend on 0.0.193; the token refresh works with any friend.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-20T16:22:17Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.193/Jellyfin.Federation.zip",
+        "checksum": "f0f05404db328c1de1b186ce3cb4234c"
+      },
+      {
         "version": "0.0.192",
         "changelog": "Fixes friends' titles failing to play in the browser when the friend converts them: a friend behind some proxies or tunnels wrote http addresses into its playlists, which a browser on an https page refuses. Your server now puts those addresses on the https address it already uses for that friend. Only your server needs 0.0.192 for this; the friend can stay on 0.0.187 or later. Also includes 0.0.191: a friend's title plays only from that friend while it converts for you.",
         "targetAbi": "12.0.0.0",

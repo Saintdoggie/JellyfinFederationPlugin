@@ -151,9 +151,39 @@ public class RemoteTranscodeHandoffTests
         Assert.True(registry.TryEnd("friend-a", "s1", out var device));
         Assert.Equal("dev", device);
 
+        // A stopped session frees its slot at once, can't be ended or pinged
+        // again, but stays known for fetching its conversion log.
+        Assert.False(registry.TryEnd("friend-a", "s1", out _));
+        Assert.False(registry.TryPing("friend-a", "s1"));
+        Assert.True(registry.TryTouch("friend-a", "s3", "dev", limit: 2));
+        registry.TryEnd("friend-a", "s3", out _);
+
         now += RemoteTranscodeSessionRegistry.ActiveWindow + TimeSpan.FromSeconds(1);
         Assert.True(registry.TryTouch("friend-a", "s4", "dev", limit: 2));
         Assert.True(registry.TryTouch("friend-a", "s5", "dev", limit: 2));
+    }
+
+    [Fact]
+    public void OwnerRegistry_KnowsTitleAndStartForLogs_OnlyForTheFriendThatStartedIt()
+    {
+        var now = new DateTime(2026, 10, 20, 15, 42, 0, DateTimeKind.Utc);
+        var registry = new RemoteTranscodeSessionRegistry { UtcNow = () => now };
+        registry.TryTouch("friend-a", "play", "dev", 0, Item);
+
+        now = now.AddMinutes(2);
+        registry.TryTouch("friend-a", "play", "dev", 0, Guid.NewGuid());
+        Assert.True(registry.TryGetForLog("friend-a", "PLAY", out var item, out var started));
+        Assert.Equal(Item, item);
+        Assert.Equal(now.AddMinutes(-2), started);
+        Assert.False(registry.TryGetForLog("friend-b", "play", out _, out _));
+
+        registry.TryEnd("friend-a", "play", out _);
+        now += RemoteTranscodeSessionRegistry.EndedWindow - TimeSpan.FromMinutes(1);
+        registry.TryTouch("friend-a", "other", "dev", 0, Item);
+        Assert.True(registry.TryGetForLog("friend-a", "play", out _, out _));
+        now += TimeSpan.FromMinutes(2);
+        registry.TryTouch("friend-a", "other", "dev", 0, Item);
+        Assert.False(registry.TryGetForLog("friend-a", "play", out _, out _));
     }
 
     [Fact]

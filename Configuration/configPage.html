@@ -1041,13 +1041,15 @@
                             <div class="fed-subcard" id="fedRemoteTranscodeCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Who converts friends' video</h4>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkUseFriendsTranscoders" class="emby-checkbox fed-check" /> Let a friend's server convert its own titles for my viewers</label>
-                                <p class="fieldDescription">When one of your viewers plays a friend's title that has to be converted for their device, the friend's server converts its own copy and sends it straight to the player. Your viewer stays signed in here and their progress is saved here, but the video never passes through this server. If the friend can't (older version, switched off, busy, unreachable), this server converts it as before.</p>
+                                <p class="fieldDescription">When one of your viewers plays a friend's title that has to be converted for their device, the friend's server converts its own copy and sends it straight to the player. Your viewer stays signed in here and their progress is saved here, but the video never passes through this server. A play stays with the friend from start to end. If the friend has converting switched off or runs an older version, this server converts it instead; if the friend is busy or has a problem, the player shows that. The friend's conversion log of the play is copied to this server's logs (Dashboard → Logs) when the friend shares it.</p>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkEnableRemoteTranscodeForFriends" class="emby-checkbox fed-check" /> Convert my titles on this server for friends' viewers</label>
                                 <p class="fieldDescription">Uses this server's transcoder (GPU) and upload for friends who play your titles. Each friend can also be switched off on the Friends tab.</p>
                                 <div class="inputContainer">
                                     <label class="inputLabel" for="fedNumMaxRemoteTranscodes">Most conversions per friend at once (0 = no limit)</label>
                                     <input type="number" id="fedNumMaxRemoteTranscodes" class="emby-input" min="0" max="100" step="1" />
                                 </div>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareConversionLogs" class="emby-checkbox fed-check" /> Share the conversion log of each play with the friend it's for</label>
+                                <p class="fieldDescription">When this server converts a title for a friend's viewer, that friend's server can copy the conversion (ffmpeg) log of the play into its own logs, to see how the conversion went. Keys and tokens are blanked; it shows the file's path on this server and the hardware used.</p>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-remote-transcode">Save conversion settings</button>
                                 <div class="fed-srvstatus" id="fedRemoteTranscodeStatus" style="display:none;"></div>
                                 <div id="fedRemoteTranscodeFriends" class="fed-hint" style="margin-top:.6em;"></div>
@@ -1760,6 +1762,7 @@
                             if (!res) { return; }
                             q('#fedChkUseFriendsTranscoders').checked = res.UseFriendsTranscoders !== false;
                             q('#fedChkEnableRemoteTranscodeForFriends').checked = res.EnableRemoteTranscodeForFriends !== false;
+                            q('#fedChkShareConversionLogs').checked = res.ShareConversionLogsWithFriends !== false;
                             q('#fedNumMaxRemoteTranscodes').value = res.MaxRemoteTranscodesPerFriend || 0;
                             var lines = (res.Friends || []).map(function (f) {
                                 return escapeHtml(f.Name) + ': '
@@ -1780,6 +1783,7 @@
                             body: JSON.stringify({
                                 UseFriendsTranscoders: q('#fedChkUseFriendsTranscoders').checked,
                                 EnableRemoteTranscodeForFriends: q('#fedChkEnableRemoteTranscodeForFriends').checked,
+                                ShareConversionLogsWithFriends: q('#fedChkShareConversionLogs').checked,
                                 MaxRemoteTranscodesPerFriend: isNaN(max) || max < 0 ? 0 : Math.min(max, 100)
                             })
                         })

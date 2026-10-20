@@ -465,6 +465,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
                     config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
+                    config.ShareConversionLogsWithFriends = existing.ShareConversionLogsWithFriends;
                     config.ShareFavoritesWithFriends = existing.ShareFavoritesWithFriends;
                     config.ShowFriendsFavorites = existing.ShowFriendsFavorites;
                     config.HostWatchPartiesWithFriends = existing.HostWatchPartiesWithFriends;
@@ -1473,6 +1474,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.EnableRemoteTranscodeForFriends,
                 config.MaxRemoteTranscodesPerFriend,
                 config.UseFriendsTranscoders,
+                config.ShareConversionLogsWithFriends,
                 Friends = (config.RemoteServers ?? new List<RemoteServer>())
                     .Where(s => s.Kind == ServerKind.Jellyfin)
                     .Select(s => new
@@ -1500,6 +1502,11 @@ namespace Jellyfin.Plugin.Federation.Api
             config.EnableRemoteTranscodeForFriends = body.EnableRemoteTranscodeForFriends;
             config.MaxRemoteTranscodesPerFriend = Math.Clamp(body.MaxRemoteTranscodesPerFriend, 0, 100);
             config.UseFriendsTranscoders = body.UseFriendsTranscoders;
+            if (body.ShareConversionLogsWithFriends.HasValue)
+            {
+                config.ShareConversionLogsWithFriends = body.ShareConversionLogsWithFriends.Value;
+            }
+
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
         }
@@ -1661,17 +1668,6 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(_placement.Local());
         }
 
-        private static readonly HttpClient HandoffPlaylistHttp = new(new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = System.Net.DecompressionMethods.None,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            UseCookies = false
-        })
-        {
-            Timeout = TimeSpan.FromSeconds(30)
-        };
-
         /// <summary>
         /// Player-facing, anonymous like the media it leads to: a playlist from a
         /// friend that is converting one of its titles for a viewer here, fetched
@@ -1691,11 +1687,17 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             Response.Headers.CacheControl = "private, no-store";
+            var relayPrefix = HandoffPlaylistLinks.RelayPrefix(Request.PathBase.Value);
+            if (HandoffPlaylistLinks.TakePrefetched(u!) is { } ready)
+            {
+                return Content(HandoffPlaylistLinks.Rewrite(ready.Text, RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix), ready.ContentType);
+            }
+
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, u);
                 request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
-                using var response = await HandoffPlaylistHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                using var response = await HandoffPlaylistLinks.Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return StatusCode((int)response.StatusCode);
@@ -1707,7 +1709,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
 
                 var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                var rewritten = HandoffPlaylistLinks.Rewrite(text, RemoteServerClientFactory.EffectiveUrl(friend), HandoffPlaylistLinks.RelayPrefix(Request.PathBase.Value));
+                var rewritten = HandoffPlaylistLinks.Rewrite(text, RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix);
                 return Content(rewritten, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -3408,7 +3410,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 // transcode) for this item. Older friends ignore it.
                 remoteTranscode = purpose == FederationTokenPurpose.Playback
                     && Plugin.Instance?.Configuration?.EnableRemoteTranscodeForFriends == true
-                    && caller.AllowRemoteTranscode
+                    && caller.AllowRemoteTranscode,
+
+                // Tells the friend a repeated segment request joins the running
+                // one here instead of restarting the conversion, so it may ask
+                // for the first segment early to start conversion sooner.
+                sharedSegments = purpose == FederationTokenPurpose.Playback
             });
         }
 
@@ -3675,7 +3682,7 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 var playSessionId = RemoteMediaPath.QueryValue(Request.Query, "PlaySessionId");
                 if (!string.IsNullOrEmpty(playSessionId)
-                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, RemoteMediaPath.QueryValue(Request.Query, "DeviceId"), config?.MaxRemoteTranscodesPerFriend ?? 0))
+                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, RemoteMediaPath.QueryValue(Request.Query, "DeviceId"), config?.MaxRemoteTranscodesPerFriend ?? 0, path.ItemId))
                 {
                     _logger.LogInformation("[Federation] Remote transcode for {Friend} refused: their limit of {Limit} at once is reached", owner.Name, config?.MaxRemoteTranscodesPerFriend);
                     Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
@@ -3686,6 +3693,38 @@ namespace Jellyfin.Plugin.Federation.Api
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             await _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), cancellationToken).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        /// <summary>
+        /// Server-to-server: the conversion (ffmpeg) log of a play this server is
+        /// converting, or converted, for the calling friend's viewer, so the
+        /// friend's admin sees it in their own logs like a conversion done there.
+        /// Only sessions that friend started through the gateway; keys and tokens
+        /// are blanked. 204 while there is no log yet; 404 when this server's
+        /// admin turned sharing logs off (or an older friend asks something else).
+        /// </summary>
+        [HttpGet("Peer/PlayLog")]
+        [AllowAnonymous]
+        public IActionResult GetRemoteTranscodeLog([FromQuery] string? playSessionId)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (Plugin.Instance?.Configuration?.ShareConversionLogsWithFriends == false
+                || string.IsNullOrWhiteSpace(playSessionId)
+                || playSessionId.Length > 128
+                || !_remoteTranscodeSessions.TryGetForLog(caller.FederationId, playSessionId, out var itemId, out var startedUtc))
+            {
+                return NotFound();
+            }
+
+            var paths = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Common.Configuration.IApplicationPaths)) as MediaBrowser.Common.Configuration.IApplicationPaths;
+            var text = FriendConversionLogs.Collect(paths?.LogDirectoryPath ?? string.Empty, itemId, startedUtc);
+            Response.Headers.CacheControl = "private, no-store";
+            return text == null ? NoContent() : Content(text, "text/plain; charset=utf-8");
         }
 
         /// <summary>CORS preflight for <see cref="RemoteTranscodeGateway"/>.</summary>
@@ -6812,6 +6851,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool UseFriendsTranscoders { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends may fetch the conversion logs of plays converted here for them (null = unchanged).</summary>
+        public bool? ShareConversionLogsWithFriends { get; set; }
     }
 
     /// <summary>Body of <c>Party</c>.</summary>

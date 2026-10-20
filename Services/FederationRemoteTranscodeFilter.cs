@@ -145,6 +145,33 @@ namespace Jellyfin.Plugin.Federation.Services
             var playlist = path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.SubtitlePlaylist;
             var relayPrefix = HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value);
             var (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted).ConfigureAwait(false);
+            if (status == StatusCodes.Status403Forbidden)
+            {
+                // Most often a token the friend no longer knows (it restarted).
+                // Drop every token from it, get a fresh one (the provider mints it
+                // while recording the grant again) and try once more; a friend
+                // that really switched converting off says so in that new token.
+                RemoteServerClient.InvalidatePlaybackTokens(handoff.ServerId);
+                PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
+                var fresh = await ResolveAsync(context, path).ConfigureAwait(false);
+                if (fresh != null)
+                {
+                    handoff = fresh;
+                    (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted).ConfigureAwait(false);
+                    if (fetched != null)
+                    {
+                        _logger.LogInformation("[Federation] {Server} refused an old token; a fresh one worked", handoff.ServerName);
+                    }
+                }
+                else
+                {
+                    // The fresh token says the friend no longer converts for us.
+                    _logger.LogInformation("[Federation] {Server} no longer converts for us; converting {ItemId} here", handoff.ServerName, path.ItemId);
+                    await next().ConfigureAwait(false);
+                    return;
+                }
+            }
+
             if (fetched != null)
             {
                 if (path.StartsWork)
@@ -306,7 +333,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
-            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase);
+            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind);
         }
 
         /// <summary>
@@ -383,7 +410,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     // The friend's addresses can be http behind its proxy; put
                     // them on the address this server uses for it.
-                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(HandoffPlaylistLinks.Decode(bytes), handoff.PeerBase, relayPrefix));
+                    var text = HandoffPlaylistLinks.Decode(bytes);
+                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PeerBase, relayPrefix));
+                    if (handoff.Kind == RemoteMediaKind.HlsMaster)
+                    {
+                        HandoffPlaylistLinks.WarmUp(text, handoff.PeerBase, PeerTranscodeCapability.HasSharedSegments(handoff.ServerId), _logger);
+                    }
                 }
 
                 return (new FileContentResult(bytes, contentType), StatusCodes.Status200OK);
@@ -399,6 +431,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase);
+        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind);
     }
 }

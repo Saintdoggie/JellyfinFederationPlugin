@@ -15,6 +15,34 @@ namespace Jellyfin.Plugin.Federation.Tests;
 public class FederationPlaybackTokenBindingTests
 {
     [Fact]
+    public void Tokens_SurviveARestart_AndTheFileHoldsNoUsableToken()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fed-tokens-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var before = new FederationPlaybackTokenService(path);
+            var token = before.Issue("item-1", "friend-a", FederationTokenPurpose.Playback, "viewer-1");
+            before.Save();
+
+            Assert.DoesNotContain(token, System.IO.File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
+
+            var after = new FederationPlaybackTokenService(path);
+            Assert.True(after.TryValidate(token, "item-1", out var federationId, out var purpose, out var viewer));
+            Assert.Equal("friend-a", federationId);
+            Assert.Equal(FederationTokenPurpose.Playback, purpose);
+            Assert.Equal("viewer-1", viewer);
+            Assert.False(after.TryValidate(token, "item-2", out _));
+
+            System.IO.File.WriteAllText(path, "not json");
+            Assert.False(new FederationPlaybackTokenService(path).TryValidate(token, "item-1", out _));
+        }
+        finally
+        {
+            System.IO.File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void Issue_BindsTokenToMintingFriend_TryValidateReturnsIt()
     {
         var service = new FederationPlaybackTokenService();
