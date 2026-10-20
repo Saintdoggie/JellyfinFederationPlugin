@@ -48,5 +48,45 @@
 [x] Full gate on frozen commit 72c5c61: 1006 plugin + 170 Companion + 116 UI tests, twice, receipt written
 [x] Two-server fixtures on frozen commit: peer smoke 5/5 (12.2), handoff smoke 6/6 on 12.2 and 12.0
 [x] Version 0.0.187: csproj, meta.json, manifest (md5 2e033381b2395192f46d0cbbdce02dbd), zip = DLL+meta+logo+thumb
-[ ] Commit, merge to master, push, GitHub release
-[ ] Deploy to live server (user's) — only after release passes
+[x] Commit, merge to master, push, GitHub release (0.0.187)
+[x] Deploy to live server (user's) — 0.0.187 Active on Jellyfin 12.2.0
+
+
+# ======================================================================
+# Federation 0.0.188 — friends' favorites + downloads to device
+# Branch: feature/favorites-and-downloads, base origin/master 0.0.187
+# ======================================================================
+
+## 5. Downloads to device (any user, any app)
+Root cause: Jellyfin only offers Download for local files (CanDownload = IsFileProtocol);
+a federated item's Path is a URL, so web/Android/Findroid/Swiftfin hide Download and
+/Items/{id}/Download throws. The web-only "Download to device" menu entry handed the
+browser a loopback (127.0.0.1) URL and refused any title with a per-user rule.
+### Owner side
+[ ] DirectStream download=true: Content-Disposition attachment with the real file name (RFC 6266 filename*)
+[ ] Token response advertises deviceDownload=true for Download tokens
+[ ] Viewer-bound download tokens: own limit per viewer (not the friend-wide 3/hour server-copy limit)
+[ ] Peer/UserRules also reports friend-level allowDownloads + shareFavorites
+### Receiver side
+[ ] Store what the friend allows (PeerAllowsDownloads, PeerSharesFavorites); preserved by config Save
+[ ] /Items/{id}/Download filter: user, visibility, friend rule, source online -> viewer-bound Download token
+    -> 302 straight to the friend (same scheme, new friend) or relay through this server (old friend / scheme change)
+[ ] Error answers carry the friend's reason (not allowed / limit reached + Retry-After / offline)
+[ ] CanDownload=true in item responses for federated videos/audio the user may download
+[ ] Web: drop the broken injected "Download to device" entry (native Download now works); DownloadUrl returns the native path
+[ ] Tests: decision logic, filename header, CanDownload rules, token cache
+## 6. Friends' favorites
+Design (user picked): each friend shares which of its own titles its users favorited —
+anonymous, only titles already shared with you; your Favorites tab gets "Favorites on <friend>".
+[ ] Owner: Peer/Favorites — favorites of enabled local users, own media only, visible to the calling viewer, ranked, capped, cached
+[ ] Owner setting ShareFavoritesWithFriends (default on)
+[ ] Receiver: FriendFavoritesService — pull per friend per viewer (cached), map to local items, filter by viewer visibility
+[ ] Receiver: /Plugins/Federation/FriendFavorites (signed-in user) -> sections per friend
+[ ] Receiver setting ShowFriendsFavorites (default on)
+[ ] Web: per-friend sections below the native Favorites sections (native card look, no gradients)
+[ ] Admin UI: both switches in Advanced
+[ ] Tests: aggregation, ranking, mapping, visibility, settings
+## 7. Validation + release
+[ ] Gate twice on frozen commit
+[ ] Two-server fixture: device download (redirect + relay), CanDownload, friends' favorites section data
+[ ] Version 0.0.188, release, master, deploy live

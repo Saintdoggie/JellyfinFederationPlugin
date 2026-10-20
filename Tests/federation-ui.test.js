@@ -221,7 +221,8 @@ test('admin action sheet offers download to this server for federated items', as
   await settle();
   const labels = [...dom.window.document.querySelectorAll('.federation-actionsheet-item')].map((btn) => btn.textContent.trim());
   assert.ok(labels.includes('Download to this server'));
-  assert.ok(labels.includes('Download to device'));
+  // Device downloads are jellyfin-web's own Download entry now (CanDownload).
+  assert.equal(labels.includes('Download to device'), false);
   assert.equal(labels.includes('Cancel server download'), false);
   assert.ok(badgeScript.includes("federationFetch('/Plugins/Federation/Download'"));
   assert.equal(badgeScript.includes('temporarily disabled'), false);
@@ -1824,4 +1825,100 @@ test('custom library types have readable names, and music is recognisable', () =
   assert.match(configPage, /MusicAlbum: 'Music \(albums with songs\)'/);
   assert.match(configPage, /Audio: 'Music \(songs, with their albums\)'/);
   assert.match(configPage, /escapeHtml\(CUSTOM_TYPE_LABELS\[t\] \|\| t\)/);
+});
+
+function makeFavoritesWindow(sections, items, userId = 'user-1') {
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div id="favoritesTab" class="tabContent pageTabContent is-active"><div class="sections"><div class="verticalSection">native</div></div></div>'
+      + '</body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/home?tab=1' }
+  );
+  const calls = [];
+  const itemQueries = [];
+  let currentUser = userId;
+  dom.window.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    getCurrentUserId: () => currentUser,
+    serverId: () => 'srv',
+    accessToken: () => 'test-token',
+    getScaledImageUrl: (id, opts) => '/Items/' + id + '/Images/Primary?tag=' + opts.tag,
+    getItems: (uid, query) => {
+      itemQueries.push({ uid, query });
+      return Promise.resolve({ Items: items });
+    }
+  };
+  dom.window.fetch = (url) => {
+    calls.push(String(url));
+    let data = {};
+    if (String(url).includes('ClientCatalog')) data = { items: {}, unavailableIds: [] };
+    if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: false };
+    if (String(url).includes('FriendFavorites')) data = { enabled: true, sections };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  return { dom, calls, itemQueries, setUser: (id) => { currentUser = id; } };
+}
+
+async function settleMany(times = 8) {
+  for (let i = 0; i < times; i++) { await settle(); }
+}
+
+test("friends' favorites appear as one row per friend below the native favorites", async () => {
+  const items = [
+    { Id: 'aaa', Name: 'Dune <Part Two>', Type: 'Movie', ProductionYear: 2024, ImageTags: { Primary: 't1' } },
+    { Id: 'bbb', Name: 'Pilot', Type: 'Episode', SeriesName: 'Show', ImageTags: {} },
+    { Id: 'ccc', Name: 'Song', Type: 'Audio', AlbumArtist: 'Band', ImageTags: { Primary: 't3' } }
+  ];
+  const { dom, calls, itemQueries } = makeFavoritesWindow([
+    { serverId: 'f1', name: 'netflix++', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f2', name: 'Inspired', itemIds: ['ccc', 'gone'] },
+    { serverId: 'f3', name: 'Empty', itemIds: ['gone'] }
+  ], items);
+  await settleMany();
+
+  assert.ok(calls.some((url) => url.endsWith('/Plugins/Federation/FriendFavorites')));
+  assert.equal(itemQueries.length, 1);
+  assert.equal(itemQueries[0].uid, 'user-1');
+  const doc = dom.window.document;
+  const tab = doc.getElementById('favoritesTab');
+  assert.equal(tab.querySelector('.sections').textContent, 'native');
+  const sections = [...tab.querySelectorAll('.federation-favorites-section')];
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Favorites on netflix++', 'Favorites on Inspired']);
+  const first = [...sections[0].querySelectorAll('.federation-fav-card')];
+  assert.deepEqual(first.map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
+  assert.equal(first[1].getAttribute('href'), '#/details?id=aaa&serverId=srv');
+  assert.equal(first[1].querySelector('.federation-fav-title').textContent, 'Dune <Part Two>');
+  assert.equal(first[1].querySelector('img').getAttribute('src'), '/Items/aaa/Images/Primary?tag=t1');
+  assert.ok(first[0].classList.contains('federation-fav-backdrop'));
+  assert.ok(first[0].querySelector('.federation-fav-noart'));
+  assert.equal(first[0].querySelector('.federation-fav-sub').textContent, 'Show');
+  assert.ok(sections[1].querySelector('.federation-fav-square'));
+  assert.equal(tab.querySelector('part'), null);
+  dom.window.close();
+});
+
+test("friends' favorites stay empty and quiet when there is nothing to show", async () => {
+  const { dom, itemQueries } = makeFavoritesWindow([], []);
+  await settleMany();
+  assert.equal(itemQueries.length, 0);
+  assert.equal(dom.window.document.querySelectorAll('.federation-favorites-section').length, 0);
+  dom.window.close();
+});
+
+test("friends' favorites rows use solid colours only", () => {
+  const css = badgeScript.slice(badgeScript.indexOf('.federation-favorites-row'), badgeScript.indexOf("].join('');"));
+  assert.ok(css.length > 0);
+  assert.equal(/gradient/i.test(css), false);
+});
+
+test("admin page has the friends' favorites switches wired to their own settings route", () => {
+  assert.ok(configPage.includes('id="fedChkShowFriendsFavorites"'));
+  assert.ok(configPage.includes('id="fedChkShareFavoritesWithFriends"'));
+  assert.ok(configPage.includes('data-fed-action="save-favorites"'));
+  assert.match(configPage, /case 'save-favorites':\s*saveFavoritesSettings\(\);/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/Favorites', \{\s*method: 'POST'/);
+  assert.match(configPage, /loadRemoteTranscodeSettings\(\);\s*loadFavoritesSettings\(\);/);
 });

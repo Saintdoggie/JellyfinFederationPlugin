@@ -7,8 +7,28 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import urllib.error
 import urllib.parse
+import urllib.request
 import federation_metadata_smoke as qa
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def no_redirect(base, path, headers):
+    """GET without following redirects: (status, headers, body)."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(base + path, headers=headers), timeout=45) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+OLD_SOURCE = os.environ.get('FEDERATION_SOURCE_DLL')
 
 
 def smoke():
@@ -31,7 +51,9 @@ def smoke():
         for number, name in enumerate(names):
             config = work / name
             plugin = config / 'plugins/Federation'; plugin.mkdir(parents=True)
-            shutil.copy(qa.REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
+            # FEDERATION_SOURCE_DLL runs the source on an older release, to check a
+            # current receiver against a friend that hasn't updated yet.
+            shutil.copy(OLD_SOURCE if (number == 0 and OLD_SOURCE) else qa.REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
             created.append(name)
             qa.run(['podman', 'run', '-d', '--name', name, '--network', network, '--security-opt', 'label=disable',
                 '-p', '127.0.0.1::8096', '-v', f'{config}:/config', '-v', f'{media}:/media:ro', qa.JELLYFIN_IMAGE])
@@ -150,6 +172,94 @@ def smoke():
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/Sharing', source_admin, {'ShareAll':True})['success'], 'Reshare failed')
         qa.wait_for(refreshed, 'Reshared library did not come back')
         print('PEER PASS: unsharing a library removes its titles from the friend; resharing restores them', flush=True)
+        stage = 'viewers download friends\' titles to their devices'
+        item_id = movies(base, viewer)[0]['Id']
+        def can_download(headers, user_id):
+            return qa.request(base, f'/Items/{item_id}?userId={user_id}', headers).get('CanDownload')
+        admin_id = qa.request(base, '/Users/Me', admin)['Id']
+        qa.wait_for(lambda: can_download(viewer, viewer_id), 'Download is not offered on the friend title')
+        if OLD_SOURCE:
+            # An older friend doesn't name the file itself: this server relays it.
+            status, relayed_headers, relayed = no_redirect(base, f'/Items/{item_id}/Download', viewer)
+            qa.check(status == 200 and relayed == payload, f'Download from an older friend failed (HTTP {status})')
+            qa.check('QA Peer (2026).mkv' in (relayed_headers.get('Content-Disposition') or ''), 'Relayed download is not named')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
+                {'AllowDownloads':False,'AllowBulkDownloads':False})['success'], 'Friend download switch failed')
+            status, _, body = no_redirect(base, f'/Items/{item_id}/Download', viewer)
+            qa.check(status == 403 and b'error' in body, f'Older friend refusal not passed on (HTTP {status})')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
+                {'AllowDownloads':True,'AllowBulkDownloads':False})['success'], 'Friend download restore failed')
+            qa.check(no_redirect(base, f'/Items/{item_id}/Download', viewer)[0] == 200, 'Download did not come back')
+            qa.check(not qa.request(base, '/Plugins/Federation/FriendFavorites', viewer)['sections'], 'Older friend produced a favorites row')
+            print('PEER PASS (older friend): downloads relayed and named here, the friend\'s refusal passed on; no favorites row, no errors', flush=True)
+        else:
+            status, located, _ = no_redirect(base, f'/Items/{item_id}/Download', viewer)
+            qa.check(status == 302, f'Device download answered HTTP {status}, expected a redirect to the friend')
+            location = located.get('Location') or located.get('location')
+            parts = urllib.parse.urlsplit(location)
+            qa.check(parts.netloc == f'{names[0]}:8096' and '/Plugins/Federation/DirectStream/' in parts.path
+                and 'download=true' in parts.query and 'token=' in parts.query, 'Device download is not sent to the friend')
+            secret = viewer['Authorization'].split('"')[1]
+            qa.check(secret not in location and 'api_key' not in location.lower(), 'Device download URL carries a credential')
+            got_headers, got = qa.request(source_base, path_only(location), {}, raw=True)
+            qa.check(got == payload, 'File from the friend differs')
+            disposition = got_headers.get('Content-Disposition') or ''
+            qa.check(disposition.startswith('attachment') and 'QA Peer (2026).mkv' in disposition, 'Friend does not name the downloaded file')
+            relayed_headers, relayed = qa.request(base, f'/Items/{item_id}/Download', {**viewer, 'X-Forwarded-Proto': 'https'}, raw=True)
+            qa.check(relayed == payload, 'Relayed download differs')
+            qa.check('QA Peer (2026).mkv' in (relayed_headers.get('Content-Disposition') or ''), 'Relayed download is not named')
+            _, ranged = qa.request(base, f'/Items/{item_id}/Download', {**viewer, 'X-Forwarded-Proto': 'https', 'Range': 'bytes=137-648'}, expected=206, raw=True)
+            qa.check(ranged == payload[137:649], 'Relayed download cannot resume')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries','AllowDownload':False})['success'], 'Viewer download rule failed')
+            qa.wait_for(lambda: can_download(viewer, viewer_id) is False or None, 'Download still offered after the friend turned it off for the viewer')
+            status, _, body = no_redirect(base, f'/Items/{item_id}/Download', viewer)
+            qa.check(status == 403 and b'error' in body, f'Viewer download not refused with a reason (HTTP {status})')
+            qa.check(can_download(admin, admin_id), 'A per-viewer download rule removed Download for the admin too')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer download restore failed')
+            qa.wait_for(lambda: can_download(viewer, viewer_id), 'Download did not come back for the viewer')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
+                {'AllowDownloads':False,'AllowBulkDownloads':False})['success'], 'Friend download switch failed')
+            refreshed()
+            qa.wait_for(lambda: (refreshed() and can_download(admin, admin_id) is False) or None, 'Download still offered after the friend turned downloads off')
+            qa.check(no_redirect(base, f'/Items/{item_id}/Download', admin)[0] == 403, 'Download not refused after the friend turned downloads off')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
+                {'AllowDownloads':True,'AllowBulkDownloads':False})['success'], 'Friend download restore failed')
+            qa.wait_for(lambda: (refreshed() and can_download(viewer, viewer_id)) or None, 'Download did not come back')
+            qa.request(source_base, f'/Plugins/Federation/DirectStream/{native["Id"]}?token=forged&download=true', {}, expected=403, raw=True)
+            print('PEER PASS: any viewer downloads a friend title in their app: straight from the friend (named file, no credential), relayed when the scheme differs (resumable), refused with a reason when the friend turns it off per viewer or for everyone', flush=True)
+            stage = 'friends\' favorites'
+            source_admin_id = qa.request(source_base, '/Users/Me', source_admin)['Id']
+            qa.request(source_base, f'/UserFavoriteItems/{native["Id"]}?userId={source_admin_id}', source_admin, {})
+            qa.request(source_base, '/Plugins/Federation/Peer/Favorites', {}, expected=401, raw=True)
+            def favorite_ids(headers):
+                data = qa.request(base, '/Plugins/Federation/FriendFavorites', headers)
+                return [i for section in data.get('sections') or [] for i in section.get('itemIds') or []]
+            local = item_id.replace('-', '').lower()
+            qa.wait_for(lambda: local in favorite_ids(viewer) or None, 'Friend favorite not shown to the viewer')
+            data = qa.request(base, '/Plugins/Federation/FriendFavorites', viewer)
+            qa.check(data['sections'][0]['name'] == settings['RemoteServers'][0]['Name'], 'Favorites section is not named after the friend')
+            qa.check('qa-admin' not in json.dumps(data), 'Favorites reveal who favorited')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries','BlockedItemIds':[native['Id']]})['success'], 'Per-item block failed')
+            qa.wait_for(lambda: viewer_sees() == (0, 0, 0) or None, 'Per-item block did not hide the title')
+            qa.check(local not in favorite_ids(viewer), 'A hidden title is shown in the viewer\'s friends\' favorites')
+            qa.check(local in favorite_ids(admin), 'Hiding from the viewer removed the favorite for the admin')
+            # A title only some viewers may see has no shared path (Jellyfin calls it Virtual).
+            qa.check(can_download(admin, admin_id), 'Download not offered on a title other viewers are blocked from')
+            qa.check(no_redirect(base, f'/Items/{item_id}/Download', admin)[0] == 302, 'Admin download of a per-viewer title failed')
+            qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+                {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer restore failed')
+            qa.wait_for(lambda: viewer_sees() == (1, 1, 1) or None, 'Unblocked viewer did not get the title back')
+            qa.request(source_base, '/Plugins/Federation/Settings/Favorites', source_admin, {'ShareFavoritesWithFriends':False,'ShowFriendsFavorites':True})
+            qa.wait_for(lambda: (refreshed() and not favorite_ids(admin)) or None, 'Friend favorites still shown after the friend stopped sharing them')
+            qa.request(source_base, '/Plugins/Federation/Settings/Favorites', source_admin, {'ShareFavoritesWithFriends':True,'ShowFriendsFavorites':True})
+            qa.wait_for(lambda: (refreshed() and local in favorite_ids(admin)) or None, 'Friend favorites did not come back')
+            qa.request(base, '/Plugins/Federation/Settings/Favorites', admin, {'ShareFavoritesWithFriends':True,'ShowFriendsFavorites':False})
+            qa.check(not favorite_ids(viewer), 'Friends\' favorites shown after this server turned them off')
+            qa.request(base, '/Plugins/Federation/Settings/Favorites', admin, {'ShareFavoritesWithFriends':True,'ShowFriendsFavorites':True})
+            print('PEER PASS: friends\' favorites: titles only, per viewer visibility, owner and receiver switches', flush=True)
         stage = 'disable, outage, cache retention and stable recovery'
         settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
         settings['RemoteServers'][0]['Enabled'] = False

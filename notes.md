@@ -136,3 +136,77 @@ own server (transcoding there).
   `federation_handoff_smoke.py` 6/6 on 12.2 and 12.0: owner converts, 1 MB first segment straight from
   owner with no receiver credential, receiver ran no ffmpeg, subtitle from owner, stop frees owner job in
   ~1-2 s (was 60 s idle timeout), block cuts in-flight URLs, opt-out and limit fall back to receiver.
+
+---
+
+# Notes — friends' favorites + downloads to device (0.0.188 work)
+
+Started 2026-10-19 on branch `feature/favorites-and-downloads` from `origin/master` (0.0.187).
+
+## What the user asked for
+
+1. "Allow favorites to be shared across servers", not janky or obstructive, maybe per-server
+   sections in the Favorites view. Asked which meaning; user picked **friends' favorites**: each
+   friend shares which of its titles its users favorited (anonymous, titles already shared with you),
+   your Favorites tab gets a "Favorites on <friend>" section; works both ways; admins can turn it off.
+2. "Allow users to download from server to device federated items. Right now it's broken." Any user.
+3. Make it proper; fix bugs found on the way.
+
+## Root causes (downloads)
+
+- Jellyfin only offers Download for local files: `Video.CanDownload() => IsFileProtocol`. A federated
+  item's Path is an http URL, so `CanDownload` is false and every app (jellyfin-web context menu,
+  Android, Findroid, Swiftfin) hides Download. `/Items/{id}/Download` would `PhysicalFile(<url>)` → 500.
+- The only path that existed was a web-only injected "Download to device" entry calling
+  `Plugins/Federation/DownloadUrl`, which returned this server's **loopback** proxy URL
+  (`http://127.0.0.1:8096/Plugins/Federation/Stream?...`) — unreachable from any phone or other PC,
+  despite its doc comment claiming an origin-relative URL. It also refused every title once any
+  per-user rule existed (`IsAllowedForEveryConfiguredUser`), and the bytes were relayed through this
+  server with a Download-less Playback path (owner's download consent never asked).
+- Owner `DirectStream?download=true` never sent `Content-Disposition`, so even a direct link would
+  play in the browser instead of saving.
+
+## Design (downloads)
+
+- Native route everywhere: `FederationCanDownloadFilter` (result filter) flips `CanDownload` to true on
+  item DTOs that asked for the field, are Remote, not folders, Video/Audio, federated, and
+  `FederationDeviceDownloadService.CanOffer` (viewer has EnableContentDownloading; some source friend
+  is enabled Jellyfin, didn't report `allowDownloads=false`, its rule for this viewer has
+  AllowDownload ≠ false and lets them see the title).
+- `FederationDeviceDownloadFilter` answers `Library/GetDownload` for federated items (never falls
+  through): visibility check as the viewer → viewer-bound **Download** token from the owner (sends
+  X-Federation-Remote-User-Id) → 302 straight to `owner/Plugins/Federation/DirectStream/{id}?token&download=true`
+  when the owner names the file (`deviceDownload` flag on the token response, new) and the scheme
+  matches the request (browsers block https→http downloads; ExoPlayer refuses scheme-changing
+  redirects); otherwise relay through this server with our own Content-Disposition (Range works).
+  Permits cached per (server,item,viewer) until 2 min before expiry; refusals never cached;
+  a relayed 401/403 drops the cached permit. Activity log entry once per viewer+title per hour.
+- Owner: viewer-bound Download tokens live 12 h (resume window; still re-validated per request);
+  server copies keep 15 min. Viewer allowance 30 distinct titles/viewer/hour and 120/friend/hour
+  when the friend has no bulk permission; server copies keep the 3/hour friend-wide limit.
+  Refusal messages distinguish "turned off for your account" from "not allowed for this friend".
+- `Peer/UserRules` now also reports `allowDownloads` and `shareFavorites`; the receiver stores them
+  as `PeerAllowsDownloads` / `PeerSharesFavorites` (null = older friend), preserved by the main Save.
+- Removed: injected web "Download to device" entry and `FederationDownloadService.GetDownloadUrl`.
+  `DownloadUrl/{id}` kept for old cached web scripts; it now returns the native relative path.
+
+## Design (favorites)
+
+- Owner `Peer/Favorites` (federation token + viewer header): favorites of enabled local users
+  (`InternalItemsQuery(user){IsFavorite}` over Movie/Series/Season/Episode/Video/MusicVideo/
+  MusicAlbum/Audio), never federated/downloaded copies, ranked by count then newest, filtered by
+  `IsItemVisible(caller, viewer, id)` (sharing scope, excludes, per-viewer rules), max 60. Ids and
+  counts only. Aggregate cached 5 min. Off → `{shared:false, items:[]}`. Setting
+  `ShareFavoritesWithFriends` (default on).
+- Receiver `FriendFavorites` (signed-in viewer): per friend (enabled, Jellyfin, online, not reported
+  as not sharing, not 404-backed-off), fetch with 8 s timeout, cache 10 min per viewer, map remote id →
+  local id via the cache index + `ComputeItemId`, keep only ids the viewer's own `GetItemIds` query
+  returns (library access, parental, friend hide tags). Setting `ShowFriendsFavorites` (default on).
+- Web: rows appended to `#favoritesTab` after jellyfin-web's own `.sections` (never touches them),
+  jellyfin-web heading classes, solid-colour cards, lazy images, links `#/details?id=`. Reloads when
+  the tab is visible and data is >5 min old or another user signed in.
+- Admin: Advanced → "Friends' favorites" card (both switches + what each friend reports, incl. downloads).
+
+## Log
+- 2026-10-19: 1025 plugin tests, 93 web UI tests pass (new: DeviceDownloadTests, FriendFavoritesTests,
+  FriendFavoritesRouteTests, 4 UI tests). Peer smoke extended with device-download and favorites stages.

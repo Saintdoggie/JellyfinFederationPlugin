@@ -29,6 +29,23 @@ Rules a friend sets for one of your users (block, only some libraries or titles,
 hide those titles from that user everywhere, not only at playback. Unsharing a library removes
 its titles from the friend right away.
 
+## Downloading a friend's title to your device
+
+Any viewer allowed to download (Jellyfin's own "Allow media downloading" user setting) gets the
+normal Download button on a friend's movies, episodes and music, in the web client and in apps
+such as Jellyfin for Android, Findroid and Swiftfin. The file comes straight from the friend's
+server with its real file name; if that isn't possible (an older friend, or an https/http
+mismatch) your server passes it through instead, and an interrupted download can resume. The
+friend stays in control: "Allow this friend and their viewers to download my titles" on their
+Friends tab, and per-viewer rules, turn it off. Without bulk permission each viewer can save
+30 titles an hour from that friend.
+
+## Friends' favorites
+
+Your Favorites tab gets a "Favorites on (friend)" row per friend with the titles that friend's
+users favorited: titles only, never who, and only titles you can already open. Your server does
+the same for your friends. Both directions can be turned off under Advanced → "Friends' favorites".
+
 ## Plex
 Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports.
 

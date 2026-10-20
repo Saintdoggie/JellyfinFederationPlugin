@@ -1,5 +1,17 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.188 — downloads to device and friends' favorites (2026-10-19)
+
+- [x] Any viewer can download a friend's title with their app's own Download button (web, Android,
+      Findroid, Swiftfin): CanDownload is reported for friends' files, `/Items/{id}/Download` sends the
+      app straight to the friend (named file, viewer-bound permit) or relays when it must.
+- [x] Fixed: the old web-only "Download to device" handed browsers this server's loopback address
+      (never worked off the server itself) and refused every title once any per-user rule existed.
+- [x] Friend download consent covers viewers (friend switch + per-viewer rule), with a per-viewer allowance.
+- [x] Friends' favorites: "Favorites on (friend)" rows on the Favorites tab; titles only, per-viewer visibility.
+- [ ] Real-world check once both friends run 0.0.188 (older friends: downloads are relayed, no favorites row).
+- [ ] Not covered: Plex/Companion sources (no Download button), native-app favorites rows (web only).
+
 ## 0.0.187 — remote-transcode handoff and access that hides (2026-10-19)
 
 Branch `feature/direct-play-and-access`. Full record: `notes.md`, checklist: `.todo`.
