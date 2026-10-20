@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.189",
+        "changelog": "Watch parties with friends: in the group (SyncPlay) menu at the top, choose \"New group with friends\" (or \"Invite friends\" in a group). Your friends' viewers find the party in their own group list and join it like any group, from any app that supports group watching, while everyone plays their own server's copy. Play, pause, seeking and title changes are shared, and anyone loading or buffering pauses everyone until they're ready. Each viewer still needs access to what's playing. Switches under Advanced. Both servers need 0.0.189.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-20T07:52:47Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.189/Jellyfin.Federation.zip",
+        "checksum": "050d90d62a385abd7371cbb3bef0fee3"
+      },
+      {
         "version": "0.0.188",
         "changelog": "Anyone can now download a friend's title to their phone or computer with their app's normal Download button (web, Jellyfin for Android, Findroid, Swiftfin). The file comes straight from the friend's server with its real name; if that isn't possible your server passes it through, and interrupted downloads resume. The friend's download permission and per-viewer rules apply. New: friends' favorites. Your Favorites tab shows a \"Favorites on (friend)\" row per friend with the titles their users favorited (titles only, never who, only titles you can already open). Both can be turned off in Advanced. Fixes the old web \"Download to device\" option, which only worked on the server itself. Friends need 0.0.188 for direct downloads and favorites; with older friends downloads go through your server.",
         "targetAbi": "12.0.0.0",
