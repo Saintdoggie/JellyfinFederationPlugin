@@ -512,6 +512,59 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets whether friends' watch parties appear in this server's SyncPlay group list.</summary>
         public bool JoinFriendsWatchParties { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets where "download to this server" puts files when the admin
+        /// doesn't pick: "auto" (Movies for films, Shows for episodes),
+        /// "library:&lt;name&gt;", "folder:&lt;path&gt;" or "separate" (the
+        /// Federation Downloads library older versions always used).
+        /// </summary>
+        public string DownloadDestination { get; set; } = Services.DownloadDestinations.Auto;
+
+        /// <summary>Gets or sets whether friends are told what this server's viewers are watching of theirs, so it shows on their dashboard.</summary>
+        public bool ShareViewersWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends' viewers watching this server's titles show on the dashboard like local sessions.</summary>
+        public bool ShowFriendsViewers { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends may see what this server converts video with (GPU/CPU model and codecs; nothing else).</summary>
+        public bool ShareTranscodeHardware { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether a friend's title is converted here instead of on
+        /// the friend when the friend's hardware falls short of the minimums
+        /// below and this server meets them. Off: the friend always converts.
+        /// </summary>
+        public bool SmartTranscodePlacement { get; set; }
+
+        /// <summary>Gets or sets "auto" (read Jellyfin's playback settings) or "manual" (described below).</summary>
+        public string TranscodeHardwareMode { get; set; } = "auto";
+
+        /// <summary>Gets or sets a value indicating whether conversions run on another machine (for example a broker that sends ffmpeg to a gaming PC).</summary>
+        public bool TranscodeHardwareOffloaded { get; set; }
+
+        /// <summary>Gets or sets the GPU that actually converts, as free text.</summary>
+        public string? ManualTranscodeGpu { get; set; }
+
+        /// <summary>Gets or sets the CPU of the machine that converts, when offloaded.</summary>
+        public string? ManualTranscodeCpu { get; set; }
+
+        public int ManualTranscodeCpuThreads { get; set; }
+
+        /// <summary>Gets or sets the codecs the converting GPU decodes ("h264", "hevc", "hevc10", "av1", "vp9").</summary>
+        public List<string> ManualHardwareDecodeCodecs { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets the codecs the converting GPU encodes ("h264", "hevc", "av1").</summary>
+        public List<string> ManualHardwareEncodeCodecs { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets the least a server must manage to convert 4K: "full" (hardware decode and encode), "encode" or "any".</summary>
+        public string PlacementMinimum4k { get; set; } = "full";
+
+        /// <summary>Gets or sets the least a server must manage to convert 720p-1440p.</summary>
+        public string PlacementMinimumHd { get; set; } = "encode";
+
+        /// <summary>Gets or sets the CPU thread count that counts as a hardware encoder (0 = never).</summary>
+        public int PlacementCpuThreadsCountAsEncode { get; set; } = 16;
     }
 
     /// <summary>

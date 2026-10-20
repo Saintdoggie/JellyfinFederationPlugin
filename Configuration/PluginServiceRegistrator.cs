@@ -59,6 +59,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationUserSessionTokenService>();
             serviceCollection.AddSingleton<FederationPeerAccessService>();
             serviceCollection.AddSingleton<FederationNowWatchingService>();
+            serviceCollection.AddSingleton<FriendHardwareCache>();
+            serviceCollection.AddSingleton<TranscodePlacementService>();
+            serviceCollection.AddSingleton<FederationViewerReporter>();
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederationViewerReporter>());
+            serviceCollection.AddSingleton<FederationRemoteViewerService>();
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederationRemoteViewerService>());
             serviceCollection.AddSingleton<FederationQualityAdvisorService>();
             serviceCollection.AddSingleton<PlexStrmExportService>();
             serviceCollection.AddSingleton<PlexMetadataSourceService>();

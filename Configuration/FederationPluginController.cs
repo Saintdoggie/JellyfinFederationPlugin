@@ -106,6 +106,12 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationDeviceDownloadService? _deviceDownloads;
         private readonly FederationFriendFavoritesService? _friendFavorites;
         private readonly FederatedPartyService? _parties;
+        private readonly FederationRemoteViewerService? _remoteViewers;
+        private readonly TranscodePlacementService? _placement;
+        private readonly RemoteTranscodeHandoffs? _handoffs;
+        private readonly AdaptiveSourceRanking? _ranking;
+        private readonly FederationViewerReporter? _viewerReporter;
+        private readonly MediaBrowser.Controller.Session.ISessionManager? _sessionManager;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -137,8 +143,20 @@ namespace Jellyfin.Plugin.Federation.Api
             RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null,
             FederationDeviceDownloadService? deviceDownloads = null,
             FederationFriendFavoritesService? friendFavorites = null,
-            FederatedPartyService? parties = null)
+            FederatedPartyService? parties = null,
+            FederationRemoteViewerService? remoteViewers = null,
+            TranscodePlacementService? placement = null,
+            RemoteTranscodeHandoffs? handoffs = null,
+            AdaptiveSourceRanking? ranking = null,
+            FederationViewerReporter? viewerReporter = null,
+            MediaBrowser.Controller.Session.ISessionManager? sessionManager = null)
         {
+            _viewerReporter = viewerReporter;
+            _sessionManager = sessionManager;
+            _remoteViewers = remoteViewers;
+            _placement = placement;
+            _handoffs = handoffs;
+            _ranking = ranking;
             _logger = logger;
             _syncService = syncService;
             _federationManager = federationManager;
@@ -451,6 +469,21 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.ShowFriendsFavorites = existing.ShowFriendsFavorites;
                     config.HostWatchPartiesWithFriends = existing.HostWatchPartiesWithFriends;
                     config.JoinFriendsWatchParties = existing.JoinFriendsWatchParties;
+                    config.DownloadDestination = existing.DownloadDestination;
+                    config.ShareViewersWithFriends = existing.ShareViewersWithFriends;
+                    config.ShowFriendsViewers = existing.ShowFriendsViewers;
+                    config.ShareTranscodeHardware = existing.ShareTranscodeHardware;
+                    config.SmartTranscodePlacement = existing.SmartTranscodePlacement;
+                    config.TranscodeHardwareMode = existing.TranscodeHardwareMode;
+                    config.TranscodeHardwareOffloaded = existing.TranscodeHardwareOffloaded;
+                    config.ManualTranscodeGpu = existing.ManualTranscodeGpu;
+                    config.ManualTranscodeCpu = existing.ManualTranscodeCpu;
+                    config.ManualTranscodeCpuThreads = existing.ManualTranscodeCpuThreads;
+                    config.ManualHardwareDecodeCodecs = existing.ManualHardwareDecodeCodecs;
+                    config.ManualHardwareEncodeCodecs = existing.ManualHardwareEncodeCodecs;
+                    config.PlacementMinimum4k = existing.PlacementMinimum4k;
+                    config.PlacementMinimumHd = existing.PlacementMinimumHd;
+                    config.PlacementCpuThreadsCountAsEncode = existing.PlacementCpuThreadsCountAsEncode;
 
                     // Managed by the dedicated QualityUpgrades/Exclude endpoints,
                     // not serialized back by the main settings form.
@@ -1588,6 +1621,255 @@ namespace Jellyfin.Plugin.Federation.Api
             config.JoinFriendsWatchParties = body.JoinFriendsWatchParties;
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
+        }
+
+        /// <summary>Server-to-server: a friend says what one of its viewers is watching of ours.</summary>
+        [HttpPost("Peer/Viewers")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerViewers([FromBody] PeerViewerReport? body)
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_remoteViewers == null || body == null)
+            {
+                return NotFound();
+            }
+
+            return StatusCode(await _remoteViewers.ReceiveAsync(caller, body, RemoteIp()).ConfigureAwait(false));
+        }
+
+        /// <summary>Server-to-server: what this server converts video with, when the admin shares it.</summary>
+        [HttpGet("Peer/Hardware")]
+        [AllowAnonymous]
+        public IActionResult PeerHardware()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_placement == null || Plugin.Instance?.Configuration?.ShareTranscodeHardware == false)
+            {
+                return NoContent();
+            }
+
+            return Ok(_placement.Local());
+        }
+
+        /// <summary>
+        /// For the player's Playback Info panel: how a friend's title reaches
+        /// this viewer (which friend, the route, who converts and why, the link
+        /// and both servers' hardware). <c>federated = false</c> for this
+        /// server's own titles. Without an item id it describes what the
+        /// calling device is playing now (players don't expose their play
+        /// session id, so this is how the panel asks).
+        /// </summary>
+        [HttpGet("Playback/Connection")]
+        [Authorize]
+        public async Task<IActionResult> GetPlaybackConnection(
+            [FromQuery] Guid itemId,
+            [FromQuery] string? mediaSourceId,
+            [FromQuery] string? playSessionId,
+            [FromQuery] string? playMethod)
+        {
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (itemId == Guid.Empty && _sessionManager != null)
+            {
+                var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+                var session = _sessionManager.Sessions.FirstOrDefault(s =>
+                    s.UserId == user.Id
+                    && s.NowPlayingItem != null
+                    && string.Equals(s.DeviceId, info?.DeviceId, StringComparison.Ordinal));
+                if (session == null)
+                {
+                    return Ok(new { federated = false });
+                }
+
+                itemId = session.NowPlayingItem!.Id;
+                mediaSourceId ??= session.PlayState?.MediaSourceId;
+                playMethod ??= session.PlayState?.PlayMethod?.ToString();
+                playSessionId ??= _viewerReporter?.PlaySessionFor(session.Id);
+            }
+
+            var item = itemId == Guid.Empty ? null : _libraryManager.GetItemById(itemId);
+            if (item == null || !item.IsVisibleStandalone(user))
+            {
+                return NotFound();
+            }
+
+            var key = FederationLibraryManager.GetFederationKey(item);
+            var entry = key == null ? null : _cache.GetEntryByKey(key);
+            var source = entry == null ? null : FederationViewerReporter.PlayedSource(entry, item.Id, mediaSourceId);
+            var server = source == null ? null : _federationManager.GetServer(source.ServerId);
+            if (entry == null || source == null || server == null)
+            {
+                return Ok(new { federated = false });
+            }
+
+            var method = Enum.TryParse<MediaBrowser.Model.Session.PlayMethod>(playMethod, true, out var parsedMethod)
+                ? parsedMethod
+                : (MediaBrowser.Model.Session.PlayMethod?)null;
+            var handedOff = _handoffs?.HandedOffTo(playSessionId) != null;
+            var route = FederatedRoute.Classify(server, method, handedOff);
+            var routeText = route switch
+            {
+                FederatedRoute.Direct => "Straight from " + server.Name + " to this player",
+                FederatedRoute.Relay => "From " + server.Name + ", passed through this server unchanged",
+                FederatedRoute.FriendConverts => server.Name + " converts it and sends it straight to this player",
+                _ => "This server reads the original from " + server.Name + " and converts it"
+            };
+
+            TranscodeHardwareInfo? friendHardware = null;
+            if (_placement != null && server.Kind == ServerKind.Jellyfin)
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+                timeout.CancelAfter(TimeSpan.FromSeconds(4));
+                try
+                {
+                    friendHardware = await _placement.Friends.GetFreshAsync(server, timeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            var others = entry.GetSourcesSnapshot()
+                .Where(s => !string.Equals(s.ServerId, source.ServerId, StringComparison.OrdinalIgnoreCase))
+                .Select(s => _federationManager.GetServer(s.ServerId)?.Name)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Ok(new
+            {
+                federated = true,
+                friend = server.Name,
+                route,
+                routeText,
+                streaming = server.StreamingMode.ToString(),
+                placement = route is FederatedRoute.FriendConverts or FederatedRoute.ConvertedHere
+                    ? _placement?.Last(server.Id, item.Id)?.Reason
+                    : null,
+                latencyMs = _ranking?.LatencyMs(server.Id) is double ms ? Math.Round(ms) : (double?)null,
+                linkMbps = _bandwidthMonitor.GetMeasuredLinkMbps(server.Id),
+                capMbps = _federationManager.GetEffectiveWanCapMbps(server),
+                friendHardware = friendHardware?.Describe(),
+                thisServerHardware = route == FederatedRoute.ConvertedHere ? _placement?.Local().Describe() : null,
+                alsoOn = others
+            });
+        }
+
+        /// <summary>Settings for showing viewers across friends.</summary>
+        [HttpGet("Settings/Viewers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetViewerSettings()
+        {
+            var config = Plugin.Instance!.Configuration;
+            return Ok(new { config.ShareViewersWithFriends, config.ShowFriendsViewers });
+        }
+
+        /// <summary>Saves the viewer-sharing settings.</summary>
+        [HttpPost("Settings/Viewers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetViewerSettings([FromBody] ViewerSettingsBody? body)
+        {
+            if (body == null)
+            {
+                return BadRequest();
+            }
+
+            var config = Plugin.Instance!.Configuration;
+            config.ShareViewersWithFriends = body.ShareViewersWithFriends;
+            config.ShowFriendsViewers = body.ShowFriendsViewers;
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved." });
+        }
+
+        /// <summary>
+        /// Conversion hardware: this server's (as friends see it), each friend's,
+        /// and the settings that pick who converts.
+        /// </summary>
+        [HttpGet("Settings/Hardware")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> GetHardwareSettings()
+        {
+            var config = Plugin.Instance!.Configuration;
+            var friends = new List<object>();
+            if (_placement != null)
+            {
+                foreach (var server in (config.RemoteServers ?? new List<RemoteServer>()).Where(s => s.Enabled && s.Kind == ServerKind.Jellyfin))
+                {
+                    TranscodeHardwareInfo? info = null;
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(4));
+                    try
+                    {
+                        info = await _placement.Friends.GetFreshAsync(server, timeout.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    friends.Add(new { name = server.Name, hardware = info?.Describe() });
+                }
+            }
+
+            return Ok(new
+            {
+                config.ShareTranscodeHardware,
+                config.SmartTranscodePlacement,
+                config.TranscodeHardwareMode,
+                config.TranscodeHardwareOffloaded,
+                config.ManualTranscodeGpu,
+                config.ManualTranscodeCpu,
+                config.ManualTranscodeCpuThreads,
+                config.ManualHardwareDecodeCodecs,
+                config.ManualHardwareEncodeCodecs,
+                config.PlacementMinimum4k,
+                config.PlacementMinimumHd,
+                config.PlacementCpuThreadsCountAsEncode,
+                local = _placement?.Local().Describe(),
+                friends
+            });
+        }
+
+        /// <summary>Saves the conversion hardware settings.</summary>
+        [HttpPost("Settings/Hardware")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetHardwareSettings([FromBody] HardwareSettingsBody? body)
+        {
+            if (body == null)
+            {
+                return BadRequest();
+            }
+
+            static string Level(string? value, string fallback)
+                => value is "full" or "encode" or "any" ? value : fallback;
+
+            var config = Plugin.Instance!.Configuration;
+            config.ShareTranscodeHardware = body.ShareTranscodeHardware;
+            config.SmartTranscodePlacement = body.SmartTranscodePlacement;
+            config.TranscodeHardwareMode = string.Equals(body.TranscodeHardwareMode, "manual", StringComparison.OrdinalIgnoreCase) ? "manual" : "auto";
+            config.TranscodeHardwareOffloaded = body.TranscodeHardwareOffloaded;
+            config.ManualTranscodeGpu = string.IsNullOrWhiteSpace(body.ManualTranscodeGpu) ? null : body.ManualTranscodeGpu.Trim();
+            config.ManualTranscodeCpu = string.IsNullOrWhiteSpace(body.ManualTranscodeCpu) ? null : body.ManualTranscodeCpu.Trim();
+            config.ManualTranscodeCpuThreads = Math.Clamp(body.ManualTranscodeCpuThreads, 0, 1024);
+            config.ManualHardwareDecodeCodecs = (body.ManualHardwareDecodeCodecs ?? new List<string>()).Where(c => TranscodeHardware.Codecs.Contains(c)).Distinct().ToList();
+            config.ManualHardwareEncodeCodecs = (body.ManualHardwareEncodeCodecs ?? new List<string>()).Where(c => c is "h264" or "hevc" or "av1").Distinct().ToList();
+            config.PlacementMinimum4k = Level(body.PlacementMinimum4k, "full");
+            config.PlacementMinimumHd = Level(body.PlacementMinimumHd, "encode");
+            config.PlacementCpuThreadsCountAsEncode = Math.Clamp(body.PlacementCpuThreadsCountAsEncode, 0, 1024);
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved.", local = _placement?.Local().Describe() });
         }
 
         /// <summary>Server-to-server: a friend announces a watch party (or that it ended).</summary>
@@ -4948,10 +5230,50 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult StartDownload([FromBody] DownloadItemBody body)
         {
-            var (success, message, operationId) = _downloadService.StartDownload(body?.ItemId ?? string.Empty);
+            var (success, message, operationId) = _downloadService.StartDownload(body?.ItemId ?? string.Empty, body?.Destination);
             return success
                 ? Ok(new { success, message, operationId })
                 : BadRequest(new { success, message });
+        }
+
+        /// <summary>
+        /// Where "download to this server" can put files: each library with a
+        /// folder of its own, plus the configured default. A new folder is given
+        /// as "folder:&lt;name or /full/path&gt;".
+        /// </summary>
+        [HttpGet("Download/Destinations")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetDownloadDestinations()
+        {
+            var options = DownloadDestinations.List(_libraryManager.GetVirtualFolders(), Plugin.Instance?.DataFolderPath);
+            return Ok(new
+            {
+                defaultDestination = Plugin.Instance?.Configuration?.DownloadDestination ?? DownloadDestinations.Auto,
+                options = options.Select(o => new { id = o.Id, name = o.Name, path = o.Path, collectionType = o.CollectionType })
+            });
+        }
+
+        /// <summary>Sets where downloads go when the admin doesn't pick.</summary>
+        [HttpPost("Settings/DownloadDestination")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetDownloadDestination([FromBody] DownloadDestinationBody body)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { success = false, message = "Plugin not ready." });
+            }
+
+            var value = string.IsNullOrWhiteSpace(body?.Destination) ? DownloadDestinations.Auto : body.Destination.Trim();
+            var check = DownloadDestinations.Resolve(value, "Movie", _libraryManager.GetVirtualFolders(), Plugin.Instance?.DataFolderPath, FederationDownloadService.GetDownloadsRoot());
+            if (!check.Ok)
+            {
+                return BadRequest(new { success = false, message = check.Error });
+            }
+
+            config.DownloadDestination = value;
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true, message = "Download destination saved.", destination = value });
         }
 
         /// <summary>
@@ -5645,7 +5967,8 @@ namespace Jellyfin.Plugin.Federation.Api
             var (success, message, operationId) = _downloadService.StartBrowseDownload(
                 body?.ServerId ?? string.Empty,
                 body?.ItemId ?? string.Empty,
-                body?.Name ?? "Federated item");
+                body?.Name ?? "Federated item",
+                details: new DownloadDetails(body?.Destination, body?.Type, body?.Year, body?.SeriesName, body?.Season, body?.Episode));
             return success
                 ? Ok(new { success, message, operationId })
                 : BadRequest(new { success, message });
@@ -5683,7 +6006,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     body.ServerId!,
                     item.ItemId!,
                     string.IsNullOrWhiteSpace(item.Name) ? "Federated item" : item.Name!,
-                    bulk);
+                    bulk,
+                    new DownloadDetails(body.Destination, item.Type, item.Year, item.SeriesName, item.Season, item.Episode));
                 return new
                 {
                     itemId = item.ItemId,
@@ -6334,6 +6658,14 @@ namespace Jellyfin.Plugin.Federation.Api
     public class DownloadItemBody
     {
         public string? ItemId { get; set; }
+
+        /// <summary>Gets or sets where the file goes (see <see cref="DownloadDestinations"/>); empty uses the default.</summary>
+        public string? Destination { get; set; }
+    }
+
+    public class DownloadDestinationBody
+    {
+        public string? Destination { get; set; }
     }
 
     public class BrowseDownloadBody
@@ -6343,6 +6675,18 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? ItemId { get; set; }
 
         public string? Name { get; set; }
+
+        public string? Destination { get; set; }
+
+        public string? Type { get; set; }
+
+        public int? Year { get; set; }
+
+        public string? SeriesName { get; set; }
+
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
     }
 
     public class BrowseImagesBody
@@ -6354,6 +6698,8 @@ namespace Jellyfin.Plugin.Federation.Api
     {
         public string? ServerId { get; set; }
 
+        public string? Destination { get; set; }
+
         public List<BrowseDownloadSelection>? Items { get; set; }
     }
 
@@ -6362,6 +6708,16 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? ItemId { get; set; }
 
         public string? Name { get; set; }
+
+        public string? Type { get; set; }
+
+        public int? Year { get; set; }
+
+        public string? SeriesName { get; set; }
+
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
     }
 
     public class QualityUpgradeApplyBody
@@ -6416,6 +6772,42 @@ namespace Jellyfin.Plugin.Federation.Api
     }
 
     /// <summary>Body of <c>Settings/WatchParties</c>.</summary>
+    public class ViewerSettingsBody
+    {
+        /// <summary>Gets or sets whether friends are told what this server's viewers watch of theirs.</summary>
+        public bool ShareViewersWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends' viewers show on this dashboard.</summary>
+        public bool ShowFriendsViewers { get; set; } = true;
+    }
+
+    public class HardwareSettingsBody
+    {
+        public bool ShareTranscodeHardware { get; set; } = true;
+
+        public bool SmartTranscodePlacement { get; set; }
+
+        public string? TranscodeHardwareMode { get; set; }
+
+        public bool TranscodeHardwareOffloaded { get; set; }
+
+        public string? ManualTranscodeGpu { get; set; }
+
+        public string? ManualTranscodeCpu { get; set; }
+
+        public int ManualTranscodeCpuThreads { get; set; }
+
+        public List<string>? ManualHardwareDecodeCodecs { get; set; }
+
+        public List<string>? ManualHardwareEncodeCodecs { get; set; }
+
+        public string? PlacementMinimum4k { get; set; }
+
+        public string? PlacementMinimumHd { get; set; }
+
+        public int PlacementCpuThreadsCountAsEncode { get; set; } = 16;
+    }
+
     public class WatchPartySettingsBody
     {
         /// <summary>Gets or sets whether viewers here can start parties with friends.</summary>

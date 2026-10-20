@@ -2001,3 +2001,219 @@ test("admin page has the watch party switches wired to their own settings route"
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/WatchParties', \{\s*method: 'POST'/);
   assert.match(configPage, /loadFavoritesSettings\(\);\s*loadWatchPartySettings\(\);/);
 });
+
+function routeFetch(dom, routes) {
+  const posts = [];
+  dom.window.fetch = (url, options) => {
+    const u = String(url);
+    if (options && options.method === 'POST') { posts.push({ url: u, body: JSON.parse(options.body || '{}') }); }
+    const match = Object.keys(routes).find((key) => u.includes(key));
+    const data = match ? routes[match] : {};
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  return posts;
+}
+
+test('server download asks where to save, with the default preselected', async () => {
+  const { dom } = makeWindow(true);
+  await settleMany();
+  const posts = routeFetch(dom, {
+    '/Download/Destinations': {
+      defaultDestination: 'auto',
+      options: [{ id: 'library:Movies', name: 'Movies', path: '/media/movies' }, { id: 'library:Shows', name: 'Shows', path: '/media/tv' }]
+    },
+    '/Plugins/Federation/Download': { operationId: 'op1', success: true }
+  });
+  const doc = dom.window.document;
+  doc.querySelector('.btnMoreCommands').click();
+  await settleMany();
+  const item = [...doc.querySelectorAll('.federation-actionsheet-item')].find((b) => b.textContent.trim() === 'Download to this server');
+  item.click();
+  await settleMany();
+
+  const dialog = doc.querySelector('.federation-dest');
+  assert.ok(dialog);
+  const values = [...dialog.querySelectorAll('input[name="federation-dest"]')].map((r) => r.value);
+  assert.deepEqual(values, ['auto', 'library:Movies', 'library:Shows', 'separate', 'folder:']);
+  assert.equal(dialog.querySelector('input[name="federation-dest"]:checked').value, 'auto');
+  assert.equal(posts.length, 0);
+
+  dialog.querySelector('input[value="library:Shows"]').checked = true;
+  dialog.querySelector('.federation-dest-go').click();
+  await settleMany();
+  assert.equal(doc.querySelector('.federation-dest'), null);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].url, /\/Plugins\/Federation\/Download$/);
+  assert.deepEqual(posts[0].body, { ItemId: itemId, Destination: 'library:Shows' });
+  dom.window.close();
+});
+
+test('server download into a new folder needs a name, and can become the default', async () => {
+  const { dom } = makeWindow(true);
+  await settleMany();
+  const posts = routeFetch(dom, {
+    '/Download/Destinations': { defaultDestination: 'library:Movies', options: [{ id: 'library:Movies', name: 'Movies', path: '/media/movies' }] },
+    '/Settings/DownloadDestination': { success: true },
+    '/Plugins/Federation/Download': { operationId: 'op1', success: true }
+  });
+  const doc = dom.window.document;
+  doc.querySelector('.btnMoreCommands').click();
+  await settleMany();
+  [...doc.querySelectorAll('.federation-actionsheet-item')].find((b) => b.textContent.trim() === 'Download to this server').click();
+  await settleMany();
+
+  const dialog = doc.querySelector('.federation-dest');
+  assert.equal(dialog.querySelector('input[name="federation-dest"]:checked').value, 'library:Movies');
+  dialog.querySelector('input[value="folder:"]').checked = true;
+  dialog.querySelector('.federation-dest-go').click();
+  await settleMany();
+  assert.ok(doc.querySelector('.federation-dest'));
+  assert.match(dialog.querySelector('.federation-dest-error').textContent, /folder name/);
+
+  dialog.querySelector('.federation-dest-new').value = 'From friends';
+  dialog.querySelector('.federation-dest-remember input').checked = true;
+  dialog.querySelector('.federation-dest-go').click();
+  await settleMany();
+  assert.deepEqual(posts.map((p) => p.url.replace(/^.*\/Plugins\/Federation\//, '')), ['Settings/DownloadDestination', 'Download']);
+  assert.deepEqual(posts[0].body, { Destination: 'folder:From friends' });
+  assert.equal(posts[1].body.Destination, 'folder:From friends');
+  dom.window.close();
+});
+
+test('cancelling the destination dialog starts nothing', async () => {
+  const { dom } = makeWindow(true);
+  await settleMany();
+  const posts = routeFetch(dom, { '/Download/Destinations': { defaultDestination: 'auto', options: [] } });
+  const doc = dom.window.document;
+  doc.querySelector('.btnMoreCommands').click();
+  await settleMany();
+  [...doc.querySelectorAll('.federation-actionsheet-item')].find((b) => b.textContent.trim() === 'Download to this server').click();
+  await settleMany();
+  doc.querySelector('.federation-dest-actions button').click();
+  await settleMany();
+  assert.equal(doc.querySelector('.federation-dest'), null);
+  assert.equal(posts.length, 0);
+  dom.window.close();
+});
+
+test('dashboard downloads have a "Save to" choice sent with the batch', () => {
+  assert.ok(configPage.includes('id="fedDownloadDest"'));
+  assert.ok(configPage.includes('id="fedDownloadDestFolder"'));
+  assert.match(configPage, /case 'save-download-dest':\s*saveDownloadDestination\(\);/);
+  assert.match(configPage, /Destination: destination,\s*Items: items\.map/);
+  assert.match(configPage, /Season: item\.parentIndexNumber != null/);
+  assert.match(configPage, /loadWatchPartySettings\(\);\s*loadDownloadDestinations\(\);/);
+});
+
+function makePlayerStats(connection) {
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div class="playerStats"><div class="playerStats-content"><div class="playerStats-stats">'
+      + '<div class="playerStats-stat playerStats-stat-header"><div class="playerStats-stat-label">Playback Info</div><div class="playerStats-stat-value"></div></div>'
+      + '</div></div></div></body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/video' }
+  );
+  const calls = [];
+  dom.window.ApiClient = { getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }), accessToken: () => 'test-token' };
+  dom.window.fetch = (url) => {
+    const u = String(url);
+    calls.push(u);
+    let data = {};
+    if (u.includes('ClientCatalog')) data = { items: {}, unavailableIds: [] };
+    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false };
+    if (u.includes('/Playback/Connection')) data = connection;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  return { dom, calls };
+}
+
+test('Playback Info gets a Federation block for friends\' titles, and keeps it across re-renders', async () => {
+  const { dom, calls } = makePlayerStats({
+    federated: true,
+    friend: 'friendflix',
+    route: 'friend-converts',
+    routeText: 'friendflix converts it and sends it straight to this player',
+    placement: 'Friend converts (full hardware conversion)',
+    latencyMs: 42,
+    linkMbps: 87.4,
+    capMbps: 20,
+    friendHardware: 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC',
+    alsoOn: ['Slowpoke']
+  });
+  await settleMany();
+  const doc = dom.window.document;
+  assert.ok(calls.some((u) => u.endsWith('/Plugins/Federation/Playback/Connection')));
+  const block = doc.querySelector('.playerStats-stats .federation-stats');
+  assert.ok(block);
+  const rows = [...block.querySelectorAll('.playerStats-stat')].map((r) => [r.querySelector('.playerStats-stat-label').textContent, r.querySelector('.playerStats-stat-value').textContent]);
+  assert.deepEqual(rows, [
+    ['Federation', ''],
+    ['Friend', 'friendflix'],
+    ['Route', 'friendflix converts it and sends it straight to this player'],
+    ['Who converts', 'Friend converts (full hardware conversion)'],
+    ['Round trip', '42 ms'],
+    ['Link speed', '87 Mbps'],
+    ['Bitrate cap', '20 Mbps'],
+    ['friendflix converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
+    ['Also on', 'Slowpoke']
+  ]);
+  assert.ok(block.querySelector('.playerStats-stat-header'));
+
+  // jellyfin-web replaces the panel's contents every second.
+  doc.querySelector('.playerStats-stats').innerHTML = '<div class="playerStats-stat"><div class="playerStats-stat-label">Player</div><div class="playerStats-stat-value">Html Video Player</div></div>';
+  await settleMany();
+  assert.equal(doc.querySelectorAll('.federation-stats').length, 1);
+  assert.equal(calls.filter((u) => u.includes('/Playback/Connection')).length, 1);
+  dom.window.close();
+});
+
+test('Playback Info stays untouched for this server\'s own titles and when the panel is closed', async () => {
+  const own = makePlayerStats({ federated: false });
+  await settleMany();
+  assert.equal(own.dom.window.document.querySelector('.federation-stats'), null);
+  own.dom.window.close();
+
+  const closed = makePlayerStats({ federated: true, friend: 'x', routeText: 'y' });
+  closed.dom.window.document.querySelector('.playerStats').classList.add('hide');
+  await settleMany();
+  assert.equal(closed.calls.some((u) => u.includes('/Playback/Connection')), false);
+  closed.dom.window.close();
+});
+
+test('destination dialog and Playback Info block use solid colours only', () => {
+  const css = badgeScript.slice(badgeScript.indexOf('.federation-dest-backdrop'), badgeScript.indexOf("].join('');"));
+  assert.ok(css.length > 0);
+  assert.equal(/gradient/i.test(css), false);
+});
+
+test('admin page has the viewer and hardware cards wired to their own settings routes', () => {
+  assert.ok(configPage.includes('id="fedChkShowFriendsViewers"'));
+  assert.ok(configPage.includes('id="fedChkShareViewersWithFriends"'));
+  assert.ok(configPage.includes('id="fedChkSmartPlacement"'));
+  assert.ok(configPage.includes('id="fedSelHardwareMode"'));
+  assert.match(configPage, /case 'save-viewers':\s*saveViewerSettings\(\);/);
+  assert.match(configPage, /case 'save-hardware':\s*saveHardwareSettings\(\);/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/Hardware', \{\s*method: 'POST'/);
+  assert.match(configPage, /loadViewerSettings\(\);\s*loadHardwareSettings\(\);/);
+});
+
+test('friend-to-friend viewer and hardware routes check the friend; panel route needs a login', () => {
+  const controller = fs.readFileSync(path.join(root, 'Configuration/FederationPluginController.cs'), 'utf8');
+  for (const [route, method] of [['Peer/Viewers', 'PeerViewers'], ['Peer/Hardware', 'PeerHardware']]) {
+    const block = controller.match(new RegExp('\\[Http(?:Get|Post)\\("' + route.replace('/', '\\/') + '"\\)\\][\\s\\S]*?public [^(]*' + method + '\\([\\s\\S]*?ResolveCaller'));
+    assert.ok(block, route + ' not found or does not resolve the calling friend');
+  }
+
+  const panel = controller.match(/\[HttpGet\("Playback\/Connection"\)\][\s\S]*?public async Task<IActionResult> GetPlaybackConnection\(/);
+  assert.ok(panel);
+  assert.match(panel[0], /\[Authorize\]/);
+  assert.doesNotMatch(panel[0], /AllowAnonymous/);
+
+  for (const route of ['Settings/Viewers', 'Settings/Hardware', 'Settings/DownloadDestination', 'Download/Destinations']) {
+    const block = controller.match(new RegExp('\\[Http(?:Get|Post)\\("' + route.replace('/', '\\/') + '"\\)\\]\\s*\\[Authorize\\(Policy = "RequiresElevation"\\)\\]'));
+    assert.ok(block, route + ' must require an administrator');
+  }
+});

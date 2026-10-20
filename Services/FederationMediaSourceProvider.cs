@@ -36,6 +36,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IAuthorizationContext _authorizationContext;
         private readonly RemoteAccessControlService _accessControl;
         private readonly ExternalCatalogRegistry _externalCatalogs;
+        private readonly TranscodePlacementService? _placement;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceProvider"/> class.
@@ -46,8 +47,10 @@ namespace Jellyfin.Plugin.Federation.Services
             IHttpContextAccessor httpContextAccessor,
             IAuthorizationContext authorizationContext,
             RemoteAccessControlService accessControl,
-            ExternalCatalogRegistry? externalCatalogs = null)
+            ExternalCatalogRegistry? externalCatalogs = null,
+            TranscodePlacementService? placement = null)
         {
+            _placement = placement;
             _logger = logger;
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
@@ -417,6 +420,22 @@ namespace Jellyfin.Plugin.Federation.Services
                     // the WAN link can't carry as-is must be converted, and only the
                     // friend converts it (to the bitrate the player asked for).
                     var handoff = UsesRemoteTranscode(candidate.Server);
+
+                    // Hardware-based choice (off by default): when the friend's
+                    // hardware falls short for this source and this server does
+                    // better, convert here. Only when the link can carry the
+                    // original; otherwise the friend must shrink it first.
+                    if (handoff && _placement != null
+                        && !_placement.Decide(candidate.Server, item.Id, remote.MediaStreams, SourceOverageBitrate(candidate.Server, remote) == 0).FriendConverts)
+                    {
+                        handoff = false;
+                        if (localUserId.HasValue)
+                        {
+                            // A grant from an earlier play would still send conversions to the friend.
+                            PeerPlaybackGrants.Forget(localUserId.Value, item.Id, sourceId);
+                        }
+                    }
+
                     if (handoff && localUserId.HasValue && PeerPlaybackGrants.TokenFromDirectPath(candidate.Path) is { } grantToken)
                     {
                         PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken);

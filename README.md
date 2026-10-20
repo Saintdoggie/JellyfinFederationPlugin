@@ -51,6 +51,37 @@ shared, and anyone loading or buffering pauses everyone until they're ready. Eac
 still needs their own access to what's playing. Switches: Advanced → "Watch parties with
 friends". Both servers need 0.0.189.
 
+## Downloading a friend's title to your server
+
+Admins can copy a friend's title onto this server ("Download to this server" in the "..." menu,
+or Federated downloads on the dashboard). You pick where it goes: your Movies or Shows library
+(the default), any other library, a new folder (it becomes its own library), or the separate
+"Federation Downloads" library. Films are saved as `Name (Year)/Name (Year).ext` and episodes as
+`Series/Season 01/Series S01E01.ext`, so Jellyfin identifies them; a second copy of a film you
+already have is saved as a version (`Name (Year) - friend.ext`). Downloaded copies are never
+shared on to other friends.
+
+## Seeing who is watching
+
+When someone on a friend's server watches one of your titles, they show on your dashboard
+under Active devices like anyone connected to you: the title, how far in, paused or playing,
+named "viewer (friend)". Nothing is added to your users' watch history. Your server tells your
+friends the same about your viewers. In the player, Playback Info gains a "Federation" section
+for friends' titles: which friend, how the video travels, who converts it and why, the round
+trip and link speed, and the hardware involved. Switches: Advanced → "Who is watching across
+friends". Both servers need 0.0.190.
+
+## Who converts: hardware (optional)
+
+Servers can share what they convert video with (GPU and CPU model, which codecs run in
+hardware). Normally the friend converts their own titles, so only the smaller converted stream
+crosses the internet. With "Pick who converts a friend's title by hardware" on, your server
+converts instead when the friend's hardware falls short of your minimum for that title (4K:
+hardware decode and encode by default; HD: hardware encode) or the friend is at its limit, and
+your server does better; never when the connection can't carry the original file. If your
+conversions run on another machine (an offloading broker), describe that machine under
+Advanced → "Conversion hardware", since Jellyfin's own settings only show the server itself.
+
 ## Friends' favorites
 
 Your Favorites tab gets a "Favorites on (friend)" row per friend with the titles that friend's

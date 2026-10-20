@@ -99,6 +99,14 @@ Playback, authorization, and downloads:
 - `Services/FederationFriendFavoritesService.cs` — friends' favorites: owner
   `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/federation-badge.js`. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.
+- 0.0.190: `Services/DownloadDestinations.cs` (pure: where a server download goes,
+  on-disk naming, `DownloadedFileRegistry` keeping copies outside the downloads folder
+  unshareable); `Services/FederationViewerActivity.cs` (viewer side
+  `FederationViewerReporter` → owner `Peer/Viewers` → `FederationRemoteViewerService`
+  user-less dashboard sessions; `FederatedRoute`); `Services/TranscodeHardware.cs`
+  (`Peer/Hardware`, auto/manual hardware, `Decide` placement, default off, hooked in
+  `FederationMediaSourceProvider` before a grant is recorded); `Playback/Connection`
+  feeds the "Federation" block in the player's Playback Info (`federation-badge.js`).
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
 - Remote-transcode handoff (0.0.187): `Services/RemoteMediaPath.cs` (allow-list
   shared by both sides), `HlsPlaylistRewriter.cs`, `FederationRemoteTranscodeGateway.cs`

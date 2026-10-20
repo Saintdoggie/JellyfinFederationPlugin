@@ -74,6 +74,10 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>The friend converting <paramref name="playSessionId"/>, or null when it isn't handed off.</summary>
+        public string? HandedOffTo(string? playSessionId)
+            => !string.IsNullOrWhiteSpace(playSessionId) && _sessions.TryGetValue(playSessionId, out var handoff) ? handoff.ServerId : null;
+
         /// <summary>Forgets the session and returns the friend running it, or null.</summary>
         public string? TakeStop(string? playSessionId)
             => !string.IsNullOrWhiteSpace(playSessionId) && _sessions.TryRemove(playSessionId, out var handoff) ? handoff.ServerId : null;
