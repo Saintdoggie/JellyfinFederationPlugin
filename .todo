@@ -156,6 +156,15 @@ then had its segment requests 302'd to the friend once the 2 min ended (two tran
 [x] Release 0.0.191 (zip md5 701d9c450082a395706c74d8a050fbcf, master fab48c4); deployed live 2026-10-20 15:06 UTC, Active, startup sync 888 items 0 ERR (backup plugin-backup-federation-0.0.190-20261020)
 [ ] netflix++ side: The Wild Robot / Wonder Woman refused by netflix++ itself (handoff and DirectStream) at 14:36-14:42 UTC; ask its owner for their log
 [ ] Broker (~/hosting/media-stack/scripts/transcode-broker.py): an upstream HTTP error is turned into a dropped connection ("End of file" in ffmpeg); pass the status through and log it
+## 0.0.192 — friend playlists on https (2026-10-20)
+User: "its going through http not https". Wicked handed to netflix++ at 15:11 failed 3x in the browser: netflix++ builds playlist addresses from
+what its proxy tells it (http), an https page refuses them. Receiver-side fix, works with friends on 0.0.187+:
+[x] HandoffPlaylistLinks: friend gateway addresses in fetched playlists rebuilt on EffectiveUrl (https); nested .m3u8 go through
+    GET Plugins/Federation/HandoffPlaylist?u= (anonymous; fetches only an enabled Jellyfin friend's exact EffectiveUrl + /Plugins/Federation/Peer/Play/*.m3u8)
+[x] 14 unit tests; gate 1095/170/133 twice; two-server handoff 6/6 (variant via relay). Note: handoff test needs TMPDIR off /tmp (tmpfs, Jellyfin wants 2 GiB free)
+[x] README redone by a subagent (current features, compatibility table, disclaimer kept top and bottom)
+[ ] Release 0.0.192 + deploy
+[ ] Friend side (later): owner gateway could also use a public base the receiver sends, so other receivers on old versions benefit
 ## 6. Later (user asked: review only, do not implement)
 [x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.
     Read 2026-10-20 (release notes only, no code pulled). Their 0.0.177-0.0.186 are our own releases.

@@ -142,7 +142,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
-            var (fetched, status) = await FetchAsync(handoff, context.HttpContext.RequestAborted).ConfigureAwait(false);
+            var playlist = path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.SubtitlePlaylist;
+            var relayPrefix = HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value);
+            var (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted).ConfigureAwait(false);
             if (fetched != null)
             {
                 if (path.StartsWork)
@@ -304,7 +306,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
-            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId);
+            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase);
         }
 
         /// <summary>
@@ -363,7 +365,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Fetches a playlist/subtitle from the friend: the result, or null and
         /// the status to give the player (502 when the friend can't be reached).
         /// </summary>
-        private async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, CancellationToken cancellationToken)
+        private async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, bool playlist, string relayPrefix, CancellationToken cancellationToken)
         {
             try
             {
@@ -377,6 +379,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
                 var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
+                if (playlist)
+                {
+                    // The friend's addresses can be http behind its proxy; put
+                    // them on the address this server uses for it.
+                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(HandoffPlaylistLinks.Decode(bytes), handoff.PeerBase, relayPrefix));
+                }
+
                 return (new FileContentResult(bytes, contentType), StatusCodes.Status200OK);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -390,6 +399,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId);
+        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase);
     }
 }

@@ -345,3 +345,8 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
 - 2026-10-20: Released 0.0.191 (master fab48c4, asset md5 701d9c450082a395706c74d8a050fbcf verified). Deployed live:
   0.0.190 plugin + config backed up to /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.190-20261020;
   0.0.191 Active, startup sync 888 items, 0 ERR.
+- 2026-10-20 (0.0.192): after 0.0.191 the handoff to netflix++ happened but failed in the browser ("its going through http not
+  https"): netflix++'s gateway writes absolute playlist addresses from X-Forwarded-Proto/request scheme, which its proxy chain
+  reports as http. Receiver now rewrites them (HandoffPlaylistLinks) and relays nested playlists through
+  Plugins/Federation/HandoffPlaylist so segment addresses are fixed too. Segments themselves go straight to the friend over https.
+
