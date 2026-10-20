@@ -217,3 +217,7 @@ Started 2026-10-19 on branch `feature/favorites-and-downloads` from `origin/mast
 - 2026-10-19: **Final validation on frozen commit 864d338**: gate passed (1025 plugin, 170 Companion,
   120 UI tests, twice; receipt). Peer smoke 7/7 on 12.2; peer smoke with the source on released
   0.0.187 passes (downloads relayed + named, refusal passed on, no favorites row); handoff smoke 6/6.
+- 2026-10-19: Released 0.0.188 (master a622f8a, GitHub release asset md5 4c4e574dfe8a4c0b208635b99775ce4a
+  verified). Deployed live: backup of 0.0.187 plugin + config at
+  /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.187-20261019; 0.0.188 loaded
+  Active, startup sync refreshed both friends with 0 ERR.
