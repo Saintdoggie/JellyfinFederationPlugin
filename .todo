@@ -143,7 +143,8 @@ federation friends."
 ## 5. Validation + release
 [x] Unit tests (34 new) + web tests (9 new); gate 1081 plugin / 170 Companion / 133 web
 [x] Two-server on 12.2: peer 9/9 (new: friends' viewers on owner dashboard, Playback Info, hardware, download destinations), handoff 6/6, party 8/8, older friend on 0.0.189 6/6
-[ ] Release 0.0.190, master, deploy
+[x] Release 0.0.190 (zip md5 9cb488c7c77baf8ba9cdd67702c399da), master
+[ ] Deploy live
 ## 6. Later (user asked: review only, do not implement)
 [x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.
     Read 2026-10-20 (release notes only, no code pulled). Their 0.0.177-0.0.186 are our own releases.
