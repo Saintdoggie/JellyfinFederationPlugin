@@ -69,6 +69,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 parts.Add(CpuThreads + " CPU threads");
             }
 
+            if (parts.Count == 0 && HardwareEncode.Count == 0 && HardwareDecode.Count == 0)
+            {
+                // Nothing shared (a friend before 0.0.190, or sharing off): saying
+                // "converts on the CPU" would be a guess presented as fact.
+                return "Not shared by this server";
+            }
+
             var text = parts.Count == 0 ? "Unknown hardware" : string.Join(" + ", parts);
             if (HardwareEncode.Count > 0)
             {
