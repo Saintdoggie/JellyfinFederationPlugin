@@ -30,9 +30,12 @@ namespace Jellyfin.Plugin.Federation.Services
     /// playlist the player gets points at the friend for every segment.</item>
     /// <item>Progressive streams and stray segment requests are 302-redirected.</item>
     /// <item>Anything that can't be handed off - not a friend's title, friend on an
-    /// older version or switched off, viewer not allowed, an https page that would
-    /// be handed an http address, the friend refusing - falls through to Jellyfin,
-    /// which converts here exactly as before.</item>
+    /// older version or switched off (including its 403 saying so), viewer not
+    /// allowed, an https page that would be handed an http address - falls through
+    /// to Jellyfin, which converts here exactly as before.</item>
+    /// <item>A friend that offers to convert but fails (at its limit, an error)
+    /// gives the player its answer: a friend's title plays only from the friend,
+    /// and one play is never split between two transcoders.</item>
     /// <item>This server's own credentials (<c>ApiKey</c> on the URL) are never
     /// forwarded; the friend's item-scoped token carries the authorization and the
     /// friend re-checks sharing on every request.</item>
@@ -118,7 +121,15 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var playSessionId = RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId");
-            if (!path!.FetchedByReceiver)
+            if (path!.Kind == RemoteMediaKind.HlsSegment && _handoffs.HandedOffTo(playSessionId) == null)
+            {
+                // A segment of a play this server's own transcoder started (its
+                // playlist came from here): one play never mixes two transcoders.
+                await next().ConfigureAwait(false);
+                return;
+            }
+
+            if (!path.FetchedByReceiver)
             {
                 if (path.StartsWork)
                 {
@@ -131,7 +142,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
-            var fetched = await FetchAsync(handoff, context.HttpContext.RequestAborted).ConfigureAwait(false);
+            var (fetched, status) = await FetchAsync(handoff, context.HttpContext.RequestAborted).ConfigureAwait(false);
             if (fetched != null)
             {
                 if (path.StartsWork)
@@ -145,10 +156,24 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
-            PeerTranscodeCapability.RecordRefusal(handoff.ServerId);
-            PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
-            _logger.LogInformation("[Federation] {Server} could not take {Kind} for {ItemId}; converting here instead", handoff.ServerName, path.Kind, path.ItemId);
-            await next().ConfigureAwait(false);
+            if (status == StatusCodes.Status403Forbidden)
+            {
+                // The friend no longer converts for us (switched off). Until a
+                // new token says otherwise, its titles convert here, whole plays
+                // at a time - this is the playlist every play starts with.
+                PeerTranscodeCapability.Record(handoff.ServerId, false);
+                PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
+                _logger.LogInformation("[Federation] {Server} no longer converts for us; converting {ItemId} here", handoff.ServerName, path.ItemId);
+                await next().ConfigureAwait(false);
+                return;
+            }
+
+            // A friend's title plays from the friend. When the friend offers to
+            // convert but fails, the player gets the friend's answer; this server
+            // does not step in, so plays never switch between the two servers.
+            _logger.LogWarning("[Federation] {Server} could not play {ItemId} ({Kind}, HTTP {Status}); the title plays only from its own server", handoff.ServerName, path.ItemId, path.Kind, status);
+            context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+            context.Result = new StatusCodeResult(status);
         }
 
         /// <summary>
@@ -334,7 +359,11 @@ namespace Jellyfin.Plugin.Federation.Services
             return value;
         }
 
-        private async Task<IActionResult?> FetchAsync(Handoff handoff, CancellationToken cancellationToken)
+        /// <summary>
+        /// Fetches a playlist/subtitle from the friend: the result, or null and
+        /// the status to give the player (502 when the friend can't be reached).
+        /// </summary>
+        private async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, CancellationToken cancellationToken)
         {
             try
             {
@@ -343,13 +372,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await Send(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogDebug("[Federation] {Server} answered the handoff with HTTP {Status}", handoff.ServerName, (int)response.StatusCode);
-                    return null;
+                    return (null, (int)response.StatusCode);
                 }
 
                 var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
                 var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
-                return new FileContentResult(bytes, contentType);
+                return (new FileContentResult(bytes, contentType), StatusCodes.Status200OK);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -358,7 +386,7 @@ namespace Jellyfin.Plugin.Federation.Services
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[Federation] Could not reach {Server} for a handoff", handoff.ServerName);
-                return null;
+                return (null, StatusCodes.Status502BadGateway);
             }
         }
 

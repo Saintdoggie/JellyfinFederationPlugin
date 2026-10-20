@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.191",
+        "changelog": "A friend's title now plays only from that friend when it converts for you: one play is never split between their server and yours, and one failed title no longer switches every title from that friend over to your server for two minutes. If the friend is at its limit or can't play a title, the player shows that, instead of your server stepping in halfway. Your server still converts a friend's titles when the friend has switched converting off or runs an older version.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-20T15:05:08Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.191/Jellyfin.Federation.zip",
+        "checksum": "701d9c450082a395706c74d8a050fbcf"
+      },
+      {
         "version": "0.0.190",
         "changelog": "Server downloads go where you choose: your Movies or Shows library (the default), another library, a new folder of its own, or the separate Federation Downloads library, named so Jellyfin identifies them. Friends' viewers watching your titles show on your dashboard like your own (title, how far in, paused), and the player's Playback Info shows how a friend's title reaches you. Optional: servers share their conversion hardware, and you can let hardware decide who converts a friend's title (off by default). Both servers need 0.0.190 for the viewer and hardware parts.",
         "targetAbi": "12.0.0.0",

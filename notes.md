@@ -332,3 +332,13 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.189-20261020; 0.0.190 loaded Active,
   startup sync 888 items, 0 ERR; /Plugins/Federation/ClientScript serves the new picker and Playback Info code.
   Friends (netflix++, Inspired) need 0.0.190 for viewers/hardware; downloads and Playback Info work without them.
+- 2026-10-20 (0.0.191): live playback errors on netflix++ titles. Log: at 14:41 netflix++ refused the handoff of The Wild Robot
+  ("could not take HlsMaster"), which turned the handoff off for ALL netflix++ titles for 2 min; local fallback then failed too
+  (the broker's input relay got an HTTP error from netflix++ DirectStream and dropped the connection: ffmpeg "End of file",
+  exit 187). Wicked, started in that window, got a local playlist; after the 2 min its segments were 302'd to netflix++, which
+  converted too (the user's screenshot: every segment twice). User decision: a friend's title plays only from the friend.
+  Fix in FederationRemoteTranscodeFilter: segments follow the play's start (RemoteTranscodeHandoffs.HandedOffTo), a failed
+  handoff returns the friend's status to the player (502 if unreachable), 403 = switched off -> PeerTranscodeCapability.Record(false)
+  and that play converts here. RecordRefusal (2-min friend-wide backoff) is no longer called. A first attempt with per-title
+  backoffs and retry detection was dropped at the user's request ("simplify it").
+
