@@ -9,6 +9,19 @@ Bigger items were fixed in 0.0.78/0.0.79; these are smaller and set aside:
 5. **Resume points lost on item delete/recreate** — reconciliation dedup and migrations delete/recreate virtual items, wiping all users' watch progress on those items.
 6. **Deleting a local Jellyfin user leaves stale federation state** — per-user access rules pushed by friends (`FriendUserAccessRules`) and cached session tokens for that user are never swept (no user-deletion hook exists). Inert after deletion, but accumulates.
 7. **Direct-mode static source relays through this server** — the Play-button fix routes the stamped static Path through the local proxy gateway (a relay hop). Direct client→remote fetching is still available for the provider-emitted sources where applicable, but the default source relays.
+   *0.0.187:* the provider's own Direct source points at the friend (the stored loopback path is replaced), and transcodes are handed to the friend too (remote-transcode handoff), so neither direct play nor conversion relays through this server when the friend runs 0.0.187.
+
+## Remote-transcode handoff limits (0.0.187)
+
+- Both servers need 0.0.187. With an older friend this server converts as before.
+- The player must be able to reach the friend's address (the same address Direct play already
+  uses). A page served over https is never handed an http friend address (mixed content);
+  that case converts here.
+- The friend's GPU, upload and transcoder settings apply. Its admin can switch the handoff off
+  per friend or cap concurrent sessions; a refused session converts here instead.
+- Friend-rule hiding uses one `federation-hidden-…` tag per restricted local user, added to that
+  user's "Block items with tags" policy. Removing it by hand is undone at the next sync while the
+  friend's rule exists.
 
 ## Resolved in the current quality pass
 

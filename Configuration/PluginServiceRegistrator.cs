@@ -36,6 +36,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationLibraryManager>();
             serviceCollection.AddSingleton<FederationArtworkService>();
             serviceCollection.AddSingleton<RemoteAccessControlService>();
+            serviceCollection.AddSingleton<FederationVisibilityService>();
+            serviceCollection.AddSingleton<FederationRemoteTranscodeGateway>();
+            serviceCollection.AddSingleton<RemoteTranscodeSessionRegistry>();
+            serviceCollection.AddSingleton<RemoteTranscodeHandoffs>();
+            serviceCollection.AddHostedService<RemoteTranscodeSessionBridge>();
             serviceCollection.AddSingleton<FederationSyncService>();
             serviceCollection.AddSingleton<FederationChangeNotifier>();
             serviceCollection.AddSingleton<FederationItemPersistenceService>();
@@ -74,6 +79,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationMediaSourceNameFilter>());
             serviceCollection.AddTransient<FederationDirectStreamRedirectFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationDirectStreamRedirectFilter>());
+            serviceCollection.AddTransient<FederationRemoteTranscodeFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationRemoteTranscodeFilter>());
             serviceCollection.AddTransient<FederationLocalOnlyItemsFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationLocalOnlyItemsFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();

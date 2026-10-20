@@ -409,13 +409,27 @@ namespace Jellyfin.Plugin.Federation.Services
                     // one is present. Adaptive playback addresses sources by their
                     // hashed ids, so it keeps them.
                     var replacesStatic = !adaptive && candidate.Index == primaryIndex;
+                    var sourceId = replacesStatic ? item.Id.ToString("N") : BuildSourceId(candidate.Src);
+
+                    // Remote-transcode handoff: remember the friend token behind this
+                    // source for this viewer, so FederationRemoteTranscodeFilter can
+                    // send their transcode/subtitle requests to the friend. A source
+                    // the WAN link can't carry as-is must be converted, and only the
+                    // friend converts it (to the bitrate the player asked for).
+                    var handoff = UsesRemoteTranscode(candidate.Server);
+                    if (handoff && localUserId.HasValue && PeerPlaybackGrants.TokenFromDirectPath(candidate.Path) is { } grantToken)
+                    {
+                        PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken);
+                    }
+
+                    var mustConvert = handoff && SourceOverageBitrate(candidate.Server, remote) > 0;
 
                     sources.Add(new MediaSourceInfo
                     {
                         // Jellyfin round-trips MediaSourceId through playback URLs and
                         // expects a plain 32-char hex string; the old
                         // "{serverId}:{remoteItemId}" composite did not survive that.
-                        Id = replacesStatic ? item.Id.ToString("N") : BuildSourceId(candidate.Src),
+                        Id = sourceId,
                         Name = position == 0 ? $"{candidate.SourceName} (Auto)" : candidate.SourceName,
                         Path = candidate.Path,
                         Protocol = MediaProtocol.Http,
@@ -433,8 +447,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         Size = advertised.Size,
                         Bitrate = advertised.Bitrate,
                         MediaStreams = advertised.MediaStreams,
-                        SupportsDirectPlay = true,
-                        SupportsDirectStream = true,
+                        SupportsDirectPlay = !mustConvert,
+                        SupportsDirectStream = !mustConvert,
 
                         // Enabled so a client that cannot direct-play the remote's
                         // container still has a path: this server pulls the remote HTTP
@@ -556,12 +570,22 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 foreach (var stream in remote.MediaStreams)
                 {
-                    stream.Path = null;
+                    FederationLibraryManager.RedactStreamPath(stream);
                 }
             }
 
             return remote;
         }
+
+        /// <summary>
+        /// True when conversion of this peer's titles is handed to the peer
+        /// (remote-transcode handoff): Direct-mode Jellyfin friend, enabled here,
+        /// and the friend's last token said its gateway is open to us.
+        /// </summary>
+        internal static bool UsesRemoteTranscode(RemoteServer? server)
+            => IsPeerDirect(server)
+                && Plugin.Instance?.Configuration?.UseFriendsTranscoders != false
+                && PeerTranscodeCapability.IsAvailable(server!.Id);
 
         /// <summary>True for a Jellyfin peer whose bytes go straight from it to the viewer.</summary>
         private static bool IsPeerDirect(RemoteServer? server)
@@ -808,7 +832,14 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var directAudioFlag = itemType == "Audio" ? "&audio=true" : string.Empty;
-            var capQuery = _federationManager.BuildDirectStreamCapQuery(server, itemType == "Audio", src);
+
+            // With the remote-transcode handoff the friend converts whatever the
+            // device needs, so direct play gets the original file and a source
+            // over the WAN cap is marked transcode-only in GetMediaSources instead
+            // of being pre-shrunk to one fixed progressive MP4 here.
+            var capQuery = UsesRemoteTranscode(server)
+                ? string.Empty
+                : _federationManager.BuildDirectStreamCapQuery(server, itemType == "Audio", src);
             return $"{RemoteServerClientFactory.EffectiveUrl(server)}/Plugins/Federation/DirectStream/{src.RemoteItemId:N}?token={Uri.EscapeDataString(token)}{directAudioFlag}{capQuery}";
         }
 

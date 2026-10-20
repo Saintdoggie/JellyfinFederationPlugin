@@ -16,6 +16,19 @@ Disclaimer: this fork has been primarily written by AI, and has not had a human-
 ## Aims
 The goal of this plugin is to sync Jellyfin servers together, merging connected servers' libraries together as seemlessly as possible. This is NOT a true federation plugin. It does not let you federate with unknown public jellyfin servers.
 
+## Playing a friend's title
+
+When one of your viewers plays a friend's title that has to be converted for their device,
+the friend's server converts its own copy and streams it straight to the player. The viewer
+stays signed in to your server, which keeps their progress and history; the video never passes
+through your server. If the friend's server can't (older plugin, switched off, busy, not
+reachable from the player), your server converts it as before. Settings: Advanced tab →
+"Who converts friends' video", and per friend on the Friends tab.
+
+Rules a friend sets for one of your users (block, only some libraries or titles, rating limit)
+hide those titles from that user everywhere, not only at playback. Unsharing a library removes
+its titles from the friend right away.
+
 ## Plex
 Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports.
 

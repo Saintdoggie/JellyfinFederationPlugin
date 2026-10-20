@@ -86,6 +86,12 @@ def smoke():
         def path_only(url):
             p = urllib.parse.urlsplit(url)
             return p.path + ('?' + p.query if p.query else '')
+        def target(url):
+            # Direct-mode sources point at the source server itself (the bytes go
+            # source -> client, never through the receiver); reach it on its
+            # host-mapped port. Everything else is a receiver path.
+            host = urllib.parse.urlsplit(url).netloc
+            return (source_base if host == f'{names[0]}:8096' else base), path_only(url)
         for mode in ('Direct','Proxy'):
             settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
             settings['RemoteServers'][0]['StreamingMode'] = mode
@@ -96,33 +102,59 @@ def smoke():
                 playable = info['MediaSources'][0]
                 qa.check(playable.get('Size')==native['MediaSources'][0].get('Size'), 'Playback size differs from native Jellyfin source')
                 qa.check(playable['Container']==native['MediaSources'][0]['Container'], 'Playback container differs from native Jellyfin source')
-                stream = path_only(playable['Path'])
-                _, served = qa.request(base, stream, headers, raw=True)
+                host, stream = target(playable['Path'])
+                qa.check(mode == 'Proxy' or host == source_base, 'Direct source is relayed through the receiver')
+                _, served = qa.request(host, stream, headers, raw=True)
                 qa.check(served == payload, 'Peer stream bytes differ')
-                head, body = qa.request(base, stream, headers, method='HEAD', raw=True)
+                head, body = qa.request(host, stream, headers, method='HEAD', raw=True)
                 qa.check(not body and int(head['Content-Length'])==len(payload), 'HEAD differs')
-                _, ranged = qa.request(base, stream, {**headers,'Range':'bytes=137-648'}, expected=206, raw=True)
+                _, ranged = qa.request(host, stream, {**headers,'Range':'bytes=137-648'}, expected=206, raw=True)
                 qa.check(ranged==payload[137:649], 'Seek range differs')
-            old_path = stream
+            old_host, old_path = host, stream
             print(f'PEER PASS: {mode} native metadata, admin/viewer full playback, HEAD and seek ranges', flush=True)
         stage = 'viewer rule and old-capability revocation'
         result = qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
             {'RemoteUserId':viewer_id,'RemoteUserName':'qa-viewer','Mode':'Blocked'})
         qa.check(result['success'], 'Viewer revocation failed')
-        qa.request(base, old_path, viewer, expected=403, raw=True)
-        info = qa.request(base, f'/Items/{item_id}/PlaybackInfo', viewer)
-        for denied in info.get('MediaSources', []):
-            if denied.get('Path'):
-                qa.request(base, path_only(denied['Path']), viewer, expected=403, raw=True)
+        qa.request(old_host, old_path, viewer, expected=403, raw=True)
         info = qa.request(base, f'/Items/{item_id}/PlaybackInfo', admin)
-        qa.check(qa.request(base, path_only(info['MediaSources'][0]['Path']), admin, raw=True)[1]==payload, 'Viewer revocation blocked admin')
+        qa.check(qa.request(*target(info['MediaSources'][0]['Path']), admin, raw=True)[1]==payload, 'Viewer revocation blocked admin')
+        stage = 'viewer rule hides titles, not just playback'
+        def viewer_sees():
+            listed = len(movies(base, viewer))
+            searched = len(qa.request(base, '/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=QA%20Peer', viewer)['Items'])
+            latest = len(qa.request(base, '/Items/Latest?IncludeItemTypes=Movie', viewer))
+            return listed, searched, latest
+        qa.wait_for(lambda: viewer_sees() == (0, 0, 0) or None, 'Blocked viewer still sees the friend title')
+        qa.request(base, f'/Items/{item_id}?userId={viewer_id}', viewer, expected=404)
+        qa.request(base, f'/Items/{item_id}/PlaybackInfo', viewer, expected=404)
+        qa.check(len(movies(base, admin)) == 1, 'Blocking the viewer hid the title from the admin too')
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
             {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer restore failed')
+        qa.wait_for(lambda: viewer_sees() == (1, 1, 1) or None, 'Unblocked viewer did not get the title back')
+        qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+            {'RemoteUserId':viewer_id,'Mode':'AllLibraries','BlockedItemIds':[native['Id']]})['success'], 'Per-item block failed')
+        qa.wait_for(lambda: viewer_sees() == (0, 0, 0) or None, 'Per-item block did not hide the title')
+        qa.check(len(movies(base, admin)) == 1, 'Per-item block hid the title from the admin too')
+        policy = qa.request(base, f'/Users/{viewer_id}', admin)['Policy']
+        qa.check(any(t.startswith('federation-hidden-') for t in policy.get('BlockedTags') or []), 'Viewer policy has no hide tag')
+        qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
+            {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer restore failed')
+        qa.wait_for(lambda: viewer_sees() == (1, 1, 1) or None, 'Unblocked viewer did not get the title back')
+        policy = qa.request(base, f'/Users/{viewer_id}', admin)['Policy']
+        qa.check(not any(t.startswith('federation-hidden-') for t in policy.get('BlockedTags') or []), 'Hide tag left on an unrestricted viewer')
+        print('PEER PASS: friend per-user block/per-item block hide the title from that user only (list, search, Latest, direct id) and restore', flush=True)
+        stage = 'friend unshares the library'
+        qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/Sharing', source_admin, {'ShareAll':False,'FolderIds':[]})['success'], 'Unshare failed')
+        qa.wait_for(lambda: (not movies(base, admin) and not movies(base, viewer)) or None, 'Unshared library titles are still listed on the friend')
+        qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/Sharing', source_admin, {'ShareAll':True})['success'], 'Reshare failed')
+        qa.wait_for(refreshed, 'Reshared library did not come back')
+        print('PEER PASS: unsharing a library removes its titles from the friend; resharing restores them', flush=True)
         stage = 'disable, outage, cache retention and stable recovery'
         settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
         settings['RemoteServers'][0]['Enabled'] = False
         qa.request(base, '/Plugins/Federation/Configuration', admin, settings)
-        qa.request(base, old_path, viewer, expected=403, raw=True)
+        qa.request(old_host, old_path, viewer, expected=403, raw=True)
         refreshed()
         qa.check(not movies(base, admin) and not movies(base, viewer), 'Disabled source remains visible')
         settings['RemoteServers'][0]['Enabled'] = True
@@ -132,7 +164,9 @@ def smoke():
         snapshot = json.loads(cache.read_text())
         qa.run(['podman','stop','-t','2',names[0]])
         for _ in range(2): qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
-        qa.check(not movies(base, admin) and not movies(base, viewer), 'Offline source remains visible')
+        # Since 0.0.184 titles already in the library stay listed while their
+        # server is offline (they come back without churn); playback fails fast.
+        qa.check(movies(base, admin) and movies(base, viewer), 'Offline source titles were dropped from the library')
         refreshed()
         qa.check(json.loads(cache.read_text())==snapshot, 'Outage erased cached catalog')
         qa.run(['podman','start',names[0]])
@@ -140,8 +174,12 @@ def smoke():
         qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
         recovered = qa.wait_for(lambda: movies(base, viewer), 'Source titles did not return')
         qa.check(recovered[0]['Id']==item_id, 'Recovery changed identity')
-        info = qa.request(base, f'/Items/{item_id}/PlaybackInfo', viewer)
-        qa.check(qa.request(base, path_only(info['MediaSources'][0]['Path']), viewer, raw=True)[1]==payload, 'Recovery playback failed')
+        # Titles stay listed while offline (0.0.184), so wait for a playable source.
+        def playable_again():
+            qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
+            return qa.request(base, f'/Items/{item_id}/PlaybackInfo', viewer).get('MediaSources') or None
+        sources = qa.wait_for(playable_again, 'Recovered source never became playable')
+        qa.check(qa.request(*target(sources[0]['Path']), viewer, raw=True)[1]==payload, 'Recovery playback failed')
         print('PEER PASS: viewer-only revocation, old URL denial, disabled/offline hiding, catalog retention and stable-ID recovery', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError)) else type(e).__name__

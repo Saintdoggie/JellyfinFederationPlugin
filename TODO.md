@@ -1,5 +1,23 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.187 — remote-transcode handoff and access that hides (2026-10-19)
+
+Branch `feature/direct-play-and-access`. Full record: `notes.md`, checklist: `.todo`.
+
+- [x] Remote-transcode handoff: a viewer signed in here plays a friend's title that must be
+  converted; the friend's server converts its own file and streams it straight to the player
+  (`Peer/Play/{token}/...` gateway, `FederationRemoteTranscodeFilter`, session bridge for pause/stop).
+  Falls back to converting here when the friend can't. Two-server proof: `scripts/federation_handoff_smoke.py`.
+- [x] Friend per-user rules hide titles (native BlockedTags + per-user hide tag), not only refuse playback.
+  Receiver pulls its rules from each friend every sync (`Peer/UserRules`).
+- [x] Unsharing a library removes it from the friend at once (sharing notice skips spacing; revoked
+  libraries prune without the glitch brakes). Proof: `scripts/federation_peer_smoke.py`.
+- [x] Fixed: transcoding a friend title with an external subtitle on the receiving server failed
+  (stream index shifted by the redacted sidecar path).
+- [ ] Real-world check on the user's servers (both friends must run 0.0.187 for the handoff and the
+  rule pull; the hiding of already-pushed rules works with older friends).
+- [ ] Not covered yet: Plex/Companion sources (always converted here), adaptive web player, live TV.
+
 ## Top priority — major streaming redesign and federated watch parties
 
 **Scope clarification: Jellyfin-to-Jellyfin only for this phase.** User reports

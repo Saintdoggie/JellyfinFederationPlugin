@@ -465,6 +465,31 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// every other sharing rule already goes through.
         /// </summary>
         public List<string> GloballyExcludedItemIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets whether friends may convert this server's titles here and
+        /// stream the result straight to their players (owner side of the
+        /// remote-transcode handoff). Per-friend switch:
+        /// <see cref="RemoteServer.AllowRemoteTranscode"/>. Managed by
+        /// <c>Settings/RemoteTranscode</c>, preserved by the main Save.
+        /// </summary>
+        public bool EnableRemoteTranscodeForFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets how many playback sessions one friend may convert here at
+        /// once (0 = no limit). A session over the limit is refused, and the
+        /// friend's server converts it itself instead.
+        /// </summary>
+        public int MaxRemoteTranscodesPerFriend { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether this server hands conversion of a friend's title to
+        /// that friend's server (receiver side of the remote-transcode handoff), so
+        /// the video never passes through this server. When the friend can't (older
+        /// version, switched off, at its limit, unreachable), this server converts
+        /// as before.
+        /// </summary>
+        public bool UseFriendsTranscoders { get; set; } = true;
     }
 
     /// <summary>
@@ -767,6 +792,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// editable from this server's own admin UI - the friend owns it.
         /// </summary>
         public List<RemoteUserAccessRule> FriendUserAccessRules { get; set; } = new List<RemoteUserAccessRule>();
+
+        /// <summary>
+        /// Gets or sets whether this friend may run transcodes on this server for
+        /// its users (the remote-transcode handoff: their player streams the
+        /// converted video straight from here while staying signed in to their own
+        /// server). Owner-side, per friend; on by default. When off, the friend
+        /// converts on its own server as before. Managed by
+        /// <c>Friends/{id}/RemoteTranscode</c>, preserved by the main Save.
+        /// </summary>
+        public bool AllowRemoteTranscode { get; set; } = true;
 
         /// <summary>
         /// Gets or sets whether this friend's federated items are allowed to be
