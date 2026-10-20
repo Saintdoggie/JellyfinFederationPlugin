@@ -122,3 +122,17 @@ own server (transcoding there).
   `EnableRemoteTranscodeForFriends`, `MaxRemoteTranscodesPerFriend`, `UseFriendsTranscoders`,
   per-friend `AllowRemoteTranscode` (endpoints `Settings/RemoteTranscode`, `Friends/{id}/RemoteTranscode`;
   all preserved by the main Save). E2E: `scripts/federation_handoff_smoke.py`.
+- 2026-10-19: Fixed a pre-existing bug found by the fallback test: friend titles with an external
+  (sidecar) subtitle could not be transcoded on the receiving server. Jellyfin maps streams to ffmpeg
+  input indexes by counting streams with an equal Path; nulling every Path made the sidecar count as
+  part of the file (ffmpeg asked for 0:1/0:2 of a 2-stream file). Sidecars now get a distinct
+  placeholder path (`FederationLibraryManager.RedactStreamPath`), regression test uses Jellyfin's own
+  `EncodingHelper.FindIndex`.
+- 2026-10-19: Self-review fixes before freeze: gateway no longer checks owner-side `Enabled` (that is
+  "do I pull from them", not "do I share with them"); handoff sessions recorded only after the owner
+  accepted (no pings for fallen-back sessions); rules naming non-existent local users ignored.
+- 2026-10-19: **Final validation on frozen commit 72c5c61**: `scripts/test.sh` gate passed (1006 plugin,
+  170 Companion, 116 UI tests, twice; receipt written). `federation_peer_smoke.py` 5/5 on Jellyfin 12.2.
+  `federation_handoff_smoke.py` 6/6 on 12.2 and 12.0: owner converts, 1 MB first segment straight from
+  owner with no receiver credential, receiver ran no ffmpeg, subtitle from owner, stop frees owner job in
+  ~1-2 s (was 60 s idle timeout), block cuts in-flight URLs, opt-out and limit fall back to receiver.
