@@ -1661,6 +1661,63 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(_placement.Local());
         }
 
+        private static readonly HttpClient HandoffPlaylistHttp = new(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.None,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            UseCookies = false
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+
+        /// <summary>
+        /// Player-facing, anonymous like the media it leads to: a playlist from a
+        /// friend that is converting one of its titles for a viewer here, fetched
+        /// and passed on with the friend's addresses put on the address this server
+        /// uses for it (see <see cref="HandoffPlaylistLinks"/>). Only an enabled
+        /// friend's own gateway playlist URL is fetched; the item-scoped token in
+        /// that URL is what authorizes it, and the friend re-checks it.
+        /// </summary>
+        [HttpGet("HandoffPlaylist")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetHandoffPlaylist([FromQuery] string? u, CancellationToken cancellationToken)
+        {
+            var friend = HandoffPlaylistLinks.FindRelayTarget(u, Plugin.Instance?.Configuration?.RemoteServers ?? new List<RemoteServer>());
+            if (friend == null)
+            {
+                return NotFound();
+            }
+
+            Response.Headers.CacheControl = "private, no-store";
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, u);
+                request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                using var response = await HandoffPlaylistHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return StatusCode((int)response.StatusCode);
+                }
+
+                if (response.Content.Headers.ContentLength > 8 * 1024 * 1024)
+                {
+                    return StatusCode(StatusCodes.Status502BadGateway);
+                }
+
+                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var rewritten = HandoffPlaylistLinks.Rewrite(text, RemoteServerClientFactory.EffectiveUrl(friend), HandoffPlaylistLinks.RelayPrefix(Request.PathBase.Value));
+                return Content(rewritten, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                // The URL carries a token: log the friend, never the URL.
+                _logger.LogInformation("[Federation] Could not fetch a handoff playlist from {Friend}: {Error}", friend.Name, ex.GetType().Name);
+                return StatusCode(StatusCodes.Status502BadGateway);
+            }
+        }
+
         /// <summary>
         /// For the player's Playback Info panel: how a friend's title reaches
         /// this viewer (which friend, the route, who converts and why, the link

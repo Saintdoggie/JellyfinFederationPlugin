@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.192",
+        "changelog": "Fixes friends' titles failing to play in the browser when the friend converts them: a friend behind some proxies or tunnels wrote http addresses into its playlists, which a browser on an https page refuses. Your server now puts those addresses on the https address it already uses for that friend. Only your server needs 0.0.192 for this; the friend can stay on 0.0.187 or later. Also includes 0.0.191: a friend's title plays only from that friend while it converts for you.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-20T15:19:59Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.192/Jellyfin.Federation.zip",
+        "checksum": "8961d3a7807c989d2156f5b081313389"
+      },
+      {
         "version": "0.0.191",
         "changelog": "A friend's title now plays only from that friend when it converts for you: one play is never split between their server and yours, and one failed title no longer switches every title from that friend over to your server for two minutes. If the friend is at its limit or can't play a title, the player shows that, instead of your server stepping in halfway. Your server still converts a friend's titles when the friend has switched converting off or runs an older version.",
         "targetAbi": "12.0.0.0",

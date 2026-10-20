@@ -137,8 +137,13 @@ def smoke():
         master = master.decode()
         qa.check(viewer_token not in master and 'ApiKey' not in master and 'api_key' not in master, 'A credential reached the playlist')
         variant_url = next(l for l in master.splitlines() if l and not l.startswith('#'))
-        qa.check(f'{source_host}/Plugins/Federation/Peer/Play/' in variant_url, 'Master playlist does not point at the owner')
-        _, variant = qa.request(on_source(variant_url), '', None, raw=True)
+        # The variant playlist comes through the receiver's relay, which puts the
+        # owner's addresses on the address the receiver uses for the owner (an
+        # owner behind a proxy can write http ones an https page would refuse).
+        relay = '/Plugins/Federation/HandoffPlaylist?u='
+        qa.check(variant_url.startswith(relay), 'Master playlist does not send the variant through the receiver relay')
+        qa.check(f'{source_host}/Plugins/Federation/Peer/Play/' in urllib.parse.unquote(variant_url[len(relay):]), 'Relayed variant is not the owner gateway')
+        _, variant = qa.request(base, variant_url, None, raw=True)
         variant = variant.decode()
         segment_url = next(l for l in variant.splitlines() if l and not l.startswith('#'))
         _, segment = qa.request(on_source(segment_url), '', None, raw=True)
@@ -182,7 +187,7 @@ def smoke():
         before = len(transcode_logs(config))
         _, master = qa.request(base, source['TranscodingUrl'], viewer, raw=True)
         master = master.decode()
-        qa.check(source_host not in master, 'Receiver still handed off after the owner switched it off')
+        qa.check(source_host not in master and 'HandoffPlaylist' not in master, 'Receiver still handed off after the owner switched it off')
         variant = next(l for l in master.splitlines() if l and not l.startswith('#'))
         variant_path = urllib.parse.urljoin(source['TranscodingUrl'], variant)
         _, playlist = qa.request(base, variant_path, viewer, raw=True)
@@ -203,10 +208,10 @@ def smoke():
         def handed_off():
             _, src = negotiate(viewer, bitrate=2000000)
             _, body = qa.request(base, src['TranscodingUrl'], viewer, raw=True)
-            return (src, body.decode()) if source_host in body.decode() else None
+            return (src, body.decode()) if 'HandoffPlaylist' in body.decode() else None
         first_source, first = qa.wait_for(handed_off, 'Handoff did not resume after switching it back on', seconds=200)
         first_variant = next(l for l in first.splitlines() if l and not l.startswith('#'))
-        qa.request(on_source(first_variant), '', None, raw=True)
+        qa.request(base, first_variant, None, raw=True)
         # A friend's title plays only from the friend: over its limit, the
         # player gets the friend's refusal and the receiver converts nothing.
         before = len(transcode_logs(config))
@@ -214,7 +219,7 @@ def smoke():
         qa.request(base, second_source['TranscodingUrl'], viewer, expected=429, raw=True)
         qa.check(len(transcode_logs(config)) == before, 'The receiver converted a friend title itself')
         # The play that is running stays with the owner.
-        qa.request(on_source(first_variant), '', None, raw=True)
+        qa.request(base, first_variant, None, raw=True)
         print('HANDOFF PASS: owner limit of 1 refuses a second concurrent session; the player gets the refusal, the receiver never converts it', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError, StopIteration)) else f'{type(e).__name__}: {e}'

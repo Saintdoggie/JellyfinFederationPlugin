@@ -1,96 +1,118 @@
-# Jellyfin plugin for federation.
+# Jellyfin Federation
 
-Disclaimer: this fork has been primarily written by AI, and has not had a human-review: use at your own risk.
+Disclaimer: this fork has been primarily written by AI, and has not had a human review: use at your own risk.
 
-## Jellyfin compatibility
+Jellyfin Federation connects your Jellyfin server with your friends' servers. Their libraries
+show up in yours and play from their server, with no copying or syncing of files.
 
-- **Jellyfin 12.x:** Federation 0.0.160, built for .NET 10. Legacy authorization can stay disabled.
-- **Jellyfin 10.11.x:** keep Federation 0.0.135. The 12.x DLL cannot load on 10.11.
-- Existing friend connections and plugin configuration are retained. Jellyfin 12 with 0.0.160 can connect to Jellyfin 10.11 with 0.0.135; sync and Direct/Proxy playback are verified in both directions. Friends on 10.11 do not need to upgrade together.
+This is NOT true federation: it does not connect you to unknown public Jellyfin servers. You only
+connect with servers whose admins you send a friend request to (or accept one from).
+
+Current release: **0.0.192** for Jellyfin 12.
+
+## Features
+
+**Browsing and playing**
+- Friends' movies, shows and music appear in your libraries, kept up to date automatically.
+- You choose what each friend can see of your library, and can set rules per viewer (block,
+  only some libraries or titles, rating limit). Hidden titles are hidden everywhere, not just at playback.
+- When a friend's title needs converting for a device, the friend's server converts its own copy
+  and streams it straight to the player. Your viewer stays signed in to your server, which keeps
+  their progress and history.
+- A friend's title plays only from that friend while it converts for you; if the friend is busy
+  or can't play it, the player says so. Your server converts instead only when the friend has
+  converting switched off or runs an older version.
+
+**Downloads**
+- Download to your device: viewers allowed to download get the normal Download button on
+  friends' titles (web, Jellyfin for Android, Findroid, Swiftfin). The friend can turn this off,
+  and without bulk permission each viewer can save 30 titles an hour from a friend.
+- Download to your server (admins): copy a friend's title into your Movies or Shows library
+  (the default), another library, a new folder, or a separate "Federation Downloads" library.
+  Files are named so Jellyfin identifies them. Downloaded copies are never shared on to other friends.
+
+**Watching together**
+- Watch parties across servers using Jellyfin's group watching (SyncPlay): choose "New group with
+  friends" or "Invite friends". Everyone plays their own server's copy; play, pause and seeking are shared.
+- Friends' favorites: a "Favorites on (friend)" row per friend (titles only, never who favorited them).
+- Friends' viewers watching your titles show on your dashboard under Active devices.
+- Playback Info in the player has a "Federation" section showing which friend, how the video
+  travels and who converts it.
+
+**Optional**
+- Hardware sharing: servers can share their conversion hardware and let it decide who converts
+  a friend's title. Off by default (Advanced tab).
+- Pools: groups of servers that all federate with each other.
+- Plex: bring Plex libraries into Jellyfin from the Plex tab, or use the separate Companion app (see below).
+
+Most features can be switched off under the plugin's Advanced tab.
+
+## Requirements
+
+- Jellyfin 12.x for the current release (0.0.192, built for .NET 10).
+- Jellyfin 10.11.x: use 0.0.135 (the last 10.11 build). The 12.x plugin cannot load on 10.11.
+- Your server must be reachable by your friends (port forwarding to your own domain, or Tailscale
+  with Funnel; the Friends tab helps set this up).
 
 ## Installation
-1. Add https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/manifest.json to your Jellyfin plugin repositories
-2. Install the Jellyfin Federation plugin
+
+1. In Jellyfin, go to Dashboard → Plugins → Repositories and add:
+   `https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/manifest.json`
+2. Install the **Jellyfin Federation** plugin from the catalog.
 3. Restart Jellyfin, then open Dashboard → Plugins → Federation.
 
-## Aims
-The goal of this plugin is to sync Jellyfin servers together, merging connected servers' libraries together as seemlessly as possible. This is NOT a true federation plugin. It does not let you federate with unknown public jellyfin servers.
+Existing friend connections and settings are kept when you update.
 
-## Playing a friend's title
+## Adding a friend
 
-When one of your viewers plays a friend's title that has to be converted for their device,
-the friend's server converts its own copy and streams it straight to the player. The viewer
-stays signed in to your server, which keeps their progress and history; the video never passes
-through your server. If the friend's server can't (older plugin, switched off, busy, not
-reachable from the player), your server converts it as before. Settings: Advanced tab →
-"Who converts friends' video", and per friend on the Friends tab.
+1. Open the **Friends** tab and choose **Create new friend request**.
+2. Enter your friend's server address and pick what they can see of your library.
+3. Send the request. Once your friend accepts it on their server, both servers add each other
+   automatically and their titles appear after the first sync.
 
-Rules a friend sets for one of your users (block, only some libraries or titles, rating limit)
-hide those titles from that user everywhere, not only at playback. Unsharing a library removes
-its titles from the friend right away.
+Manage a friend from the Friends tab to change what they can see, set per-viewer rules, or
+adjust connection settings.
 
-## Downloading a friend's title to your device
+## Compatibility between friends
 
-Any viewer allowed to download (Jellyfin's own "Allow media downloading" user setting) gets the
-normal Download button on a friend's movies, episodes and music, in the web client and in apps
-such as Jellyfin for Android, Findroid and Swiftfin. The file comes straight from the friend's
-server with its real file name; if that isn't possible (an older friend, or an https/http
-mismatch) your server passes it through instead, and an interrupted download can resume. The
-friend stays in control: "Allow this friend and their viewers to download my titles" on their
-Friends tab, and per-viewer rules, turn it off. Without bulk permission each viewer can save
-30 titles an hour from that friend.
+Friends don't have to upgrade at the same time; basic sync and playback keep working with older
+friends. Newer features need **both** servers on at least:
 
-## Watch parties with friends
+| Feature | Both servers need |
+| --- | --- |
+| Friend's server converts and streams directly to the player | 0.0.187 |
+| Direct device downloads and friends' favorites | 0.0.188 (older friends: downloads go through your server) |
+| Watch parties across servers | 0.0.189 |
+| Friends' viewers on your dashboard, hardware sharing | 0.0.190 |
 
-Watch together with viewers on a friend's server, using Jellyfin's own group watching
-(SyncPlay, the people icon at the top). Choose "New group with friends" there (or "Invite
-friends" when already in a group). Your friends' viewers find the party in their normal
-group list and join it like any group, from any app that supports group watching. Everyone
-plays their own server's copy of the title; play, pause, seeking and title changes are
-shared, and anyone loading or buffering pauses everyone until they're ready. Each viewer
-still needs their own access to what's playing. Switches: Advanced → "Watch parties with
-friends". Both servers need 0.0.189.
+## Troubleshooting
 
-## Downloading a friend's title to your server
+- **A friend's titles disappeared:** the friend is probably unreachable. Their titles are hidden
+  (not deleted) until they come back. Use **Check now** on the Friends tab.
+- **A friend's title won't convert or play:** check the player's Playback Info → Federation section
+  for which server converts and why. The friend may be at its limit or unable to
+  play that title on its side.
+- **A new feature doesn't work with one friend:** check both servers' plugin versions against the
+  table above.
+- More detail is in the plugin's **Log** tab and in Jellyfin's server logs.
 
-Admins can copy a friend's title onto this server ("Download to this server" in the "..." menu,
-or Federated downloads on the dashboard). You pick where it goes: your Movies or Shows library
-(the default), any other library, a new folder (it becomes its own library), or the separate
-"Federation Downloads" library. Films are saved as `Name (Year)/Name (Year).ext` and episodes as
-`Series/Season 01/Series S01E01.ext`, so Jellyfin identifies them; a second copy of a film you
-already have is saved as a version (`Name (Year) - friend.ext`). Downloaded copies are never
-shared on to other friends.
+## Plex Companion
 
-## Seeing who is watching
+Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers
+library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports.
 
-When someone on a friend's server watches one of your titles, they show on your dashboard
-under Active devices like anyone connected to you: the title, how far in, paused or playing,
-named "viewer (friend)". Nothing is added to your users' watch history. Your server tells your
-friends the same about your viewers. In the player, Playback Info gains a "Federation" section
-for friends' titles: which friend, how the video travels, who converts it and why, the round
-trip and link speed, and the hardware involved. Switches: Advanced → "Who is watching across
-friends". Both servers need 0.0.190.
+Before installing it, read its [permissions, Windows security notices, Linux setup and removal guide](Companion/README.md#windows-app-tray-and-permissions).
+It runs a local background dashboard and saves private access tokens. The read-only media helper,
+sign-in startup and remote sharing are optional. Windows builds are unsigned: investigate Defender
+detections; do not disable protection or add blanket antivirus exclusions. Release installers
+verify published SHA-256 checksums.
 
-## Who converts: hardware (optional)
+## Credits and license
 
-Servers can share what they convert video with (GPU and CPU model, which codecs run in
-hardware). Normally the friend converts their own titles, so only the smaller converted stream
-crosses the internet. With "Pick who converts a friend's title by hardware" on, your server
-converts instead when the friend's hardware falls short of your minimum for that title (4K:
-hardware decode and encode by default; HD: hardware encode) or the friend is at its limit, and
-your server does better; never when the connection can't carry the original file. If your
-conversions run on another machine (an offloading broker), describe that machine under
-Advanced → "Conversion hardware", since Jellyfin's own settings only show the server itself.
+Thanks to Stephan Voeth (@svoeth) for the faster, more reliable sync in 0.0.186.
 
-## Friends' favorites
+MIT License. See [LICENSE](LICENSE).
 
-Your Favorites tab gets a "Favorites on (friend)" row per friend with the titles that friend's
-users favorited: titles only, never who, and only titles you can already open. Your server does
-the same for your friends. Both directions can be turned off under Advanced → "Friends' favorites".
+## Disclaimer
 
-## Plex
-Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers library consent, friend connections, playback diagnostics, and the media mount required for Jellyfin imports.
-
-### Companion app permissions and unsigned Windows downloads
-
-Before installing the Plex Companion, read its [permissions, Windows security notices, Linux setup and removal guide](Companion/README.md#windows-app-tray-and-permissions). It runs a local background dashboard and saves private access tokens. The read-only media helper, sign-in startup and remote sharing are optional. Windows builds are unsigned: investigate Defender detections; do not disable protection or add blanket antivirus exclusions. Release installers verify published SHA-256 checksums.
+This fork has been primarily written by AI and has not had a human review. Use it at your own risk.
