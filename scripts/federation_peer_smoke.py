@@ -179,19 +179,23 @@ def smoke():
         admin_id = qa.request(base, '/Users/Me', admin)['Id']
         qa.wait_for(lambda: can_download(viewer, viewer_id), 'Download is not offered on the friend title')
         if OLD_SOURCE:
-            # An older friend doesn't name the file itself: this server relays it.
+            # A friend before 0.0.188 doesn't name the file itself, so this server
+            # relays it; 0.0.188 does, so the viewer is sent straight there.
             status, relayed_headers, relayed = no_redirect(base, f'/Items/{item_id}/Download', viewer)
-            qa.check(status == 200 and relayed == payload, f'Download from an older friend failed (HTTP {status})')
-            qa.check('QA Peer (2026).mkv' in (relayed_headers.get('Content-Disposition') or ''), 'Relayed download is not named')
+            if status == 302:
+                location = relayed_headers.get('Location') or relayed_headers.get('location')
+                relayed_headers, relayed = qa.request(source_base, path_only(location), {}, raw=True)
+            qa.check(status in (200, 302) and relayed == payload, f'Download from an older friend failed (HTTP {status})')
+            qa.check('QA Peer (2026).mkv' in (relayed_headers.get('Content-Disposition') or ''), 'Downloaded file is not named')
             qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
                 {'AllowDownloads':False,'AllowBulkDownloads':False})['success'], 'Friend download switch failed')
             status, _, body = no_redirect(base, f'/Items/{item_id}/Download', viewer)
             qa.check(status == 403 and b'error' in body, f'Older friend refusal not passed on (HTTP {status})')
             qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/DownloadAccess', source_admin,
                 {'AllowDownloads':True,'AllowBulkDownloads':False})['success'], 'Friend download restore failed')
-            qa.check(no_redirect(base, f'/Items/{item_id}/Download', viewer)[0] == 200, 'Download did not come back')
+            qa.check(no_redirect(base, f'/Items/{item_id}/Download', viewer)[0] in (200, 302), 'Download did not come back')
             qa.check(not qa.request(base, '/Plugins/Federation/FriendFavorites', viewer)['sections'], 'Older friend produced a favorites row')
-            print('PEER PASS (older friend): downloads relayed and named here, the friend\'s refusal passed on; no favorites row, no errors', flush=True)
+            print('PEER PASS (older friend): downloads work (named, relayed or direct by the friend\'s version), the friend\'s refusal passed on; no favorites row, no errors', flush=True)
         else:
             status, located, _ = no_redirect(base, f'/Items/{item_id}/Download', viewer)
             qa.check(status == 302, f'Device download answered HTTP {status}, expected a redirect to the friend')
