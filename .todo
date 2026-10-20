@@ -177,7 +177,8 @@ hls.js retries after 20 s (6x) -> a converter slower than 20 s to its first segm
     receiver copies to its log folder as FFmpeg.Transcode-..._<friend>-<session>.log on relayed pings and after the stop
 [x] Playback Info: "Not shared by this server" instead of "converts on the CPU" for a friend without hardware info
 [x] Gate 1107/170/133 twice; two-server handoff 9/9 (new: early start, seek retry joins (2 starts: early + jump), log copy, owner restart)
-[ ] Release 0.0.193 + deploy; friendflix must update for seeking/early start/logs/token persistence
+[x] Release 0.0.193 (md5 f0f05404db328c1de1b186ce3cb4234c, master 55995d8); deployed live 16:23 UTC, 888 items 0 ERR (backup plugin-backup-federation-0.0.192-20261020)
+[ ] friendflix to update to 0.0.193 (seeking, early start, logs, token persistence are its side)
 ## 6. Later (user asked: review only, do not implement)
 [x] Review the svoeth fork (github.com/svoeth/JellyfinFederationPlugin/releases): what it adds, what we already have, what could be useful. User has their own thoughts before anything is built.
     Read 2026-10-20 (release notes only, no code pulled). Their 0.0.177-0.0.186 are our own releases.

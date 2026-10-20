@@ -358,3 +358,4 @@ Started 2026-10-20 on branch `feature/download-dest-viewers-info` from master (0
   Early start: receiver fetches variant + first segment right after serving the master (only for friends advertising sharedSegments).
   Handoff test needs TMPDIR=/home/user/.cache/jf-qa-tmp (tmpfs /tmp too small for Jellyfin's 2 GiB free-space check).
 
+- 2026-10-20: Released 0.0.193 (master 55995d8, md5 f0f05404db328c1de1b186ce3cb4234c verified); deployed live, backup of 0.0.192 at /var/mnt/kingfast/hosting-cutover-20260927/plugin-backup-federation-0.0.192-20261020; 888 items, 0 ERR.
