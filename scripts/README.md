@@ -15,8 +15,7 @@ temporary directory. Only generated containers/network are removed on completion
 This measures HTTP startup on a local container network using an admin identity;
 it does **not** measure first rendered frame, client codec negotiation, transcoding,
 WAN conditions or watch-party synchronization. The first measured request is not
-guaranteed cache-cold after library scanning. See `STREAMING_REDESIGN.md` for the
-remaining benchmark matrix.
+guaranteed cache-cold after library scanning.
 
 For a real Chromium video-frame callback measurement, also pass
 `--playwright-module /absolute/path/to/node_modules/playwright` and optionally

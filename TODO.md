@@ -23,7 +23,7 @@
 
 ## 0.0.187 — remote-transcode handoff and access that hides (2026-10-19)
 
-Branch `feature/direct-play-and-access`. Full record: `notes.md`, checklist: `.todo`.
+Branch `feature/direct-play-and-access`.
 
 - [x] Remote-transcode handoff: a viewer signed in here plays a friend's title that must be
   converted; the friend's server converts its own file and streams it straight to the player
@@ -42,9 +42,7 @@ Branch `feature/direct-play-and-access`. Full record: `notes.md`, checklist: `.t
 ## Top priority — major streaming redesign and federated watch parties
 
 **Scope clarification: Jellyfin-to-Jellyfin only for this phase.** User reports
-30–60+ seconds to start, depending on quality/codec. Detailed architecture map,
-phased implementation, proposed performance targets, access rules and rollout:
-[STREAMING_REDESIGN.md](STREAMING_REDESIGN.md).
+30–60+ seconds to start, depending on quality/codec.
 
 - [x] Map current playback path and write the phased redesign/party plan.
 - [x] Initial code: coordinate duplicate metadata requests, isolate cache by viewer/address/credential, add metadata and first-body-write debug timing. Four focused regressions pass; not yet a measured end-to-end speed improvement.
@@ -106,10 +104,7 @@ Diagnosis and release
 
 Companion now ships as a real background app: WinExe + tray on Windows, XDG
 autostart on Linux, single-instance, rotating log, low-memory GC settings, and
-an owner "Companion app" card. Implementation details, remaining platform
-validation, and the exact test commands live in
-[`Companion/DESKTOP-APP-TODO.md`](Companion/DESKTOP-APP-TODO.md). Read that file
-before changing Companion startup, tray, autostart, or packaging.
+an owner "Companion app" card.
 
 ## Active Plex repair — shipped as 0.0.133
 
