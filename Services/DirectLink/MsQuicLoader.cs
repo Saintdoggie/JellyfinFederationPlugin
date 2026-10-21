@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace Jellyfin.Plugin.Federation.Services.DirectLink
@@ -71,6 +72,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 try
                 {
                     string? loadNote = null;
+                    var quicAlreadyLoaded = AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "System.Net.Quic");
                     if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                     {
                         var path = BundledPath(Path.GetDirectoryName(typeof(MsQuicLoader).Assembly.Location));
@@ -94,13 +96,28 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     }
 
                     _available = IsQuicSupported();
-                    _reason = _available ? "ok" : loadNote ?? "this system has no QUIC support";
+                    _reason = _available ? "ok" : (loadNote ?? "this system has no QUIC support") + " [" + RuntimeReason() + (quicAlreadyLoaded ? "; QUIC was checked before the plugin loaded" : string.Empty) + "]";
                 }
                 catch (Exception ex)
                 {
                     _available = false;
                     _reason = "QUIC check failed: " + ex.Message;
                 }
+            }
+        }
+
+        /// <summary>The runtime's own reason QUIC is unsupported (diagnostics only).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static string RuntimeReason()
+        {
+            try
+            {
+                var api = typeof(System.Net.Quic.QuicConnection).Assembly.GetType("System.Net.Quic.MsQuicApi");
+                return api?.GetProperty("NotSupportedReason", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)?.GetValue(null) as string ?? "no reason given";
+            }
+            catch (Exception ex)
+            {
+                return ex.GetType().Name;
             }
         }
 

@@ -217,6 +217,9 @@ class Server:
         for f in self.dll.iterdir():
             if f.suffix in ('.dll', '.json', '.so') or f.name.endswith('.deps.json'):
                 shutil.copy(f, plugin)
+        if (self.dll / 'native').is_dir():
+            # The bundled MsQuic ships in the release zip under native/<rid>/.
+            shutil.copytree(self.dll / 'native', plugin / 'native', dirs_exist_ok=True)
         ctr(self.name, '--network', f"fdl-lan-{self.side}:ip={IP['jf-' + self.side]}", '-e', 'FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE=1',
             '-v', f'{self.config}:/config', '-v', f'{media}:/media:ro', image=qa.JELLYFIN_IMAGE, tail=None)
 
@@ -473,7 +476,20 @@ def security_checks(a, b):
         out = pm('exec', 'fdl-viewer-b', 'python3', '/fdl/fdl_udp_probe.py', IP['jf-b'], port, *payloads)
         # And from the wan at the router (also expected silent).
         outw = pm('exec', 'fdl-viewer-w', 'python3', '/fdl/fdl_udp_probe.py', IP['router-b-wan'], port, *payloads)
-        return 'reply' not in out and 'reply' not in outw, f'lan:{out.split()[1::2]} wan:{outw.split()[1::2]}'
+        # The port is the live link's QUIC socket by now, so a QUIC stack may
+        # answer junk with a small stateless reset. What must never come back:
+        # a punch ack (forged probes accepted) or anything larger than what was
+        # sent (amplification).
+        def bad(text):
+            for line in text.splitlines():
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == 'reply':
+                    sent = bytes.fromhex(payloads[int(parts[0])])
+                    reply = bytes.fromhex(parts[2])
+                    if reply.startswith(b'JFDL') or len(reply) > len(sent):
+                        return True
+            return False
+        return not bad(out) and not bad(outw), f'lan:{out.split()[1::2]} wan:{outw.split()[1::2]}'
     guard('6b. junk / forged / replayed JFDL probe datagrams get no reply', junk)
 
 
