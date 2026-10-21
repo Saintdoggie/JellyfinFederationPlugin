@@ -1,0 +1,324 @@
+#pragma warning disable CA2252, CA1416 // System.Net.Quic: only reached when MsQuicLoader says QUIC works.
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.Quic;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Jellyfin.Plugin.Federation.Services.DirectLink
+{
+    /// <summary>
+    /// One established direct link: the QUIC connection plus what's counted on
+    /// it. Initiator side: <see cref="Http"/> sends friend requests over it, one
+    /// QUIC stream per request.
+    /// </summary>
+    public sealed class DirectLinkConnection : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _closing = new();
+        private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private long _bytesIn;
+        private long _bytesOut;
+        private int _activeStreams;
+        private int _disposed;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DirectLinkConnection"/> class.
+        /// </summary>
+        /// <param name="connection">The authenticated QUIC connection.</param>
+        /// <param name="serverId">The friend's configured server id.</param>
+        /// <param name="isInitiator">True on the side that opens the streams.</param>
+        /// <param name="federationToken">Initiator: the friend's federation token, sent on every request.</param>
+        public DirectLinkConnection(QuicConnection connection, string serverId, bool isInitiator, string? federationToken)
+        {
+            Quic = connection;
+            ServerId = serverId;
+            IsInitiator = isInitiator;
+            RemoteEndPoint = connection.RemoteEndPoint;
+            ConnectedUtc = DateTime.UtcNow;
+            if (isInitiator)
+            {
+                Http = CreateHttpClient(federationToken);
+            }
+        }
+
+        /// <summary>Gets the QUIC connection.</summary>
+        public QuicConnection Quic { get; }
+
+        /// <summary>Gets the friend's configured server id.</summary>
+        public string ServerId { get; }
+
+        /// <summary>Gets a value indicating whether this side opened the link.</summary>
+        public bool IsInitiator { get; }
+
+        /// <summary>Gets the friend's public UDP endpoint.</summary>
+        public IPEndPoint RemoteEndPoint { get; }
+
+        /// <summary>Gets when the link came up.</summary>
+        public DateTime ConnectedUtc { get; }
+
+        /// <summary>Gets the HTTP client that sends over the link (initiator only).</summary>
+        public HttpClient? Http { get; }
+
+        /// <summary>Gets bytes received over the link.</summary>
+        public long BytesIn => Interlocked.Read(ref _bytesIn);
+
+        /// <summary>Gets bytes sent over the link.</summary>
+        public long BytesOut => Interlocked.Read(ref _bytesOut);
+
+        /// <summary>Gets the number of requests in flight.</summary>
+        public int ActiveStreams => Volatile.Read(ref _activeStreams);
+
+        /// <summary>Gets a value indicating whether the link has ended.</summary>
+        public bool IsClosed => _closed.Task.IsCompleted;
+
+        /// <summary>Gets a task that completes when the link ends.</summary>
+        public Task Closed => _closed.Task;
+
+        /// <summary>Gets a token cancelled when the link ends.</summary>
+        public CancellationToken Closing => _closing.Token;
+
+        /// <summary>Gets or sets the throughput measured after connecting (0 = not yet).</summary>
+        public double Mbps { get; set; }
+
+        /// <summary>Gets why the link ended, once it has.</summary>
+        public string? CloseReason { get; private set; }
+
+        /// <summary>
+        /// Initiator: watches for the connection ending. The initiator accepts no
+        /// streams, so waiting for one only returns when the connection closes.
+        /// </summary>
+        public void StartCloseWatch()
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await using var unexpected = await Quic.AcceptInboundStreamAsync(_closing.Token).ConfigureAwait(false);
+                    MarkClosed("the friend opened a stream it shouldn't have");
+                }
+                catch (QuicException ex)
+                {
+                    MarkClosed(Describe(ex));
+                }
+                catch (OperationCanceledException)
+                {
+                    MarkClosed("closed");
+                }
+                catch (ObjectDisposedException)
+                {
+                    MarkClosed("closed");
+                }
+            });
+        }
+
+        /// <summary>Records that the link ended.</summary>
+        public void MarkClosed(string reason)
+        {
+            if (_closed.TrySetResult())
+            {
+                CloseReason = reason;
+                try
+                {
+                    _closing.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Already disposed.
+                }
+            }
+        }
+
+        /// <summary>Counts bytes received.</summary>
+        internal void AddIn(long bytes) => Interlocked.Add(ref _bytesIn, bytes);
+
+        /// <summary>Counts bytes sent.</summary>
+        internal void AddOut(long bytes) => Interlocked.Add(ref _bytesOut, bytes);
+
+        /// <summary>Notes a stream opening (+1) or ending (-1).</summary>
+        internal void StreamDelta(int delta) => Interlocked.Add(ref _activeStreams, delta);
+
+        /// <summary>A readable reason for a QUIC failure.</summary>
+        internal static string Describe(QuicException ex) => ex.QuicError switch
+        {
+            QuicError.ConnectionIdle => "the link went quiet (no answer for 60 s)",
+            QuicError.ConnectionTimeout => "the friend didn't answer",
+            QuicError.ConnectionAborted => "the friend closed the link",
+            QuicError.ConnectionRefused => "the friend refused the link",
+            _ => "QUIC: " + ex.QuicError
+        };
+
+        /// <inheritdoc />
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            {
+                return;
+            }
+
+            MarkClosed(CloseReason ?? "closed");
+            Http?.Dispose();
+            try
+            {
+                await Quic.CloseAsync(0).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Closing a dead connection may throw; it's gone either way.
+            }
+
+            await Quic.DisposeAsync().ConfigureAwait(false);
+            _closing.Dispose();
+        }
+
+        private HttpClient CreateHttpClient(string? federationToken)
+        {
+            var sockets = new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                UseProxy = false,
+                AutomaticDecompression = DecompressionMethods.None,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                ConnectCallback = async (_, cancellationToken) =>
+                {
+                    if (IsClosed)
+                    {
+                        throw new HttpRequestException("The direct link is closed.");
+                    }
+
+                    try
+                    {
+                        var stream = await Quic.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, cancellationToken).ConfigureAwait(false);
+                        return new CountingStream(stream, this);
+                    }
+                    catch (QuicException ex)
+                    {
+                        MarkClosed(Describe(ex));
+                        throw new HttpRequestException("The direct link is closed: " + Describe(ex), ex);
+                    }
+                }
+            };
+            var client = new HttpClient(new OneRequestPerStreamHandler(sockets))
+            {
+                BaseAddress = new Uri("http://federation-direct-link/"),
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+            if (!string.IsNullOrEmpty(federationToken))
+            {
+                client.DefaultRequestHeaders.TryAddWithoutValidation(FederationTokenAuth.Header, federationToken);
+            }
+
+            return client;
+        }
+
+        /// <summary>Each request gets its own QUIC stream; the friend closes it after one answer.</summary>
+        private sealed class OneRequestPerStreamHandler : DelegatingHandler
+        {
+            public OneRequestPerStreamHandler(HttpMessageHandler inner)
+                : base(inner)
+            {
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                request.Headers.ConnectionClose = true;
+                request.Version = HttpVersion.Version11;
+                request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+                return base.SendAsync(request, cancellationToken);
+            }
+        }
+
+        /// <summary>A stream wrapper that counts traffic on the link.</summary>
+        internal sealed class CountingStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly DirectLinkConnection _owner;
+            private int _done;
+
+            public CountingStream(Stream inner, DirectLinkConnection owner)
+            {
+                _inner = inner;
+                _owner = owner;
+                owner.StreamDelta(1);
+            }
+
+            public override bool CanRead => _inner.CanRead;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => _inner.CanWrite;
+
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush() => _inner.Flush();
+
+            public override Task FlushAsync(CancellationToken cancellationToken) => _inner.FlushAsync(cancellationToken);
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var n = _inner.Read(buffer, offset, count);
+                _owner.AddIn(n);
+                return n;
+            }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                _owner.AddIn(n);
+                return n;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+                => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                _inner.Write(buffer, offset, count);
+                _owner.AddOut(count);
+            }
+
+            public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                await _inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                _owner.AddOut(buffer.Length);
+            }
+
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+                => WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override async ValueTask DisposeAsync()
+            {
+                if (Interlocked.Exchange(ref _done, 1) == 0)
+                {
+                    _owner.StreamDelta(-1);
+                }
+
+                await _inner.DisposeAsync().ConfigureAwait(false);
+                await base.DisposeAsync().ConfigureAwait(false);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing && Interlocked.Exchange(ref _done, 1) == 0)
+                {
+                    _owner.StreamDelta(-1);
+                    _inner.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
+        }
+    }
+}

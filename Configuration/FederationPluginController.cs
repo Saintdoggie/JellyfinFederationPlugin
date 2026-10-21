@@ -348,6 +348,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
                         server.MonthlyDataCapGb = oldServer.MonthlyDataCapGb;
                         server.MaxConcurrentStreams = oldServer.MaxConcurrentStreams;
+                        server.DirectLinkMode = oldServer.DirectLinkMode;
                         server.PeerAllowsDownloads = oldServer.PeerAllowsDownloads;
                         server.PeerSharesFavorites = oldServer.PeerSharesFavorites;
 
@@ -472,6 +473,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     // config save - enforced in FederationPeerAccessService.IsItemVisible.
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
+                    config.EnableDirectLink = existing.EnableDirectLink;
+                    config.DirectLinkStunServers = existing.DirectLinkStunServers;
                     config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
                     config.ShareConversionLogsWithFriends = existing.ShareConversionLogsWithFriends;
@@ -4921,7 +4924,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 Version = version,
                 OperatingSystem = string.Empty,
                 Id = systemId,
-                FederationPluginVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+                FederationPluginVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(),
+                DirectLinkVersion = Services.DirectLink.DirectLinkManager.AdvertisedVersion()
             });
         }
 

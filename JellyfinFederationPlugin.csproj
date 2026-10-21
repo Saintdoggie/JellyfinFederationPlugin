@@ -46,6 +46,11 @@
     <None Update="thumb.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <!-- MsQuic for the direct link (see native/README.md); ships in the release zip at the same paths. -->
+    <None Include="native\linux-x64\libmsquic.so.2;native\linux-arm64\libmsquic.so.2">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>%(Identity)</Link>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
