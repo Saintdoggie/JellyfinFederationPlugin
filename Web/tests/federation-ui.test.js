@@ -6,9 +6,9 @@ const path = require('node:path');
 const test = require('node:test');
 const { JSDOM } = require('jsdom');
 
-const root = path.resolve(__dirname, '..');
-const badgeScript = fs.readFileSync(path.join(root, 'Web/federation-badge.js'), 'utf8');
-const configPage = fs.readFileSync(path.join(root, 'Configuration/configPage.html'), 'utf8');
+const root = path.resolve(__dirname, '../..');
+const badgeScript = fs.readFileSync(path.join(root, 'Web/client/federation-badge.js'), 'utf8');
+const configPage = fs.readFileSync(path.join(root, 'Web/admin/configPage.html'), 'utf8');
 const itemId = '11111111111111111111111111111111';
 
 function settle() {
