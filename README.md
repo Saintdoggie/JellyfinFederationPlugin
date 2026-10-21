@@ -1,5 +1,8 @@
 # Jellyfin Federation
 (becus this has moved so far from the orignal owners creation. we have decided that we would rather separate from the orignal owner, thank you @angablade :heart: )
+
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/ac59da49-29fe-4f32-b66a-442a5529c132" />
+
 Disclaimer: this fork has been primarily written by AI, and has not had a human review: use at your own risk.
 
 Jellyfin Federation connects your Jellyfin server with your friends' servers. Their libraries
