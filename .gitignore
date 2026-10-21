@@ -370,3 +370,6 @@ FodyWeavers.xsd
 .dotnet/
 .local/
 .nuget/
+
+# Built plugin package (published as a GitHub release asset)
+Jellyfin.Federation.zip

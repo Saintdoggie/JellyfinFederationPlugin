@@ -134,17 +134,11 @@ Tests and project history:
 
 - `Tests/` — xUnit/Moq regression suite. Locate the closest existing fixture
   before creating a new one; streaming and sharing tests encode hard-won bugs.
-- `KNOWN_ISSUES.md` — confirmed unresolved limitations.
-- `ideas.md` — historical design notes and root-cause writeups. Read the
-  relevant section before modifying persistence or playback.
-- `manifest.json`, `meta.json`, and `Jellyfin.Federation.zip` — plugin release
-  metadata/artifact.
+- `manifest.json` and `meta.json` — plugin release metadata. The plugin zip is
+  a GitHub release asset, not committed.
 - `.github/workflows/companion-release.yml` — rolling Companion builds; it is
   separate from plugin version releases.
 - `TODO.md` — active reliability/security/polish release checklist.
-- `Companion/DESKTOP-APP-TODO.md` — Companion desktop-app handoff: Windows
-  tray/WinExe, Linux XDG autostart, single-instance, RAM tuning, remaining
-  platform validation. Read before changing Companion startup or packaging.
 
 ## Non-negotiable engineering invariants
 

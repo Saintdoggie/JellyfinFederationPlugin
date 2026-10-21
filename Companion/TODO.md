@@ -2,10 +2,7 @@
 
 Updated 2026-10-01. Source: the repository checkout. The Plex ownership/playback repair is published in plugin 0.0.133. Read root `AGENTS.md` and `TODO.md` before continuing.
 
-> Desktop app work (Windows tray/WinExe, Linux XDG autostart, single-instance,
-> RAM tuning, platform validation) moved to
-> [`DESKTOP-APP-TODO.md`](DESKTOP-APP-TODO.md). Keep this file focused on the
-> Plex federation repair.
+> Keep this file focused on the Plex federation repair.
 
 ## Private sharing preview
 
@@ -32,7 +29,7 @@ The peer authorization service lacked a FederationKey exclusion before allow-all
 - [x] Approved Plex parts are revalidated against current metadata and sharing at read time, including moves to private sections.
 - [x] Failed/malformed catalog fetches preserve the last successful catalog. Successful removal/revocation reconciles entries. Source media changes trigger Plex refresh; failed refreshes remain pending for retry.
 - [x] Legacy `.strm` cleanup tracks ownership atomically, rejects traversal/links, adopts only this peer's old URLs, preserves unrelated files even when titles collide, and serializes removal with sync.
-- [x] Documentation and UI distinguish catalog sync, mount readiness, Plex attachment and playback. Root README points to Companion setup; KNOWN_ISSUES records current limits.
+- [x] Documentation and UI distinguish catalog sync, mount readiness, Plex attachment and playback. Root README points to Companion setup;
 
 ## Validation completed on the final source
 
