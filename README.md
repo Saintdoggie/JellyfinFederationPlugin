@@ -1,5 +1,5 @@
 # Jellyfin Federation
-
+(becus this has moved so far from the orignal owners creation. we have decided that we would rather separate from the orignal owner, thank you @angablade :heart: )
 Disclaimer: this fork has been primarily written by AI, and has not had a human review: use at your own risk.
 
 Jellyfin Federation connects your Jellyfin server with your friends' servers. Their libraries
