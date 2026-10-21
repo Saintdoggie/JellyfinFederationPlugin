@@ -86,6 +86,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         /// <summary>Gets or sets bytes this server sent the friend over its inbound link.</summary>
         public long InboundBytesOut { get; set; }
+
+        /// <summary>Gets or sets the local UDP port of the friend's inbound link (0 = none).</summary>
+        public int InboundLocalPort { get; set; }
     }
 
     /// <summary>The whole direct link status (admin view).</summary>
@@ -105,6 +108,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         /// <summary>Gets or sets this server's router kind from the last STUN answers.</summary>
         public string Nat { get; set; } = "unknown";
+
+        /// <summary>Gets or sets the local UDP port of an inbound link, when one is up (0 = none; diagnostics).</summary>
+        public int LocalPort { get; set; }
 
         /// <summary>Gets or sets this server's key fingerprint (what friends pin).</summary>
         public string Fingerprint { get; set; } = string.Empty;
@@ -214,6 +220,15 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <inheritdoc />
         public Task StartAsync(CancellationToken cancellationToken)
         {
+            if (MsQuicLoader.Available)
+            {
+                _logger.LogInformation("[Federation] Direct links are available on this server (QUIC ready)");
+            }
+            else
+            {
+                _logger.LogInformation("[Federation] Direct links aren't available on this server: {Reason}", MsQuicLoader.Reason);
+            }
+
             _loop = Task.Run(() => LoopAsync(_shutdown.Token), CancellationToken.None);
             return Task.CompletedTask;
         }
@@ -304,6 +319,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 {
                     entry.InboundConnected = true;
                     entry.InboundBytesOut = inbound.BytesOut;
+                    entry.InboundLocalPort = inbound.Quic.LocalEndPoint.Port;
+                    if (status.LocalPort == 0)
+                    {
+                        status.LocalPort = entry.InboundLocalPort;
+                    }
                 }
 
                 status.Friends.Add(entry);
