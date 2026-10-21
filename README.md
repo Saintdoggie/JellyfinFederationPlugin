@@ -1,5 +1,4 @@
 # Jellyfin Federation
-(becus this has moved so far from the orignal owners creation. we have decided that we would rather separate from the orignal owner, thank you @angablade :heart: )
 
 
 
