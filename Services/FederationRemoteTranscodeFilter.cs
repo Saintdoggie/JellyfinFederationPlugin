@@ -104,6 +104,16 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            var playSessionId = RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId");
+            if (path!.Kind == RemoteMediaKind.HlsSegment && _handoffs.HandedOffTo(playSessionId) == null)
+            {
+                // A segment of a play this server's own transcoder started (its
+                // playlist came from here): one play never mixes two transcoders.
+                // Decided before ResolveAsync, which can hit the friend over the network.
+                await next().ConfigureAwait(false);
+                return;
+            }
+
             Handoff? handoff = null;
             try
             {
@@ -116,15 +126,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (handoff == null)
             {
-                await next().ConfigureAwait(false);
-                return;
-            }
-
-            var playSessionId = RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId");
-            if (path!.Kind == RemoteMediaKind.HlsSegment && _handoffs.HandedOffTo(playSessionId) == null)
-            {
-                // A segment of a play this server's own transcoder started (its
-                // playlist came from here): one play never mixes two transcoders.
                 await next().ConfigureAwait(false);
                 return;
             }

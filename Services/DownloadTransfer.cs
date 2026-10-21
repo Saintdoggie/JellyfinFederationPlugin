@@ -8,6 +8,15 @@ using System.Threading.Tasks;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
+    /// <summary>The friend refused a download for a reason that retrying will not fix (its monthly data cap).</summary>
+    internal sealed class DownloadRefusedException : Exception
+    {
+        public DownloadRefusedException(string message)
+            : base(message)
+        {
+        }
+    }
+
     /// <summary>
     /// Shared HTTP-to-file copy used by both Jellyfin-peer downloads and
     /// external catalog URLs. Supports Range resume so a crashed or paused
@@ -77,6 +86,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
                 else
                 {
+                    if ((int)response.StatusCode == 429 && response.Headers.TryGetValues(FriendDataLimits.RefusalHeader, out var refusal))
+                    {
+                        var reason = System.Linq.Enumerable.FirstOrDefault(refusal);
+                        var message = "The friend's server refused the download: " + FriendDataLimits.Describe(reason);
+                        // A used-up monthly cap will not lift until next month, so retrying
+                        // is pointless; a stream limit can clear in minutes, so it stays transient.
+                        throw reason == FriendDataLimits.DataLimitReason
+                            ? new DownloadRefusedException(message)
+                            : new HttpRequestException(message);
+                    }
+
                     response.EnsureSuccessStatusCode();
                 }
             }

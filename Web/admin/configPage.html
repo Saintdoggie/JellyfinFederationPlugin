@@ -1060,6 +1060,10 @@
                                 <p class="fieldDescription">Adds a "Favorites on (friend)" row per friend under your viewers' own favorites, with the titles that friend's users favorited. Each viewer only sees titles they can already open here.</p>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkShareFavoritesWithFriends" class="emby-checkbox fed-check" /> Share which of my titles my users favorited</label>
                                 <p class="fieldDescription">Friends see the titles only, never who favorited them, and only titles you already share with that viewer. Titles you get from other friends are never included.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsPopular" class="emby-checkbox fed-check" /> Show what's popular on friends' servers on my Home tab</label>
+                                <p class="fieldDescription">Adds a "Popular on (friend)" row per friend, with the titles most played there in the last 30 days. Each viewer only sees titles they can already open here.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkSharePopularWithFriends" class="emby-checkbox fed-check" /> Share what's popular here with friends</label>
+                                <p class="fieldDescription">Friends see which of your titles your users played most in the last 30 days, as counts only, never who played them, and only titles you already share with that viewer. Taken from Jellyfin's own watch history; nothing extra is recorded.</p>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-favorites">Save favorites settings</button>
                                 <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
                                 <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
@@ -1668,6 +1672,20 @@
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-download-access" data-id="' + escapeHtml(server.Id) + '">Save download permissions</button>';
                             html += '<div class="fed-srvstatus" id="fedDownloadAccessStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                             html += '</div>';
+
+                            var usedGb = (server.DataUsedThisMonthBytes || 0) / 1e9;
+                            var capGb = server.MonthlyDataCapGb || 0;
+                            html += '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                            html += '<label class="fed-label">Limits for this friend</label>';
+                            html += '<div class="fed-inline">';
+                            html += '<div class="fed-input-container"><label class="fed-hint">Monthly data (GB, 0 = no limit)</label><input type="number" class="emby-input fed-input fedLimitDataGb" data-id="' + escapeHtml(server.Id) + '" min="0" max="1000000" step="1" value="' + capGb + '" /></div>';
+                            html += '<div class="fed-input-container"><label class="fed-hint">Streams at once (0 = no limit)</label><input type="number" class="emby-input fed-input fedLimitStreams" data-id="' + escapeHtml(server.Id) + '" min="0" max="100" step="1" value="' + (server.MaxConcurrentStreams || 0) + '" /></div>';
+                            html += '</div>';
+                            html += '<p class="fed-hint fedLimitUsage" data-id="' + escapeHtml(server.Id) + '">Used ' + usedGb.toFixed(1) + ' GB' + (capGb > 0 ? ' of ' + capGb + ' GB' : '') + ' this month (UTC) · ' + (server.ActiveStreams || 0) + ' stream' + ((server.ActiveStreams || 0) === 1 ? '' : 's') + ' right now.</p>';
+                            html += '<p class="fed-hint">Counts everything sent to them: playing, converting here, and downloads. When the monthly limit is reached, transfers stop and their requests are refused until next month. Streams at once counts plays, not downloads.</p>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-friend-limits" data-id="' + escapeHtml(server.Id) + '">Save limits</button>';
+                            html += '<div class="fed-srvstatus" id="fedFriendLimitsStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                            html += '</div>';
                         }
 
                         html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
@@ -1802,6 +1820,8 @@
                             if (!res) { return; }
                             q('#fedChkShowFriendsFavorites').checked = res.ShowFriendsFavorites !== false;
                             q('#fedChkShareFavoritesWithFriends').checked = res.ShareFavoritesWithFriends !== false;
+                            q('#fedChkShowFriendsPopular').checked = res.ShowFriendsPopular !== false;
+                            q('#fedChkSharePopularWithFriends').checked = res.SharePopularWithFriends !== false;
                             var lines = (res.Friends || []).map(function (f) {
                                 var favorites = f.SharesFavorites === true ? 'shares its favorites'
                                     : f.SharesFavorites === false ? 'doesn\'t share its favorites'
@@ -1941,7 +1961,9 @@
                             method: 'POST',
                             body: JSON.stringify({
                                 ShowFriendsFavorites: q('#fedChkShowFriendsFavorites').checked,
-                                ShareFavoritesWithFriends: q('#fedChkShareFavoritesWithFriends').checked
+                                ShareFavoritesWithFriends: q('#fedChkShareFavoritesWithFriends').checked,
+                                ShowFriendsPopular: q('#fedChkShowFriendsPopular').checked,
+                                SharePopularWithFriends: q('#fedChkSharePopularWithFriends').checked
                             })
                         })
                         .then(function (r) { return readJson(r); })
@@ -1992,6 +2014,26 @@
                             if (res.success) { return loadConfiguration(true); }
                         })
                         .catch(function (e) { show('Could not save download permissions: ' + e.message, 'err'); });
+                    }
+
+                    function saveFriendLimits(serverId) {
+                        var gb = q('.fedLimitDataGb[data-id="' + serverId + '"]');
+                        var streams = q('.fedLimitStreams[data-id="' + serverId + '"]');
+                        var id = '#fedFriendLimitsStatus-' + serverId;
+                        showRemoteTranscodeStatus(id, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Limits', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                MonthlyDataCapGb: Math.max(0, parseInt(gb && gb.value, 10) || 0),
+                                MaxConcurrentStreams: Math.max(0, parseInt(streams && streams.value, 10) || 0)
+                            })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus(id, (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            if (res && res.success) { return loadConfiguration(true); }
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus(id, 'Could not save: ' + e.message, 'err'); });
                     }
 
                     function blockFriend(serverId) {
@@ -7526,6 +7568,9 @@
                                     break;
                                 case 'save-download-access':
                                     saveDownloadAccess(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-friend-limits':
+                                    saveFriendLimits(t.getAttribute('data-id'));
                                     break;
                                 case 'save-remote-transcode':
                                     saveRemoteTranscodeSettings();

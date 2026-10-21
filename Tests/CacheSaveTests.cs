@@ -53,3 +53,40 @@ public sealed class CacheSaveTests
         }
     }
 }
+
+public sealed class CacheLoadFailureTests
+{
+    [Fact]
+    public void CorruptCache_IsMovedAside_AndBlocksReconcileUntilRepopulated()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "fed-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "federation-cache.json");
+            File.WriteAllText(path, "{ not json");
+            var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+            cache.Initialize(path);
+
+            Assert.True(cache.DestructiveReconcileBlocked);
+            Assert.False(File.Exists(path));
+            Assert.Single(Directory.GetFiles(dir, "federation-cache.json.corrupt-*"));
+
+            var id = Guid.NewGuid();
+            cache.UpsertRaw("Movies", "s", id, new BaseItemDto { Id = id, Name = "One" }, 0, "Movie");
+            Assert.False(cache.DestructiveReconcileBlocked);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void MissingCache_DoesNotBlockReconcile()
+    {
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        cache.Initialize(Path.Combine(Path.GetTempPath(), "nope-" + Guid.NewGuid().ToString("N") + ".json"));
+        Assert.False(cache.DestructiveReconcileBlocked);
+    }
+}

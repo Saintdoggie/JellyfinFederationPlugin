@@ -387,6 +387,7 @@ public class FederationPoolTests : IDisposable
                 }
             },
             CancellationToken.None);
+        await _service.PendingFanOut;
 
         var pool = Assert.Single(_plugin.Configuration.Pools);
         Assert.Equal("pool-1", pool.Id);
@@ -976,5 +977,92 @@ public class FederationPoolTests : IDisposable
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(_responder(request));
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_RosterWithPrivateOrMalformedUrls_IsNeitherStoredNorContacted()
+    {
+        var bob = new RemoteServer { Id = "friend-1", Name = "Bob", Url = "http://bob.example", ApiKey = "key-1", FederationId = "bob-fed-id" };
+        _plugin.Configuration.RemoteServers.Add(bob);
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+        });
+
+        var requested = new List<string>();
+        UseFakeHttp(req =>
+        {
+            requested.Add(req.RequestUri!.ToString());
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "X" });
+        });
+
+        await _service.ReceivePoolNotice(
+            bob,
+            new PoolNoticePayload
+            {
+                FromFederationId = "bob-fed-id",
+                PoolId = "pool-1",
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { Name = "lan", Url = "http://192.168.1.5:8096" },
+                    new PoolMember { Name = "loop", Url = "http://127.0.0.1:8096" },
+                    new PoolMember { Name = "meta", Url = "http://169.254.169.254" },
+                    new PoolMember { Name = "zero", Url = "http://0.0.0.0:8096" },
+                    new PoolMember { Name = "ula", Url = "http://[fd00::1]:8096" },
+                    new PoolMember { Name = "tailnet", Url = "http://100.101.102.103:8096" },
+                    new PoolMember { Name = "magic", Url = "https://box.tail1234.ts.net" },
+                    new PoolMember { Name = "junk", Url = "not a url" },
+                    new PoolMember { Name = "ok", Url = "https://ok.example" }
+                }
+            },
+            CancellationToken.None);
+        await _service.PendingFanOut;
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.DoesNotContain(pool.Members, m => m.Url.Contains("192.168") || m.Url.Contains("127.0.0.1") || m.Url.Contains("169.254") || m.Url.Contains("0.0.0.0") || m.Url.Contains("fd00") || m.Url == "not a url");
+        Assert.Contains(pool.Members, m => m.Url.Contains("100.101"));
+        Assert.Contains(pool.Members, m => m.Url.Contains("ts.net"));
+        Assert.Contains(pool.Members, m => m.Url == "https://ok.example");
+        Assert.Equal(3, requested.Count);
+        Assert.Contains("https://ok.example/Plugins/Federation/Friends/Request", requested);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_HugeRoster_IsCapped_AndFanOutDoesNotBlockTheRequest()
+    {
+        var bob = new RemoteServer { Id = "friend-1", Name = "Bob", Url = "http://bob.example", ApiKey = "key-1", FederationId = "bob-fed-id" };
+        _plugin.Configuration.RemoteServers.Add(bob);
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+        });
+
+        var gate = new ManualResetEventSlim(false);
+        var posts = 0;
+        UseFakeHttp(_ =>
+        {
+            Interlocked.Increment(ref posts);
+            gate.Wait(TimeSpan.FromSeconds(10));
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "X" });
+        });
+
+        var roster = Enumerable.Range(0, 500).Select(i => new PoolMember { Name = "m" + i, Url = $"https://m{i}.example" }).ToList();
+        var notice = _service.ReceivePoolNotice(
+            bob,
+            new PoolNoticePayload { FromFederationId = "bob-fed-id", PoolId = "pool-1", Roster = roster },
+            CancellationToken.None);
+
+        // Returns while the first introduction is still stuck in flight.
+        Assert.True(notice.IsCompleted || await Task.WhenAny(notice, Task.Delay(2000)) == notice);
+        Assert.False(_service.PendingFanOut.IsCompleted);
+        Assert.True(_plugin.Configuration.Pools[0].Members.Count <= FederationFriendService.MaxPoolRosterEntries + 3);
+
+        gate.Set();
+        await _service.PendingFanOut;
+        Assert.True(posts <= FederationFriendService.MaxPoolRosterEntries);
     }
 }

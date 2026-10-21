@@ -24,6 +24,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <param name="Url">The friend's item-scoped download address (carries a token: never log it).</param>
     /// <param name="FileName">The name to save the file under when relaying.</param>
     /// <param name="ServerName">The friend the file comes from.</param>
+    /// <param name="RelayReason">Why the file is relayed instead of sent direct (null when direct).</param>
     public sealed record DeviceDownloadPlan(
         int Status,
         string? Error,
@@ -31,7 +32,8 @@ namespace Jellyfin.Plugin.Federation.Services
         DeviceDownloadRoute Route,
         string? Url,
         string? FileName,
-        string? ServerName)
+        string? ServerName,
+        string? RelayReason = null)
     {
         /// <summary>A refusal.</summary>
         public static DeviceDownloadPlan Refused(int status, string error, int? retryAfterSeconds = null)
@@ -133,17 +135,74 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var friendBase = RemoteServerClientFactory.EffectiveUrl(server);
                 var audio = string.Equals(entry.ItemType, "Audio", StringComparison.Ordinal);
+
+                // A friend behind a proxy may only be configured by an http address
+                // while reachable on https; only ask when an https app needs it.
+                string? httpsBase = null;
+                if (permit.FriendNamesFile && string.Equals(requestScheme, "https", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var candidate in DeviceDownload.HttpsCandidates(friendBase))
+                    {
+                        if (await HttpsReachableAsync(server, candidate, cancellationToken).ConfigureAwait(false))
+                        {
+                            httpsBase = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                var (route, baseUrl, reason) = DeviceDownload.Decide(permit.FriendNamesFile, friendBase, requestScheme, httpsBase);
                 return new DeviceDownloadPlan(
                     200,
                     null,
                     null,
-                    DeviceDownload.ChooseRoute(permit.FriendNamesFile, friendBase, requestScheme),
-                    DeviceDownload.FriendDownloadUrl(friendBase, source.RemoteItemId, permit.Token, audio),
+                    route,
+                    DeviceDownload.FriendDownloadUrl(baseUrl, source.RemoteItemId, permit.Token, audio),
                     LocalFileName(item, source.Container ?? entry.Metadata.Container, audio),
-                    server.Name);
+                    server.Name,
+                    reason);
             }
 
             return refusal ?? DeviceDownloadPlan.Refused(502, "The friend that has this title couldn't be reached.");
+        }
+
+        /// <summary>Checks an https address of a friend; replaceable in tests.</summary>
+        internal Func<string, CancellationToken, Task<bool>> HttpsProbe { get; set; } = ProbeHttpsAsync;
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Ok, DateTime AtUtc)> HttpsSeen = new(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly System.Net.Http.HttpClient ProbeClient = new(new System.Net.Http.SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        };
+
+        private async Task<bool> HttpsReachableAsync(RemoteServer server, string httpsBase, CancellationToken cancellationToken)
+        {
+            // Remembered for a day when it works, ten minutes when it doesn't.
+            if (HttpsSeen.TryGetValue(httpsBase, out var seen)
+                && DateTime.UtcNow - seen.AtUtc < (seen.Ok ? TimeSpan.FromHours(24) : TimeSpan.FromMinutes(10)))
+            {
+                return seen.Ok;
+            }
+
+            var ok = false;
+            try
+            {
+                ok = await HttpsProbe(httpsBase, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "[Federation] https check for {Server} failed", server.Name);
+            }
+
+            HttpsSeen[httpsBase] = (ok, DateTime.UtcNow);
+            return ok;
+        }
+
+        private static async Task<bool> ProbeHttpsAsync(string httpsBase, CancellationToken cancellationToken)
+        {
+            using var response = await ProbeClient.GetAsync(httpsBase + "/System/Info/Public", System.Net.Http.HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
         }
 
         /// <summary>Only playable files can be saved: not folders, shows or seasons.</summary>

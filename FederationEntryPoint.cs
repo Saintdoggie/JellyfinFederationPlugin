@@ -80,6 +80,7 @@ namespace Jellyfin.Plugin.Federation
         {
             // Friends are told about changes to this server's own catalog.
             _changeNotifier.Start();
+            IncomingContentFilterService.UnknownCeilingLogger = msg => _logger.LogWarning("{Message}", msg);
             _logger.LogInformation("Federation Plugin Entry Point started");
             _logger.LogInformation(
                 "[Federation] Fast-start probing: {State}",

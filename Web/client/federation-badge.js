@@ -388,6 +388,14 @@
       container.appendChild(ring);
     }
 
+    // Rewriting the ring is a DOM mutation, which the body-wide observer turns
+    // into another scan; only touch it when the shown value actually changed.
+    var shown = Math.round(pct) + '|' + sizePx;
+    if (ring.getAttribute('data-ring-state') === shown) {
+      return;
+    }
+
+    ring.setAttribute('data-ring-state', shown);
     ring.innerHTML = ringSvg(pct, sizePx);
   }
 
@@ -593,6 +601,20 @@
 
     pollingOperations[operationId] = true;
 
+    // Consecutive failed polls (server error or network). A transient one is
+    // retried with a growing delay; past the cap the poll stops and a later scan
+    // may resume it, rather than leaving the operation marked as polled forever.
+    var failures = 0;
+    var retryOrStop = function () {
+      failures += 1;
+      if (failures > 8) {
+        delete pollingOperations[operationId];
+        return;
+      }
+
+      setTimeout(poll, Math.min(3000 * failures, 15000));
+    };
+
     var poll = function () {
       var token = getToken();
       federationFetch('/Plugins/Federation/Download/Progress/' + operationId, {
@@ -606,12 +628,19 @@
             return null;
           }
 
-          return res.ok ? res.json() : null;
+          return res.ok ? res.json() : { retry: true };
         })
         .then(function (data) {
           if (!data) {
             return;
           }
+
+          if (data.retry === true) {
+            retryOrStop();
+            return;
+          }
+
+          failures = 0;
 
           // The button only exists for as long as the "..." action sheet it
           // was clicked from stays open (the sheet closes itself right after
@@ -654,9 +683,7 @@
             }
           }
         })
-        .catch(function () {
-          setTimeout(poll, 3000);
-        });
+        .catch(retryOrStop);
     };
 
     poll();
@@ -1535,6 +1562,7 @@
     updateDetailPageRing();
     renderOriginFilter();
     renderFriendFavorites();
+    renderFriendPopular();
     injectSyncPlayMenu();
     injectPlaybackConnection();
   }
@@ -1588,6 +1616,7 @@
     if (data.placement) { rows.push(['Who converts', data.placement]); }
     if (typeof data.latencyMs === 'number') { rows.push(['Round trip', Math.round(data.latencyMs) + ' ms']); }
     if (typeof data.linkMbps === 'number') { rows.push(['Link speed', data.linkMbps.toFixed(data.linkMbps < 10 ? 1 : 0) + ' Mbps']); }
+    if (data.speedNote) { rows.push(['Speed test', data.speedNote]); }
     if (typeof data.capMbps === 'number') { rows.push(['Bitrate cap', data.capMbps + ' Mbps']); }
     if (data.friendHardware) { rows.push([data.friend + ' converts with', data.friendHardware]); }
     if (data.thisServerHardware) { rows.push(['This server converts with', data.thisServerHardware]); }
@@ -1884,6 +1913,8 @@
       })
       .catch(function () {
         // Keep what was shown; try again on the next visit to the tab.
+        // userId is recorded too, or the next scan sees "another viewer" and asks again at once.
+        friendFavorites.userId = userId;
         friendFavorites.at = Date.now() - FRIEND_FAVORITES_TTL_MS + 30 * 1000;
       })
       .then(function () {
@@ -1933,6 +1964,131 @@
 
     if (friendFavorites.userId !== userId || Date.now() - friendFavorites.at > FRIEND_FAVORITES_TTL_MS) {
       loadFriendFavorites(userId);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Popular on friends' servers
+  //
+  // On the Home tab, one row per friend: "Popular on <friend>", the titles
+  // most played there in the last 30 days, most popular first. Same cards and
+  // row as the friends' favorites; the server only lists titles this viewer can
+  // open here. A friend with nothing to show (or an older one) gets no row.
+  // ---------------------------------------------------------------------
+  var FRIEND_POPULAR_TTL_MS = 10 * 60 * 1000;
+  var friendPopular = { userId: '', at: 0, loading: false, html: '' };
+
+  function friendPopularHtml(sections, itemsById, serverId) {
+    return sections.map(function (section) {
+      var cards = (section.itemIds || [])
+        .map(function (id) { return itemsById[normalizeId(id)]; })
+        .filter(Boolean)
+        .map(function (item) { return favoriteCardHtml(item, serverId); });
+      if (cards.length === 0) {
+        return '';
+      }
+
+      return '<div class="verticalSection federation-popular-section" data-server-id="' + escapeHtml(section.serverId) + '">'
+        + '<div class="sectionTitleContainer sectionTitleContainer-cards padded-left">'
+        + '<h2 class="sectionTitle sectionTitle-cards">Popular on ' + escapeHtml(section.name) + '</h2>'
+        + '</div>'
+        + '<div class="federation-favorites-row padded-left padded-right">' + cards.join('') + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  function loadFriendPopular(userId) {
+    friendPopular.loading = true;
+    federationFetch('/Plugins/Federation/FriendPopular', { credentials: 'same-origin' })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('Popular titles unavailable'); }
+        return res.json();
+      })
+      .then(function (data) {
+        var sections = (data && data.enabled !== false && data.sections) || [];
+        var ids = [];
+        sections.forEach(function (section) { (section.itemIds || []).forEach(function (id) { ids.push(id); }); });
+        if (ids.length === 0 || !window.ApiClient || typeof window.ApiClient.getItems !== 'function') {
+          return { sections: sections, items: [] };
+        }
+
+        return Promise.resolve(window.ApiClient.getItems(userId, {
+          Ids: ids.join(','),
+          Fields: 'PrimaryImageAspectRatio',
+          EnableImageTypes: 'Primary',
+          ImageTypeLimit: 1,
+          EnableTotalRecordCount: false
+        })).then(function (result) {
+          return { sections: sections, items: (result && result.Items) || [] };
+        });
+      })
+      .then(function (result) {
+        var itemsById = {};
+        result.items.forEach(function (item) { itemsById[normalizeId(item.Id)] = item; });
+        var serverId = '';
+        try { serverId = window.ApiClient.serverId(); } catch (e) { /* links still open on this server */ }
+        friendPopular.html = friendPopularHtml(result.sections, itemsById, serverId);
+        friendPopular.userId = userId;
+        friendPopular.at = Date.now();
+      })
+      .catch(function () {
+        // Keep what was shown; try again shortly.
+        // userId is recorded too, or the next scan sees "another viewer" and asks again at once.
+        friendPopular.userId = userId;
+        friendPopular.at = Date.now() - FRIEND_POPULAR_TTL_MS + 30 * 1000;
+      })
+      .then(function () {
+        friendPopular.loading = false;
+        paintFriendPopular();
+      });
+  }
+
+  function paintFriendPopular() {
+    var tab = document.getElementById('homeTab');
+    if (!tab) {
+      return;
+    }
+
+    var host = tab.querySelector(':scope > .federation-friend-popular');
+    if (!host) {
+      if (!friendPopular.html) {
+        return;
+      }
+
+      host = document.createElement('div');
+      host.className = 'federation-friend-popular';
+      tab.appendChild(host);
+    }
+
+    if (host.getAttribute('data-html-at') !== String(friendPopular.at)) {
+      host.innerHTML = friendPopular.html;
+      host.setAttribute('data-html-at', String(friendPopular.at));
+    }
+  }
+
+  function renderFriendPopular() {
+    var tab = document.getElementById('homeTab');
+    if (!tab) {
+      return;
+    }
+
+    paintFriendPopular();
+    var userId = currentUserId();
+    var visible = tab.classList.contains('is-active') || tab.offsetParent !== null;
+    if (!userId || !visible || friendPopular.loading) {
+      return;
+    }
+
+    if (friendPopular.userId !== userId) {
+      // Another viewer signed in on this browser: never show the last one's rows.
+      friendPopular.html = '';
+      friendPopular.at = 0;
+      var stale = tab.querySelector(':scope > .federation-friend-popular');
+      if (stale) { stale.innerHTML = ''; stale.removeAttribute('data-html-at'); }
+    }
+
+    if (friendPopular.userId !== userId || Date.now() - friendPopular.at > FRIEND_POPULAR_TTL_MS) {
+      loadFriendPopular(userId);
     }
   }
 

@@ -450,6 +450,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     toDelete.Count,
                     hideExisting);
 
+                if (toDelete.Count > 0 && _federationManager.Cache.DestructiveReconcileBlocked)
+                {
+                    _logger.LogError(
+                        "[Federation] Skipping deletion of {Count} federated item(s) in {Name}: the cache failed to load and has not been repopulated by a sync yet",
+                        toDelete.Count,
+                        mapping.LocalLibraryName);
+                    toDelete.Clear();
+                }
+
                 foreach (var stale in toDelete)
                 {
                     _libraryManager.DeleteItem(stale, new DeleteOptions { DeleteFileLocation = false });

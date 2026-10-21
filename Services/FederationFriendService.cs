@@ -53,7 +53,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         internal static HttpClient? HttpClientOverride { get; set; }
 
+        // Carries X-Federation-Token, so it must never follow a redirect by itself:
+        // a friend (or anything in front of it) answering 3xx to another host would
+        // otherwise be handed the token. See TokenRedirect for the same-host hop.
+        internal static readonly SocketsHttpHandler DefaultTokenHandler = new()
+        {
+            AllowAutoRedirect = false
+        };
+
+        private static readonly HttpClient DefaultTokenHttpClient = new HttpClient(DefaultTokenHandler, disposeHandler: false)
+        {
+            Timeout = TimeSpan.FromSeconds(20)
+        };
+
         private static HttpClient SharedHttpClient => HttpClientOverride ?? DefaultHttpClient;
+
+        private static HttpClient TokenHttpClient => HttpClientOverride ?? DefaultTokenHttpClient;
 
         private static HttpClient VerifyHttpClient => HttpClientOverride ?? DefaultVerifyHttpClient;
 
@@ -409,14 +424,26 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = ResolveLocalUrl();
             var sent = 0;
 
-            foreach (var friend in config.RemoteServers.Where(s => s.Enabled).ToList())
+            var requestsLeft = MaxAutoRequestsPerPass;
+            var now = DateTime.UtcNow;
+            if (config.DeclinedDiscoveryCandidates.RemoveAll(d => d.UntilUtc <= now) > 0)
+            {
+                Plugin.Instance.SaveConfiguration();
+            }
+
+            // Only Jellyfin friends with a usable address speak Friends/List; Plex and
+            // Companion entries have no such endpoint (and may have no URL at all).
+            foreach (var friend in config.RemoteServers.Where(s =>
+                         s.Enabled
+                         && s.Kind == ServerKind.Jellyfin
+                         && ConfigValidator.IsValidServerUrl(s.Url)).ToList())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var client = _clientFactory.GetClient(friend);
                 List<FriendListEntry>? friendsOfFriend;
                 try
                 {
+                    var client = _clientFactory.GetClient(friend);
                     friendsOfFriend = await client.GetFriendsListAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -450,6 +477,20 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
+                    // A friend's list is not an instruction to contact LAN hosts, and a
+                    // server that already said no is not asked again until the expiry.
+                    if (!IsAutoIntroducibleUrl(candidateUrl)
+                        || config.DeclinedDiscoveryCandidates.Any(d => string.Equals(d.Url, candidateUrl, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    if (requestsLeft <= 0)
+                    {
+                        return sent;
+                    }
+
+                    requestsLeft--;
                     var (success, message) = await SendFriendRequestAsync(candidateUrl, cancellationToken).ConfigureAwait(false);
                     if (success)
                     {
@@ -465,6 +506,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return sent;
         }
+
+        /// <summary>Most automatic friends-of-friends requests sent in one sync pass.</summary>
+        internal const int MaxAutoRequestsPerPass = 5;
+
+        /// <summary>How long a server that rejected an automatic request is left alone.</summary>
+        internal static readonly TimeSpan DeclinedCandidateTtl = TimeSpan.FromDays(30);
 
         // In-memory only, static so it survives across this Scoped service's
         // per-request instances (same reasoning as InternalRelayKeyLock above).
@@ -519,6 +566,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     continue;
                 }
 
+                // This friend answered: what it no longer lists (unshared, or
+                // friends-of-friends turned off) disappears here too.
+                foreach (var stale in DiscoveredServersCache.Where(kv => kv.Value.DiscoveredViaFriendId == friend.Id).Select(kv => kv.Key).ToList())
+                {
+                    DiscoveredServersCache.TryRemove(stale, out _);
+                }
+
                 foreach (var entry in entries)
                 {
                     if (string.IsNullOrEmpty(entry.Url) || !ConfigValidator.IsValidServerUrl(entry.Url))
@@ -537,10 +591,18 @@ namespace Jellyfin.Plugin.Federation.Services
                         Name = string.IsNullOrEmpty(entry.Name) ? normalizedUrl : entry.Name,
                         Url = normalizedUrl,
                         DiscoveredViaFriendName = friend.Name,
+                        DiscoveredViaFriendId = friend.Id,
                         LastSeenUtc = DateTime.UtcNow
                     };
                     found++;
                 }
+            }
+
+            // Servers found through a friend that was removed or switched off.
+            var askable = config.RemoteServers.Where(s => s.Enabled && s.Kind == ServerKind.Jellyfin).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var orphan in DiscoveredServersCache.Where(kv => !askable.Contains(kv.Value.DiscoveredViaFriendId)).Select(kv => kv.Key).ToList())
+            {
+                DiscoveredServersCache.TryRemove(orphan, out _);
             }
 
             return found;
@@ -1505,7 +1567,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     sender.FederationId,
                     sender.Name,
                     payload.Roster,
-                    cancellationToken);
+                    cancellationToken,
+                    inbound: true);
             }
 
             if (config.IncomingPoolInvites.Any(i => i.Id == payload.InviteId))
@@ -1873,7 +1936,8 @@ namespace Jellyfin.Plugin.Federation.Services
             string? reachedViaFederationId,
             string? reachedViaName,
             List<PoolMember>? roster,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool inbound = false)
         {
             var config = Plugin.Instance!.Configuration;
             var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
@@ -1894,10 +1958,18 @@ namespace Jellyfin.Plugin.Federation.Services
             var selfName = _applicationHost.FriendlyName;
             var selfUrl = ResolveLocalUrl();
 
-            void AddMember(string? federationId, string? name, string? url)
+            void AddMember(string? federationId, string? name, string? url, bool fromRoster = false)
             {
                 if (string.IsNullOrEmpty(url))
                 {
+                    return;
+                }
+
+                // A roster comes from another server: only well-formed public
+                // addresses are stored (and later contacted automatically).
+                if (fromRoster && !IsAutoIntroducibleUrl(url))
+                {
+                    _logger.LogDebug("[Federation] Ignored pool roster entry {Url}: not a valid public server address", url);
                     return;
                 }
 
@@ -1912,9 +1984,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             AddMember(selfId, selfName, selfUrl);
             AddMember(reachedViaFederationId, reachedViaName, reachedViaUrl);
-            foreach (var member in roster ?? new List<PoolMember>())
+            foreach (var member in (roster ?? new List<PoolMember>()).Take(MaxPoolRosterEntries))
             {
-                AddMember(member.FederationId, member.Name, member.Url);
+                AddMember(member?.FederationId, member?.Name, member?.Url, fromRoster: true);
             }
 
             Plugin.Instance.SaveConfiguration();
@@ -1923,17 +1995,54 @@ namespace Jellyfin.Plugin.Federation.Services
             var reachedViaUrlNormalized = reachedViaUrl.TrimEnd('/');
             var toIntroduce = pool.Members
                 .Where(m => !string.Equals(m.Url.TrimEnd('/'), selfUrlNormalized, StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(m.Url.TrimEnd('/'), reachedViaUrlNormalized, StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(m.Url.TrimEnd('/'), reachedViaUrlNormalized, StringComparison.OrdinalIgnoreCase)
+                    && IsAutoIntroducibleUrl(m.Url))
+                .Take(MaxPoolRosterEntries)
                 .ToList();
 
+            if (!inbound)
+            {
+                await FanOutPoolIntroductionsAsync(pool.Id, toIntroduce, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            // Inbound notice: answer the friend now and introduce the rest in the
+            // background, so a slow or hostile roster entry can't hold the request
+            // open. The request's own address is pinned first because the
+            // HttpContext is gone once this request ends.
+            //
+            // This instance is Scoped but outlives its request scope here on purpose:
+            // every constructor dependency (IAuthenticationManager, IServerApplicationHost,
+            // FederationLibraryManager, IHttpContextAccessor, IRemoteServerClientFactory) is
+            // a singleton and nothing request-bound is touched after the pin, so no fresh
+            // scope is needed. If a scoped dependency is ever added, resolve one in here.
+            _pinnedLocalUrl = selfUrl;
+            PendingFanOut = Task.Run(async () =>
+            {
+                try
+                {
+                    await FanOutPoolIntroductionsAsync(pool.Id, toIntroduce, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Background pool mesh introductions for pool {PoolId} failed (non-fatal - will retry on a future pool sync)", pool.Id);
+                }
+            });
+        }
+
+        /// <summary>Gets the most recent background pool fan-out (tests await it).</summary>
+        internal Task PendingFanOut { get; private set; } = Task.CompletedTask;
+
+        private async Task FanOutPoolIntroductionsAsync(string poolId, List<PoolMember> toIntroduce, CancellationToken cancellationToken)
+        {
             foreach (var member in toIntroduce)
             {
                 try
                 {
-                    var (success, message) = await SendPoolInviteAsync(pool.Id, member.Url, cancellationToken).ConfigureAwait(false);
+                    var (success, message) = await SendPoolInviteAsync(poolId, member.Url, cancellationToken).ConfigureAwait(false);
                     if (!success)
                     {
-                        _logger.LogDebug("[Federation] Pool mesh introduction to {Url} did not send: {Message}", member.Url, message);
+                        _logger.LogWarning("[Federation] Pool mesh introduction to {Url} did not send: {Message}", member.Url, message);
                     }
                 }
                 catch (Exception ex)
@@ -1987,7 +2096,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 sender.FederationId,
                 sender.Name,
                 payload.Roster,
-                cancellationToken);
+                cancellationToken,
+                inbound: true);
         }
 
         /// <summary>
@@ -2092,7 +2202,19 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var memberName = string.IsNullOrEmpty(payload.FromServerName) ? entry.RemoteServerName : payload.FromServerName;
-            var memberUrl = string.IsNullOrEmpty(payload.FromServerUrl) ? entry.RemoteServerUrl : payload.FromServerUrl.TrimEnd('/');
+
+            // The address we sent the request to is the one we trust; the callback
+            // may not point the new friend (and its key) somewhere else.
+            var memberUrl = entry.RemoteServerUrl.TrimEnd('/');
+            if (!string.IsNullOrEmpty(payload.FromServerUrl)
+                && !string.Equals(payload.FromServerUrl.TrimEnd('/'), memberUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "[Federation] Accept callback for request {RequestId} claimed address {Claimed}; using the address the request was sent to ({Url})",
+                    payload.RequestId,
+                    payload.FromServerUrl,
+                    memberUrl);
+            }
 
             config.RemoteServers.Add(new RemoteServer
             {
@@ -2142,6 +2264,11 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             config.OutgoingFriendRequests.Remove(entry);
+
+            // Remember the no so automatic discovery doesn't ask them again every sync.
+            var declinedUrl = entry.RemoteServerUrl.TrimEnd('/');
+            config.DeclinedDiscoveryCandidates.RemoveAll(d => string.Equals(d.Url, declinedUrl, StringComparison.OrdinalIgnoreCase));
+            config.DeclinedDiscoveryCandidates.Add(new DeclinedDiscoveryCandidate { Url = declinedUrl, UntilUtc = DateTime.UtcNow + DeclinedCandidateTtl });
             Plugin.Instance.SaveConfiguration();
         }
 
@@ -2439,8 +2566,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// request. Friend requests need this so the other side has an address to
         /// call back on.
         /// </summary>
+        private string? _pinnedLocalUrl;
+
         private string ResolveLocalUrl()
         {
+            if (!string.IsNullOrEmpty(_pinnedLocalUrl))
+            {
+                return _pinnedLocalUrl;
+            }
+
             var configured = _federationManager.GetLocalServerUrl();
             if (!string.IsNullOrEmpty(configured))
             {
@@ -2484,6 +2618,18 @@ namespace Jellyfin.Plugin.Federation.Services
             return derived;
         }
 
+        /// <summary>Most roster entries or discovery candidates acted on from one notice.</summary>
+        internal const int MaxPoolRosterEntries = 50;
+
+        /// <summary>
+        /// Addresses another server handed us are only contacted automatically when
+        /// they are well-formed and not loopback/LAN/link-local/metadata (Tailscale
+        /// addresses are fine, friends often run over a tailnet), so a
+        /// roster or friends list can't aim this server at its own network.
+        /// </summary>
+        internal static bool IsAutoIntroducibleUrl(string? url)
+            => ConfigValidator.IsValidServerUrl(url) && !ConfigValidator.IsBlockedForAutoContact(url);
+
         private static StringContent JsonContent(object payload)
         {
             return new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
@@ -2501,9 +2647,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         private static async Task<HttpResponseMessage> PostAuthenticatedAsync(string url, object payload, string apiKey, CancellationToken cancellationToken)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent(payload) };
-            request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, apiKey);
-            return await SharedHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            var json = JsonSerializer.Serialize(payload);
+            return await TokenRedirect.SendAsync(
+                TokenHttpClient,
+                () =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json")
+                    };
+                    request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, apiKey);
+                    return request;
+                },
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2754,6 +2910,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets when this server was last seen in a discovery refresh.</summary>
         public DateTime LastSeenUtc { get; set; }
+
+        /// <summary>Gets or sets the id of the friend that listed this server (not sent to the browser).</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string DiscoveredViaFriendId { get; set; } = string.Empty;
     }
 
     /// <summary>What a new friend may see of this server, chosen before the friendship exists.</summary>

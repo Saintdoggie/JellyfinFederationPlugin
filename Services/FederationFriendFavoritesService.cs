@@ -64,6 +64,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly TimeSpan OwnerCacheLifetime = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan ViewerCacheLifetime = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan UnsupportedBackoff = TimeSpan.FromHours(6);
+        private static readonly TimeSpan FailureRetry = TimeSpan.FromMinutes(1);
         private static readonly TimeSpan FriendTimeout = TimeSpan.FromSeconds(8);
 
         private static readonly BaseItemKind[] SharedKinds =
@@ -88,6 +89,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly object _ownerGate = new();
         private (DateTime At, IReadOnlyList<(Guid Id, int Count)> Items)? _ownerFavorites;
         private readonly ConcurrentDictionary<string, (DateTime At, IReadOnlyList<PeerFavorite> Items)> _viewerCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, DateTime> _failedAt = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, DateTime> _unsupportedUntil = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
@@ -256,6 +258,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 return cached.Items;
             }
 
+            // A failed ask (per friend and viewer) is not repeated on every scan.
+            if (_failedAt.TryGetValue(key, out var failedAt) && DateTime.UtcNow - failedAt < FailureRetry)
+            {
+                return cached.Items ?? Array.Empty<PeerFavorite>();
+            }
+
             var client = _clients.GetClient(server);
             if (client == null)
             {
@@ -270,6 +278,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (body == null)
                 {
                     // Unreachable or failed: keep showing what we had.
+                    _failedAt[key] = DateTime.UtcNow;
                     return cached.Items ?? Array.Empty<PeerFavorite>();
                 }
 
@@ -281,11 +290,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var items = (IReadOnlyList<PeerFavorite>)(body.Items ?? new List<PeerFavorite>()).Take(MaxShared).ToList();
                 _viewerCache[key] = (DateTime.UtcNow, items);
+                _failedAt.TryRemove(key, out _);
                 return items;
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug("[Federation] {Server} took too long to list its favorites", server.Name);
+                _failedAt[key] = DateTime.UtcNow;
                 return cached.Items ?? Array.Empty<PeerFavorite>();
             }
         }

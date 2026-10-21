@@ -770,19 +770,17 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanCapMode_Auto_ConfirmedWan_MeasuredVerySlow_ClampsToTheConfiguredFloor()
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredVerySlow_NeverCapsAboveWhatWasMeasured()
     {
-        // The floor is a deliberate minimum-acceptable-quality choice, not just a
-        // safety clamp - a connection that measures below it still gets this
-        // bitrate requested rather than something even lower proportional to what
-        // it measured.
+        // The 10 Mbps floor used to push a 2 Mbps link up to a 10 Mbps request;
+        // the cap may never exceed what was measured.
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 2.0);
 
         var entry = AddEntry("Movie", Guid.NewGuid());
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("VideoBitrate=9244000", liveUrl);
+        Assert.DoesNotContain("VideoBitrate=9244000", liveUrl);
     }
 
     [Fact]

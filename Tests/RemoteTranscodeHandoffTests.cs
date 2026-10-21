@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
 using Microsoft.Extensions.Primitives;
 using Xunit;
@@ -269,4 +270,76 @@ public class RemoteTranscodeHandoffTests
         Assert.Equal(0, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[1]));
         Assert.Equal(1, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[2]));
     }
+}
+
+public class RemoteTranscodeFilterOrderTests
+{
+    [Fact]
+    public async Task SegmentOfLocalPlay_SkipsTheFriendLookup()
+    {
+        // Strict mocks: any ResolveAsync work (library or auth lookup) would throw and be swallowed,
+        // so assert on the verifiable calls instead.
+        var library = new Moq.Mock<MediaBrowser.Controller.Library.ILibraryManager>(Moq.MockBehavior.Strict);
+        var auth = new Moq.Mock<MediaBrowser.Controller.Net.IAuthorizationContext>(Moq.MockBehavior.Strict);
+        var filter = new FederationRemoteTranscodeFilter(
+            auth.Object,
+            Moq.Mock.Of<MediaBrowser.Controller.Library.IUserManager>(),
+            library.Object,
+            Moq.Mock.Of<MediaBrowser.Controller.Library.IMediaSourceManager>(),
+            null!,
+            null!,
+            new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance);
+
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        http.Request.Method = "GET";
+        http.Request.Path = $"/videos/{Guid.NewGuid()}/hls1/main/0.ts";
+        http.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString("?PlaySessionId=local1");
+        var descriptor = new Microsoft.AspNetCore.Mvc.Abstractions.ActionDescriptor
+        {
+            RouteValues = new Dictionary<string, string?> { ["controller"] = "DynamicHls", ["action"] = "GetHlsVideoSegment" }
+        };
+        var context = new Microsoft.AspNetCore.Mvc.Filters.ActionExecutingContext(
+            new Microsoft.AspNetCore.Mvc.ActionContext(http, new Microsoft.AspNetCore.Routing.RouteData(), descriptor),
+            new List<Microsoft.AspNetCore.Mvc.Filters.IFilterMetadata>(),
+            new Dictionary<string, object?>(),
+            new object());
+
+        var nextCalled = false;
+        await filter.OnActionExecutionAsync(context, () =>
+        {
+            nextCalled = true;
+            return Task.FromResult(new Microsoft.AspNetCore.Mvc.Filters.ActionExecutedContext(context, new List<Microsoft.AspNetCore.Mvc.Filters.IFilterMetadata>(), new object()));
+        });
+
+        Assert.True(nextCalled);
+        Assert.Null(context.Result);
+        library.VerifyNoOtherCalls();
+        auth.VerifyNoOtherCalls();
+    }
+}
+
+public class RemoteTranscodeLimitKeyTests
+{
+    [Fact]
+    public void MissingPlaySessionId_IsStillCountedWhenALimitIsSet()
+    {
+        var item = Guid.NewGuid();
+        var registry = new RemoteTranscodeSessionRegistry();
+        var k1 = RemoteMediaPath.SessionKeyForLimit(null, "dev1", item, 1);
+        Assert.NotNull(k1);
+        Assert.True(registry.TryTouch("friend", k1!, "dev1", 1, item));
+
+        // Same play's next request joins it; a different play is over the limit of 1.
+        Assert.True(registry.TryTouch("friend", RemoteMediaPath.SessionKeyForLimit(null, "dev1", item, 1)!, "dev1", 1, item));
+        Assert.False(registry.TryTouch("friend", RemoteMediaPath.SessionKeyForLimit(null, "dev2", item, 1)!, "dev2", 1, item));
+    }
+
+    [Fact]
+    public void NoLimit_MissingPlaySessionId_IsNotTracked()
+        => Assert.Null(RemoteMediaPath.SessionKeyForLimit(null, "d", Guid.NewGuid(), 0));
+
+    [Fact]
+    public void PlaySessionId_IsUsedAsIs()
+        => Assert.Equal("abc", RemoteMediaPath.SessionKeyForLimit("abc", "d", Guid.NewGuid(), 3));
 }

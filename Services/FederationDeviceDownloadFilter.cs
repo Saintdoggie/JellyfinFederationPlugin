@@ -22,8 +22,8 @@ namespace Jellyfin.Plugin.Federation.Services
     /// Jellyfin would try to send a local file that doesn't exist and fail. This gets
     /// a download permit for the viewer from the friend that owns the file and sends
     /// the app straight there, so the file never passes through this server. When it
-    /// can't (an older friend that doesn't name the file, or an address with a
-    /// different scheme than the app used) the file is relayed through this server
+    /// can't (an older friend that doesn't name the file, or an https app and a
+    /// friend with no reachable https address) the file is relayed through this server
     /// instead. Refusals say why (downloads off, the friend's hourly limit, offline).
     /// Requests for this server's own files are untouched.
     /// </remarks>
@@ -116,7 +116,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                _logger.LogInformation("[Federation] {User} is downloading {Item} from {Server} through this server", user.Username, item!.Name, plan.ServerName);
+                _logger.LogInformation("[Federation] {User} is downloading {Item} from {Server} through this server because {Reason}", user.Username, item!.Name, plan.ServerName, plan.RelayReason ?? "a direct link wasn't possible");
                 http.Response.Headers.ContentDisposition = DeviceDownload.AttachmentHeader(plan.FileName);
                 await _streams.HandleDirectGatewayAsync(plan.Url, http.Request, http.Response, http.RequestAborted).ConfigureAwait(false);
                 if (http.Response.StatusCode is 401 or 403 && !http.Response.HasStarted)

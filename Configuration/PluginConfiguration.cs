@@ -246,6 +246,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<PoolInvite> OutgoingPoolInvites { get; set; } = new List<PoolInvite>();
 
         /// <summary>
+        /// Gets or sets servers that declined an automatic friends-of-friends
+        /// request from this server, with when to ask again, so a rejection isn't
+        /// followed by a new request on every sync.
+        /// </summary>
+        public List<DeclinedDiscoveryCandidate> DeclinedDiscoveryCandidates { get; set; } = new List<DeclinedDiscoveryCandidate>();
+
+        /// <summary>
         /// Gets or sets pool invites received from already-known friends, awaiting
         /// this server's admin to accept or reject. See <see cref="PoolInvite"/>.
         /// </summary>
@@ -513,6 +520,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <c>Settings/Favorites</c>, preserved by the main Save.
         /// </summary>
         public bool ShowFriendsFavorites { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether friends may see which of this server's own titles
+        /// were most played here in the last 30 days: counts of distinct users,
+        /// never who, and only titles already shared with the viewer asking.
+        /// Shown on their Home tab as "Popular on (this server)". Managed by
+        /// <c>Settings/Favorites</c>, preserved by the main Save.
+        /// </summary>
+        public bool SharePopularWithFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether this server's Home tab shows a "Popular on
+        /// (friend)" row per friend. Managed by <c>Settings/Favorites</c>,
+        /// preserved by the main Save.
+        /// </summary>
+        public bool ShowFriendsPopular { get; set; } = true;
 
         /// <summary>Gets or sets whether this server's viewers can start watch parties with friends and friends may join them.</summary>
         public bool HostWatchPartiesWithFriends { get; set; } = true;
@@ -884,6 +907,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <c>Friends/{id}/RemoteTranscode</c>, preserved by the main Save.
         /// </summary>
         public bool AllowRemoteTranscode { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets how many GB this server will send this friend per UTC
+        /// calendar month (0 = no limit). Counts every path that sends them media:
+        /// Direct play, remote-transcode play, downloads. Managed by
+        /// <c>Friends/{id}/Limits</c>, preserved by the main Save.
+        /// </summary>
+        public int MonthlyDataCapGb { get; set; }
+
+        /// <summary>
+        /// Gets or sets how many streams (Direct plays plus remote-transcode plays)
+        /// this friend may have at once (0 = no limit). Downloads don't count.
+        /// Managed by <c>Friends/{id}/Limits</c>, preserved by the main Save.
+        /// </summary>
+        public int MaxConcurrentStreams { get; set; }
 
         /// <summary>
         /// Gets or sets whether this friend's federated items are allowed to be
@@ -1455,5 +1493,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets the same folder as this Jellyfin server sees it, e.g. <c>/mnt/media</c>.</summary>
         public string To { get; set; } = string.Empty;
+    }
+}
+
+namespace Jellyfin.Plugin.Federation.Configuration
+{
+    /// <summary>A server that rejected our automatic friend request; not asked again until <see cref="UntilUtc"/>.</summary>
+    public class DeclinedDiscoveryCandidate
+    {
+        /// <summary>Gets or sets the server's address, no trailing slash.</summary>
+        public string Url { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets when the server may be asked again.</summary>
+        public DateTime UntilUtc { get; set; }
     }
 }

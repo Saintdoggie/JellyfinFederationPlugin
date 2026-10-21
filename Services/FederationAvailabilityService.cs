@@ -66,7 +66,14 @@ namespace Jellyfin.Plugin.Federation.Services
         internal const int OfflineThreshold = 2;
         internal static readonly TimeSpan ExpectedOfflineInterval = TimeSpan.FromMinutes(10);
 
-        private static readonly HttpClient ProbeHttpClient = new HttpClient
+        // The probe carries the friend's federation token, so redirects are never
+        // followed automatically (see TokenRedirect for the one same-host hop).
+        internal static readonly SocketsHttpHandler ProbeHandler = new()
+        {
+            AllowAutoRedirect = false
+        };
+
+        private static readonly HttpClient ProbeHttpClient = new HttpClient(ProbeHandler, disposeHandler: false)
         {
             Timeout = ProbeTimeout
         };
@@ -78,6 +85,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly AvailabilityScheduleStore _schedule;
         private readonly ConcurrentDictionary<string, ServerAvailability> _states = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, string> _redirectWarned = new(StringComparer.OrdinalIgnoreCase);
         private readonly AdaptiveSourceRanking _ranking;
         private readonly ConcurrentDictionary<string, DateTime> _nextProbe = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _probeGate = new(1, 1);
@@ -332,15 +340,34 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 try
                 {
-                    using var request = new HttpRequestMessage(
-                        HttpMethod.Get,
-                        server.Url.TrimEnd('/') + "/Plugins/Federation/Peer/SystemInfo");
-                    request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, server.ApiKey ?? string.Empty);
-                    using var response = await ProbeHttpClient.SendAsync(request, linkedCts.Token).ConfigureAwait(false);
+                    var probeUrl = server.Url.TrimEnd('/') + "/Plugins/Federation/Peer/SystemInfo";
+                    using var response = await TokenRedirect.SendAsync(
+                        ProbeHttpClient,
+                        () =>
+                        {
+                            var request = new HttpRequestMessage(HttpMethod.Get, probeUrl);
+                            request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, server.ApiKey ?? string.Empty);
+                            return request;
+                        },
+                        linkedCts.Token).ConfigureAwait(false);
                     online = response.IsSuccessStatusCode;
                     if (!online)
                     {
                         error = $"HTTP {(int)response.StatusCode}";
+                        var redirectHost = Uri.TryCreate(probeUrl, UriKind.Absolute, out var probed)
+                            ? TokenRedirect.CrossHostRedirectTarget(response, probed)
+                            : null;
+                        if (redirectHost != null)
+                        {
+                            // The token is deliberately not sent to a different host, so this
+                            // friend looks offline until its address is updated; say so plainly.
+                            error = $"{server.Name} redirects to {redirectHost}; update its address";
+                            if (!_redirectWarned.TryGetValue(server.Id, out var warned) || warned != redirectHost)
+                            {
+                                _redirectWarned[server.Id] = redirectHost;
+                                _logger.LogWarning("[Federation] {Error}", error);
+                            }
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

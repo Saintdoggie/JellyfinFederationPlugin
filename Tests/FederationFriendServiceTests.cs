@@ -1287,6 +1287,254 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Contains("send the share request again", message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_SkipsPrivateCandidates_AndNonJellyfinFriends()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "plex", Kind = ServerKind.Plex, Url = "https://plex.example", Name = "P", Enabled = true });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "recv", Kind = ServerKind.Companion, Url = string.Empty, Name = "R", Enabled = true });
+
+        var requested = new List<string>();
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            requested.Add(url);
+            if (url == "http://friend-b.example/Plugins/Federation/Friends/List")
+            {
+                return Json(HttpStatusCode.OK, new
+                {
+                    allowsIntroductions = true,
+                    friends = new[]
+                    {
+                        new { name = "lan", url = "http://10.0.0.5:8096" },
+                        new { name = "meta", url = "http://169.254.169.254" },
+                        new { name = "ok", url = "http://friend-c.example" }
+                    }
+                });
+            }
+
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+        });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(1, sent);
+        Assert.DoesNotContain(requested, u => u.Contains("10.0.0.5") || u.Contains("169.254") || u.Contains("plex.example"));
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_CapsRequestsPerPass()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/Friends/List", StringComparison.Ordinal))
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = Enumerable.Range(0, 30).Select(i => new { name = "n" + i, url = $"http://cand{i}.example" }).ToArray() });
+            }
+
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+        });
+
+        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+
+        Assert.Equal(FederationFriendService.MaxAutoRequestsPerPass, sent);
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_RejectedCandidate_IsNotAskedAgainUntilExpiry()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        var requests = 0;
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/Friends/List", StringComparison.Ordinal))
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
+            }
+
+            requests++;
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+        });
+
+        Assert.Equal(1, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
+        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+
+        // They decline: the pending entry goes, but the next pass must not re-ask.
+        _service.HandleRejectCallbackAsync(outgoing.Id);
+        Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.Equal(0, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
+        Assert.Equal(1, requests);
+
+        // Once the remembered no has expired they are asked again.
+        _plugin.Configuration.DeclinedDiscoveryCandidates.Single().UntilUtc = DateTime.UtcNow.AddMinutes(-1);
+        Assert.Equal(1, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
+        Assert.Equal(2, requests);
+    }
+
+    [Fact]
+    public async Task DiscoverFriendsOfFriendsAsync_FactoryThrowing_DoesNotAbortThePass()
+    {
+        _plugin.Configuration.AllowFriendsOfFriends = true;
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "bad", Url = "http://bad.example", Name = "Bad", Enabled = true });
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
+        UseFakeHttp(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/Friends/List", StringComparison.Ordinal))
+            {
+                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
+            }
+
+            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+        });
+        _clientFactory.Setup(f => f.GetClient(It.Is<RemoteServer>(s => s.Id == "bad"))).Throws(new UriFormatException("bad"));
+
+        Assert.Equal(1, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RefreshDiscoveredServersAsync_DropsWhatAFriendNoLongerLists_AndOrphans()
+    {
+        var friend = new RemoteServer { Id = "dd-b", Url = "http://dd-b.example", Name = "DDB", Enabled = true };
+        _plugin.Configuration.RemoteServers.Add(friend);
+        var listed = new[] { new { name = "X", url = "http://dd-x.example" }, new { name = "Y", url = "http://dd-y.example" } };
+        var allows = true;
+        UseFakeHttp(_ => Json(HttpStatusCode.OK, new { allowsIntroductions = allows, friends = allows ? listed : Array.Empty<object>().Select(o => new { name = "", url = "" }).ToArray() }));
+
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Equal(2, _service.SearchDiscoveredServers(null).Count(d => d.DiscoveredViaFriendName == "DDB"));
+
+        listed = new[] { new { name = "X", url = "http://dd-x.example" } };
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.Single(_service.SearchDiscoveredServers(null), d => d.DiscoveredViaFriendName == "DDB");
+
+        allows = false; // friend turned introductions off: an answer, so its entries go
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.DoesNotContain(_service.SearchDiscoveredServers(null), d => d.DiscoveredViaFriendName == "DDB");
+
+        allows = true;
+        listed = new[] { new { name = "X", url = "http://dd-x.example" } };
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        friend.Enabled = false; // orphan: its friend is switched off
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        Assert.DoesNotContain(_service.SearchDiscoveredServers(null), d => d.DiscoveredViaFriendName == "DDB");
+    }
+
+    [Fact]
+    public async Task RefreshDiscoveredServersAsync_UnreadableReply_KeepsWhatWasFound()
+    {
+        var friend = new RemoteServer { Id = "dd-c", Url = "http://dd-c.example", Name = "DDC", Enabled = true };
+        _plugin.Configuration.RemoteServers.Add(friend);
+        var garbled = false;
+        UseFakeHttp(_ => garbled
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html>nope</html>") }
+            : Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "Z", url = "http://dd-z.example" } } }));
+
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+        garbled = true;
+        await _service.RefreshDiscoveredServersAsync(CancellationToken.None);
+
+        Assert.Single(_service.SearchDiscoveredServers(null), d => d.DiscoveredViaFriendName == "DDC");
+    }
+
+    [Fact]
+    public async Task GetFriendsListAsync_OnlyExplicitNoOrRealListMeansEmpty()
+    {
+        var server = new RemoteServer { Id = "g", Url = "http://g.example", Name = "G", ApiKey = "k" };
+        async Task<List<FriendListEntry>?> Ask(string body)
+        {
+            var client = new RemoteServerClient(server, NullLogger.Instance, new HttpClient(new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) })) { BaseAddress = new Uri(server.Url) });
+            return await client.GetFriendsListAsync();
+        }
+
+        Assert.Empty(await Ask("{\"allowsIntroductions\":false,\"friends\":[]}") ?? throw new Xunit.Sdk.XunitException("null"));
+        Assert.Empty(await Ask("{\"allowsIntroductions\":true,\"friends\":[]}") ?? throw new Xunit.Sdk.XunitException("null"));
+        Assert.Null(await Ask("garbled"));
+        Assert.Null(await Ask("{}"));
+        Assert.Null(await Ask("null"));
+        Assert.Null(await Ask("{\"allowsIntroductions\":true}"));
+    }
+
+    [Fact]
+    public void HandleAcceptCallback_UsesTheAddressWeSentTheRequestTo_NotThePayloads()
+    {
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-9", RemoteServerUrl = "http://friend.example/", RemoteServerName = "Friend" });
+
+        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        {
+            RequestId = "req-9",
+            FromServerUrl = "http://evil.example",
+            FromServerName = "Friend",
+            ApiKeyForYou = "key-from-friend",
+            SupportsFederationToken = true
+        }));
+
+        Assert.Equal("http://friend.example", Assert.Single(_plugin.Configuration.RemoteServers).Url);
+    }
+
+    [Fact]
+    public void TokenCarryingClients_DoNotFollowRedirectsAutomatically()
+    {
+        Assert.False(FederationFriendService.DefaultTokenHandler.AllowAutoRedirect);
+        Assert.False(FederationAvailabilityService.ProbeHandler.AllowAutoRedirect);
+    }
+
+    [Theory]
+    [InlineData("http://a.example/x", "https://a.example/x", true)]
+    [InlineData("https://a.example/x", "https://a.example/y", true)]
+    [InlineData("https://a.example/x", "http://a.example/x", false)]
+    [InlineData("http://a.example/x", "http://b.example/x", false)]
+    [InlineData("http://a.example:8096/x", "http://a.example:9/x", false)]
+    public void TokenRedirect_OnlyFollowsSameHostHops(string from, string to, bool expected)
+        => Assert.Equal(expected, TokenRedirect.IsSameHostHop(new Uri(from), new Uri(to)));
+
+    [Fact]
+    public async Task TokenRedirect_SameHostHopKeepsToken_CrossHostHopIsNotFollowed()
+    {
+        var seen = new List<(string Url, string? Token)>();
+        var handler = new FakeHandler(req =>
+        {
+            seen.Add((req.RequestUri!.ToString(), req.Headers.TryGetValues("X-Federation-Token", out var v) ? v.First() : null));
+            if (req.RequestUri.Host == "a.example" && req.RequestUri.Scheme == "http")
+            {
+                var r = new HttpResponseMessage(HttpStatusCode.MovedPermanently);
+                r.Headers.Location = new Uri("https://a.example/p");
+                return r;
+            }
+
+            if (req.RequestUri.Host == "c.example")
+            {
+                var r = new HttpResponseMessage(HttpStatusCode.Found);
+                r.Headers.Location = new Uri("http://evil.example/steal");
+                return r;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        HttpRequestMessage Make(string url)
+        {
+            var m = new HttpRequestMessage(HttpMethod.Get, url);
+            m.Headers.TryAddWithoutValidation("X-Federation-Token", "tok");
+            return m;
+        }
+
+        using var up = await TokenRedirect.SendAsync(client, () => Make("http://a.example/p"), CancellationToken.None);
+        Assert.Equal(HttpStatusCode.OK, up.StatusCode);
+        Assert.Equal(("https://a.example/p", "tok"), seen[^1]);
+
+        seen.Clear();
+        using var away = await TokenRedirect.SendAsync(client, () => Make("http://c.example/p"), CancellationToken.None);
+        Assert.Equal(HttpStatusCode.Found, away.StatusCode);
+        Assert.DoesNotContain(seen, s => s.Url.Contains("evil.example"));
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

@@ -564,6 +564,55 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// The friend's most played titles of the last 30 days that this server's
+        /// viewer <paramref name="localUserId"/> may see (see <c>Peer/Popular</c>).
+        /// Null when the request failed; <c>Shared = false</c> with null items for a
+        /// friend running a version without the endpoint.
+        /// </summary>
+        public async Task<PeerPopularBody?> GetPopularAsync(string localUserId, string? localUserName, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/Plugins/Federation/Peer/Popular");
+                request.Headers.TryAddWithoutValidation(RemoteUserIdHeader, localUserId);
+                if (!string.IsNullOrEmpty(localUserName))
+                {
+                    request.Headers.TryAddWithoutValidation(RemoteUserNameHeader, localUserName);
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return new PeerPopularBody { Shared = false, Items = null };
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = JsonSerializer.Deserialize<PeerPopularBody>(content, JsonOpts);
+                if (body == null)
+                {
+                    return null;
+                }
+
+                body.Items ??= new List<PeerPopular>();
+                return body;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not read {ServerName}'s popular titles", _server.Name);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// One page of a friend's catalog index: [id, hash] per title it shares
         /// with us (see PeerCatalogWire.ItemHash). Null when the request failed;
         /// <see cref="PeerCatalogIndexPage.Supported"/> is false for a friend
@@ -875,9 +924,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
-                if (!root.TryGetProperty("Items", out var itemsElement))
+                // Only an explicit Items array is an authoritative "these are the libraries".
+                // A 2xx without it (proxy error page, older/odd peer) is "unknown": an empty
+                // list would make sync treat the friend as sharing nothing and prune everything.
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("Items", out var itemsElement)
+                    || itemsElement.ValueKind != JsonValueKind.Array)
                 {
-                    return new List<BaseItemDto>();
+                    _logger.LogWarning("[Federation] Libraries response from {ServerName} had no Items array; treating the library list as unknown", _server.Name);
+                    return null;
                 }
 
                 var libraries = new List<BaseItemDto>();
@@ -928,10 +983,10 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Gets this server's friends-of-friends list, if it has that feature enabled.
-        /// Returns null (not an empty list) when the remote is unreachable, doesn't
-        /// run Federation, or has the feature disabled - callers should treat that as
-        /// "nothing to discover here," not as an error worth surfacing.
+        /// Gets this server's friends-of-friends list. Empty when the remote answered
+        /// that it shares none (feature off, or an empty list); null when it is
+        /// unreachable, doesn't run Federation, or the reply is unreadable - callers
+        /// should treat null as "could not ask," not as an error worth surfacing.
         /// </summary>
         public async Task<List<FriendListEntry>?> GetFriendsListAsync(CancellationToken cancellationToken = default)
         {
@@ -945,6 +1000,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendsListResponse>(content, JsonOpts);
+                // Only an explicit "no" or a real list means "nothing here"; a reply
+                // missing both fields is garbled, not an answer.
+                if (result?.AllowsIntroductions == false)
+                {
+                    return new List<FriendListEntry>();
+                }
+
                 return result?.AllowsIntroductions == true ? result.Friends : null;
             }
             catch (Exception ex)
@@ -1875,7 +1937,19 @@ namespace Jellyfin.Plugin.Federation.Services
             double elapsed = 0;
             while (elapsed < maxMeasureSeconds)
             {
-                var read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                int read;
+                try
+                {
+                    read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (measured >= 1_000_000 && nowSeconds() - start > 0)
+                {
+                    // The caller's deadline hit on a very slow link: keep what was
+                    // timed so far rather than throw a usable reading away.
+                    elapsed = nowSeconds() - start;
+                    break;
+                }
+
                 if (read == 0)
                 {
                     break;
@@ -2272,7 +2346,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static HttpClient CreateDefaultHttpClient(RemoteServer server)
         {
-            var client = new HttpClient
+            // The token rides as a default header, so stock redirect following would
+            // resend it to whatever host an answer names. TokenRedirect.FollowHandler
+            // follows only same-site hops.
+            var client = new HttpClient(new TokenRedirect.FollowHandler())
             {
                 BaseAddress = new Uri(RemoteServerClientFactory.EffectiveUrl(server)),
                 Timeout = TimeSpan.FromMinutes(5)
@@ -2458,10 +2535,10 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FriendsListResponse
     {
         /// <summary>Gets or sets a value indicating whether the responding server allows friends-of-friends discovery.</summary>
-        public bool AllowsIntroductions { get; set; }
+        public bool? AllowsIntroductions { get; set; }
 
         /// <summary>Gets or sets the responding server's own friends.</summary>
-        public List<FriendListEntry> Friends { get; set; } = new();
+        public List<FriendListEntry>? Friends { get; set; }
     }
 
     /// <summary>

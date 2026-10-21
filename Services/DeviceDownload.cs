@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using MediaBrowser.Controller.Entities;
@@ -113,23 +114,68 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Whether the app can be sent straight to the friend: the friend must name
-        /// the file itself (otherwise a browser would play it in place of saving
-        /// it), and the redirect must keep the scheme the app used (browsers block
-        /// an https page's download from an http address; some players refuse a
-        /// redirect that changes scheme).
+        /// Whether the app can be sent straight to the friend, and why not when it
+        /// can't. The friend must name the file itself (otherwise a browser would
+        /// play it in place of saving it) and the address must not downgrade the
+        /// app: browsers block an https page's download from an http address. A
+        /// friend on https is fine for an http app (that is an upgrade). A friend
+        /// only known by an http address is tried on https first when the app used
+        /// https (<paramref name="httpsBase"/>, the same host once seen reachable).
         /// </summary>
-        public static DeviceDownloadRoute ChooseRoute(bool friendNamesFile, string friendBaseUrl, string requestScheme)
+        /// <returns>The route, the base address to redirect to, and the reason for a relay.</returns>
+        public static (DeviceDownloadRoute Route, string BaseUrl, string? Reason) Decide(
+            bool friendNamesFile,
+            string friendBaseUrl,
+            string requestScheme,
+            string? httpsBase = null)
         {
-            if (!friendNamesFile
-                || !Uri.TryCreate(friendBaseUrl, UriKind.Absolute, out var friend)
-                || !string.Equals(friend.Scheme, requestScheme, StringComparison.OrdinalIgnoreCase))
+            if (!friendNamesFile)
             {
-                return DeviceDownloadRoute.Relay;
+                return (DeviceDownloadRoute.Relay, friendBaseUrl, "the friend runs an older Federation plugin that can't send a named file to a device");
             }
 
-            return DeviceDownloadRoute.Redirect;
+            if (!Uri.TryCreate(friendBaseUrl, UriKind.Absolute, out var friend))
+            {
+                return (DeviceDownloadRoute.Relay, friendBaseUrl, "the friend's address isn't a valid URL");
+            }
+
+            if (string.Equals(friend.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(requestScheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return (DeviceDownloadRoute.Redirect, friendBaseUrl, null);
+            }
+
+            return string.IsNullOrEmpty(httpsBase)
+                ? (DeviceDownloadRoute.Relay, friendBaseUrl, "the app uses https but the friend has no reachable https address")
+                : (DeviceDownloadRoute.Redirect, httpsBase, null);
         }
+
+        /// <summary>
+        /// Https addresses to try for an http friend address: the same port first,
+        /// then the default port when the port was explicit (a TLS proxy usually
+        /// serves https on 443 while http is on 8096).
+        /// </summary>
+        public static IReadOnlyList<string> HttpsCandidates(string friendBaseUrl)
+        {
+            var list = new List<string>();
+            if (HttpsForm(friendBaseUrl) is { } same)
+            {
+                list.Add(same);
+                var uri = new Uri(friendBaseUrl);
+                if (!uri.IsDefaultPort && uri.Port != 443)
+                {
+                    list.Add(new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Port = -1 }.Uri.GetLeftPart(UriPartial.Authority));
+                }
+            }
+
+            return list;
+        }
+
+        /// <summary>The https form of an http friend address (same host and port), or null.</summary>
+        public static string? HttpsForm(string friendBaseUrl)
+            => Uri.TryCreate(friendBaseUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttp
+                ? new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Port = uri.IsDefaultPort ? -1 : uri.Port }.Uri.GetLeftPart(UriPartial.Authority)
+                : null;
 
         /// <summary>
         /// The friend's item-scoped download address. Carries only the download

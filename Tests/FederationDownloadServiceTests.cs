@@ -387,6 +387,81 @@ public class FederationDownloadServiceTests : IDisposable
         Assert.False(access.IsItemVisible(new RemoteServer { ShareAllLibraries = true }, null, scanned.Id, "local-library"));
     }
 
+    private Guid SetUpMappedDownload()
+    {
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer
+        {
+            Id = "server-1",
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "federation-secret",
+            Enabled = true
+        });
+
+        var virtualItemId = Guid.NewGuid();
+        var remoteItemId = Guid.NewGuid();
+        var key = FederationItemCache.BuildRawKey("Movies", "server-1", remoteItemId);
+        _libraryManager.Setup(l => l.GetItemById(virtualItemId)).Returns(new Movie
+        {
+            Id = virtualItemId,
+            ProviderIds = new Dictionary<string, string> { ["FederationKey"] = key }
+        });
+        _libraryManager.Setup(l => l.GetVirtualFolders()).Returns(new List<VirtualFolderInfo>
+        {
+            new VirtualFolderInfo { Name = "Federation Downloads" }
+        });
+        _cache.UpsertRaw("Movies", "server-1", remoteItemId, new BaseItemDto { Name = "Friend Movie", Container = "mkv" }, 0, "Movie");
+        return virtualItemId;
+    }
+
+    [Fact]
+    public async Task MappedDownload_PostMoveFailure_StillCompletes()
+    {
+        var id = SetUpMappedDownload();
+        _libraryManager.Setup(l => l.QueueLibraryScan()).Throws(new InvalidOperationException("scan scheduler down"));
+        _libraryManager.Setup(l => l.FindByPath(It.IsAny<string>(), It.IsAny<bool?>())).Throws(new InvalidOperationException("boom"));
+
+        var service = CreateQualityService(
+            (path, token) => File.WriteAllBytesAsync(path, ValidMediaBytes(), token),
+            () => true);
+
+        var (started, message, operationId) = service.StartDownload(id.ToString());
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.True(completed.Success, completed.Status);
+        Assert.True(File.Exists(completed.DestinationPath));
+    }
+
+    [Fact]
+    public async Task MappedDownload_DiskFull_FailsClearlyInsteadOfPausing()
+    {
+        var id = SetUpMappedDownload();
+        var service = CreateQualityService(
+            (path, token) => throw new IOException("No space left on device"),
+            () => true);
+
+        var (started, message, operationId) = service.StartDownload(id.ToString());
+        Assert.True(started, message);
+        var completed = await WaitForCompletion(operationId!);
+
+        Assert.False(completed.Success);
+        Assert.Contains("Not enough disk space", completed.Status);
+    }
+
+    [Theory]
+    [InlineData("No space left on device", 0, true)]
+    [InlineData("x", 28, true)]
+    [InlineData("x", unchecked((int)0x80070070), true)]
+    [InlineData("x", unchecked((int)0x80070027), true)]
+    [InlineData("connection reset", 0, false)]
+    public void IsOutOfDiskSpace_RecognisesDiskFull(string message, int hresult, bool expected)
+    {
+        var ex = new IOException(message, hresult);
+        Assert.Equal(expected, FederationDownloadService.IsOutOfDiskSpace(ex));
+        Assert.Equal(expected, FederationDownloadService.IsOutOfDiskSpace(new InvalidOperationException("w", ex)));
+    }
+
     [Fact]
     public async Task QualityReplace_DownloadsValidatesAndCommitsBeforeDeletingExactOldItem()
     {

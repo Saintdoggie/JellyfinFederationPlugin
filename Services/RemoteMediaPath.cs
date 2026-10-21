@@ -74,6 +74,22 @@ namespace Jellyfin.Plugin.Federation.Services
             "userid", "liveStreamId", "deviceProfileId"
         };
 
+        /// <summary>
+        /// The key a work-starting request is counted under for the per-friend limit. Normally the
+        /// PlaySessionId; a request without one (some audio/stream URLs) must not slip past the
+        /// limit, so with a limit set it is counted under a key derived from the item and device,
+        /// which stays the same across that play's follow-up requests.
+        /// </summary>
+        public static string? SessionKeyForLimit(string? playSessionId, string? deviceId, Guid itemId, int limit)
+        {
+            if (!string.IsNullOrEmpty(playSessionId))
+            {
+                return playSessionId;
+            }
+
+            return limit > 0 ? $"nosession-{itemId:N}-{deviceId}" : null;
+        }
+
         /// <summary>True when the request starts a transcode or stream on the owner (counted against its limit).</summary>
         public bool StartsWork => Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.HlsSegment or RemoteMediaKind.Stream or RemoteMediaKind.UniversalAudio;
 

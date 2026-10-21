@@ -1,5 +1,20 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.194 — data limits, Popular on friends' servers, direct downloads, review fixes (2026-10-21)
+
+- [x] Per-friend monthly GB and simultaneous-stream limits on the owner, counted on DirectStream and the
+      Peer/Play gateway (adapted from svoeth's PR #3; its activity card, user hiding and collections not taken).
+- [x] "Popular on <friend>" Home rows: distinct local users' plays of the owner's own titles, last 30 days.
+- [x] Device downloads redirect straight to the friend (https rebuilt for http-configured friends).
+- [x] WAN speed test: cap never above the measured speed (live: "Inspired Jellyfin" measures 1–7 Mbps and was capped at 10).
+- [x] Fixes from the 2026-10-21 review (`~/Documents/federation-review-2026-10-21/`): rating scales, corrupt-cache
+      mass delete, `{}` library prune, disk full, batch image tokens, segment hot path, pool/discovery address checks,
+      token never sent to another host on redirect, web rescans and stuck progress.
+- [x] Gate twice (1215 plugin / 170 Companion / 139 web); two-server peer 9/9, handoff 9/9, party 8/8 on 12.2.
+- [ ] Live checks: a cap reached mid-HLS and mid-download; an apex→www friend redirect; first Popular load on a big
+      library; a client that omits PlaySessionId with a transcode limit set; netflix++'s WAN classification (new Info line).
+- [ ] PR #3: reply to svoeth (split into small PRs: end dates + preview, friends-of-friends control).
+
 ## 0.0.189 — watch parties with friends (2026-10-20)
 
 - [x] SyncPlay groups across servers: "New group with friends" / "Invite friends" in the group menu;
