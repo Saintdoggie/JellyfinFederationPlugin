@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
-const script = fs.readFileSync(require('node:path').join(__dirname, '../Web/federation-adaptive.js'), 'utf8');
+const script = fs.readFileSync(require('node:path').join(__dirname, '../client/federation-adaptive.js'), 'utf8');
 function fixture() {
   const dom = new JSDOM('<html><head></head><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/web/' });
   dom.window.MediaSource = function () {}; dom.window.eval(script); return { dom, core: dom.window.__federationAdaptiveCore };

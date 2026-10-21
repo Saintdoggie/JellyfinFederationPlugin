@@ -252,7 +252,7 @@ namespace Jellyfin.Plugin.Federation.Api
             try
             {
                 var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-                var resourceName = "Jellyfin.Plugin.Federation.Configuration.configPage.html";
+                var resourceName = "Jellyfin.Plugin.Federation.Web.admin.configPage.html";
                 using var stream = assembly.GetManifestResourceStream(resourceName);
                 if (stream == null)
                 {
@@ -619,7 +619,7 @@ namespace Jellyfin.Plugin.Federation.Api
             try
             {
                 var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-                var resourceName = "Jellyfin.Plugin.Federation.Web.federation-badge.js";
+                var resourceName = "Jellyfin.Plugin.Federation.Web.client.federation-badge.js";
                 using var stream = assembly.GetManifestResourceStream(resourceName);
                 if (stream == null)
                 {
@@ -629,7 +629,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
                 var js = "(function(){function startFederationBadge(){\n" + reader.ReadToEnd()
                     + "\n}if(document.readyState === 'loading'){document.addEventListener('DOMContentLoaded',startFederationBadge,{once:true});}else{startFederationBadge();}}());";
-                using var adaptive = assembly.GetManifestResourceStream("Jellyfin.Plugin.Federation.Web.federation-adaptive.js");
+                using var adaptive = assembly.GetManifestResourceStream("Jellyfin.Plugin.Federation.Web.client.federation-adaptive.js");
                 if (adaptive != null)
                 {
                     using var adaptiveReader = new System.IO.StreamReader(adaptive);
@@ -4913,7 +4913,7 @@ namespace Jellyfin.Plugin.Federation.Api
         // point) for the rest of the mechanism. Per-friend/per-user exclusion
         // already existed via Friends/{id}/Sharing and Friends/{id}/RemoteUserRule;
         // these three endpoints are the "everyone" case, plus the ids list the
-        // item detail page's own button/badge (Web/federation-badge.js) and the
+        // item detail page's own button/badge (Web/client/federation-badge.js) and the
         // settings page's Catalog picker both read to know current state.
 
         /// <summary>

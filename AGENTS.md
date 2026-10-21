@@ -38,10 +38,10 @@ HTTP, UI, and browser injection:
 
 - `Configuration/FederationPluginController.cs` — the entire plugin HTTP API;
   check authorization attributes and input validation for every changed route.
-- `Configuration/configPage.html` — embedded admin UI. It is currently a large
+- `Web/admin/configPage.html` — embedded admin UI. It is currently a large
   single-file page with Friends, Pools, Companion, Discovery, Libraries,
   Browse/Downloads, Catalog, Storage, and Advanced tabs.
-- `Web/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
+- `Web/client/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
 - `Services/WebClientInjector.cs` and `Middleware/BadgeScriptInjectionMiddleware.cs`
   — disk and serve-time injection paths. Both must remain idempotent.
@@ -97,7 +97,7 @@ Playback, authorization, and downloads:
   (adds friends' parties to `/SyncPlay/List`, answers `/SyncPlay/Join`). E2E:
   `scripts/federation_party_smoke.py` with `scripts/syncplay_player.py`.
 - `Services/FederationFriendFavoritesService.cs` — friends' favorites: owner
-  `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/federation-badge.js`. The old quality replacement endpoint is retired; Storage
+  `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/client/federation-badge.js`. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.
 - 0.0.190: `Services/DownloadDestinations.cs` (pure: where a server download goes,
   on-disk naming, `DownloadedFileRegistry` keeping copies outside the downloads folder
@@ -206,8 +206,8 @@ Tests and project history:
   Apply endpoint always refuses replacement downloads. Storage removal requires
   explicit selected IDs plus confirmation and rebuilds the candidate set before
   deleting any exact local file.
-- `Configuration/configPage.html` is approximately 5,700 lines and
-  `Web/federation-badge.js` approximately 1,000 lines. Make narrow changes with
+- `Web/admin/configPage.html` is approximately 5,700 lines and
+  `Web/client/federation-badge.js` approximately 1,000 lines. Make narrow changes with
   regression tests before attempting structural cleanup.
 
 ## Validation and release policy

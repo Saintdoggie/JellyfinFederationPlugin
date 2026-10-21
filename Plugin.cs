@@ -195,7 +195,7 @@ namespace Jellyfin.Plugin.Federation
             yield return new PluginPageInfo
             {
                 Name = Name,
-                EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.html",
+                EmbeddedResourcePath = GetType().Namespace + ".Web.admin.configPage.html",
                 EnableInMainMenu = true,
                 DisplayName = "Federation",
                 MenuIcon = "public"

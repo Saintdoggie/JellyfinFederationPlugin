@@ -13,7 +13,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// Makes the library "This server" tab filter on the server again.
     /// </summary>
     /// <remarks>
-    /// The tab (see <c>Web/federation-badge.js</c>) asks for
+    /// The tab (see <c>Web/client/federation-badge.js</c>) asks for
     /// <c>ExcludeItemTags=Federated</c>, but Jellyfin 12's items endpoint no longer
     /// has that parameter and silently ignores it. Every page of results then came
     /// back mostly federated and the browser hid those cards, so the tab showed a

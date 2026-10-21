@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.Federation.Services
 {
     /// <summary>
     /// Injects a script tag into jellyfin-web's <c>index.html</c> so the federation
-    /// badge script (see <c>Web/federation-badge.js</c> and
+    /// badge script (see <c>Web/client/federation-badge.js</c> and
     /// <see cref="Api.FederationController.GetClientScript"/>) actually runs in the
     /// browser. Jellyfin has no server-side templating for its web client - it
     /// serves index.html as a static file - so this is the same technique other
