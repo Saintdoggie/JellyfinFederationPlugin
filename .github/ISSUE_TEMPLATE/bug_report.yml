@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible problem with Jellyfin Federation.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please keep reports constructive and focused on reproducible technical details.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "Example: 0.0.193"
+      placeholder: 0.0.193
+    validations:
+      required: true
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin version
+      description: "Example: 12.0.0"
+      placeholder: 12.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem summary
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal reproducible sequence.
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste only relevant snippets and remove secrets/tokens/keys.
+      render: text
+    validations:
+      required: false
