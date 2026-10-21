@@ -9,5 +9,5 @@
   "changelog": "Smoother, faster playback of friends' titles that the friend converts. Seeking works: a player asking again for a segment that is still being made now waits for it instead of making the friend's server restart its conversion (which could repeat forever on a slow start). Plays start sooner: your server starts the friend's conversion and fetches the next playlist while the player is still on its way. A friend restarting no longer refuses every play: your server gets fresh playback tokens and retries, and tokens now survive a restart. The friend's conversion log of each play is copied into your Dashboard \u2192 Logs (the friend can turn this off). Playback Info says \"Not shared\" for a friend that doesn't share its hardware. Seeking, the faster start and the logs need the friend on 0.0.193; the token refresh works with any friend.",
   "targetAbi": "12.0.0.0",
   "timestamp": "2026-10-20T16:22:17Z",
-  "imageUrl": "thumb.png"
+  "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }
