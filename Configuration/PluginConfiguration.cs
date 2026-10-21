@@ -483,6 +483,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool EnableRemoteTranscodeForFriends { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets whether this server opens direct links with friends: an
+        /// encrypted UDP connection straight between the two servers, punched
+        /// through both home routers, so a friend's video doesn't have to go
+        /// through a slow tunnel or VPS. Needs the friend on 0.0.195+.
+        /// Per-friend switch: <see cref="RemoteServer.DirectLinkMode"/>. Managed
+        /// by <c>Settings/DirectLink</c>, preserved by the main Save.
+        /// </summary>
+        public bool EnableDirectLink { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the STUN servers (<c>host:port</c>) a direct link asks for
+        /// this server's public address. Two are needed to tell router kinds apart.
+        /// </summary>
+        public string[] DirectLinkStunServers { get; set; } = { "stun.cloudflare.com:3478", "stun.l.google.com:19302" };
+
+        /// <summary>
         /// Gets or sets a value indicating whether a friend whose viewer's play this
         /// server converts may fetch that play's conversion log (credentials
         /// blanked), so it shows in the friend's own logs.
@@ -922,6 +938,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Managed by <c>Friends/{id}/Limits</c>, preserved by the main Save.
         /// </summary>
         public int MaxConcurrentStreams { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether a direct link to this friend is used: <c>Auto</c>
+        /// (when both sides support it) or <c>Off</c>. Managed by
+        /// <c>Friends/{id}/DirectLink</c>, preserved by the main Save.
+        /// </summary>
+        public string DirectLinkMode { get; set; } = "Auto";
 
         /// <summary>
         /// Gets or sets whether this friend's federated items are allowed to be

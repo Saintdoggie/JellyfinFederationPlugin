@@ -515,6 +515,47 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// Posts JSON to the friend's <c>Peer/{relativePath}</c> and reads a JSON
+        /// answer. Status 0 when the friend couldn't be reached; the body is null
+        /// unless the friend answered 2xx with readable JSON.
+        /// </summary>
+        public async Task<(int Status, T? Body)> PostPeerForJsonAsync<T>(string relativePath, object body, CancellationToken cancellationToken = default)
+            where T : class
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/" + relativePath.TrimStart('/'))
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(body, JsonOpts), System.Text.Encoding.UTF8, "application/json")
+                };
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return ((int)response.StatusCode, null);
+                }
+
+                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    return ((int)response.StatusCode, JsonSerializer.Deserialize<T>(text, JsonOpts));
+                }
+                catch (JsonException)
+                {
+                    return ((int)response.StatusCode, null);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} at Peer/{Path}", _server.Name, relativePath);
+                return (0, null);
+            }
+        }
+
+        /// <summary>
         /// The titles the friend's users favorited that this server's viewer
         /// <paramref name="localUserId"/> may see (see <c>Peer/Favorites</c>). Null
         /// when the request failed; <c>Shared = false</c> with null items for a
@@ -2577,6 +2618,17 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Gets or sets the ID.
         /// </summary>
         public string? Id { get; set; }
+
+        /// <summary>
+        /// Gets or sets the friend's Federation plugin version (null before 0.0.150-ish).
+        /// </summary>
+        public string? FederationPluginVersion { get; set; }
+
+        /// <summary>
+        /// Gets or sets the direct link protocol the friend accepts (0 = none:
+        /// older plugin, switched off, or no QUIC on that server).
+        /// </summary>
+        public int DirectLinkVersion { get; set; }
     }
 
     /// <summary>
