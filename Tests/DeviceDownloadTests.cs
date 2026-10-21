@@ -103,11 +103,27 @@ public class DeviceDownloadTests : IDisposable
     [Theory]
     [InlineData(true, "https://friend.example", "https", DeviceDownloadRoute.Redirect)]
     [InlineData(true, "http://friend.example", "https", DeviceDownloadRoute.Relay)]
-    [InlineData(true, "https://friend.example", "http", DeviceDownloadRoute.Relay)]
+    [InlineData(true, "https://friend.example", "http", DeviceDownloadRoute.Redirect)]
+    [InlineData(true, "http://friend.example", "http", DeviceDownloadRoute.Redirect)]
     [InlineData(false, "https://friend.example", "https", DeviceDownloadRoute.Relay)]
     [InlineData(true, "not a url", "https", DeviceDownloadRoute.Relay)]
-    public void Route_RedirectsOnlyWhenTheFriendNamesTheFile_AndTheSchemeHolds(bool namesFile, string friend, string scheme, DeviceDownloadRoute expected)
-        => Assert.Equal(expected, DeviceDownload.ChooseRoute(namesFile, friend, scheme));
+    public void Route_RedirectsUnlessTheFriendIsOldOrWouldDowngradeAnHttpsApp(bool namesFile, string friend, string scheme, DeviceDownloadRoute expected)
+        => Assert.Equal(expected, DeviceDownload.Decide(namesFile, friend, scheme).Route);
+
+    [Fact]
+    public void Route_RebuildsAnHttpFriendOnHttps_WhenItIsReachableThere()
+    {
+        Assert.Equal("https://friend.example:8920", DeviceDownload.HttpsForm("http://friend.example:8920"));
+        Assert.Equal("https://friend.example", DeviceDownload.HttpsForm("http://friend.example"));
+        Assert.Null(DeviceDownload.HttpsForm("https://friend.example"));
+
+        var (route, baseUrl, reason) = DeviceDownload.Decide(true, "http://friend.example", "https", "https://friend.example");
+        Assert.Equal(DeviceDownloadRoute.Redirect, route);
+        Assert.Equal("https://friend.example", baseUrl);
+        Assert.Null(reason);
+        Assert.NotNull(DeviceDownload.Decide(false, "https://friend.example", "https").Reason);
+        Assert.Contains("https", DeviceDownload.Decide(true, "http://friend.example", "https").Reason);
+    }
 
     [Fact]
     public void FriendUrl_CarriesOnlyTheDownloadPermit()
@@ -169,12 +185,64 @@ public class DeviceDownloadTests : IDisposable
     }
 
     [Fact]
+    public async Task Plan_HttpFriendIsSentToItsHttpsAddress_ForAnHttpsApp_WhenReachable()
+    {
+        _friend.Url = "http://plan-direct.example";
+        var handler = new PermitHandler { NamesFile = true };
+        var service = Service(handler);
+        service.HttpsProbe = (url, _) => Task.FromResult(url == "https://plan-direct.example");
+
+        var plan = await service.PlanAsync(_viewer, _movie, "https", CancellationToken.None);
+
+        Assert.Equal(DeviceDownloadRoute.Redirect, plan.Route);
+        Assert.StartsWith($"https://plan-direct.example/Plugins/Federation/DirectStream/{_remoteId:N}?token=permit-1&download=true", plan.Url);
+        Assert.DoesNotContain("api", plan.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(plan.RelayReason);
+    }
+
+    [Fact]
+    public async Task Plan_TriesTheDefaultHttpsPort_WhenTheExplicitPortHasNoHttps()
+    {
+        Assert.Equal(new[] { "https://p.example:8096", "https://p.example" }, DeviceDownload.HttpsCandidates("http://p.example:8096"));
+        Assert.Single(DeviceDownload.HttpsCandidates("http://p.example"));
+        Assert.Single(DeviceDownload.HttpsCandidates("http://p.example:443"));
+
+        _friend.Url = "http://plan-port.example:8096";
+        var service = Service(new PermitHandler { NamesFile = true });
+        service.HttpsProbe = (url, _) => Task.FromResult(url == "https://plan-port.example");
+
+        var plan = await service.PlanAsync(_viewer, _movie, "https", CancellationToken.None);
+
+        Assert.Equal(DeviceDownloadRoute.Redirect, plan.Route);
+        Assert.StartsWith("https://plan-port.example/Plugins/", plan.Url);
+    }
+
+    [Fact]
+    public async Task Plan_RelaysWithAReason_WhenAnHttpFriendHasNoHttps()
+    {
+        _friend.Url = "http://plan-nohttps.example";
+        var service = Service(new PermitHandler { NamesFile = true });
+        service.HttpsProbe = (_, _) => Task.FromResult(false);
+
+        var plan = await service.PlanAsync(_viewer, _movie, "https", CancellationToken.None);
+
+        Assert.Equal(DeviceDownloadRoute.Relay, plan.Route);
+        Assert.Contains("https", plan.RelayReason);
+
+        // An http app is simply sent to the http address.
+        var plain = await service.PlanAsync(_viewer, _movie, "http", CancellationToken.None);
+        Assert.Equal(DeviceDownloadRoute.Redirect, plain.Route);
+        Assert.StartsWith("http://plan-nohttps.example/", plain.Url);
+    }
+
+    [Fact]
     public async Task Plan_RelaysForAnOlderFriend_AndAsksTheFriendEveryTime()
     {
         var handler = new PermitHandler { NamesFile = false };
         var service = Service(handler);
         var first = await service.PlanAsync(_viewer, _movie, "https", CancellationToken.None);
         Assert.Equal(DeviceDownloadRoute.Relay, first.Route);
+        Assert.Contains("older", first.RelayReason);
 
         // A friend that turned downloads off since is asked again, so its reason reaches the viewer.
         handler.Refuse = HttpStatusCode.Forbidden;

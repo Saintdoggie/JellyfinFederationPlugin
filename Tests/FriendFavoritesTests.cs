@@ -191,6 +191,35 @@ public class FriendFavoritesTests : IDisposable
     }
 
     [Fact]
+    public async Task Viewer_FailedAsk_IsNotRepeatedOnEveryScan()
+    {
+        var friend = new RemoteServer { Id = "flaky", Name = "Flaky", Url = "http://flaky.local", ApiKey = "k", Enabled = true, Kind = ServerKind.Jellyfin };
+        _plugin.Configuration.RemoteServers.Add(friend);
+        var calls = 0;
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(It.IsAny<RemoteServer>()))
+            .Returns(new RemoteServerClient(friend, NullLogger.Instance, new HttpClient(new DelegateHandler(() => { calls++; return new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError); })) { BaseAddress = new Uri(friend.Url) }));
+        var (service, _) = Create(factory);
+        var viewer = NewUser("viewer");
+
+        await service.GetSectionsAsync(viewer, CancellationToken.None);
+        await service.GetSectionsAsync(viewer, CancellationToken.None);
+        await service.GetSectionsAsync(viewer, CancellationToken.None);
+
+        Assert.Equal(1, calls);
+    }
+
+    private sealed class DelegateHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpResponseMessage> _responder;
+
+        public DelegateHandler(Func<HttpResponseMessage> responder) => _responder = responder;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(_responder());
+    }
+
+    [Fact]
     public async Task Viewer_OlderFriendWithoutFavorites_IsSkippedQuietly_AndNotAskedAgainSoon()
     {
         var friend = new RemoteServer { Id = "old", Name = "Old", Url = "http://old.local", ApiKey = "k", Enabled = true, Kind = ServerKind.Jellyfin };

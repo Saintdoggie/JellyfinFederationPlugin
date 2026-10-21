@@ -56,6 +56,13 @@ namespace Jellyfin.Plugin.Federation.Services
         private const int MinAutoCapMbps = 10;
         private const int MaxAutoCapMbps = 45;
 
+        // Consecutive failed probes (about 20 minutes apart) after which an
+        // unmeasured WAN server stops getting the placeholder cap.
+        private const int MaxPendingFailures = 3;
+
+        // A speed reading this young is reused instead of probing the same friend again.
+        private static readonly TimeSpan SampleReuseWindow = TimeSpan.FromMinutes(10);
+
         // Fraction of measured bandwidth actually requested. Was 0.75; raised to
         // 0.85 - the earlier margin was leaving real, usable bandwidth on the table
         // on connections that measured comfortably above the floor, capping lower
@@ -171,7 +178,11 @@ namespace Jellyfin.Plugin.Federation.Services
             double? measured = null;
             try
             {
-                if (_externalCatalogs?.For(server) is { } provider)
+                if (info.MeasuredMbps is > 0 && DateTime.UtcNow - info.MeasuredAtUtc < SampleReuseWindow)
+                {
+                    measured = info.MeasuredMbps;
+                }
+                else if (_externalCatalogs?.For(server) is { } provider)
                 {
                     var nativeId = FindImportedNativeId(server);
                     if (nativeId != null)
@@ -197,6 +208,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (measured is > 0)
                 {
                     info.LinkMbps = measured;
+                    info.LinkSampledUtc = DateTime.UtcNow;
                     info.LinkNextDueUtc = DateTime.UtcNow + LinkMeasurementInterval;
                     _logger.LogInformation("[Federation] Link speed to {ServerName} measured at {Mbps:F1} Mbps", server.Name, measured.Value);
                 }
@@ -304,7 +316,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     if (!info.MeasuredMbps.HasValue)
                     {
-                        return PendingMeasurementCapMbps;
+                        // The placeholder only covers the brief wait for a first probe.
+                        // If probes keep failing, stop guessing: an arbitrary 10 Mbps
+                        // forever, with no sign of why, is worse than uncapped.
+                        return info.FailedProbes >= MaxPendingFailures ? null : PendingMeasurementCapMbps;
                     }
 
                     if (info.MeasuredMbps.Value >= UncappedThresholdMbps)
@@ -312,9 +327,39 @@ namespace Jellyfin.Plugin.Federation.Services
                         return null;
                     }
 
-                    var target = (int)Math.Round(info.MeasuredMbps.Value * SafetyMargin);
-                    return Math.Clamp(target, MinAutoCapMbps, MaxAutoCapMbps);
+                    return AutoCapFromMeasured(info.MeasuredMbps.Value);
             }
+        }
+
+        /// <summary>
+        /// Cap for a measured WAN speed: 85% of it, kept within the usual floor and
+        /// ceiling, but never above what was actually measured - a 4 Mbps link must
+        /// not be told it can carry 10.
+        /// </summary>
+        internal static int AutoCapFromMeasured(double measuredMbps)
+        {
+            var target = (int)Math.Round(measuredMbps * SafetyMargin);
+            var cap = Math.Clamp(target, MinAutoCapMbps, MaxAutoCapMbps);
+            return Math.Max(1, Math.Min(cap, (int)Math.Floor(measuredMbps)));
+        }
+
+        /// <summary>
+        /// Short admin-facing note on the WAN measurement for a server, or null when
+        /// there is nothing worth saying (not Auto, same-network, or measured fine).
+        /// </summary>
+        /// <param name="server">The server.</param>
+        /// <returns>Text, or null.</returns>
+        public string? GetWanNote(RemoteServer server)
+        {
+            if (server.WanCapMode != WanCapMode.Auto || server.Kind != ServerKind.Jellyfin
+                || !_cache.TryGetValue(server.Id, out var info) || info.IsLocalNetwork != false || info.MeasuredMbps.HasValue)
+            {
+                return null;
+            }
+
+            return info.FailedProbes >= MaxPendingFailures
+                ? "Never measured (probe keeps failing); no cap applied"
+                : "Not measured yet; temporary " + PendingMeasurementCapMbps + " Mbps cap";
         }
 
         /// <summary>
@@ -345,32 +390,72 @@ namespace Jellyfin.Plugin.Federation.Services
             // no BitrateTest endpoint to hit).
             if (server.WanCapMode != WanCapMode.Auto || !server.Enabled || server.Kind != ServerKind.Jellyfin)
             {
+                if (server.Enabled)
+                {
+                    _logger.LogDebug("[Federation] WAN bandwidth check skipped for {ServerName}: cap mode is {Mode} ({Kind})", server.Name, server.WanCapMode, server.Kind);
+                }
+
                 return;
             }
 
             var info = _cache.GetOrAdd(server.Id, _ => new ServerNetworkInfo());
-            if (DateTime.UtcNow - info.LastChecked < RefreshInterval)
+            if (DateTime.UtcNow - info.LastChecked < RefreshInterval || Interlocked.Exchange(ref info.Refreshing, 1) == 1)
             {
                 return;
             }
 
             try
             {
-                info.IsLocalNetwork = await ClassifyAsync(server.Url).ConfigureAwait(false);
+                // A DNS failure (null) must not wipe a confirmed WAN/LAN answer.
+                var classified = await ClassifyAsync(server.Url).ConfigureAwait(false);
+                if (classified.HasValue)
+                {
+                    if (info.IsLocalNetwork != classified)
+                    {
+                        _logger.LogInformation("[Federation] {ServerName} classified as {Class}", server.Name, classified.Value ? "same-network (no WAN cap or bandwidth probe)" : "WAN");
+                    }
+
+                    info.IsLocalNetwork = classified;
+                }
+                else
+                {
+                    _logger.LogInformation("[Federation] Could not classify {ServerName} (DNS failed); keeping {Previous}", server.Name, info.IsLocalNetwork?.ToString() ?? "unclassified");
+                }
 
                 if (info.IsLocalNetwork == false)
                 {
                     var client = _clientFactory.GetClient(server.Id);
                     if (client != null)
                     {
-                        var measured = await client.MeasureBandwidthMbpsAsync(cancellationToken, FindSampleVideoId(server)).ConfigureAwait(false);
+                        // Reuse the link-speed sample if one was just taken: same
+                        // friend, same path, no need for a second 10 MB download.
+                        var recentLink = info.LinkMbps is > 0 && DateTime.UtcNow - info.LinkSampledUtc < SampleReuseWindow
+                            ? info.LinkMbps
+                            : null;
+                        var measured = recentLink
+                            ?? await client.MeasureBandwidthMbpsAsync(cancellationToken, FindSampleVideoId(server)).ConfigureAwait(false);
                         if (measured.HasValue)
                         {
                             info.MeasuredMbps = measured;
+                            info.MeasuredAtUtc = DateTime.UtcNow;
+                            info.FailedProbes = 0;
+                            if (recentLink == null)
+                            {
+                                info.LinkMbps = measured;
+                                info.LinkSampledUtc = info.MeasuredAtUtc;
+                            }
+
                             _logger.LogInformation(
                                 "[Federation] WAN bandwidth to {ServerName} measured at {Mbps:F1} Mbps",
                                 server.Name,
                                 measured.Value);
+                        }
+                        else if (++info.FailedProbes == MaxPendingFailures && !info.MeasuredMbps.HasValue)
+                        {
+                            _logger.LogWarning(
+                                "[Federation] WAN bandwidth to {ServerName} has never been measured after {Count} attempts; its temporary cap is lifted until a probe succeeds",
+                                server.Name,
+                                MaxPendingFailures);
                         }
                     }
                 }
@@ -388,6 +473,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Backs off on failure too, so a server that is briefly unreachable
                 // doesn't get hammered with a probe attempt on every sync cycle.
                 info.LastChecked = DateTime.UtcNow;
+                Interlocked.Exchange(ref info.Refreshing, 0);
             }
         }
 
@@ -464,14 +550,24 @@ namespace Jellyfin.Plugin.Federation.Services
         /// real DNS lookups or network calls. Internal, gated by
         /// <c>InternalsVisibleTo</c>.
         /// </summary>
-        internal void SeedForTests(string serverId, bool? isLocalNetwork, double? measuredMbps)
+        internal void SeedForTests(string serverId, bool? isLocalNetwork, double? measuredMbps, int failedProbes = 0)
         {
             _cache[serverId] = new ServerNetworkInfo
             {
                 IsLocalNetwork = isLocalNetwork,
                 MeasuredMbps = measuredMbps,
+                FailedProbes = failedProbes,
                 LastChecked = DateTime.UtcNow
             };
+        }
+
+        /// <summary>Test-only seam: makes the next refresh run.</summary>
+        internal void ExpireForTests(string serverId)
+        {
+            if (_cache.TryGetValue(serverId, out var info))
+            {
+                info.LastChecked = DateTime.MinValue;
+            }
         }
 
         /// <summary>Test-only seam: records a link-speed reading without any network call.</summary>
@@ -490,12 +586,19 @@ namespace Jellyfin.Plugin.Federation.Services
 
             public DateTime LastChecked { get; set; }
 
+            public DateTime MeasuredAtUtc { get; set; }
+
+            public DateTime LinkSampledUtc { get; set; }
+
+            public int FailedProbes { get; set; }
+
             public double? LinkMbps { get; set; }
 
             public DateTime LinkNextDueUtc { get; set; } = DateTime.MinValue;
 
             // Fields, not properties: Interlocked needs a ref.
             public int LinkMeasuring;
+            public int Refreshing;
         }
     }
 }

@@ -39,6 +39,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationVisibilityService>();
             serviceCollection.AddSingleton<FederationRemoteTranscodeGateway>();
             serviceCollection.AddSingleton<RemoteTranscodeSessionRegistry>();
+            serviceCollection.AddSingleton<FriendDataLimits>();
             serviceCollection.AddSingleton<RemoteTranscodeHandoffs>();
             serviceCollection.AddHostedService<RemoteTranscodeSessionBridge>();
             serviceCollection.AddSingleton<FederationSyncService>();
@@ -52,6 +53,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationDownloadService>();
             serviceCollection.AddSingleton<FederationDeviceDownloadService>();
             serviceCollection.AddSingleton<FederationFriendFavoritesService>();
+            serviceCollection.AddSingleton<FederationFriendPopularService>();
             serviceCollection.AddSingleton<PartyItemMapper>();
             serviceCollection.AddSingleton<FederatedPartyService>();
             serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederatedPartyService>());

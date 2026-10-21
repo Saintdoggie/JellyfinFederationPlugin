@@ -576,14 +576,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 File.Move(partialPath, destinationPath);
                 partialPath = null;
 
-                await StampDownloadedCopyAsync(destinationPath, source.ServerId).ConfigureAwait(false);
-                await FinishTargetAsync(job).ConfigureAwait(false);
-                _libraryManager.QueueLibraryScan();
+                // The file is committed. Nothing after this point may fail the job: a
+                // failed/paused job here would re-download a movie that is already on disk.
+                await RunPostMoveStepsAsync(destinationPath, source.ServerId, job).ConfigureAwait(false);
 
-                var item = _libraryManager.GetItemById(itemGuid);
-                if (item != null)
+                try
                 {
-                    _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = false });
+                    var item = _libraryManager.GetItemById(itemGuid);
+                    if (item != null)
+                    {
+                        _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = false });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Downloaded {Name} but could not remove its virtual item", entry.Metadata.Name);
                 }
 
                 // Without this, the very next scheduled refresh sees the friend
@@ -597,15 +604,22 @@ namespace Jellyfin.Plugin.Federation.Services
                 // inventing separate "downloaded" state - a downloaded item
                 // should never be re-materialized as a virtual one, exactly the
                 // same outcome an admin hiding it by hand already gets.
-                var config = Plugin.Instance?.Configuration;
-                if (config != null)
+                try
                 {
-                    config.HiddenFederatedItemIds ??= new List<string>();
-                    if (!config.HiddenFederatedItemIds.Contains(entry.Key, StringComparer.OrdinalIgnoreCase))
+                    var config = Plugin.Instance?.Configuration;
+                    if (config != null)
                     {
-                        config.HiddenFederatedItemIds.Add(entry.Key);
-                        Plugin.Instance?.SaveConfiguration();
+                        config.HiddenFederatedItemIds ??= new List<string>();
+                        if (!config.HiddenFederatedItemIds.Contains(entry.Key, StringComparer.OrdinalIgnoreCase))
+                        {
+                            config.HiddenFederatedItemIds.Add(entry.Key);
+                            Plugin.Instance?.SaveConfiguration();
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Downloaded {Name} but could not record it as hidden", entry.Metadata.Name);
                 }
 
                 _logger.LogInformation("[Federation] Downloaded {Name} to {Path}", entry.Metadata.Name, destinationPath);
@@ -618,6 +632,41 @@ namespace Jellyfin.Plugin.Federation.Services
             finally
             {
                 ReleaseOwnedCts(operationId, ownedCts);
+            }
+        }
+
+        /// <summary>
+        /// Stamp, library-target setup and scan for a file that has already been moved into
+        /// place. Best effort: the download itself succeeded, so a failure here is logged
+        /// and the next library scan / startup stamp pass picks the file up.
+        /// </summary>
+        private async Task RunPostMoveStepsAsync(string destinationPath, string origin, DownloadJob job)
+        {
+            try
+            {
+                await StampDownloadedCopyAsync(destinationPath, origin).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Downloaded file is in place but stamping failed for {Path}", destinationPath);
+            }
+
+            try
+            {
+                await FinishTargetAsync(job).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Downloaded file is in place but the library target setup failed for {Path}", destinationPath);
+            }
+
+            try
+            {
+                _libraryManager.QueueLibraryScan();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Downloaded file is in place but a library scan could not be queued");
             }
         }
 
@@ -671,9 +720,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 File.Move(partialPath, destinationPath);
                 partialPath = null;
 
-                await StampDownloadedCopyAsync(destinationPath, server.Id).ConfigureAwait(false);
-                await FinishTargetAsync(job).ConfigureAwait(false);
-                _libraryManager.QueueLibraryScan();
+                await RunPostMoveStepsAsync(destinationPath, server.Id, job).ConfigureAwait(false);
 
                 _logger.LogInformation("[Federation] Browse-downloaded {Name} from {Server} to {Path}", itemName, server.Name, destinationPath);
                 SucceedJob(job, "Downloaded. It will appear as a local item after the next library scan.");
@@ -1040,8 +1087,34 @@ namespace Jellyfin.Plugin.Federation.Services
                 DownloadProgressTracker.Update(job.OperationId, status);
             }
 
+            void CheckFreeSpace(long? totalBytes, long alreadyOnDisk)
+            {
+                if (totalBytes is not > 0)
+                {
+                    return;
+                }
+
+                var remaining = totalBytes.Value - alreadyOnDisk;
+                var free = FreeSpaceProvider(partialPath);
+                if (remaining > 0 && free.HasValue && free.Value < remaining)
+                {
+                    throw new InsufficientDiskSpaceException($"Not enough disk space: {remaining / 1048576} MB needed, {free.Value / 1048576} MB free.");
+                }
+            }
+
+            // Resumed jobs already know their size; a fresh one learns it from the first progress
+            // report (response headers arrive before any bytes are written), so check there too.
+            CheckFreeSpace(job.TotalBytes, resumeFrom);
+            var spaceChecked = job.TotalBytes is > 0;
+
             var progress = new ImmediateProgress<(long BytesRead, long? TotalBytes)>(p =>
             {
+                if (!spaceChecked && p.TotalBytes is > 0)
+                {
+                    spaceChecked = true;
+                    CheckFreeSpace(p.TotalBytes, p.BytesRead);
+                }
+
                 DownloadProgressTracker.UpdateBytes(job.OperationId, p.BytesRead, p.TotalBytes, status);
                 job.BytesDownloaded = p.BytesRead;
                 job.TotalBytes = p.TotalBytes;
@@ -1113,12 +1186,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private void SucceedJob(DownloadJob job, string message)
         {
+            _retryAttempts.TryRemove(job.OperationId, out _);
             _queue.Remove(job.OperationId);
             DownloadProgressTracker.Complete(job.OperationId, true, message);
         }
 
         private void FailPermanently(DownloadJob job, string message)
         {
+            _retryAttempts.TryRemove(job.OperationId, out _);
             _queue.Remove(job.OperationId);
             DownloadProgressTracker.Complete(job.OperationId, false, message);
         }
@@ -1153,6 +1228,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     : "Paused after a transfer interruption — will retry automatically";
                 _logger.LogInformation("[Federation] Download paused for {Name}: {Reason}", itemName, reason);
                 PauseJob(job, reason);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    // An interruption, not a server-offline pause: no server-back event will resume it.
+                    ScheduleRetry(job);
+                }
+
                 return;
             }
 
@@ -1164,16 +1245,141 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            if (IsOutOfDiskSpace(ex))
+            {
+                // Retrying cannot help until the admin frees space, and the partial file is
+                // what is filling the disk, so fail clearly and drop it.
+                _logger.LogError(ex, "[Federation] Download failed for {Name}: out of disk space", itemName);
+                FailPermanently(job, "Not enough disk space to finish this download. Free some space and start it again.");
+                DeletePartialFile(job, partialPath);
+                return;
+            }
+
+            if (ex is DownloadRefusedException)
+            {
+                _logger.LogWarning("[Federation] Download of {Name} failed: {Reason}", itemName, ex.Message);
+                FailPermanently(job, ex.Message);
+                DeletePartialFile(job, partialPath);
+                return;
+            }
+
             if (IsTransientDownloadFailure(ex))
             {
                 _logger.LogWarning(ex, "[Federation] Download paused for {Name} after a transfer error", itemName);
                 PauseJob(job, "Paused after a transfer error — will retry automatically. " + ex.Message);
+                ScheduleRetry(job);
                 return;
             }
 
             _logger.LogError(ex, "[Federation] Download failed for {Name}", itemName);
             FailPermanently(job, "Download failed: " + ex.Message);
             DeletePartialFile(job, partialPath);
+        }
+
+        /// <summary>Thrown before a transfer starts when the target volume cannot hold the file.</summary>
+        private sealed class InsufficientDiskSpaceException : IOException
+        {
+            public InsufficientDiskSpaceException(string message)
+                : base(message)
+            {
+            }
+        }
+
+        /// <summary>
+        /// True for a disk-full failure (Windows ERROR_DISK_FULL / ERROR_HANDLE_DISK_FULL,
+        /// Linux ENOSPC, or the runtime's "No space left" message), possibly wrapped.
+        /// </summary>
+        internal static bool IsOutOfDiskSpace(Exception? ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is InsufficientDiskSpaceException)
+                {
+                    return true;
+                }
+
+                if (e is IOException)
+                {
+                    var code = e.HResult & 0xFFFF;
+                    if (code == 0x70 || code == 0x27 || e.HResult == 28)
+                    {
+                        return true;
+                    }
+
+                    if (e.Message.Contains("No space left", StringComparison.OrdinalIgnoreCase)
+                        || e.Message.Contains("not enough space", StringComparison.OrdinalIgnoreCase)
+                        || e.Message.Contains("disk is full", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Test seam: free bytes on the volume holding a path (null when unknown).</summary>
+        internal Func<string, long?> FreeSpaceProvider { get; set; } = path =>
+        {
+            try
+            {
+                var root = Path.GetPathRoot(Path.GetFullPath(path));
+                return string.IsNullOrEmpty(root) ? null : new DriveInfo(root).AvailableFreeSpace;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        };
+
+        /// <summary>Test seam: delay before retry attempt <c>n</c> (1-based).</summary>
+        internal Func<int, TimeSpan> RetryDelay { get; set; } = attempt => attempt switch
+        {
+            1 => TimeSpan.FromMinutes(1),
+            2 => TimeSpan.FromMinutes(5),
+            3 => TimeSpan.FromMinutes(15),
+            _ => TimeSpan.FromMinutes(30)
+        };
+
+        private const int MaxAutomaticRetries = 6;
+
+        private readonly ConcurrentDictionary<string, int> _retryAttempts = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// A transient transfer failure pauses the job, and only a server-back event or a
+        /// restart resumes paused jobs - neither fires when the friend never went offline.
+        /// Retry with a backoff, a bounded number of times, so "will retry automatically" is true.
+        /// </summary>
+        private void ScheduleRetry(DownloadJob job)
+        {
+            var attempt = _retryAttempts.AddOrUpdate(job.OperationId, 1, (_, n) => n + 1);
+            if (attempt > MaxAutomaticRetries)
+            {
+                _retryAttempts.TryRemove(job.OperationId, out _);
+                _logger.LogWarning("[Federation] Download {Name} stayed interrupted after {Count} automatic retries; resume it manually", job.ItemName, MaxAutomaticRetries);
+                return;
+            }
+
+            var delay = RetryDelay(attempt);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                    var current = _queue.Get(job.OperationId);
+                    if (current != null
+                        && string.Equals(current.State, DownloadJob.StatePaused, StringComparison.OrdinalIgnoreCase)
+                        && !_cancellationSources.ContainsKey(current.OperationId)
+                        && !IsServerOffline(current.ServerId))
+                    {
+                        ResumeJob(current);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Automatic download retry failed to start for {Name}", job.ItemName);
+                }
+            });
         }
 
         private static bool IsTransientDownloadFailure(Exception ex)

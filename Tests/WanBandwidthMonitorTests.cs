@@ -287,4 +287,85 @@ public class WanBandwidthMonitorTests
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
+
+    [Theory]
+    [InlineData(4.0, 4)]
+    [InlineData(9.5, 9)]
+    [InlineData(10.0, 10)]
+    [InlineData(20.0, 17)]
+    [InlineData(49.0, 42)]
+    public void AutoCap_NeverExceedsMeasured(double measured, int expected)
+    {
+        var cap = WanBandwidthMonitor.AutoCapFromMeasured(measured);
+        Assert.Equal(expected, cap);
+        Assert.True(cap <= measured);
+    }
+
+    [Fact]
+    public void GetEffectiveCapMbps_SlowLink_IsBelowMeasured()
+    {
+        var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 4.0);
+        Assert.Equal(4, monitor.GetEffectiveCapMbps(server));
+    }
+
+    [Fact]
+    public void GetEffectiveCapMbps_PlaceholderLifts_AfterRepeatedFailedProbes()
+    {
+        var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: null, failedProbes: 3);
+        Assert.Null(monitor.GetEffectiveCapMbps(server));
+        Assert.Contains("Never measured", monitor.GetWanNote(server));
+    }
+
+    [Fact]
+    public async Task Refresh_KeepsConfirmedWan_WhenClassificationFails()
+    {
+        var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
+        var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
+        server.Url = "http://no-such-host.invalid:8096";
+        monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 30.0);
+        monitor.ExpireForTests(server.Id);
+
+        await monitor.RefreshIfDueAsync(server);
+
+        Assert.Equal(26, monitor.GetEffectiveCapMbps(server));
+    }
+
+    private sealed class DeadlineStream : System.IO.Stream
+    {
+        public double Clock;
+        public int Reads;
+        public override async Task<int> ReadAsync(byte[] b, int o, int c, CancellationToken t) => 0;
+        public override async ValueTask<int> ReadAsync(Memory<byte> m, CancellationToken t = default)
+        {
+            Reads++;
+            if (Reads > 40) { throw new OperationCanceledException(t); }
+            Clock += 0.5;
+            var n = Math.Min(m.Length, 64 * 1024);
+            return n;
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] b, int o, int c) => throw new NotSupportedException();
+        public override long Seek(long o, System.IO.SeekOrigin f) => throw new NotSupportedException();
+        public override void SetLength(long v) { }
+        public override void Write(byte[] b, int o, int c) { }
+    }
+
+    [Fact]
+    public async Task Throughput_KeepsPartialReading_WhenDeadlineHits()
+    {
+        var s = new DeadlineStream();
+        using var cts = new CancellationTokenSource();
+        var mbps = await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(s, () => s.Clock, cts.Token);
+        Assert.NotNull(mbps);
+        Assert.InRange(mbps!.Value, 0.5, 2.0);
+    }
 }

@@ -103,8 +103,10 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly FederationLogBuffer _logBuffer;
         private readonly FederationRemoteTranscodeGateway _remoteTranscodeGateway;
         private readonly RemoteTranscodeSessionRegistry _remoteTranscodeSessions;
+        private readonly FriendDataLimits? _limits;
         private readonly FederationDeviceDownloadService? _deviceDownloads;
         private readonly FederationFriendFavoritesService? _friendFavorites;
+        private readonly FederationFriendPopularService? _friendPopular;
         private readonly FederatedPartyService? _parties;
         private readonly FederationRemoteViewerService? _remoteViewers;
         private readonly TranscodePlacementService? _placement;
@@ -143,14 +145,17 @@ namespace Jellyfin.Plugin.Federation.Api
             RemoteTranscodeSessionRegistry? remoteTranscodeSessions = null,
             FederationDeviceDownloadService? deviceDownloads = null,
             FederationFriendFavoritesService? friendFavorites = null,
+            FederationFriendPopularService? friendPopular = null,
             FederatedPartyService? parties = null,
             FederationRemoteViewerService? remoteViewers = null,
             TranscodePlacementService? placement = null,
             RemoteTranscodeHandoffs? handoffs = null,
             AdaptiveSourceRanking? ranking = null,
             FederationViewerReporter? viewerReporter = null,
-            MediaBrowser.Controller.Session.ISessionManager? sessionManager = null)
+            MediaBrowser.Controller.Session.ISessionManager? sessionManager = null,
+            FriendDataLimits? limits = null)
         {
+            _limits = limits;
             _viewerReporter = viewerReporter;
             _sessionManager = sessionManager;
             _remoteViewers = remoteViewers;
@@ -186,6 +191,7 @@ namespace Jellyfin.Plugin.Federation.Api
             _remoteTranscodeSessions = remoteTranscodeSessions ?? new RemoteTranscodeSessionRegistry();
             _deviceDownloads = deviceDownloads;
             _friendFavorites = friendFavorites;
+            _friendPopular = friendPopular;
             _parties = parties;
         }
 
@@ -288,7 +294,7 @@ namespace Jellyfin.Plugin.Federation.Api
         public ActionResult<object> GetConfiguration()
         {
             var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-            return Ok(Sanitize(config));
+            return Ok(Sanitize(config, _limits));
         }
 
         [HttpPost("Configuration")]
@@ -340,6 +346,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.AllowDownloads = oldServer.AllowDownloads;
                         server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
                         server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
+                        server.MonthlyDataCapGb = oldServer.MonthlyDataCapGb;
+                        server.MaxConcurrentStreams = oldServer.MaxConcurrentStreams;
                         server.PeerAllowsDownloads = oldServer.PeerAllowsDownloads;
                         server.PeerSharesFavorites = oldServer.PeerSharesFavorites;
 
@@ -428,6 +436,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     // deciding on (and every invite this server itself had sent and
                     // was still waiting on) with no way to get it back.
                     config.OutgoingPoolInvites = existing.OutgoingPoolInvites;
+                    config.DeclinedDiscoveryCandidates = existing.DeclinedDiscoveryCandidates ?? new();
                     config.IncomingPoolInvites = existing.IncomingPoolInvites;
 
                     // Set through its own Setup/Connectivity endpoint, not the main
@@ -468,6 +477,8 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.ShareConversionLogsWithFriends = existing.ShareConversionLogsWithFriends;
                     config.ShareFavoritesWithFriends = existing.ShareFavoritesWithFriends;
                     config.ShowFriendsFavorites = existing.ShowFriendsFavorites;
+                    config.SharePopularWithFriends = existing.SharePopularWithFriends;
+                    config.ShowFriendsPopular = existing.ShowFriendsPopular;
                     config.HostWatchPartiesWithFriends = existing.HostWatchPartiesWithFriends;
                     config.JoinFriendsWatchParties = existing.JoinFriendsWatchParties;
                     config.DownloadDestination = existing.DownloadDestination;
@@ -1036,7 +1047,7 @@ namespace Jellyfin.Plugin.Federation.Api
         public ActionResult<IEnumerable<object>> GetServers()
         {
             var servers = Plugin.Instance?.Configuration?.RemoteServers ?? new List<RemoteServer>();
-            return Ok(servers.Select(SanitizeServer));
+            return Ok(servers.Select(x => SanitizeServerWithUsage(x, _limits)));
         }
 
         [HttpPost("Servers")]
@@ -1064,7 +1075,7 @@ namespace Jellyfin.Plugin.Federation.Api
             config.RemoteServers.Add(server);
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.InvalidateAll();
-            return Ok(new { success = true, server = SanitizeServer(server) });
+            return Ok(new { success = true, server = SanitizeServerWithUsage(server, _limits) });
         }
 
         [HttpPut("Servers/{id}")]
@@ -1463,6 +1474,31 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new { success = true, message = body.Allow ? "They can play your titles converted here." : "They convert your titles on their own server." });
         }
 
+        /// <summary>
+        /// Admin: this friend's monthly data cap and limit on streams at once
+        /// (owner side; 0 = no limit). Enforced in <see cref="FriendDataLimits"/>.
+        /// </summary>
+        [HttpPost("Friends/{id}/Limits")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendLimits(string id, [FromBody] FriendLimitsBody? body)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            if (body == null || body.MaxConcurrentStreams is < 0 or > 100 || body.MonthlyDataCapGb is < 0 or > 1_000_000)
+            {
+                return BadRequest(new { success = false, message = "Use 0 (no limit) to 100 streams and 0 (no limit) to 1,000,000 GB." });
+            }
+
+            server.MaxConcurrentStreams = body.MaxConcurrentStreams;
+            server.MonthlyDataCapGb = body.MonthlyDataCapGb;
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true, message = "Limits saved." });
+        }
+
         /// <summary>Admin: the remote-transcode handoff settings, both directions.</summary>
         [HttpGet("Settings/RemoteTranscode")]
         [Authorize(Policy = "RequiresElevation")]
@@ -1821,6 +1857,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 latencyMs = _ranking?.LatencyMs(server.Id) is double ms ? Math.Round(ms) : (double?)null,
                 linkMbps = _bandwidthMonitor.GetMeasuredLinkMbps(server.Id),
                 capMbps = _federationManager.GetEffectiveWanCapMbps(server),
+                speedNote = _bandwidthMonitor.GetWanNote(server),
                 friendHardware = friendHardware?.Describe(),
                 thisServerHardware = route == FederatedRoute.ConvertedHere ? _placement?.Local().Describe() : null,
                 alsoOn = others
@@ -2007,6 +2044,38 @@ namespace Jellyfin.Plugin.Federation.Api
             return StatusCode(await _parties.ReceiveEventAsync(caller, partyId, body).ConfigureAwait(false));
         }
 
+        /// <summary>
+        /// The signed-in viewer's "Popular on (friend)" sections for the Home tab:
+        /// per friend, this server's ids for the titles most played there in the
+        /// last 30 days, limited to what this viewer can see here.
+        /// </summary>
+        [HttpGet("FriendPopular")]
+        [Authorize]
+        public async Task<IActionResult> GetFriendPopular(CancellationToken cancellationToken)
+        {
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            var enabled = Plugin.Instance?.Configuration?.ShowFriendsPopular != false && _friendPopular != null;
+            var sections = enabled
+                ? await _friendPopular!.GetSectionsAsync(user, cancellationToken).ConfigureAwait(false)
+                : Array.Empty<FriendPopularSection>();
+            Response.Headers.CacheControl = "private, no-store";
+            return Ok(new
+            {
+                enabled,
+                sections = sections.Select(section => new
+                {
+                    serverId = section.ServerId,
+                    name = section.ServerName,
+                    itemIds = section.ItemIds.Select(id => id.ToString("N"))
+                })
+            });
+        }
+
         private IActionResult PartyAnswer(PartyResult result)
             => StatusCode(result.Status, new { success = result.Status == 200, message = result.Message, groupId = result.GroupId?.ToString("N") });
 
@@ -2022,6 +2091,8 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 config.ShareFavoritesWithFriends,
                 config.ShowFriendsFavorites,
+                config.SharePopularWithFriends,
+                config.ShowFriendsPopular,
                 Friends = (config.RemoteServers ?? new List<RemoteServer>())
                     .Where(s => s.Kind == ServerKind.Jellyfin)
                     .Select(s => new { s.Id, s.Name, SharesFavorites = s.PeerSharesFavorites, AllowsDownloads = s.PeerAllowsDownloads })
@@ -2042,6 +2113,8 @@ namespace Jellyfin.Plugin.Federation.Api
             var sharingChanged = config.ShareFavoritesWithFriends != body.ShareFavoritesWithFriends;
             config.ShareFavoritesWithFriends = body.ShareFavoritesWithFriends;
             config.ShowFriendsFavorites = body.ShowFriendsFavorites;
+            config.SharePopularWithFriends = body.SharePopularWithFriends;
+            config.ShowFriendsPopular = body.ShowFriendsPopular;
             Plugin.Instance.SaveConfiguration();
             return Ok(new
             {
@@ -2872,7 +2945,7 @@ namespace Jellyfin.Plugin.Federation.Api
             config.RemoteServers.Add(server);
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.InvalidateAll();
-            return Ok(new { success = true, server = SanitizeServer(server) });
+            return Ok(new { success = true, server = SanitizeServerWithUsage(server, _limits) });
         }
 
         /// <summary>
@@ -2918,7 +2991,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 _logger.LogWarning(ex, "[Federation] Accepted Plex offer {Name} but the first sync failed", server.Name);
             }
 
-            return Ok(new { success = true, message, server = SanitizeServer(server) });
+            return Ok(new { success = true, message, server = SanitizeServerWithUsage(server, _limits) });
         }
 
         [HttpDelete("PlexOffers/{id}")]
@@ -2953,7 +3026,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 _logger.LogWarning(ex, "[Federation] Connected to Plex source {Name} but the first sync failed", server.Name);
             }
 
-            return Ok(new { success = true, message, server = SanitizeServer(server) });
+            return Ok(new { success = true, message, server = SanitizeServerWithUsage(server, _limits) });
         }
 
         /// <summary>
@@ -3011,7 +3084,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
             _clientFactory.InvalidateAll();
             var created = Plugin.Instance?.Configuration?.RemoteServers?.LastOrDefault(s => s.Kind == ServerKind.Companion);
-            return Ok(new { success, message, connectCode, server = created == null ? null : SanitizeServer(created) });
+            return Ok(new { success, message, connectCode, server = created == null ? null : SanitizeServerWithUsage(created, _limits) });
         }
 
         /// <summary>
@@ -3321,15 +3394,17 @@ namespace Jellyfin.Plugin.Federation.Api
             // the token minted just below binds to something resolvable.
             _friends.EnsureFederationId(caller);
 
-            if (!Guid.TryParse(request?.ItemId, out var itemGuid))
-            {
-                return BadRequest(new { error = "Invalid item id" });
-            }
-
+            // The batch form carries only ItemIds, so it must be handled before the
+            // single ItemId is validated.
             var remoteUserId = RequestingRemoteUserId();
             if (request?.ItemIds is List<string> batchIds && batchIds.Count > 0)
             {
                 return IssueImageTokenBatch(caller, remoteUserId, batchIds);
+            }
+
+            if (!Guid.TryParse(request?.ItemId, out var itemGuid))
+            {
+                return BadRequest(new { error = "Invalid item id" });
             }
 
             if (!_peerAccess.IsItemVisible(caller, remoteUserId, itemGuid))
@@ -3635,6 +3710,25 @@ namespace Jellyfin.Plugin.Federation.Api
                 Response.Headers.CacheControl = "private, no-store";
             }
 
+            // Per-friend limits (owner side): the stream count (a download is not a
+            // stream) and the monthly data cap, which every byte below is booked to.
+            var limited = ResolveStreamFriend(token, itemGuid, out var limitRemoteUserId);
+            using var streamLease = limited == null || download || _limits == null
+                ? null
+                : _limits.TryOpenStream(limited.FederationId, "d:" + itemGuid.ToString("N") + ":" + limitRemoteUserId, limited.MaxConcurrentStreams);
+            if (limited != null && _limits != null)
+            {
+                if (!download && streamLease == null)
+                {
+                    return await RefuseForLimitAsync(limited, FriendDataLimits.StreamLimitReason).ConfigureAwait(false);
+                }
+
+                if (_limits.IsOverCap(limited.FederationId, FriendDataLimits.CapBytes(limited.MonthlyDataCapGb)))
+                {
+                    return await RefuseForLimitAsync(limited, FriendDataLimits.DataLimitReason).ConfigureAwait(false);
+                }
+            }
+
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
             // Downloads and audio stay raw. Video uses the viewing peer's WAN cap
@@ -3644,8 +3738,88 @@ namespace Jellyfin.Plugin.Federation.Api
             var appliedCap = audio || download ? null : capMbps;
             var loopbackUrl = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(localUrl, itemGuid, audio, appliedCap, maxHeight);
 
-            await _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, cancellationToken, internalRelayKey).ConfigureAwait(false);
+            await RelayWithDataLimitAsync(limited, cancellationToken, ct => _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, ct, internalRelayKey)).ConfigureAwait(false);
             return new EmptyResult();
+        }
+
+        /// <summary>
+        /// The friend a DirectStream token was minted for (already validated by
+        /// <see cref="IsStreamTokenAuthorized"/>), or null when it can't be told.
+        /// </summary>
+        private RemoteServer? ResolveStreamFriend(string? token, Guid itemGuid, out string? remoteUserId)
+        {
+            remoteUserId = null;
+            if (_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerId, out _, out remoteUserId))
+            {
+                return _friends.FindByFederationId(ownerId);
+            }
+
+            if (_userSessionTokens.TryValidate(token, out var sessionOwnerId, out var sessionUser))
+            {
+                remoteUserId = sessionUser;
+                return _friends.FindByFederationId(sessionOwnerId);
+            }
+
+            return null;
+        }
+
+        /// <summary>Answers 429 with the machine-readable reason, and logs it for the admin.</summary>
+        private async Task<IActionResult> RefuseForLimitAsync(RemoteServer friend, string reason)
+        {
+            _logger.LogInformation(
+                "[Federation] Refused {Friend}: {Reason} (data {UsedGb:F1} of {CapGb} GB this month, streams {Streams} of {MaxStreams})",
+                friend.Name,
+                reason,
+                (_limits?.UsedThisMonth(friend.FederationId) ?? 0) / (double)FriendDataLimits.BytesPerGb,
+                friend.MonthlyDataCapGb,
+                _limits?.ActiveStreams(friend.FederationId) ?? 0,
+                friend.MaxConcurrentStreams);
+            Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
+            await FriendDataLimits.WriteRefusalAsync(Response, reason, DateTime.UtcNow).ConfigureAwait(false);
+            return new EmptyResult();
+        }
+
+        /// <summary>
+        /// Runs a relay that writes media to <see cref="Response"/> with every byte
+        /// booked against the friend's monthly cap. Hitting the cap mid-stream
+        /// stops the relay (it is cancelled, not retried) and drops the connection,
+        /// so what the friend received never exceeds the cap.
+        /// </summary>
+        private async Task RelayWithDataLimitAsync(RemoteServer? friend, CancellationToken cancellationToken, Func<CancellationToken, Task> relay)
+        {
+            if (friend == null || _limits == null)
+            {
+                await relay(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            using var limitReached = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var original = Response.Body;
+            Response.Body = _limits.Meter(original, friend.FederationId, FriendDataLimits.CapBytes(friend.MonthlyDataCapGb), limitReached);
+            try
+            {
+                await relay(limitReached.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (limitReached.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                Response.Body = original;
+            }
+
+            if (limitReached.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInformation("[Federation] Stopped a transfer to {Friend}: their monthly data limit of {CapGb} GB is reached", friend.Name, friend.MonthlyDataCapGb);
+                if (Response.HasStarted)
+                {
+                    HttpContext.Abort();
+                }
+                else
+                {
+                    await FriendDataLimits.WriteRefusalAsync(Response, FriendDataLimits.DataLimitReason, DateTime.UtcNow).ConfigureAwait(false);
+                }
+            }
         }
 
         /// <summary>
@@ -3678,12 +3852,45 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
 
+            // Per-friend limits first (a play is one stream however many segment or
+            // range requests it makes: keyed by its PlaySessionId), then the global
+            // per-friend conversion limit below. A request without a PlaySessionId is
+            // counted under item + device, so leaving it out can't slip past either.
+            var limit = config?.MaxRemoteTranscodesPerFriend ?? 0;
+            var deviceId = RemoteMediaPath.QueryValue(Request.Query, "DeviceId");
+            var anyLimit = limit > 0 || owner.MaxConcurrentStreams > 0 ? 1 : 0;
+            var playSessionId = RemoteMediaPath.SessionKeyForLimit(RemoteMediaPath.QueryValue(Request.Query, "PlaySessionId"), deviceId, path.ItemId, anyLimit);
+            using var streamLease = _limits == null || string.IsNullOrEmpty(playSessionId)
+                ? null
+                : _limits.TryOpenStream(owner.FederationId, "p:" + playSessionId, owner.MaxConcurrentStreams, enforce: path.StartsWork && path.Kind != RemoteMediaKind.HlsSegment);
+            if (_limits != null)
+            {
+                if (!string.IsNullOrEmpty(playSessionId) && streamLease == null)
+                {
+                    return await RefuseForLimitAsync(owner, FriendDataLimits.StreamLimitReason).ConfigureAwait(false);
+                }
+
+                if (_limits.IsOverCap(owner.FederationId, FriendDataLimits.CapBytes(owner.MonthlyDataCapGb)))
+                {
+                    if (streamLease is { Created: true })
+                    {
+                        _limits.ForgetStream(owner.FederationId, "p:" + playSessionId);
+                    }
+
+                    return await RefuseForLimitAsync(owner, FriendDataLimits.DataLimitReason).ConfigureAwait(false);
+                }
+            }
+
             if (path.StartsWork)
             {
-                var playSessionId = RemoteMediaPath.QueryValue(Request.Query, "PlaySessionId");
                 if (!string.IsNullOrEmpty(playSessionId)
-                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, RemoteMediaPath.QueryValue(Request.Query, "DeviceId"), config?.MaxRemoteTranscodesPerFriend ?? 0, path.ItemId))
+                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, deviceId, limit, path.ItemId))
                 {
+                    if (streamLease is { Created: true })
+                    {
+                        _limits?.ForgetStream(owner.FederationId, "p:" + playSessionId);
+                    }
+
                     _logger.LogInformation("[Federation] Remote transcode for {Friend} refused: their limit of {Limit} at once is reached", owner.Name, config?.MaxRemoteTranscodesPerFriend);
                     Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
                     return StatusCode(StatusCodes.Status429TooManyRequests);
@@ -3691,7 +3898,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
-            await _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), cancellationToken).ConfigureAwait(false);
+            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), ct)).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -3761,6 +3968,7 @@ namespace Jellyfin.Plugin.Federation.Api
             var transcodes = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Controller.MediaEncoding.ITranscodeManager)) as MediaBrowser.Controller.MediaEncoding.ITranscodeManager;
             if (string.Equals(request.Action, "stop", StringComparison.OrdinalIgnoreCase))
             {
+                _limits?.ForgetStream(caller.FederationId, "p:" + request.PlaySessionId);
                 if (!_remoteTranscodeSessions.TryEnd(caller.FederationId, request.PlaySessionId, out var deviceId))
                 {
                     return NoContent();
@@ -3774,6 +3982,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return NoContent();
             }
 
+            _limits?.TouchStream(caller.FederationId, "p:" + request.PlaySessionId);
             if (_remoteTranscodeSessions.TryPing(caller.FederationId, request.PlaySessionId))
             {
                 transcodes?.PingTranscodingJob(request.PlaySessionId, request.IsPaused);
@@ -4620,6 +4829,32 @@ namespace Jellyfin.Plugin.Federation.Api
 
             Response.Headers.CacheControl = "private, no-store";
             return Ok(_friendFavorites.GetSharedFavorites(caller, RequestingRemoteUserId()));
+        }
+
+        /// <summary>
+        /// Server-to-server: which of this server's own titles were most played here
+        /// in the last 30 days, for the calling friend's "Popular on (this server)"
+        /// row. Counts of distinct users only, never who; only titles the named
+        /// viewer on the friend may already see; empty with <c>shared = false</c>
+        /// when the admin turned it off.
+        /// </summary>
+        [HttpGet("Peer/Popular")]
+        [AllowAnonymous]
+        public IActionResult GetPeerPopular()
+        {
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            if (_friendPopular == null)
+            {
+                return Ok(new PeerPopularBody { Shared = false, Items = new List<PeerPopular>() });
+            }
+
+            Response.Headers.CacheControl = "private, no-store";
+            return Ok(_friendPopular.GetSharedPopular(caller, RequestingRemoteUserId()));
         }
 
         /// <summary>
@@ -6596,7 +6831,7 @@ namespace Jellyfin.Plugin.Federation.Api
             return index;
         }
 
-        private static object Sanitize(PluginConfiguration config)
+        private static object Sanitize(PluginConfiguration config, FriendDataLimits? limits = null)
         {
             return new
             {
@@ -6619,12 +6854,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.PlexStrmExportPath,
                 config.IncomingFilter,
                 config.MigratedIncomingFilterV12,
-                RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(SanitizeServer).ToList(),
+                RemoteServers = (config.RemoteServers ?? new List<RemoteServer>()).Select(x => SanitizeServerWithUsage(x, limits)).ToList(),
                 config.LibraryMappings
             };
         }
 
-        private static object SanitizeServer(RemoteServer s)
+        private static object SanitizeServer(RemoteServer s) => SanitizeServerWithUsage(s, null);
+
+        private static object SanitizeServerWithUsage(RemoteServer s, FriendDataLimits? limits)
         {
             return new
             {
@@ -6649,6 +6886,10 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.AllowDownloads,
                 s.AllowBulkDownloads,
                 s.AllowRemoteTranscode,
+                s.MonthlyDataCapGb,
+                s.MaxConcurrentStreams,
+                DataUsedThisMonthBytes = limits?.UsedThisMonth(s.FederationId ?? string.Empty) ?? 0,
+                ActiveStreams = limits?.ActiveStreams(s.FederationId ?? string.Empty) ?? 0,
                 RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
                 {
                     r.RemoteUserId,
@@ -6678,6 +6919,14 @@ namespace Jellyfin.Plugin.Federation.Api
     public class RefreshServerRequest
     {
         public string? ServerId { get; set; }
+    }
+
+    /// <summary>Body of <c>Friends/{id}/Limits</c>.</summary>
+    public class FriendLimitsBody
+    {
+        public int MonthlyDataCapGb { get; set; }
+
+        public int MaxConcurrentStreams { get; set; }
     }
 
     public class SetAllowedLibrariesBody
@@ -6924,6 +7173,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether our Favorites tab shows friends' favorites.</summary>
         public bool ShowFriendsFavorites { get; set; } = true;
+
+        /// <summary>Gets or sets whether friends may see what is most played on our server.</summary>
+        public bool SharePopularWithFriends { get; set; } = true;
+
+        /// <summary>Gets or sets whether our Home tab shows what is popular on friends' servers.</summary>
+        public bool ShowFriendsPopular { get; set; } = true;
     }
 
     /// <summary>Body of <c>Peer/PlayControl</c>.</summary>

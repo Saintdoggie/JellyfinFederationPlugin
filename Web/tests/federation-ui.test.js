@@ -2217,3 +2217,102 @@ test('friend-to-friend viewer and hardware routes check the friend; panel route 
     assert.ok(block, route + ' must require an administrator');
   }
 });
+
+test('download ring skips rewriting when the shown value is unchanged', () => {
+  const fn = badgeScript.match(/function applyDownloadRing\(container, pct, sizePx\) \{[\s\S]*?\n  \}\n/);
+  assert.ok(fn, 'applyDownloadRing not found');
+  assert.match(fn[0], /data-ring-state/);
+  assert.ok(fn[0].indexOf("getAttribute('data-ring-state') === shown") < fn[0].indexOf('ring.innerHTML'));
+});
+
+test('download progress poll retries non-OK replies with a cap instead of dying', () => {
+  const fn = badgeScript.match(/function pollDownloadProgress\([\s\S]*?\n  \}\n/);
+  assert.ok(fn, 'pollDownloadProgress not found');
+  assert.match(fn[0], /res\.ok \? res\.json\(\) : \{ retry: true \}/);
+  assert.match(fn[0], /failures > 8/);
+  assert.match(fn[0], /delete pollingOperations\[operationId\]/);
+  assert.match(fn[0], /\.catch\(retryOrStop\)/);
+});
+
+function makePopularWindow(sections, items, fail = false) {
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div id="homeTab" class="tabContent pageTabContent is-active"><div class="sections"><div class="verticalSection">native</div></div></div>'
+      + '</body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/home' }
+  );
+  const calls = [];
+  const itemQueries = [];
+  dom.window.ApiClient = {
+    getCurrentUser: () => Promise.resolve({ Policy: { IsAdministrator: false } }),
+    getCurrentUserId: () => 'user-1',
+    serverId: () => 'srv',
+    accessToken: () => 'test-token',
+    getScaledImageUrl: (id, opts) => '/Items/' + id + '/Images/Primary?tag=' + opts.tag,
+    getItems: (uid, query) => {
+      itemQueries.push({ uid, query });
+      return Promise.resolve({ Items: items });
+    }
+  };
+  dom.window.fetch = (url) => {
+    calls.push(String(url));
+    let data = {};
+    if (String(url).includes('ClientCatalog')) data = { items: {}, unavailableIds: [] };
+    if (String(url).includes('ClientSettings')) data = { showFederatedCloudBadges: false };
+    if (String(url).includes('FriendPopular')) {
+      if (fail) return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      data = { enabled: true, sections };
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = () => 0;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  return { dom, calls, itemQueries };
+}
+
+test("popular titles appear on the Home tab as one row per friend, most popular first", async () => {
+  const items = [
+    { Id: 'aaa', Name: 'Dune', Type: 'Movie', ProductionYear: 2024, ImageTags: { Primary: 't1' } },
+    { Id: 'bbb', Name: 'Show', Type: 'Series', ImageTags: {} }
+  ];
+  const { dom, calls } = makePopularWindow([
+    { serverId: 'f1', name: 'friendflix', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f2', name: 'Empty', itemIds: ['gone'] }
+  ], items);
+  await settleMany();
+
+  assert.ok(calls.some((url) => url.endsWith('/Plugins/Federation/FriendPopular')));
+  const tab = dom.window.document.getElementById('homeTab');
+  assert.equal(tab.querySelector('.sections').textContent, 'native');
+  const sections = [...tab.querySelectorAll('.federation-popular-section')];
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Popular on friendflix']);
+  assert.deepEqual([...sections[0].querySelectorAll('.federation-fav-card')].map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
+  dom.window.close();
+});
+
+test("a failed popular load is not retried on every page change", async () => {
+  const { dom, calls } = makePopularWindow([], [], true);
+  await settleMany();
+  for (let i = 0; i < 4; i++) {
+    dom.window.document.body.appendChild(dom.window.document.createElement('div'));
+    await settleMany();
+  }
+  assert.equal(calls.filter((url) => url.endsWith('/Plugins/Federation/FriendPopular')).length, 1);
+  dom.window.close();
+});
+
+test("popular rows stay absent and quiet when there is nothing to show", async () => {
+  const { dom, itemQueries } = makePopularWindow([], []);
+  await settleMany();
+  assert.equal(itemQueries.length, 0);
+  assert.equal(dom.window.document.querySelectorAll('.federation-popular-section').length, 0);
+  assert.equal(dom.window.document.querySelectorAll('.federation-friend-popular').length, 0);
+  dom.window.close();
+});
+
+test("admin page has the popular switches saved with the favorites settings", () => {
+  assert.ok(configPage.includes('id="fedChkShowFriendsPopular"'));
+  assert.ok(configPage.includes('id="fedChkSharePopularWithFriends"'));
+  assert.match(configPage, /SharePopularWithFriends: q\('#fedChkSharePopularWithFriends'\)\.checked/);
+});

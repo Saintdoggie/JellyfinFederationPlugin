@@ -55,6 +55,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public int Count => _entries.Count;
 
+        private bool _loadFailed;
+
+        /// <summary>
+        /// True when the on-disk cache could not be read and nothing has repopulated it yet. An empty
+        /// cache in that state means "unknown", not "the friends share nothing", so reconcile must not
+        /// delete federated items based on it.
+        /// </summary>
+        public bool DestructiveReconcileBlocked => _loadFailed && _entries.IsEmpty;
+
         /// <summary>
         /// Sets the on-disk cache file location and loads any existing cache.
         /// </summary>
@@ -854,7 +863,17 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Federation] Failed to load cache from {Path}", _cacheFilePath);
+                _logger.LogError(ex, "[Federation] Failed to load cache from {Path}; moving it aside and starting empty", _cacheFilePath);
+                _loadFailed = true;
+                try
+                {
+                    // Keep the bad file for inspection; the next save would otherwise overwrite it.
+                    File.Move(_cacheFilePath, _cacheFilePath + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture), true);
+                }
+                catch (Exception moveEx)
+                {
+                    _logger.LogError(moveEx, "[Federation] Could not move unreadable cache file aside");
+                }
             }
         }
 

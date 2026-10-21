@@ -228,9 +228,23 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static void SeedHttpsUpgradeForTests(RemoteServer server, string? upgradedUrl)
             => HttpsUpgrades[server.Id] = (server.Url.TrimEnd('/'), upgradedUrl, DateTime.UtcNow);
 
-        private static HttpClient CreateHttpClient(RemoteServer server)
+        private static readonly ConcurrentDictionary<string, string> RedirectWarned = new();
+
+        private void LogBlockedRedirect(RemoteServer server, Uri to)
         {
-            var client = new HttpClient
+            if (RedirectWarned.TryGetValue(server.Id, out var seen) && seen == to.IdnHost)
+            {
+                return;
+            }
+
+            RedirectWarned[server.Id] = to.IdnHost;
+            _loggerFactory.CreateLogger<RemoteServerClientFactory>().LogWarning("[Federation] {ServerName} redirects to {Host}; update its address (the token is not sent to a different host)", server.Name, to.IdnHost);
+        }
+
+        private HttpClient CreateHttpClient(RemoteServer server)
+        {
+            // See TokenRedirect.FollowHandler: the token must not follow a redirect to another host.
+            var client = new HttpClient(new TokenRedirect.FollowHandler((_, to) => LogBlockedRedirect(server, to)))
             {
                 BaseAddress = new Uri(EffectiveUrl(server)),
                 Timeout = TimeSpan.FromMinutes(5)

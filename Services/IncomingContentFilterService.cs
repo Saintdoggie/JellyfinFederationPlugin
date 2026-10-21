@@ -14,21 +14,51 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public static class IncomingContentFilterService
     {
-        // OfficialRating ranking: lower index = more permissive. Unknown ratings fail open.
+        // MPAA and TV ratings are different scales, so they share one table only through an
+        // approximate cross-scale mapping (TV-Y/TV-G~G, TV-Y7/TV-PG~PG, TV-14~PG-13, TV-MA~R).
+        // Lower = more permissive. Items whose rating is not in the table are NOT ranked (see
+        // IsWithinRatingCeiling for why that stays fail-open).
         private static readonly Dictionary<string, int> RatingRank = new(StringComparer.OrdinalIgnoreCase)
         {
             ["G"] = 0,
-            ["PG"] = 1,
-            ["PG-13"] = 2,
-            ["R"] = 3,
-            ["NC-17"] = 4,
             ["TV-Y"] = 0,
+            ["TV-G"] = 0,
+            ["PG"] = 1,
             ["TV-Y7"] = 1,
-            ["TV-G"] = 2,
-            ["TV-PG"] = 3,
-            ["TV-14"] = 4,
-            ["TV-MA"] = 5
+            ["TV-PG"] = 1,
+            ["PG-13"] = 2,
+            ["TV-14"] = 2,
+            ["R"] = 3,
+            ["TV-MA"] = 3,
+            ["NC-17"] = 4
         };
+
+        private static readonly HashSet<string> LoggedUnknownCeilings = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Optional log sink so the static helper can report an unrecognised admin ceiling once.</summary>
+        public static Action<string>? UnknownCeilingLogger { get; set; }
+
+        private static bool TryRankCeiling(string ceiling, out int rank)
+        {
+            var key = ceiling.Trim();
+            if (RatingRank.TryGetValue(key, out rank))
+            {
+                return true;
+            }
+
+            bool first;
+            lock (LoggedUnknownCeilings)
+            {
+                first = LoggedUnknownCeilings.Add(key);
+            }
+
+            if (first)
+            {
+                UnknownCeilingLogger?.Invoke($"[Federation] Rating ceiling '{key}' is not a recognised rating (G, PG, PG-13, R, NC-17, TV-Y, TV-Y7, TV-G, TV-PG, TV-14, TV-MA); rated items are blocked until it is fixed.");
+            }
+
+            return false;
+        }
 
         /// <summary>
         /// Whether <paramref name="remoteItem"/> passes the global <paramref name="filter"/>.
@@ -85,26 +115,27 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>
         /// Whether <paramref name="rating"/> is at or below <paramref name="ceiling"/> in rank.
-        /// Unknown ratings return true (fail open).
+        /// An unrecognised ceiling fails closed for rated items (a typo must not switch filtering off).
+        /// An unrecognised ITEM rating (NR, empty, regional) stays fail-open: blocking every unrated item
+        /// would hide a large part of most libraries.
         /// </summary>
         public static bool IsWithinRatingCeiling(string rating, string ceiling)
         {
-            if (!RatingRank.TryGetValue(ceiling.Trim(), out var ceilingRank))
+            if (!RatingRank.TryGetValue(rating.Trim(), out var itemRank))
             {
                 return true;
             }
 
-            if (!RatingRank.TryGetValue(rating.Trim(), out var itemRank))
+            if (!TryRankCeiling(ceiling, out var ceilingRank))
             {
-                return true;
+                return false;
             }
 
             return itemRank <= ceilingRank;
         }
 
         /// <summary>
-        /// Returns true if the more restrictive of two ceilings is the given item rating.
-        /// Used to combine global and per-user ceilings (stricter wins).
+        /// Combines global and per-user ceilings (the stricter KNOWN one wins) and tests the item.
         /// </summary>
         public static bool IsAllowedByRatingCeilings(string? itemRating, string? globalCeiling, string? perUserCeiling)
         {
@@ -114,29 +145,29 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             string? effective = null;
-            if (!string.IsNullOrWhiteSpace(globalCeiling) && !string.IsNullOrWhiteSpace(perUserCeiling))
+            var effectiveRank = int.MaxValue;
+            foreach (var c in new[] { globalCeiling, perUserCeiling })
             {
-                // Stricter = lower rank
-                if (RatingRank.TryGetValue(globalCeiling!.Trim(), out var gr) && RatingRank.TryGetValue(perUserCeiling!.Trim(), out var pr))
+                if (string.IsNullOrWhiteSpace(c))
                 {
-                    effective = gr <= pr ? globalCeiling : perUserCeiling;
+                    continue;
                 }
-                else
+
+                if (TryRankCeiling(c!, out var r) && r < effectiveRank)
                 {
-                    effective = perUserCeiling;
+                    effective = c;
+                    effectiveRank = r;
                 }
-            }
-            else
-            {
-                effective = string.IsNullOrWhiteSpace(perUserCeiling) ? globalCeiling : perUserCeiling;
             }
 
-            if (string.IsNullOrWhiteSpace(effective))
+            if (effective == null)
             {
-                return true;
+                // Either no ceiling at all (allow) or only unrecognised ones (fail closed via the helper).
+                var unknown = !string.IsNullOrWhiteSpace(globalCeiling) ? globalCeiling : perUserCeiling;
+                return string.IsNullOrWhiteSpace(unknown) || IsWithinRatingCeiling(itemRating!, unknown!);
             }
 
-            return IsWithinRatingCeiling(itemRating!, effective!);
+            return IsWithinRatingCeiling(itemRating!, effective);
         }
     }
 }
