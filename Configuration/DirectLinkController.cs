@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -76,6 +77,45 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return;
             }
 
+            // Segments the player will ask for next are fetched alongside this one.
+            var depth = Math.Clamp(Plugin.Instance?.Configuration?.DirectLinkReadAhead ?? 0, 0, SegmentReadAhead.MaxDepth);
+            var readAhead = depth > 0 && HttpMethods.IsGet(Request.Method) && !Request.Headers.ContainsKey("Range");
+            if (readAhead && SegmentReadAhead.Shared.Take(server.Id, target) is { } held)
+            {
+                using (held)
+                {
+                    bool arrived;
+                    try
+                    {
+                        arrived = await held.WaitHeadAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+
+                    if (arrived)
+                    {
+                        SegmentReadAhead.Shared.After(server.Id, target, depth, ReadAheadFetch(link));
+                        WriteHead(StatusCodes.Status200OK, held.ContentType, held.Headers, held.ContentLength);
+                        try
+                        {
+                            await held.ServeAsync(Response.Body, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is System.IO.IOException or InvalidOperationException or ObjectDisposedException
+                            || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+                        {
+                            // The link went away mid-piece; the player retries.
+                            HttpContext.Abort();
+                        }
+
+                        return;
+                    }
+                }
+
+                // The friend didn't send it ahead: ask the usual way.
+            }
+
             using var request = new HttpRequestMessage(HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get, new Uri("http://federation-direct-link" + target));
             foreach (var name in PassedRequestHeaders)
             {
@@ -105,22 +145,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             using (upstream)
             {
-                Response.StatusCode = (int)upstream.StatusCode;
-
-                // The friend's answer is served from this server's own address:
-                // only media types, never sniffed, never run as a page.
                 var contentType = upstream.Content.Headers.ContentType?.ToString();
-                Response.ContentType = IsMediaType(contentType) ? contentType! : "application/octet-stream";
-                Response.Headers["X-Content-Type-Options"] = "nosniff";
-                Response.Headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
-
-                foreach (var name in PassedResponseHeaders)
-                {
-                    if (upstream.Headers.TryGetValues(name, out var values) || upstream.Content.Headers.TryGetValues(name, out values))
-                    {
-                        Response.Headers[name] = values.ToArray();
-                    }
-                }
+                var passed = upstream.Headers.Concat(upstream.Content.Headers)
+                    .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.SelectMany(h => h.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
+                WriteHead((int)upstream.StatusCode, contentType, passed, null);
 
                 if (HttpMethods.IsHead(Request.Method))
                 {
@@ -141,6 +170,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
                         return;
                     }
 
+                    if (depth > 0)
+                    {
+                        SegmentReadAhead.Shared.RememberPlaylist(server.Id, target, text);
+                    }
+
                     var body = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, DirectLinkRelay.PlayerBase(Request.PathBase.Value, server.Id), null));
                     Response.ContentLength = body.Length;
                     await Response.Body.WriteAsync(body, cancellationToken).ConfigureAwait(false);
@@ -150,6 +184,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 if (upstream.Content.Headers.ContentLength is { } length)
                 {
                     Response.ContentLength = length;
+                }
+
+                if (readAhead && upstream.StatusCode == System.Net.HttpStatusCode.OK)
+                {
+                    SegmentReadAhead.Shared.After(server.Id, target, depth, ReadAheadFetch(link));
                 }
 
                 try
@@ -164,6 +203,36 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     // to the friend if the link is still down).
                     HttpContext.Abort();
                 }
+            }
+        }
+
+        // A segment fetched ahead of the player over the same link.
+        private static Func<string, CancellationToken, Task<HttpResponseMessage>> ReadAheadFetch(HttpClient link) => (target, cancellationToken) =>
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, new Uri("http://federation-direct-link" + target));
+            request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+            return link.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        };
+
+        // The friend's answer is served from this server's own address: only
+        // media types, never sniffed, never run as a page.
+        private void WriteHead(int status, string? contentType, IReadOnlyDictionary<string, string[]> headers, long? contentLength)
+        {
+            Response.StatusCode = status;
+            Response.ContentType = IsMediaType(contentType) ? contentType! : "application/octet-stream";
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
+            Response.Headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
+            foreach (var name in PassedResponseHeaders)
+            {
+                if (headers.TryGetValue(name, out var values))
+                {
+                    Response.Headers[name] = values;
+                }
+            }
+
+            if (contentLength is { } length)
+            {
+                Response.ContentLength = length;
             }
         }
 

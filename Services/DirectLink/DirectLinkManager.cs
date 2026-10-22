@@ -113,6 +113,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>Gets or sets this server's key fingerprint (what friends pin).</summary>
         public string Fingerprint { get; set; } = string.Empty;
 
+        /// <summary>Gets or sets how many segments players got from read-ahead (since start).</summary>
+        public long ReadAheadServed { get; set; }
+
+        /// <summary>Gets or sets how many segments players asked the friend for themselves (since start).</summary>
+        public long ReadAheadMissed { get; set; }
+
         /// <summary>Gets or sets the per-friend status.</summary>
         public List<DirectLinkFriendStatus> Friends { get; set; } = new();
     }
@@ -320,7 +326,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 Enabled = config?.DirectLinkOptIn == true,
                 PublicEndpoint = _publicEndpoint,
                 Nat = DirectLinkProtocol.NatName(_lastNat),
-                Fingerprint = QuicTransportHost.Available ? Identity().Fingerprint : string.Empty
+                Fingerprint = QuicTransportHost.Available ? Identity().Fingerprint : string.Empty,
+                ReadAheadServed = SegmentReadAhead.Shared.Served,
+                ReadAheadMissed = SegmentReadAhead.Shared.Missed
             };
 
             foreach (var server in (config?.RemoteServers ?? new List<RemoteServer>()).Where(s => s.Kind == ServerKind.Jellyfin))
