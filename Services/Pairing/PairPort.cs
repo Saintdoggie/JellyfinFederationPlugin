@@ -36,6 +36,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private byte[]? _punchKey;
         private byte[]? _pairTag;
         private readonly HashSet<UInt128> _expectedAcks = new();
+        private readonly HashSet<IPAddress> _probed = new();
         private readonly Queue<UInt128> _expectedOrder = new();
 
         private PairPort(Socket socket, byte ownRole, Func<DateTimeOffset>? now)
@@ -182,6 +183,14 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
 
                     foreach (var target in targets())
                     {
+                        lock (_probed)
+                        {
+                            if (_probed.Count < 64)
+                            {
+                                _probed.Add(target.Address);
+                            }
+                        }
+
                         var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
                         Expect(AckNonce(nonce));
                         await SendAsync(PairPunchPacket.Build(PairPunchPacket.Probe, _ownRole, _pairTag, _punchKey, _now(), nonce), target, cancellationToken).ConfigureAwait(false);
@@ -197,7 +206,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private async Task ReceiveLoopAsync(TaskCompletionSource<IPEndPoint> acked, CancellationToken cancellationToken)
         {
             var buffer = new byte[2048];
-            var budgets = new Dictionary<IPEndPoint, int>();
+            var budgets = new Dictionary<IPAddress, int>();
             var window = Stopwatch.StartNew();
             try
             {
@@ -236,13 +245,22 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         budgets.Clear();
                     }
 
-                    budgets.TryGetValue(from, out var used);
-                    if (used >= MaxPacketsPerSecond || (used == 0 && budgets.Count >= MaxSourcesPerSecond))
+                    // Per address, not per port (one host can use many ports), and the
+                    // addresses this port probes always get their own budget, so filling
+                    // the sources can't lock the friend out.
+                    budgets.TryGetValue(from.Address, out var used);
+                    bool probedThere;
+                    lock (_probed)
+                    {
+                        probedThere = _probed.Contains(from.Address);
+                    }
+
+                    if (used >= MaxPacketsPerSecond || (used == 0 && budgets.Count >= MaxSourcesPerSecond && !probedThere))
                     {
                         continue;
                     }
 
-                    budgets[from] = used + 1;
+                    budgets[from.Address] = used + 1;
 
                     var type = PairPunchPacket.Verify(packet, _ownRole, key, _now(), _replay);
                     if (type == PairPunchPacket.Probe)

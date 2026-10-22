@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.197",
-  "changelog": "Faster friend video at home over a direct link. One download from a friend's server can stop well short of your line's speed (about 110 Mbps in testing), so 4K could buffer. Now, while your player watches one piece of a friend's video, your server already fetches the next three over the link at the same time, so playback gets the speed of several downloads (about 178 Mbps in the same test). Only the server watching needs 0.0.197; your friend doesn't have to update. Seeking drops what was fetched for the old spot; memory use is capped at 384 MB. Includes everything in 0.0.196.",
+  "version": "0.0.198",
+  "changelog": "Pairing codes (beta, off by default) and security hardening. Pairing: for servers that can't be port-forwarded, two admins swap two short codes and compare a safety number by voice; the servers then connect over an encrypted UDP link with no open ports, tunnel or Tailscale, and reconnect on their own. Off until you tick it on the new Beta tab, which gathers the sensitive beta settings (direct links, pairing, adaptive playback) with an explanation of each; a paired friend sees this home's internet address. Hardening for direct links: a friend's requests now reach your Jellyfin with only the headers the link needs (no proxy or client-address headers), and read-ahead ignores oversized playlists. Both were found in an attack review; neither was known to be exploitable. Larger QUIC windows for friends far away. Includes everything in 0.0.197.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-22T18:11:26Z",
+  "timestamp": "2026-10-22T19:00:37Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }
