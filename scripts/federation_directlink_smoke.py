@@ -534,6 +534,60 @@ def security_checks(a, b):
     guard('6b. junk / forged / replayed JFDL probe datagrams get no reply', junk)
 
 
+def attack_checks(a, b, item_id, friend_id):
+    """Attacks on the released direct link from the internet and from a home device (2026-10-22)."""
+    r = play(a, item_id, 'a', a.lan, segments=3)
+    segs = r['segment_urls']
+    seg = segs[1]
+    relay = f'{a.lan}/Plugins/Federation/DirectLink/{friend_id}'
+    gateway = '/Plugins/Federation/Peer/Play/'
+    token = seg.split(gateway, 1)[1].split('/', 1)[0]
+
+    def from_internet():
+        wan_seg = seg.replace(a.lan, PUBLIC['a'])
+        st = http('w', wan_seg)[0]
+        return st == 403, f'wan viewer on the relay -> {st}'
+    guard('8a. a viewer on the internet is refused by the relay (it would use the home upload)', from_internet)
+
+    def spoofed_proxy():
+        out = {}
+        for h in ({'X-Forwarded-For': '203.0.113.9'}, {'CF-Connecting-IP': '203.0.113.9'}, {'Forwarded': 'for=203.0.113.9'}, {'True-Client-IP': '203.0.113.9'}):
+            out[next(iter(h))] = http('a', seg, '', h)[0]
+        return all(v == 403 for v in out.values()), str(out)
+    guard('8b. a request carrying proxy headers is treated as not-at-home (403)', spoofed_proxy)
+
+    def traversal():
+        out = {}
+        for tail in ('../../../../System/Info', '%2e%2e/%2e%2e/%2e%2e/%2e%2e/System/Info', '..%2f..%2f..%2f..%2fSystem%2fInfo',
+                     '..;/..;/..;/..;/System/Info', '%252e%252e/%252e%252e/System/Info', 'x/..%5c..%5c..%5cSystem/Info'):
+            st, _, body = http('a', f'{relay}{gateway}{token}/{tail}')
+            out[tail[:18]] = st
+            if st == 200 and b'ServerName' in body:
+                return False, f'{tail} reached System/Info: {body[:80]!r}'
+        return all(v != 200 for v in out.values()), str(out)
+    guard('8c. path tricks through the relay never reach the friend\'s other routes', traversal)
+
+    def wrong_token():
+        # Segment 2 is held by read-ahead now; a different token must not get it.
+        forged = segs[2].replace(token, token[:-1] + ('A' if token[-1] != 'A' else 'B'))
+        st = http('a', forged)[0]
+        st_admin = http('a', f'{relay}/Plugins/Federation/Configuration')[0]
+        return st != 200 and st_admin == 404, f'forged token -> {st}; admin route via relay -> {st_admin}'
+    guard('8d. a forged play token gets nothing, even for a segment read-ahead holds', wrong_token)
+
+    def link_routes_only():
+        # B's own link gate: what a hostile A could ask over the link (checked from B's side via its status: nothing to see),
+        # so instead prove B's link port answers nothing to a stranger's QUIC/HTTP attempts.
+        port = b.status().get('LocalPort')
+        if not port:
+            return True, 'no inbound link port to probe (skipped)'
+        probe = (b'\xc0\x00\x00\x00\x01' + os.urandom(1195)).hex()
+        out = pm('exec', 'fdl-viewer-w', 'python3', '/fdl/fdl_udp_probe.py', IP['router-b-wan'], port, probe)
+        big = [l for l in out.splitlines() if ' reply ' in f' {l} ' and len(bytes.fromhex(l.split()[2])) > 1200]
+        return not big, f'stranger QUIC Initial -> {out.split()[1::2]}'
+    guard('8e. a stranger\'s QUIC Initial to the link port gets no larger answer (no amplification)', link_routes_only)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--scenario', choices=['cone', 'symmetric', 'all'], default='all')
@@ -573,6 +627,8 @@ def main():
                 stage = 'cone scenario'
                 scenario_checks(a, b, item_id, friend_id, 'cone', True)
                 security_checks(a, b)
+                stage = 'attacks'
+                attack_checks(a, b, item_id, friend_id)
                 stage = 'dial-back'
                 dial_back_checks(a, b)
             if args.scenario in ('symmetric', 'all'):
