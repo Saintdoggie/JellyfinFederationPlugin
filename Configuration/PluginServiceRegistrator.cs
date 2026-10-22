@@ -22,10 +22,6 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <inheritdoc />
         public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
         {
-            // First, before anything can touch System.Net.Quic: QUIC checks for its
-            // native library once per process (see MsQuicLoader).
-            Services.DirectLink.MsQuicLoader.EnsureLoaded();
-
             // Required by FederationMediaSourceProvider to auto-detect this
             // server's public URL for Proxy streaming. AddHttpContextAccessor is
             // idempotent if the host already registered it.

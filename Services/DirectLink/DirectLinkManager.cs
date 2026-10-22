@@ -1,4 +1,3 @@
-#pragma warning disable CA2252, CA1416 // System.Net.Quic: only reached when MsQuicLoader says QUIC works.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -7,7 +6,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
-using System.Net.Quic;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -178,7 +176,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// server accepts direct links, else 0.
         /// </summary>
         public static int AdvertisedVersion()
-            => Plugin.Instance?.Configuration?.EnableDirectLink == true && MsQuicLoader.Available ? DirectLinkProtocol.Version : 0;
+            => Plugin.Instance?.Configuration?.EnableDirectLink == true && QuicTransportHost.Available ? DirectLinkProtocol.Version : 0;
 
         /// <summary>
         /// The link client for friend <paramref name="serverId"/> when its direct
@@ -220,13 +218,13 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <inheritdoc />
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            if (MsQuicLoader.Available)
+            if (QuicTransportHost.Available)
             {
                 _logger.LogInformation("[Federation] Direct links are available on this server (QUIC ready)");
             }
             else
             {
-                _logger.LogInformation("[Federation] Direct links aren't available on this server: {Reason}", MsQuicLoader.Reason);
+                _logger.LogInformation("[Federation] Direct links aren't available on this server: {Reason}", QuicTransportHost.Reason);
             }
 
             _loop = Task.Run(() => LoopAsync(_shutdown.Token), CancellationToken.None);
@@ -276,12 +274,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             var config = Plugin.Instance?.Configuration;
             var status = new DirectLinkStatus
             {
-                Available = MsQuicLoader.Available,
-                Reason = MsQuicLoader.Reason,
+                Available = QuicTransportHost.Available,
+                Reason = QuicTransportHost.Reason,
                 Enabled = config?.EnableDirectLink == true,
                 PublicEndpoint = _publicEndpoint,
                 Nat = DirectLinkProtocol.NatName(_lastNat),
-                Fingerprint = MsQuicLoader.Available ? Identity().Fingerprint : string.Empty
+                Fingerprint = QuicTransportHost.Available ? Identity().Fingerprint : string.Empty
             };
 
             foreach (var server in (config?.RemoteServers ?? new List<RemoteServer>()).Where(s => s.Kind == ServerKind.Jellyfin))
@@ -319,7 +317,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 {
                     entry.InboundConnected = true;
                     entry.InboundBytesOut = inbound.BytesOut;
-                    entry.InboundLocalPort = inbound.Quic.LocalEndPoint.Port;
+                    entry.InboundLocalPort = inbound.LocalEndPoint.Port;
                     if (status.LocalPort == 0)
                     {
                         status.LocalPort = entry.InboundLocalPort;
@@ -344,9 +342,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return (403, null, "Direct links are switched off on this server.");
             }
 
-            if (!MsQuicLoader.Available)
+            if (!QuicTransportHost.Available)
             {
-                return (503, null, "Direct links aren't available on this server: " + MsQuicLoader.Reason);
+                return (503, null, "Direct links aren't available on this server: " + QuicTransportHost.Reason);
             }
 
             if (offer == null
@@ -474,9 +472,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return (DirectLinkState.Off, "Switched off for this friend.");
             }
 
-            if (!MsQuicLoader.Available)
+            if (!QuicTransportHost.Available)
             {
-                return (DirectLinkState.Unsupported, "Not available on this server: " + MsQuicLoader.Reason + ".");
+                return (DirectLinkState.Unsupported, "Not available on this server: " + QuicTransportHost.Reason + ".");
             }
 
             if (string.IsNullOrEmpty(server.ApiKey))
@@ -796,6 +794,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             if (punch.Path == null)
             {
                 var strict = nat == NatKind.Symmetric || state.NatRemote == NatKind.Symmetric ? " (one side's router is strict)" : string.Empty;
+                _logger.LogInformation(
+                    "[Federation] Direct link to {Friend}: punching from {Local} reached none of {Targets}",
+                    server.Name,
+                    string.Join(", ", own.Select(c => c.Kind + " " + DirectLinkProtocol.Describe(c.Endpoint))),
+                    string.Join(", ", peerCandidates.Select(DirectLinkProtocol.Describe)));
                 return ("Couldn't get through the routers: " + punch.Failure + strict + ".", false, null);
             }
 
@@ -803,22 +806,18 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             // mappings are keyed on that port, so the punched path carries over.
             socket.Close();
             await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
-            QuicConnection quic;
+            object quic;
             try
             {
                 quic = await DirectLinkHandshake.ConnectAsync(localPort, punch.Path, identity.Certificate, answer.Fingerprint, sessionKey, sessionId, identity.Fingerprint, cancellationToken).ConfigureAwait(false);
             }
-            catch (AuthenticationFailedException ex)
+            catch (System.Security.Authentication.AuthenticationException ex)
             {
-                return ("The link didn't authenticate: " + ex.Message + ".", false, null);
+                return ("The link didn't authenticate (" + ex.Message + ").", false, null);
             }
-            catch (System.Security.Authentication.AuthenticationException)
+            catch (System.IO.IOException ex)
             {
-                return ("The friend's link key didn't match what it announced.", false, null);
-            }
-            catch (QuicException ex)
-            {
-                return ("The encrypted connection didn't come up: " + DirectLinkConnection.Describe(ex) + ".", false, null);
+                return ("The encrypted connection didn't come up: " + ex.Message + ".", false, null);
             }
 
             var link = new DirectLinkConnection(quic, server.Id, true, server.ApiKey);
@@ -895,7 +894,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 return total * 8 / 1e6 / Math.Max(sw.Elapsed.TotalSeconds, 0.001);
             }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.IO.IOException or QuicException)
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.IO.IOException)
             {
                 _logger.LogDebug(ex, "[Federation] Direct link speed test failed");
                 return 0;
@@ -950,9 +949,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             {
                 // Shutting down.
             }
-            catch (Exception ex) when (ex is QuicException or AuthenticationFailedException or System.Security.Authentication.AuthenticationException or OperationCanceledException or SocketException)
+            catch (Exception ex) when (ex is System.IO.IOException or System.Security.Authentication.AuthenticationException or OperationCanceledException or SocketException)
             {
-                _logger.LogInformation("[Federation] Direct link from {Friend} didn't come up: {Reason}", caller.Name, ex is QuicException q ? DirectLinkConnection.Describe(q) : ex.Message);
+                _logger.LogInformation("[Federation] Direct link from {Friend} didn't come up: {Reason}", caller.Name, ex.Message);
             }
             catch (Exception ex)
             {
