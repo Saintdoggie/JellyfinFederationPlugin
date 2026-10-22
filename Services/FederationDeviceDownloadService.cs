@@ -139,7 +139,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // A friend behind a proxy may only be configured by an http address
                 // while reachable on https; only ask when an https app needs it.
                 string? httpsBase = null;
-                if (permit.FriendNamesFile && string.Equals(requestScheme, "https", StringComparison.OrdinalIgnoreCase))
+                if (!server.Paired && permit.FriendNamesFile && string.Equals(requestScheme, "https", StringComparison.OrdinalIgnoreCase))
                 {
                     foreach (var candidate in DeviceDownload.HttpsCandidates(friendBase))
                     {
@@ -151,7 +151,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var (route, baseUrl, reason) = DeviceDownload.Decide(permit.FriendNamesFile, friendBase, requestScheme, httpsBase);
+                var (route, baseUrl, reason) = server.Paired
+                    ? (DeviceDownloadRoute.Relay, friendBase, "the friend is paired and has no address the app can reach")
+                    : DeviceDownload.Decide(permit.FriendNamesFile, friendBase, requestScheme, httpsBase);
                 return new DeviceDownloadPlan(
                     200,
                     null,

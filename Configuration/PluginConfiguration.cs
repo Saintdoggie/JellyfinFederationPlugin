@@ -505,6 +505,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public int DirectLinkReadAhead { get; set; } = 3;
 
         /// <summary>
+        /// Gets or sets a value indicating whether this server can pair with friends
+        /// that have no reachable address, by swapping two codes (docs/PAIRING.md).
+        /// Experimental, off by default: a paired friend sees this home's internet
+        /// address. While off, no pairing port is open. Managed by
+        /// <c>Settings/Pairing</c>, preserved by the main Save.
+        /// </summary>
+        public bool PairingOptIn { get; set; }
+
+        /// <summary>Gets or sets the first UDP port pairings may use (each pairing keeps one).</summary>
+        public int PairingPortFirst { get; set; } = 47950;
+
+        /// <summary>Gets or sets the last UDP port pairings may use.</summary>
+        public int PairingPortLast { get; set; } = 47999;
+
+        /// <summary>
         /// Gets or sets the STUN servers (<c>host:port</c>) a direct link asks for
         /// this server's public address. Two are needed to tell router kinds apart.
         /// </summary>
@@ -848,7 +863,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
         /// </summary>
-        public StreamingMode StreamingMode { get; set; } = StreamingMode.Direct;
+        public StreamingMode StreamingMode
+        {
+            // A paired friend has no address a player (or Jellyfin's ffmpeg) can reach:
+            // its media always comes through this server, whatever is saved.
+            get => Paired ? StreamingMode.Proxy : _streamingMode;
+            set => _streamingMode = value;
+        }
+
+        private StreamingMode _streamingMode = StreamingMode.Direct;
 
         /// <summary>
         /// Gets or sets the priority used when picking a primary source for deduped items.
@@ -934,7 +957,15 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// converts on its own server as before. Managed by
         /// <c>Friends/{id}/RemoteTranscode</c>, preserved by the main Save.
         /// </summary>
-        public bool AllowRemoteTranscode { get; set; } = true;
+        public bool AllowRemoteTranscode
+        {
+            // A handoff sends the friend's players to this server's address, which a
+            // paired friend's players can't reach.
+            get => !Paired && _allowRemoteTranscode;
+            set => _allowRemoteTranscode = value;
+        }
+
+        private bool _allowRemoteTranscode = true;
 
         /// <summary>
         /// Gets or sets how many GB this server will send this friend per UTC
@@ -956,7 +987,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// (when both sides support it) or <c>Off</c>. Managed by
         /// <c>Friends/{id}/DirectLink</c>, preserved by the main Save.
         /// </summary>
-        public string DirectLinkMode { get; set; } = "Auto";
+        public string DirectLinkMode
+        {
+            // A paired friend already has its link; the direct-link offer doesn't apply.
+            get => Paired ? "Off" : _directLinkMode;
+            set => _directLinkMode = value;
+        }
+
+        private string _directLinkMode = "Auto";
 
         /// <summary>
         /// Gets or sets a value indicating whether this friend was paired with codes
@@ -1001,6 +1039,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets when the pairing was made.</summary>
         public DateTime? PairedAtUtc { get; set; }
+
+        /// <summary>Gets or sets this server's UDP port for this pairing.</summary>
+        public int PairLocalPort { get; set; }
+
+        /// <summary>Gets or sets the name the friend's code gave (untrusted; shown as "calls itself …").</summary>
+        public string PairClaimedName { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or sets whether this friend's federated items are allowed to be

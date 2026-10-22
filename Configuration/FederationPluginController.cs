@@ -484,6 +484,9 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
                     config.DirectLinkOptIn = existing.DirectLinkOptIn;
+                    config.PairingOptIn = existing.PairingOptIn;
+                    config.PairingPortFirst = existing.PairingPortFirst;
+                    config.PairingPortLast = existing.PairingPortLast;
                     config.DirectLinkStunServers = existing.DirectLinkStunServers;
                     config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;
@@ -6888,6 +6891,8 @@ namespace Jellyfin.Plugin.Federation.Api
             to.PairMailCounterOut = from.PairMailCounterOut;
             to.PairMailCounterIn = from.PairMailCounterIn;
             to.PairedAtUtc = from.PairedAtUtc;
+            to.PairLocalPort = from.PairLocalPort;
+            to.PairClaimedName = from.PairClaimedName;
         }
 
         private static object Sanitize(PluginConfiguration config, FriendDataLimits? limits = null)

@@ -75,6 +75,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<TailscaleService>();
             serviceCollection.AddSingleton<Services.DirectLink.DirectLinkManager>();
             serviceCollection.AddHostedService(sp => sp.GetRequiredService<Services.DirectLink.DirectLinkManager>());
+            serviceCollection.AddSingleton<Services.Pairing.PairingService>();
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<Services.Pairing.PairingService>());
             serviceCollection.AddSingleton<FunFactService>();
 
             // Catalog providers for non-Jellyfin servers. Registering another
