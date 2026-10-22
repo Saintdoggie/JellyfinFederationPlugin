@@ -45,6 +45,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         // A playlist this long (25 hours of 3 s segments) isn't a film: no read-ahead,
         // so a friend's oversized playlist can't fill memory here.
         private const int MaxSegmentsPerPlaylist = 30000;
+        private const int MaxTargetCharsPerPlaylist = 1024 * 1024;
         private const int MaxEntries = 4 * MaxDepth;
         private const long MaxSegmentBytes = 512L * 1024 * 1024;
         private static readonly TimeSpan HeadTimeout = TimeSpan.FromSeconds(60);
@@ -116,6 +117,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             var targets = new List<string>();
+            long chars = 0;
             foreach (var raw in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
             {
                 var line = raw.Trim();
@@ -132,7 +134,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
 
                 targets.Add(pathAndQuery.Substring(at));
-                if (targets.Count > MaxSegmentsPerPlaylist)
+                chars += pathAndQuery.Length - at;
+                if (targets.Count > MaxSegmentsPerPlaylist || chars > MaxTargetCharsPerPlaylist)
                 {
                     return;
                 }

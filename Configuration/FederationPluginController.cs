@@ -342,7 +342,9 @@ namespace Jellyfin.Plugin.Federation.Api
                     CopyPairing(oldServer != null && oldServer.Paired ? oldServer : new RemoteServer(), server);
                     if (oldServer != null && oldServer.Paired)
                     {
+                        // Its address and token come from the link and the hello only.
                         server.Url = oldServer.Url;
+                        server.ApiKey = oldServer.ApiKey;
                     }
 
                     if (oldServer != null)

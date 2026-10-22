@@ -1,5 +1,12 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.198 — pairing codes (beta) and link hardening (2026-10-22)
+
+- [x] Pairing codes, Beta tab, QUIC windows; security review + adversarial pass, all findings fixed (Tests/Adversarial).
+- [x] Direct link: header allowlist; read-ahead playlist cap.
+- [ ] Mutual-friend (mailbox) reconnect; relay tickets for remote viewers of paired friends.
+- [ ] Smaller receive windows on paired links; Windows MsQuic.
+
 ## 0.0.197 — relay read-ahead (2026-10-22)
 
 - [x] Direct-link relay fetches the player's next 3 segments over the link (one download to netflix++ stopped near 110 Mbps; four at once 178).

@@ -478,9 +478,16 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 return (null, "unknown");
             }
 
+            // Both admins must have confirmed: this side here, the friend's through its own
+            // Confirmed call. A hello alone never stands in for the friend's confirmation.
             if (!friend.PairSafetyConfirmed)
             {
                 return (null, "not confirmed here yet");
+            }
+
+            if (!friend.PairPeerConfirmed)
+            {
+                return (null, "the friend hasn't confirmed yet");
             }
 
             // A federation id another friend (or this server) already has would let this
@@ -500,7 +507,6 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     return;
                 }
 
-                s.PairPeerConfirmed = true;
                 s.FederationId = hello.FederationId;
                 s.ApiKey = hello.Token;
                 s.FederationPluginVersion = CleanVersion(hello.PluginVersion);
