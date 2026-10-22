@@ -1861,10 +1861,23 @@ namespace Jellyfin.Plugin.Federation.Api
                 linkMbps = _bandwidthMonitor.GetMeasuredLinkMbps(server.Id),
                 capMbps = _federationManager.GetEffectiveWanCapMbps(server),
                 speedNote = _bandwidthMonitor.GetWanNote(server),
+                directLink = DirectLinkNote(server.Id),
                 friendHardware = friendHardware?.Describe(),
                 thisServerHardware = route == FederatedRoute.ConvertedHere ? _placement?.Local().Describe() : null,
                 alsoOn = others
             });
+        }
+
+        // For Playback Info: whether this friend's video can come over the direct link.
+        private static string? DirectLinkNote(string serverId)
+        {
+            var status = Services.DirectLink.DirectLinkManager.Current?.GetStatus().Friends.FirstOrDefault(f => f.ServerId == serverId);
+            return status?.State switch
+            {
+                "connected" => "Connected" + (status.Mbps > 0 ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $" ({status.Mbps:F0} Mbps)") : string.Empty) + "; viewers on this home's network get the video over it",
+                "failed" => "Not connected; video uses the friend's address",
+                _ => null
+            };
         }
 
         /// <summary>Settings for showing viewers across friends.</summary>
