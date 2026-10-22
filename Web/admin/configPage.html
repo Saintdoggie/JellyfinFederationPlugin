@@ -525,6 +525,14 @@
             </div>
 
             <div id="fedPanelFriends" aria-labelledby="fedTabFriends" class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
+                <div class="verticalSection" id="fedDirectLinkCard">
+                    <h3 class="sectionTitle">Direct links with friends <span class="fed-pill fed-pill-off">Beta</span></h3>
+                    <label class="fed-check-label"><input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" /> Open direct links with friends (beta; shares this home's internet address with them)</label>
+                    <p class="fieldDescription"><strong>Off by default.</strong> A direct link connects your two servers without a tunnel or VPS in between, so each friend's server sees your home's internet (IP) address. If you use a tunnel or VPS to keep that address private, leave this off. Viewers and players never see it. An encrypted UDP connection straight between your server and each friend's, opened through both home routers the way Tailscale does, with no port forwarding. Your viewers at home then get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS. It only carries the friend's video, downloads and speed tests, with the same permissions as today. Both servers need Federation 0.0.195 or newer; Linux and Windows servers.</p>
+                    <p class="fed-hint" id="fedDirectLinkSummary">Checking…</p>
+                    <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-direct-link">Save direct link settings</button>
+                    <div class="fed-srvstatus" id="fedDirectLinkSaveStatus" style="display:none;"></div>
+                </div>
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Add a friend</h3>
                     <p class="fieldDescription">
@@ -1053,14 +1061,6 @@
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-remote-transcode">Save conversion settings</button>
                                 <div class="fed-srvstatus" id="fedRemoteTranscodeStatus" style="display:none;"></div>
                                 <div id="fedRemoteTranscodeFriends" class="fed-hint" style="margin-top:.6em;"></div>
-                            </div>
-                            <div class="fed-subcard" id="fedDirectLinkCard" style="margin:1em 0;">
-                                <h4 class="fed-subhead">Direct links with friends</h4>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" checked /> Open direct links with friends that support them</label>
-                                <p class="fieldDescription">An encrypted UDP connection straight between your server and each friend's, opened through both home routers the way Tailscale does, with no port forwarding. Your viewers at home then get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS. It only carries the friend's video, downloads and speed tests, with the same permissions as today. Both servers need Federation 0.0.195 or newer; Linux and Windows servers.</p>
-                                <p class="fed-hint" id="fedDirectLinkSummary">Checking…</p>
-                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-direct-link">Save direct link settings</button>
-                                <div class="fed-srvstatus" id="fedDirectLinkSaveStatus" style="display:none;"></div>
                             </div>
                             <div class="fed-subcard" id="fedFavoritesCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Friends' favorites</h4>
@@ -1870,10 +1870,12 @@
                             if (!res) { return; }
                             lastDirectLinkStatus = res;
                             var chk = q('#fedChkEnableDirectLink');
-                            if (chk) { chk.checked = res.Enabled !== false; }
+                            if (chk) { chk.checked = res.Enabled === true; }
                             var summary = q('#fedDirectLinkSummary');
                             if (summary) {
-                                summary.textContent = res.Available
+                                summary.textContent = res.Enabled !== true
+                                    ? 'Off. Friends' + "'" + ' servers never get this home' + "'" + 's address.'
+                                    : res.Available
                                     ? 'Ready on this server' + (res.PublicEndpoint ? ' · public address ' + res.PublicEndpoint + (res.Nat && res.Nat !== 'unknown' ? ' (' + res.Nat + ' router)' : '') : '') + '.'
                                     : 'Not available on this server: ' + (res.Reason || 'unknown') + '.';
                             }

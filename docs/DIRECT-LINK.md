@@ -224,7 +224,12 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
 
 ## Config (PluginConfiguration)
 
-- `EnableDirectLink` (bool, default **true**)
+- `DirectLinkOptIn` (bool, default **false**). A direct link shows each friend's
+  server this home's internet address, so it's opt-in. It replaced 0.0.195's
+  `EnableDirectLink` (default true); a saved `EnableDirectLink` is ignored, so
+  upgraded servers start off. `Settings/DirectLink` still takes and returns
+  `EnableDirectLink`. While off, the server runs no STUN, sends no address and
+  answers no offers.
 - `DirectLinkStunServers` (string[], defaults above)
 - per friend `DirectLinkMode`: `Auto` (default) | `Off`
 

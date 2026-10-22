@@ -1925,6 +1925,11 @@ test("admin page has the friends' favorites switches wired to their own settings
 
 test('admin page has the direct link switch, per-friend mode and retry wired to their own routes', () => {
   assert.ok(configPage.includes('id="fedChkEnableDirectLink"'));
+  // Opt-in and labelled beta: a direct link shows friends this home's address.
+  assert.match(configPage, /<input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" \/>/);
+  assert.match(configPage, /Direct links with friends <span class="fed-pill fed-pill-off">Beta<\/span>/);
+  assert.match(configPage, /chk\.checked = res\.Enabled === true;/);
+  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') < configPage.indexOf('id="fedPanelPools"'), 'the switch sits on the Friends tab');
   assert.match(configPage, /case 'save-direct-link':\s*saveDirectLinkSettings\(\);/);
   assert.match(configPage, /case 'direct-link-retry':\s*retryDirectLink\(t\.getAttribute\('data-id'\)\);/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/DirectLink', \{\s*method: 'POST'/);
