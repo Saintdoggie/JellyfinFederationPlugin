@@ -465,6 +465,31 @@ def scenario_checks(a, b, item_id, friend_id, name, expect_connected):
     guard(f'[{name}] 4. remote viewer (via router-a wan) plays via the friend\'s URL, no relay', wan_play)
 
 
+def dial_back_checks(a, b):
+    """A friend that turns direct links on (or updates) dials in first; A must dial back
+    right away, not after its 30-minute capability recheck."""
+    def state(want):
+        def poll():
+            e = a.entry()
+            return e if e and e.get('State') == want else None
+        return poll
+
+    stun = {'DirectLinkStunServers': [f"{IP['stun']}:3478", f"{IP['stun']}:3479"]}
+
+    def off():
+        b.call('/Plugins/Federation/Settings/DirectLink', data={'EnableDirectLink': False, **stun})
+        e = wait_for(state('unsupported'), 'A never saw B switch direct links off', seconds=120)
+        return True, f"State={e['State']} Detail={e.get('Detail')!r}"
+    guard('[dial-back] 7a. B switches direct links off: A shows unsupported', off)
+
+    def on():
+        b.call('/Plugins/Federation/Settings/DirectLink', data={'EnableDirectLink': True, **stun})
+        started = time.time()
+        e = wait_for(state('connected'), 'A did not dial back after B dialled in', seconds=90)
+        return True, f"State={e['State']} after {time.time() - started:.0f} s Remote={e.get('RemoteEndpoint')}"
+    guard('[dial-back] 7b. B switches back on and dials A: A dials back within 90 s', on)
+
+
 def security_checks(a, b):
     def no_token():
         out = []
@@ -540,6 +565,8 @@ def main():
                 stage = 'cone scenario'
                 scenario_checks(a, b, item_id, friend_id, 'cone', True)
                 security_checks(a, b)
+                stage = 'dial-back'
+                dial_back_checks(a, b)
             if args.scenario in ('symmetric', 'all'):
                 stage = 'symmetric scenario'
                 set_nat(True)

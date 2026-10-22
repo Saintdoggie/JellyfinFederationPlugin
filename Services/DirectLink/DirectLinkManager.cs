@@ -1112,6 +1112,16 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
 
                 _logger.LogInformation("[Federation] Direct link from {Friend} is up via {Endpoint}", caller.Name, DirectLinkProtocol.Describe(punch.Path));
+
+                // A link only carries the dialler's requests, so this home's viewers
+                // still need our own link to the friend. The friend just proved it
+                // runs a new enough plugin and that the routers let us through:
+                // dial back now instead of waiting out the capability recheck.
+                if (!IsConnected(caller.Id))
+                {
+                    Reconsider(caller.Id);
+                }
+
                 await Forwarder.RunAsync(link, caller.Name).ConfigureAwait(false);
                 _inbound.TryRemove(new KeyValuePair<string, DirectLinkConnection>(caller.Id, link));
                 _logger.LogInformation("[Federation] Direct link from {Friend} ended ({Reason})", caller.Name, link.CloseReason);
