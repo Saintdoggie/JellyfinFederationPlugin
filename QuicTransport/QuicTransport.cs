@@ -29,6 +29,12 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
         private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan KeepAlive = TimeSpan.FromSeconds(15);
 
+        // Paired links: home routers often forget a quiet UDP mapping after 30 s.
+        private const byte PairedMarker = 0x02;
+        private static readonly List<SslApplicationProtocol> PairedProtocols = new() { new SslApplicationProtocol("jf-fed-pair/1") };
+        private static readonly TimeSpan PairedIdleTimeout = TimeSpan.FromSeconds(45);
+        private static readonly TimeSpan PairedKeepAlive = TimeSpan.FromSeconds(10);
+
         /// <summary>Whether QUIC works in this load context.</summary>
         public static bool IsSupported() => QuicConnection.IsSupported && QuicListener.IsSupported;
 
@@ -226,6 +232,226 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
         }
 
         /// <summary>Opens a request stream on a connection.</summary>
+        /// <summary>
+        /// Paired friends (docs/PAIRING.md): connects as the client of a pairing link.
+        /// Both sides may open request streams. Before returning, both sides prove they
+        /// hold the pair key with fresh nonces on a control stream:
+        /// <c>C→S 0x02|nC</c>, <c>S→C 0x02|nS|HMAC(k,"S"|t|nC|nS)</c>,
+        /// <c>C→S HMAC(k,"C"|t|nC|nS)</c>, where <c>t</c> binds both certificates.
+        /// </summary>
+        /// <returns>The connection (opaque to the caller).</returns>
+        public static async Task<object> ConnectPairedAsync(
+            int localPort,
+            IPEndPoint remote,
+            X509Certificate2 ownCertificate,
+            string expectedFingerprint,
+            byte[] proofKey,
+            byte[] transcript,
+            int maxInboundStreams,
+            CancellationToken cancellationToken)
+        {
+            var options = new QuicClientConnectionOptions
+            {
+                RemoteEndPoint = remote,
+                LocalEndPoint = new IPEndPoint(IPAddress.Any, localPort),
+                DefaultStreamErrorCode = 1,
+                DefaultCloseErrorCode = 1,
+                IdleTimeout = PairedIdleTimeout,
+                KeepAliveInterval = PairedKeepAlive,
+                HandshakeTimeout = TimeSpan.FromSeconds(10),
+                MaxInboundBidirectionalStreams = maxInboundStreams,
+                MaxInboundUnidirectionalStreams = 0,
+                ClientAuthenticationOptions = new SslClientAuthenticationOptions
+                {
+                    ApplicationProtocols = PairedProtocols,
+                    TargetHost = "jellyfin-federation-pairing",
+                    ClientCertificates = new X509CertificateCollection { ownCertificate },
+                    RemoteCertificateValidationCallback = (_, certificate, _, _) => Matches(certificate, expectedFingerprint)
+                }
+            };
+
+            QuicConnection connection;
+            try
+            {
+                connection = await QuicConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (QuicException ex)
+            {
+                throw new IOException(Describe(ex), ex);
+            }
+
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var control = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, timeout.Token).ConfigureAwait(false);
+                var clientNonce = RandomNumberGenerator.GetBytes(16);
+                await control.WriteAsync(Prepend(PairedMarker, clientNonce), timeout.Token).ConfigureAwait(false);
+                var answer = await ReadExactlyAsync(control, 1 + 16 + 32, timeout.Token).ConfigureAwait(false);
+                if (answer == null || answer[0] != PairedMarker)
+                {
+                    throw new AuthenticationException("the friend's link proof didn't match");
+                }
+
+                var serverNonce = answer.AsSpan(1, 16).ToArray();
+                if (!CryptographicOperations.FixedTimeEquals(answer.AsSpan(17, 32), PairedProof(proofKey, (byte)'S', transcript, clientNonce, serverNonce)))
+                {
+                    throw new AuthenticationException("the friend's link proof didn't match");
+                }
+
+                await control.WriteAsync(PairedProof(proofKey, (byte)'C', transcript, clientNonce, serverNonce), timeout.Token).ConfigureAwait(false);
+                control.CompleteWrites();
+
+                // Wait for the friend to accept the proof (it closes its side), so a
+                // refused link never looks connected here.
+                var end = new byte[1];
+                if (await control.ReadAsync(end, timeout.Token).ConfigureAwait(false) != 0)
+                {
+                    throw new AuthenticationException("unexpected data on the link's control stream");
+                }
+
+                return connection;
+            }
+            catch (Exception ex)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw Translate(ex);
+            }
+        }
+
+        /// <summary>
+        /// Paired friends: listens on <paramref name="localPort"/> for at most
+        /// <paramref name="wait"/> for one connection from <paramref name="expectedRemote"/>
+        /// with the pinned certificate and a valid proof (see <see cref="ConnectPairedAsync"/>).
+        /// The listener is closed afterwards in every case.
+        /// </summary>
+        /// <returns>The connection (opaque to the caller).</returns>
+        public static async Task<object> AcceptPairedAsync(
+            int localPort,
+            IPEndPoint expectedRemote,
+            X509Certificate2 ownCertificate,
+            string expectedFingerprint,
+            byte[] proofKey,
+            byte[] transcript,
+            int maxInboundStreams,
+            TimeSpan wait,
+            CancellationToken cancellationToken)
+        {
+            var serverOptions = new QuicServerConnectionOptions
+            {
+                DefaultStreamErrorCode = 1,
+                DefaultCloseErrorCode = 1,
+                IdleTimeout = PairedIdleTimeout,
+                KeepAliveInterval = PairedKeepAlive,
+                HandshakeTimeout = TimeSpan.FromSeconds(10),
+                MaxInboundBidirectionalStreams = maxInboundStreams,
+                MaxInboundUnidirectionalStreams = 0,
+                ServerAuthenticationOptions = new SslServerAuthenticationOptions
+                {
+                    ApplicationProtocols = PairedProtocols,
+                    ServerCertificate = ownCertificate,
+                    ClientCertificateRequired = true,
+                    RemoteCertificateValidationCallback = (_, certificate, _, _) => Matches(certificate, expectedFingerprint)
+                }
+            };
+
+            QuicListener listener;
+            try
+            {
+                listener = await QuicListener.ListenAsync(
+                    new QuicListenerOptions
+                    {
+                        ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
+                        ApplicationProtocols = PairedProtocols,
+                        ListenBacklog = 2,
+                        ConnectionOptionsCallback = (candidate, _, _) =>
+                        {
+                            // Only the friend's address gets a handshake at all; anyone
+                            // else is refused before any TLS work.
+                            var from = candidate.RemoteEndPoint;
+                            var address = from.Address.IsIPv4MappedToIPv6 ? from.Address.MapToIPv4() : from.Address;
+                            if (!address.Equals(expectedRemote.Address) || from.Port != expectedRemote.Port)
+                            {
+                                throw new AuthenticationException("not the paired friend's address");
+                            }
+
+                            return ValueTask.FromResult(serverOptions);
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (QuicException ex)
+            {
+                throw new IOException(Describe(ex), ex);
+            }
+
+            QuicConnection? connection = null;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(wait);
+                while (connection == null)
+                {
+                    QuicConnection candidate;
+                    try
+                    {
+                        candidate = await listener.AcceptConnectionAsync(timeout.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when ((ex is QuicException || ex is AuthenticationException) && !timeout.IsCancellationRequested)
+                    {
+                        continue;
+                    }
+
+                    var from = candidate.RemoteEndPoint;
+                    if (!(from.Address.IsIPv4MappedToIPv6 ? from.Address.MapToIPv4() : from.Address).Equals(expectedRemote.Address) || from.Port != expectedRemote.Port)
+                    {
+                        await candidate.DisposeAsync().ConfigureAwait(false);
+                        continue;
+                    }
+
+                    connection = candidate;
+                }
+
+                using var proofTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                proofTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var control = await connection.AcceptInboundStreamAsync(proofTimeout.Token).ConfigureAwait(false);
+                var hello = await ReadExactlyAsync(control, 17, proofTimeout.Token).ConfigureAwait(false);
+                if (hello == null || hello[0] != PairedMarker)
+                {
+                    throw new AuthenticationException("the friend's link proof didn't match");
+                }
+
+                var clientNonce = hello.AsSpan(1, 16).ToArray();
+                var serverNonce = RandomNumberGenerator.GetBytes(16);
+                var answer = new byte[1 + 16 + 32];
+                answer[0] = PairedMarker;
+                serverNonce.CopyTo(answer, 1);
+                PairedProof(proofKey, (byte)'S', transcript, clientNonce, serverNonce).CopyTo(answer, 17);
+                await control.WriteAsync(answer, proofTimeout.Token).ConfigureAwait(false);
+                var proof = await ReadExactlyAsync(control, 32, proofTimeout.Token).ConfigureAwait(false);
+                if (proof == null || !CryptographicOperations.FixedTimeEquals(proof, PairedProof(proofKey, (byte)'C', transcript, clientNonce, serverNonce)))
+                {
+                    throw new AuthenticationException("the friend's link proof didn't match");
+                }
+
+                control.CompleteWrites();
+                return connection;
+            }
+            catch (Exception ex)
+            {
+                if (connection != null)
+                {
+                    await connection.DisposeAsync().ConfigureAwait(false);
+                }
+
+                throw Translate(ex);
+            }
+            finally
+            {
+                await listener.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
         public static async Task<Stream> OpenStreamAsync(object connection, CancellationToken cancellationToken)
         {
             try
@@ -325,6 +551,24 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
             }
 
             return CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.GetRawCertData()), wanted);
+        }
+
+        private static byte[] PairedProof(byte[] key, byte side, byte[] transcript, byte[] clientNonce, byte[] serverNonce)
+        {
+            var message = new byte[1 + transcript.Length + 32];
+            message[0] = side;
+            transcript.CopyTo(message, 1);
+            clientNonce.CopyTo(message, 1 + transcript.Length);
+            serverNonce.CopyTo(message, 1 + transcript.Length + 16);
+            return HMACSHA256.HashData(key, message);
+        }
+
+        private static byte[] Prepend(byte first, byte[] rest)
+        {
+            var message = new byte[1 + rest.Length];
+            message[0] = first;
+            rest.CopyTo(message, 1);
+            return message;
         }
 
         private static byte[] ProofMessage(byte[] proof)

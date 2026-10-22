@@ -81,6 +81,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
+            // Over a paired friend's link, only that friend's own token counts: a
+            // friend that learned another friend's token can't use it there.
+            var linkFriend = Pairing.PairedLinkContext.FriendId(request);
             foreach (var server in servers)
             {
                 if (!server.Enabled || string.IsNullOrEmpty(server.IssuedApiKey))
@@ -90,7 +93,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (FixedTimeEquals(server.IssuedApiKey, token))
                 {
-                    return server;
+                    return linkFriend == null || string.Equals(server.Id, linkFriend, StringComparison.Ordinal) ? server : null;
                 }
             }
 

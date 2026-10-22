@@ -175,6 +175,23 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>True when the target is an origin-form path to an allowed route.</summary>
         internal static bool IsAllowedTarget(string target)
         {
+            if (!IsCleanTarget(target, out var path))
+            {
+                return false;
+            }
+
+            return AllowedExact.Any(p => string.Equals(path, p, StringComparison.OrdinalIgnoreCase))
+                || AllowedPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase) && path.Length > p.Length);
+        }
+
+        /// <summary>
+        /// The target checks every link gate shares: an origin-form path with no
+        /// controls, spaces, dot segments, doubled or encoded slashes, encoded dots,
+        /// NULs or fragments. <paramref name="path"/> is the part before any query.
+        /// </summary>
+        internal static bool IsCleanTarget(string target, out string path)
+        {
+            path = string.Empty;
             if (string.IsNullOrEmpty(target) || target[0] != '/' || target.Length > 8192)
             {
                 return false;
@@ -191,7 +208,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             var query = target.IndexOf('?', StringComparison.Ordinal);
-            var path = query < 0 ? target : target.Substring(0, query);
+            path = query < 0 ? target : target.Substring(0, query);
             if (path.Contains('\\', StringComparison.Ordinal)
                 || path.Contains("//", StringComparison.Ordinal)
                 || path.Contains('#', StringComparison.Ordinal)
@@ -204,13 +221,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return false;
             }
 
-            if (target.Contains('#', StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            return AllowedExact.Any(p => string.Equals(path, p, StringComparison.OrdinalIgnoreCase))
-                || AllowedPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase) && path.Length > p.Length);
+            return !target.Contains('#', StringComparison.Ordinal);
         }
 
         /// <summary>

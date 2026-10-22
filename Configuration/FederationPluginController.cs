@@ -3640,7 +3640,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 // mint time (see IssuePlaybackToken) makes removal revoke it
                 // instantly instead.
                 var owner = _friends.FindByFederationId(ownerFederationId);
-                if (owner == null || !_peerAccess.IsItemVisible(owner, remoteUserId, itemGuid))
+                if (owner == null || !IsLinkFriendOrNotLinked(owner) || !_peerAccess.IsItemVisible(owner, remoteUserId, itemGuid))
                 {
                     return false;
                 }
@@ -3662,7 +3662,7 @@ namespace Jellyfin.Plugin.Federation.Api
             if (!download && _userSessionTokens.TryValidate(token, out var federationId, out var sessionRemoteUserId))
             {
                 var server = _friends.FindByFederationId(federationId);
-                if (server != null && _peerAccess.IsItemVisible(server, sessionRemoteUserId, itemGuid))
+                if (server != null && IsLinkFriendOrNotLinked(server) && _peerAccess.IsItemVisible(server, sessionRemoteUserId, itemGuid))
                 {
                     return true;
                 }
@@ -3690,7 +3690,17 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var owner = _friends.FindByFederationId(ownerFederationId);
-            return owner != null && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid);
+            return owner != null && IsLinkFriendOrNotLinked(owner) && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid);
+        }
+
+        /// <summary>
+        /// Over a paired friend's link, an item token must belong to that friend (the
+        /// forwarder vouches for which link a request came over).
+        /// </summary>
+        private bool IsLinkFriendOrNotLinked(RemoteServer owner)
+        {
+            var linked = Services.Pairing.PairedLinkContext.FriendId(Request);
+            return linked == null || string.Equals(owner.Id, linked, StringComparison.Ordinal);
         }
 
         /// <summary>
@@ -3775,18 +3785,18 @@ namespace Jellyfin.Plugin.Federation.Api
         private RemoteServer? ResolveStreamFriend(string? token, Guid itemGuid, out string? remoteUserId)
         {
             remoteUserId = null;
+            RemoteServer? friend = null;
             if (_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var ownerId, out _, out remoteUserId))
             {
-                return _friends.FindByFederationId(ownerId);
+                friend = _friends.FindByFederationId(ownerId);
             }
-
-            if (_userSessionTokens.TryValidate(token, out var sessionOwnerId, out var sessionUser))
+            else if (_userSessionTokens.TryValidate(token, out var sessionOwnerId, out var sessionUser))
             {
                 remoteUserId = sessionUser;
-                return _friends.FindByFederationId(sessionOwnerId);
+                friend = _friends.FindByFederationId(sessionOwnerId);
             }
 
-            return null;
+            return friend != null && IsLinkFriendOrNotLinked(friend) ? friend : null;
         }
 
         /// <summary>Answers 429 with the machine-readable reason, and logs it for the admin.</summary>
@@ -4035,6 +4045,11 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var owner = _friends.FindByFederationId(federationId);
+            if (owner != null && !IsLinkFriendOrNotLinked(owner))
+            {
+                return null;
+            }
+
             // Not owner.Enabled: that switch is whether we pull from this friend,
             // not whether we share with them (DirectStream doesn't check it either);
             // sharing is IsItemVisible's job.

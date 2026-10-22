@@ -60,6 +60,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         internal static Func<int, IPAddress, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>> Accept { get; private set; } = null!;
 
         /// <summary>Gets the call that opens a request stream.</summary>
+        internal static Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, CancellationToken, Task<object>> ConnectPaired { get; private set; } = null!;
+
+        internal static Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>> AcceptPaired { get; private set; } = null!;
+
         internal static Func<object, CancellationToken, Task<Stream>> OpenStream { get; private set; } = null!;
 
         /// <summary>Gets the call that waits for the other side's next stream.</summary>
@@ -183,6 +187,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             Connect = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], CancellationToken, Task<object>>>("ConnectAsync");
             Accept = Bind<Func<int, IPAddress, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>>>("AcceptAsync");
+            ConnectPaired = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, CancellationToken, Task<object>>>("ConnectPairedAsync");
+            AcceptPaired = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>>>("AcceptPairedAsync");
             OpenStream = Bind<Func<object, CancellationToken, Task<Stream>>>("OpenStreamAsync");
             AcceptStream = Bind<Func<object, CancellationToken, Task<Stream>>>("AcceptStreamAsync");
             CompleteWrites = Bind<Action<Stream>>("CompleteWrites");

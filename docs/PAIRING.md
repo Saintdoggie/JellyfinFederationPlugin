@@ -94,22 +94,24 @@ material, so it differs every time.
 - This answers the review's main finding (H1): a person who can see and replace codes
   can't get past two humans comparing digits on a separate channel.
 
-## The pairing port
+## The pairing ports
 
-One fixed UDP port per server for paired friends (default 47950, changeable), closed
-entirely while pairing is off.
+Each pairing has **its own fixed UDP port**, picked at random from a range (default
+47950–47999, changeable) when the code is made, carried in the code and kept for that
+friend. The QUIC library runs one connection per port, and a steady port per friend
+keeps each router's mapping steady. The range is closed entirely while pairing is off.
 
-- **Only punch packets are answered**, and only when valid: exact length, magic, a
-  `pairTag` that names one known pair (one HMAC per packet, never a loop over keys),
-  a valid tag, a sender role that isn't ours, a time within 120 s and a nonce not seen
-  in 5 minutes. An ack is the same size as the probe. Nothing else gets a reply.
-- **No QUIC listener stays open.** After a valid probe from a paired friend, the server
-  opens a listener on the port for 10 s for that friend's pinned certificate and
-  address only, then closes it. A random host's QUIC packet never gets a handshake reply.
-- ALPN `jf-fed-pair/1`, distinct from direct links. The link's gate profile (paired
-  friend, which friend) is fixed when the link is made, never chosen per request.
-- Rate limits: a global 2,000 packets/s budget, plus a bounded (LRU, 4,096 entries)
-  per-source budget of 50 packets/s. Spoofing can't grow memory.
+- While a friend's link is down, its port answers **only punch packets**, and only valid
+  ones: exact length, magic, this pairing's `pairTag`, a valid tag, a sender role that
+  isn't ours, a time within 120 s and a nonce not seen in 5 minutes. An ack is the same
+  size as the probe. Nothing else gets a reply.
+- **No QUIC listener stays open.** After a valid probe, the QUIC server side opens a
+  listener on that port for 10 s. It refuses any other address before TLS starts, and
+  accepts only the pinned certificate and a valid proof. Then it closes.
+- ALPN `jf-fed-pair/1`, distinct from direct links. The link's gate profile is fixed
+  when the link is made, never chosen per request.
+- Rate limits: a per-port budget of 50 packets/s, plus a global budget of 2,000
+  packets/s across all pairing ports.
 
 ## Pairing flow
 
@@ -285,9 +287,9 @@ The Friends tab keeps one line: "Direct links and pairing codes are on the Beta 
 
 ## Config
 
-- `PairingOptIn` (false), `PairingPort` (47950), `PairMailboxHelperOptIn` (false).
+- `PairingOptIn` (false), `PairingPortRange` ("47950-47999"), `PairMailboxHelperOptIn` (false).
 - `RemoteServer`: `Paired`, `PairingId` (64-bit, for its `100::` URL), `PairPeerFingerprint`,
-  `PairKey` (protected), `PairLastEndpoints`, `PairHelperIds`, `PairSafetyConfirmed`,
+  `PairKey` (protected), `PairLocalPort`, `PairLastEndpoints`, `PairHelperIds`, `PairSafetyConfirmed`,
   `PairMailCounterOut`, `PairMailCounterIn`, `PairedAtUtc`.
 - Pending offers and answers live in memory only.
 
