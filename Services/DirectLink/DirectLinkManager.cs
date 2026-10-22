@@ -190,7 +190,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// server accepts direct links, else 0.
         /// </summary>
         public static int AdvertisedVersion()
-            => Plugin.Instance?.Configuration?.EnableDirectLink == true && QuicTransportHost.Available ? DirectLinkProtocol.Version : 0;
+            => Plugin.Instance?.Configuration?.DirectLinkOptIn == true && QuicTransportHost.Available ? DirectLinkProtocol.Version : 0;
 
         /// <summary>
         /// The link client for friend <paramref name="serverId"/> when its direct
@@ -317,7 +317,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             {
                 Available = QuicTransportHost.Available,
                 Reason = QuicTransportHost.Reason,
-                Enabled = config?.EnableDirectLink == true,
+                Enabled = config?.DirectLinkOptIn == true,
                 PublicEndpoint = _publicEndpoint,
                 Nat = DirectLinkProtocol.NatName(_lastNat),
                 Fingerprint = QuicTransportHost.Available ? Identity().Fingerprint : string.Empty
@@ -378,7 +378,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         public async Task<(int Status, DirectLinkAnswer? Answer, string? Message)> HandleOfferAsync(RemoteServer caller, DirectLinkOffer? offer, CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
-            if (config?.EnableDirectLink != true || string.Equals(caller.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase))
+            if (config?.DirectLinkOptIn != true || string.Equals(caller.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase))
             {
                 return (403, null, "Direct links are switched off on this server.");
             }
@@ -548,7 +548,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             foreach (var (friendId, link) in _inbound.ToList())
             {
                 var friend = config.RemoteServers.FirstOrDefault(s => string.Equals(s.Id, friendId, StringComparison.OrdinalIgnoreCase));
-                string? reason = config.EnableDirectLink != true ? "direct links were switched off here"
+                string? reason = config.DirectLinkOptIn != true ? "direct links were switched off here"
                     : friend == null ? "the friend was removed"
                     : !friend.Enabled ? "the friend was disabled"
                     : string.Equals(friend.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase) ? "direct links were switched off for this friend"
@@ -575,7 +575,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>Whether a link to this friend should be attempted, and why not.</summary>
         internal static (DirectLinkState State, string Detail) Eligibility(RemoteServer server, PluginConfiguration? config)
         {
-            if (config?.EnableDirectLink != true)
+            if (config?.DirectLinkOptIn != true)
             {
                 return (DirectLinkState.Off, "Direct links are switched off in settings.");
             }

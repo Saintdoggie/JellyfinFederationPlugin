@@ -264,7 +264,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public IActionResult GetSettings()
         {
             var config = Plugin.Instance!.Configuration;
-            return Ok(new { config.EnableDirectLink, config.DirectLinkStunServers });
+            return Ok(new { EnableDirectLink = config.DirectLinkOptIn, config.DirectLinkStunServers });
         }
 
         /// <summary>Admin: saves the direct link settings.</summary>
@@ -291,7 +291,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 config.DirectLinkStunServers = servers.Length > 0 ? servers : new PluginConfiguration().DirectLinkStunServers;
             }
 
-            config.EnableDirectLink = body.EnableDirectLink;
+            config.DirectLinkOptIn = body.EnableDirectLink;
             Plugin.Instance.SaveConfiguration();
             foreach (var server in config.RemoteServers)
             {
@@ -355,7 +355,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
     public class DirectLinkSettingsBody
     {
         /// <summary>Gets or sets a value indicating whether direct links are on.</summary>
-        public bool EnableDirectLink { get; set; } = true;
+        public bool EnableDirectLink { get; set; }
 
         /// <summary>Gets or sets the STUN servers (null keeps the current ones).</summary>
         public string[]? DirectLinkStunServers { get; set; }

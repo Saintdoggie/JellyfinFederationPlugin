@@ -520,6 +520,26 @@ public class DirectLinkTests
         manager.Reconsider("anyone");
     }
 
+    [Fact]
+    public void DirectLinks_AreOffUntilTheAdminOptsIn()
+    {
+        // A direct link shows the friend this home's address; nothing may link by default.
+        var config = new Jellyfin.Plugin.Federation.Configuration.PluginConfiguration();
+        var friend = new Jellyfin.Plugin.Federation.Configuration.RemoteServer { Enabled = true };
+        Assert.False(config.DirectLinkOptIn);
+        Assert.Equal(DirectLinkState.Off, DirectLinkManager.Eligibility(friend, config).State);
+    }
+
+    [Fact]
+    public void DirectLinks_A0195SavedOnSetting_LoadsAsOff()
+    {
+        // 0.0.195 saved EnableDirectLink=true for everyone; that must not count as opting in.
+        var xml = "<?xml version=\"1.0\"?><PluginConfiguration xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"><EnableDirectLink>true</EnableDirectLink></PluginConfiguration>";
+        var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Jellyfin.Plugin.Federation.Configuration.PluginConfiguration));
+        var config = (Jellyfin.Plugin.Federation.Configuration.PluginConfiguration)serializer.Deserialize(new StringReader(xml))!;
+        Assert.False(config.DirectLinkOptIn);
+    }
+
     [Theory]
     [InlineData(0, null)]
     [InlineData(25, 20)]

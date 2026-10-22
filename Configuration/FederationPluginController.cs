@@ -473,7 +473,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     // config save - enforced in FederationPeerAccessService.IsItemVisible.
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
-                    config.EnableDirectLink = existing.EnableDirectLink;
+                    config.DirectLinkOptIn = existing.DirectLinkOptIn;
                     config.DirectLinkStunServers = existing.DirectLinkStunServers;
                     config.MaxRemoteTranscodesPerFriend = existing.MaxRemoteTranscodesPerFriend;
                     config.UseFriendsTranscoders = existing.UseFriendsTranscoders;

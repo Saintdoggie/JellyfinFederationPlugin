@@ -487,10 +487,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// encrypted UDP connection straight between the two servers, punched
         /// through both home routers, so a friend's video doesn't have to go
         /// through a slow tunnel or VPS. Needs the friend on 0.0.195+.
+        /// Off by default: a direct link shows each friend's server this home's
+        /// internet address, which a tunnel or VPS may be there to keep private.
+        /// Replaces 0.0.195's <c>EnableDirectLink</c> (default on), so servers that
+        /// had it saved start off until the admin opts in.
         /// Per-friend switch: <see cref="RemoteServer.DirectLinkMode"/>. Managed
         /// by <c>Settings/DirectLink</c>, preserved by the main Save.
         /// </summary>
-        public bool EnableDirectLink { get; set; } = true;
+        public bool DirectLinkOptIn { get; set; }
 
         /// <summary>
         /// Gets or sets the STUN servers (<c>host:port</c>) a direct link asks for
