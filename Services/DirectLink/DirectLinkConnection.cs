@@ -20,6 +20,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private long _bytesOut;
         private int _activeStreams;
         private int _disposed;
+        private int _closeStarted;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DirectLinkConnection"/> class.
@@ -27,8 +28,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <param name="connection">The authenticated QUIC connection (a <see cref="QuicTransportHost"/> handle).</param>
         /// <param name="serverId">The friend's configured server id.</param>
         /// <param name="isInitiator">True on the side that opens the streams.</param>
-        /// <param name="federationToken">Initiator: the friend's federation token, sent on every request.</param>
-        public DirectLinkConnection(object connection, string serverId, bool isInitiator, string? federationToken)
+        /// <param name="federationToken">Initiator: gives the friend's current federation token, sent on every request (read each time, so a re-paired friend's new token is used).</param>
+        public DirectLinkConnection(object connection, string serverId, bool isInitiator, Func<string?>? federationToken)
         {
             Quic = connection;
             ServerId = serverId;
@@ -118,9 +119,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>Records that the link ended.</summary>
         public void MarkClosed(string reason)
         {
-            if (_closed.TrySetResult())
+            if (Interlocked.CompareExchange(ref _closeStarted, 1, 0) == 0)
             {
                 CloseReason = reason;
+                _closed.TrySetResult();
                 try
                 {
                     _closing.Cancel();
@@ -155,7 +157,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _closing.Dispose();
         }
 
-        private HttpClient CreateHttpClient(string? federationToken)
+        private HttpClient CreateHttpClient(Func<string?>? federationToken)
         {
             var sockets = new SocketsHttpHandler
             {
@@ -183,30 +185,33 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     }
                 }
             };
-            var client = new HttpClient(new OneRequestPerStreamHandler(sockets))
+            return new HttpClient(new OneRequestPerStreamHandler(sockets, federationToken))
             {
                 BaseAddress = new Uri("http://federation-direct-link/"),
                 Timeout = Timeout.InfiniteTimeSpan
             };
-            if (!string.IsNullOrEmpty(federationToken))
-            {
-                client.DefaultRequestHeaders.TryAddWithoutValidation(FederationTokenAuth.Header, federationToken);
-            }
-
-            return client;
         }
 
         /// <summary>Each request gets its own QUIC stream; the friend closes it after one answer.</summary>
         private sealed class OneRequestPerStreamHandler : DelegatingHandler
         {
-            public OneRequestPerStreamHandler(HttpMessageHandler inner)
+            private readonly Func<string?>? _token;
+
+            public OneRequestPerStreamHandler(HttpMessageHandler inner, Func<string?>? token)
                 : base(inner)
             {
+                _token = token;
             }
 
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 request.Headers.ConnectionClose = true;
+                if (_token?.Invoke() is { Length: > 0 } token)
+                {
+                    request.Headers.Remove(FederationTokenAuth.Header);
+                    request.Headers.TryAddWithoutValidation(FederationTokenAuth.Header, token);
+                }
+
                 request.Version = HttpVersion.Version11;
                 request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
                 return base.SendAsync(request, cancellationToken);

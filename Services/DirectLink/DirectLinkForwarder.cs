@@ -35,13 +35,17 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _logger = logger;
         }
 
+        /// <summary>Gets or sets how long one read or write of an answer may wait before the request is dropped.</summary>
+        public TimeSpan StallTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
         /// <summary>Gets or sets the most requests served at once on one link.</summary>
         public int MaxConcurrentStreams { get; set; } = 128;
 
         /// <summary>Accepts and serves streams until the link ends.</summary>
         public async Task RunAsync(DirectLinkConnection link, string friendName)
         {
-            using var slots = new SemaphoreSlim(MaxConcurrentStreams);
+            // Not disposed: requests still finishing release it after the link ends.
+            var slots = new SemaphoreSlim(MaxConcurrentStreams);
             try
             {
                 while (!link.Closing.IsCancellationRequested)
@@ -114,8 +118,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         upstream = tcp.GetStream();
                         if (local.Scheme == Uri.UriSchemeHttps)
                         {
-                            // This server's own address, as its admin configured it.
-                            var tls = new SslStream(upstream, false, (_, _, _, _) => true);
+                            // This server's own address: certificate checks are skipped
+                            // only on loopback (a self-signed local cert); anything else is
+                            // validated normally.
+                            var loopback = System.Net.IPAddress.TryParse(local.Host, out var hostIp) ? System.Net.IPAddress.IsLoopback(hostIp) : string.Equals(local.Host, "localhost", StringComparison.OrdinalIgnoreCase);
+                            var tls = loopback ? new SslStream(upstream, false, (_, _, _, _) => true) : new SslStream(upstream, false);
                             await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = local.Host }, cancel).ConfigureAwait(false);
                             upstream = tls;
                         }
@@ -138,9 +145,20 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                             var buffer = new byte[64 * 1024];
                             int read;
-                            while ((read = await upstream.ReadAsync(buffer, cancel).ConfigureAwait(false)) > 0)
+                            using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                            while (true)
                             {
-                                await stream.WriteAsync(buffer.AsMemory(0, read), cancel).ConfigureAwait(false);
+                                // A friend that stops reading would otherwise hold this
+                                // request (and Jellyfin's work behind it) for as long as
+                                // the link lives.
+                                stall.CancelAfter(StallTimeout);
+                                read = await upstream.ReadAsync(buffer, stall.Token).ConfigureAwait(false);
+                                if (read <= 0)
+                                {
+                                    break;
+                                }
+
+                                await stream.WriteAsync(buffer.AsMemory(0, read), stall.Token).ConfigureAwait(false);
                                 link?.AddOut(read);
                             }
 

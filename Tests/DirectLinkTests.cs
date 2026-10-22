@@ -116,12 +116,16 @@ public class DirectLinkTests
     [Fact]
     public void Punch_Targets_GuessNearbyPortsOnlyForSymmetricPeers()
     {
-        var c = new[] { new IPEndPoint(IPAddress.Parse("203.0.113.9"), 50000) };
+        var c = new[] { new IPEndPoint(IPAddress.Parse("93.184.216.9"), 50000) };
         Assert.Single(Puncher.Targets(c, false));
         var guessed = Puncher.Targets(c, true);
-        Assert.Equal(9, guessed.Count);
-        Assert.Contains(guessed, e => e.Port == 50004);
-        Assert.Contains(guessed, e => e.Port == 49996);
+        Assert.Equal(5, guessed.Count);
+        Assert.Contains(guessed, e => e.Port == 50002);
+        Assert.Contains(guessed, e => e.Port == 49998);
+
+        // However many candidates a friend sends, the spray stays bounded.
+        var many = Enumerable.Range(1, 8).Select(i => new IPEndPoint(IPAddress.Parse("93.184.216." + i), 50000)).ToArray();
+        Assert.Equal(Puncher.MaxTargets, Puncher.Targets(many, true).Count);
     }
 
     [Fact]
@@ -170,35 +174,42 @@ public class DirectLinkTests
 
     // ---------- Candidates and signaling ----------
     [Theory]
-    [InlineData("srflx", "203.0.113.5", 41641, false, true)]
-    [InlineData("srflx", "100.101.102.103", 41641, false, true)]
-    [InlineData("host", "100.64.0.1", 2000, false, true)]
-    [InlineData("host", "192.168.1.20", 41641, false, false)]
-    [InlineData("host", "192.168.1.20", 41641, true, true)]
-    [InlineData("srflx", "10.0.0.5", 41641, false, false)]
-    [InlineData("srflx", "172.20.0.5", 41641, false, false)]
-    [InlineData("srflx", "127.0.0.1", 41641, true, false)]
-    [InlineData("srflx", "0.0.0.0", 41641, true, false)]
-    [InlineData("srflx", "224.0.0.251", 5353, true, false)]
-    [InlineData("srflx", "255.255.255.255", 41641, true, false)]
-    [InlineData("srflx", "169.254.1.2", 41641, true, false)]
-    [InlineData("srflx", "203.0.113.5", 53, false, false)]
-    [InlineData("srflx", "203.0.113.5", 70000, false, false)]
-    [InlineData("srflx", "::1", 41641, true, false)]
-    [InlineData("srflx", "2001:db8::1", 41641, false, false)]
-    [InlineData("srflx", "203.000.113.005", 41641, false, false)]
-    [InlineData("relay", "203.0.113.5", 41641, false, false)]
-    [InlineData("srflx", "example.com", 41641, false, false)]
-    public void Candidates_OnlySafeAddressesAreAccepted(string kind, string address, int port, bool allowPrivate, bool accepted)
-        => Assert.Equal(accepted, DirectLinkProtocol.AcceptCandidate(new DirectLinkCandidate { Kind = kind, Address = address, Port = port }, allowPrivate) != null);
+    [InlineData("srflx", "93.184.216.5", 41641, false, false, true)]
+    [InlineData("srflx", "100.101.102.103", 41641, false, false, false)]
+    [InlineData("srflx", "100.101.102.103", 41641, false, true, true)]
+    [InlineData("host", "100.64.0.1", 2000, false, true, true)]
+    [InlineData("host", "100.64.0.1", 2000, true, false, false)]
+    [InlineData("host", "192.168.1.20", 41641, false, false, false)]
+    [InlineData("host", "192.168.1.20", 41641, true, false, true)]
+    [InlineData("srflx", "10.0.0.5", 41641, false, false, false)]
+    [InlineData("srflx", "172.20.0.5", 41641, false, false, false)]
+    [InlineData("srflx", "127.0.0.1", 41641, true, true, false)]
+    [InlineData("srflx", "0.0.0.0", 41641, true, true, false)]
+    [InlineData("srflx", "224.0.0.251", 5353, true, true, false)]
+    [InlineData("srflx", "255.255.255.255", 41641, true, true, false)]
+    [InlineData("srflx", "169.254.1.2", 41641, true, true, false)]
+    [InlineData("srflx", "192.0.0.9", 41641, true, true, false)]
+    [InlineData("srflx", "192.0.2.1", 41641, true, true, false)]
+    [InlineData("srflx", "198.18.0.1", 41641, true, true, false)]
+    [InlineData("srflx", "198.51.100.1", 41641, true, true, false)]
+    [InlineData("srflx", "203.0.113.5", 41641, true, true, false)]
+    [InlineData("srflx", "93.184.216.5", 53, false, false, false)]
+    [InlineData("srflx", "93.184.216.5", 70000, false, false, false)]
+    [InlineData("srflx", "::1", 41641, true, true, false)]
+    [InlineData("srflx", "2001:db8::1", 41641, false, false, false)]
+    [InlineData("srflx", "093.184.216.005", 41641, false, false, false)]
+    [InlineData("relay", "93.184.216.5", 41641, false, false, false)]
+    [InlineData("srflx", "example.com", 41641, false, false, false)]
+    public void Candidates_OnlySafeAddressesAreAccepted(string kind, string address, int port, bool allowPrivate, bool allowTailscale, bool accepted)
+        => Assert.Equal(accepted, DirectLinkProtocol.AcceptCandidate(new DirectLinkCandidate { Kind = kind, Address = address, Port = port }, allowPrivate, allowTailscale) != null);
 
     [Fact]
     public void Candidates_AreCappedAndDeduplicated()
     {
-        var many = Enumerable.Range(0, 20).Select(i => new DirectLinkCandidate { Address = "203.0.113." + (i % 3), Port = 5000 }).ToList();
+        var many = Enumerable.Range(0, 20).Select(i => new DirectLinkCandidate { Address = "93.184.216." + (i % 3), Port = 5000 }).ToList();
         var accepted = DirectLinkProtocol.AcceptCandidates(many, false);
         Assert.Equal(3, accepted.Count);
-        Assert.True(DirectLinkProtocol.AcceptCandidates(Enumerable.Range(0, 20).Select(i => new DirectLinkCandidate { Address = "203.0.113." + i, Port = 5000 }), false).Count <= DirectLinkProtocol.MaxCandidates);
+        Assert.True(DirectLinkProtocol.AcceptCandidates(Enumerable.Range(0, 20).Select(i => new DirectLinkCandidate { Address = "93.184.216." + i, Port = 5000 }), false).Count <= DirectLinkProtocol.MaxCandidates);
     }
 
     [Theory]
@@ -278,6 +289,9 @@ public class DirectLinkTests
     [InlineData("GET /Plugins/Federation/Peer/Play/t/x#frag HTTP/1.1\r\nHost: x\r\n\r\n")]
     [InlineData("GET /Plugins/Federation/Peer/Play/t/x%00 HTTP/1.1\r\nHost: x\r\n\r\n")]
     [InlineData("GET /Plugins/Federation/Peer/BitrateTestX HTTP/1.1\r\nHost: x\r\n\r\n")]
+    [InlineData("GET /Plugins/Federation/Peer/Play/t/x\nInjected:v HTTP/1.1\r\nHost: x\r\n\r\n")]
+    [InlineData("GET /Plugins/Federation/Peer/Play/t/x\rInjected:v HTTP/1.1\r\nHost: x\r\n\r\n")]
+    [InlineData("GET /Plugins/Federation/Peer/Play/t/x\tz HTTP/1.1\r\nHost: x\r\n\r\n")]
     [InlineData("GET /Plugins/Federation/Peer/Play/t/x HTTP/1.1\r\nHost: x\r\n")]
     public void Gate_RefusesEverythingElse(string head)
         => Assert.Null(DirectLinkRequestHead.Parse(Encoding.ASCII.GetBytes(head), out _));
@@ -306,6 +320,51 @@ public class DirectLinkTests
         Assert.DoesNotContain("1.2.3.4", forwarded, StringComparison.Ordinal);
         Assert.DoesNotContain("X-Federation-Direct-Link: 0", forwarded, StringComparison.Ordinal);
         Assert.EndsWith("Connection: close\r\nX-Federation-Direct-Link: 1\r\n\r\n", forwarded, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("X-Forwarded-Host", true)]
+    [InlineData("X-Real-IP", true)]
+    [InlineData("X-Forwarded-For", false)]
+    [InlineData("Forwarded", false)]
+    [InlineData("CF-Connecting-IP", false)]
+    [InlineData("True-Client-IP", false)]
+    public void Relay_HomeViewer_UsesJellyfinsLanRules_AndDistrustsLeftoverProxyHeaders(string? header, bool home)
+    {
+        var network = new Moq.Mock<MediaBrowser.Common.Net.INetworkManager>();
+        network.Setup(n => n.IsInLocalNetwork(Moq.It.IsAny<IPAddress>())).Returns(true);
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        http.Connection.RemoteIpAddress = IPAddress.Parse("192.168.1.50");
+        if (header != null)
+        {
+            http.Request.Headers[header] = "1.2.3.4";
+        }
+
+        Assert.Equal(home, DirectLinkRelay.IsHomeViewer(http, network.Object));
+        Assert.False(DirectLinkRelay.IsHomeViewer(http, null));
+        network.Setup(n => n.IsInLocalNetwork(Moq.It.IsAny<IPAddress>())).Returns(false);
+        Assert.False(DirectLinkRelay.IsHomeViewer(http, network.Object));
+    }
+
+    [Fact]
+    public void Relay_MapsFriendUrlsOntoTheLink_DroppingTheFriendsPathBase()
+    {
+        Assert.Equal("http://federation-direct-link/Plugins/Federation/Peer/Play/t/a.m3u8?x=1", DirectLinkRelay.ToLinkUri("https://friend.example/jf/Plugins/Federation/Peer/Play/t/a.m3u8?x=1").ToString());
+        Assert.Equal("/base/Plugins/Federation/DirectLink/abc%20d", DirectLinkRelay.PlayerBase("/base/", "abc d"));
+        Assert.True(DirectLinkRelay.IsPlaylist("/x/main.m3u8", null));
+        Assert.True(DirectLinkRelay.IsPlaylist("/x/y", "application/vnd.apple.mpegurl"));
+        Assert.False(DirectLinkRelay.IsPlaylist("/x/0.ts", "video/mp2t"));
+    }
+
+    [Fact]
+    public async Task Forwarder_DropsARequestWhoseReaderStopsReading()
+    {
+        using var web = new TinyHttpServer();
+        var forwarder = new DirectLinkForwarder(() => new Uri("http://127.0.0.1:" + web.Port), NullLogger.Instance) { StallTimeout = TimeSpan.FromMilliseconds(300) };
+        var stuck = new StuckReaderStream(Encoding.ASCII.GetBytes("GET /Plugins/Federation/DirectStream/x HTTP/1.1\r\nHost: f\r\n\r\n"));
+        await forwarder.ServeAsync(stuck, null, "friend").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(stuck.WriteCancelled);
     }
 
     // ---------- Identity ----------
@@ -372,7 +431,8 @@ public class DirectLinkTests
         var server = await accept;
 
         var serverLink = new DirectLinkConnection(server, "friend", false, null);
-        await using var clientLink = new DirectLinkConnection(client, "friend", true, "the-token");
+        var token = "the-token";
+        await using var clientLink = new DirectLinkConnection(client, "friend", true, () => token);
         clientLink.StartCloseWatch();
         var forwarder = new DirectLinkForwarder(() => new Uri("http://127.0.0.1:" + web.Port), NullLogger.Instance);
         var serving = forwarder.RunAsync(serverLink, "friend");
@@ -388,6 +448,16 @@ public class DirectLinkTests
         Assert.Equal(3, web.Requests.Count);
         Assert.All(web.Requests, r => Assert.Contains("X-Federation-Direct-Link: 1", r, StringComparison.Ordinal));
         Assert.All(web.Requests, r => Assert.Contains("X-Federation-Token: the-token", r, StringComparison.Ordinal));
+
+        // A re-paired friend's new token is used from the next request on.
+        token = "new-token";
+        using (var again = await clientLink.Http!.GetAsync("/Plugins/Federation/Peer/BitrateTest"))
+        {
+            Assert.Equal(HttpStatusCode.OK, again.StatusCode);
+        }
+
+        Assert.Contains("X-Federation-Token: new-token", web.Requests[^1], StringComparison.Ordinal);
+        Assert.DoesNotContain("the-token", web.Requests[^1], StringComparison.Ordinal);
         Assert.True(clientLink.BytesIn >= 3 * TinyHttpServer.BodySize);
         Assert.True(serverLink.BytesOut >= 3 * TinyHttpServer.BodySize);
 
@@ -401,7 +471,7 @@ public class DirectLinkTests
             Assert.Equal(HttpStatusCode.Forbidden, post.StatusCode);
         }
 
-        Assert.Equal(3, web.Requests.Count);
+        Assert.Equal(4, web.Requests.Count);
 
         // Parallel requests share the link.
         var parallel = await Task.WhenAll(Enumerable.Range(0, 8).Select(i => clientLink.Http!.GetByteArrayAsync("/Plugins/Federation/DirectStream/item" + i)));
@@ -559,6 +629,65 @@ public class DirectLinkTests
     }
 
     private static FakeStunServer FakeStun(int mapPort) => new(mapPort);
+
+    /// <summary>Serves a request head, then never lets an answer through (a friend that stopped reading).</summary>
+    private sealed class StuckReaderStream : Stream
+    {
+        private readonly byte[] _request;
+        private int _read;
+
+        public StuckReaderStream(byte[] request) => _request = request;
+
+        public bool WriteCancelled { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_read >= _request.Length)
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            var n = Math.Min(buffer.Length, _request.Length - _read);
+            _request.AsMemory(_read, n).CopyTo(buffer);
+            _read += n;
+            return n;
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                WriteCancelled = true;
+                throw;
+            }
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
 
     private sealed class FakeStunServer : IDisposable
     {
