@@ -42,6 +42,21 @@ public class FederationHttpTests : IDisposable
     }
 
     [Fact]
+    public void PairedAddresses_AreNeverValidInput_ExceptOnAStoredPairedFriend()
+    {
+        var url = FederationHttp.PairUrl(77);
+        Assert.False(Jellyfin.Plugin.Federation.Configuration.ConfigValidator.IsValidServerUrl(url));
+        Assert.False(Jellyfin.Plugin.Federation.Configuration.ConfigValidator.IsValidServerUrl(url + "/jellyfin"));
+        Assert.True(Jellyfin.Plugin.Federation.Configuration.ConfigValidator.IsValidServerUrl("https://friend.example"));
+
+        var config = new Jellyfin.Plugin.Federation.Configuration.PluginConfiguration();
+        config.RemoteServers.Add(new Jellyfin.Plugin.Federation.Configuration.RemoteServer { Name = "x", Url = url });
+        Assert.NotEmpty(Jellyfin.Plugin.Federation.Configuration.ConfigValidator.Validate(config));
+        config.RemoteServers[0].Paired = true;
+        Assert.Empty(Jellyfin.Plugin.Federation.Configuration.ConfigValidator.Validate(config));
+    }
+
+    [Fact]
     public async Task PairedAddress_WithoutALink_FailsBeforeAnySocket()
     {
         using var client = new HttpClient(FederationHttp.Handler());

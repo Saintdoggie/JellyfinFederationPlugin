@@ -959,6 +959,50 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string DirectLinkMode { get; set; } = "Auto";
 
         /// <summary>
+        /// Gets or sets a value indicating whether this friend was paired with codes
+        /// (docs/PAIRING.md): it has no reachable address, its <see cref="Url"/> is its
+        /// <c>http://[100::…]</c> link address, and everything goes over the link.
+        /// Set only by the pairing service; the main Save keeps it as it was.
+        /// </summary>
+        public bool Paired { get; set; }
+
+        /// <summary>Gets or sets the 64-bit pairing id (16 hex digits) in this friend's link address.</summary>
+        public string PairingId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the SHA-256 (hex) of the friend's pairing certificate; the link accepts only it.</summary>
+        public string PairPeerFingerprint { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the pair key (base64; encrypted on disk like <see cref="ApiKey"/>).</summary>
+        public string PairKey { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets this side's role on the link: 0 when its certificate sorts lower (QUIC client), else 1.</summary>
+        public int PairRole { get; set; }
+
+        /// <summary>Gets or sets the friend's last known pairing-port endpoints (<c>ip:port</c>).</summary>
+        public List<string> PairLastEndpoints { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets the safety number shown to both admins for this pairing.</summary>
+        public string PairSafetyNumber { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets a value indicating whether this admin confirmed the safety number matched.</summary>
+        public bool PairSafetyConfirmed { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether the friend's admin confirmed it too.</summary>
+        public bool PairPeerConfirmed { get; set; }
+
+        /// <summary>Gets or sets the friends (ids) allowed to pass reconnect messages for this pairing.</summary>
+        public List<string> PairHelperIds { get; set; } = new List<string>();
+
+        /// <summary>Gets or sets the last reconnect-message counter sent to this friend.</summary>
+        public long PairMailCounterOut { get; set; }
+
+        /// <summary>Gets or sets the last reconnect-message counter accepted from this friend.</summary>
+        public long PairMailCounterIn { get; set; }
+
+        /// <summary>Gets or sets when the pairing was made.</summary>
+        public DateTime? PairedAtUtc { get; set; }
+
+        /// <summary>
         /// Gets or sets whether this friend's federated items are allowed to be
         /// downloaded to local storage via <see cref="Services.FederationDownloadService"/>.
         /// True by default — downloads still need an authenticated admin request.
