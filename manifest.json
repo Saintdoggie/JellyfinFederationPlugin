@@ -8,12 +8,12 @@
     "category": "General",
     "versions": [
       {
-        "version": "0.0.195",
-        "changelog": "TEST BUILD (branch test-branch-udp-connection). Direct links: an encrypted UDP connection straight between your server and a friend's, opened through both home routers without port forwarding (like Tailscale, built in). Your viewers at home get a friend's video over it at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS; viewers elsewhere keep going straight to the friend, so your upload is never used for friend video. Library downloads from a friend also use it. Both servers need 0.0.195; Linux servers (x64/arm64), Windows later. Status per friend on the Friends tab, switch in Advanced, and a Direct link row in Playback Info. Security: keys pinned per session over the existing https friend channel, mutual TLS 1.3 (QUIC), only the friend's video, download and speed-test routes are carried, with the same token checks as today and your remote-access/IP rules applied to the friend's address. Includes everything in 0.0.194.",
+        "version": "0.0.196",
+        "changelog": "Direct links with friends (beta, off by default). An encrypted UDP connection straight between your server and a friend's, opened through both home routers without port forwarding. Your viewers at home get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS; viewers elsewhere keep going straight to the friend, so your upload is never used for friend video. Library downloads from a friend also use it. Privacy: a direct link shows the friend's server your home's internet address, so it stays off until you tick the box at the top of the Friends tab; if you use a tunnel or VPS to keep that address private, leave it off. While off, nothing about it runs. Viewers and players never see the address. Both servers need 0.0.196 with the box ticked; Linux servers (x64/arm64), Windows later. Status per friend on the Friends tab and a Direct link row in Playback Info. Security: keys pinned per session over the existing https friend channel, mutual TLS 1.3 (QUIC), only the friend's video, download and speed-test routes are carried, with the same token checks as today. Testers on 0.0.195: the switch starts off again, tick it to keep using direct links.",
         "targetAbi": "12.0.0.0",
-        "timestamp": "2026-10-22T00:35:44Z",
-        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.195-test/Jellyfin.Federation.zip",
-        "checksum": "36e4919b6a53f11623337506ca397fa0"
+        "timestamp": "2026-10-22T14:45:29Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.196/Jellyfin.Federation.zip",
+        "checksum": "1a5af8c39bf894197c8dc48e4895b038"
       },
       {
         "version": "0.0.194",
