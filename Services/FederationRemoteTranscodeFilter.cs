@@ -353,7 +353,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            var cap = _federationManager.GetEffectiveWanCapMbps(server);
+            // Over the link, the measured link is what carries the video, not the
+            // friend's tunnel the Auto cap was measured on; manual caps still apply.
+            var cap = viaLink && server.WanCapMode == WanCapMode.Auto
+                ? LinkCap(_directLinks!.LinkMbps(server.Id))
+                : _federationManager.GetEffectiveWanCapMbps(server);
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
@@ -412,6 +416,10 @@ namespace Jellyfin.Plugin.Federation.Services
             return value;
         }
 
+        /// <summary>The cap for a play over the direct link: 80% of the measured link, none when unmeasured or fast.</summary>
+        internal static int? LinkCap(double linkMbps)
+            => linkMbps is > 0 and < 500 ? Math.Max(1, (int)(linkMbps * 0.8)) : null;
+
         /// <summary>
         /// Fetches a playlist/subtitle from the friend: the result, or null and
         /// the status to give the player (502 when the friend can't be reached).
@@ -421,14 +429,34 @@ namespace Jellyfin.Plugin.Federation.Services
             try
             {
                 // Over the direct link when it's up (faster for this server's own
-                // fetches too), otherwise to the friend's address.
+                // fetches too), otherwise, or when the link fails, to the friend's address.
+                HttpRequestMessage Make(bool viaLink)
+                {
+                    var made = new HttpRequestMessage(HttpMethod.Get, viaLink ? DirectLink.DirectLinkRelay.ToLinkUri(handoff.Url) : new Uri(handoff.Url));
+                    made.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                    return made;
+                }
+
                 HttpClient? link = null;
-                var overLink = _directLinks?.TryGetClient(handoff.ServerId, out link) == true;
-                using var request = new HttpRequestMessage(HttpMethod.Get, overLink ? DirectLink.DirectLinkRelay.ToLinkUri(handoff.Url) : new Uri(handoff.Url));
-                request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
-                using var response = overLink
-                    ? await link!.SendAsync(request, cancellationToken).ConfigureAwait(false)
-                    : await Send(request, cancellationToken).ConfigureAwait(false);
+                HttpResponseMessage? viaLinkResponse = null;
+                if (_directLinks?.TryGetClient(handoff.ServerId, out link) == true)
+                {
+                    using var linkRequest = Make(true);
+                    using var linkTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    linkTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                    try
+                    {
+                        viaLinkResponse = await link!.SendAsync(linkRequest, linkTimeout.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or System.IO.IOException or ObjectDisposedException
+                        || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+                    {
+                        _logger.LogInformation("[Federation] The direct link to {Server} didn't answer ({Error}); using its address", handoff.ServerName, ex.GetType().Name);
+                    }
+                }
+
+                using var request = Make(false);
+                using var response = viaLinkResponse ?? await Send(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return (null, (int)response.StatusCode);

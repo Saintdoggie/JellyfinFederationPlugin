@@ -72,7 +72,11 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 IdleTimeout = IdleTimeout,
                 KeepAliveInterval = KeepAlive,
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
-                MaxInboundBidirectionalStreams = 0,
+
+                // One allowed so the initiator can wait on AcceptInboundStreamAsync to
+                // learn when the connection ends (with 0 it throws at once). A friend
+                // that actually opens one is closed as misbehaving.
+                MaxInboundBidirectionalStreams = 1,
                 MaxInboundUnidirectionalStreams = 0,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {

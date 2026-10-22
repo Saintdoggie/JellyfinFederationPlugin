@@ -483,6 +483,39 @@ public class DirectLinkTests
     }
 
     [Fact]
+    public async Task Link_InitiatorNoticesWhenTheFriendClosesIt()
+    {
+        RequireQuic();
+        var initiator = DirectLinkIdentity.LoadOrCreate(null, "initiator");
+        var responder = DirectLinkIdentity.LoadOrCreate(null, "responder");
+        var session = DirectLinkProtocol.NewSessionId();
+        var key = DirectLinkProtocol.SessionKey(Key, Key.Reverse().ToArray(), session);
+        var port = FreeUdpPort();
+        var accept = DirectLinkHandshake.AcceptAsync(port, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
+        var client = await DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
+        var server = await accept;
+        await using var clientLink = new DirectLinkConnection(client, "friend", true, null);
+        clientLink.StartCloseWatch();
+        await Task.Delay(300);
+        Assert.False(clientLink.IsClosed);
+
+        // The friend restarts or turns the link off: this side must stop using it.
+        await QuicTransportHost.Close(server);
+        await clientLink.Closed.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(clientLink.IsClosed);
+        Assert.False(string.IsNullOrEmpty(clientLink.CloseReason));
+    }
+
+    [Theory]
+    [InlineData(0, null)]
+    [InlineData(25, 20)]
+    [InlineData(1, 1)]
+    [InlineData(499, 399)]
+    [InlineData(1400, null)]
+    public void LinkCap_FollowsTheMeasuredLink_NotTheTunnel(double mbps, int? cap)
+        => Assert.Equal(cap, Jellyfin.Plugin.Federation.Services.FederationRemoteTranscodeFilter.LinkCap(mbps));
+
+    [Fact]
     public async Task Link_RefusesAPeerWithTheWrongCertificate()
     {
         RequireQuic();

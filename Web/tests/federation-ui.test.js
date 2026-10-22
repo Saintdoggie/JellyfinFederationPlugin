@@ -1931,6 +1931,9 @@ test('admin page has the direct link switch, per-friend mode and retry wired to 
   assert.match(configPage, /'\/Plugins\/Federation\/Friends\/' \+ encodeURIComponent\(serverId\) \+ '\/DirectLink'/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/DirectLink\/Status'\)/);
   assert.match(configPage, /classList\.contains\('fedDirectLinkMode'\)/);
+  // Re-rendering the Friends list keeps the last status instead of "Checking…".
+  assert.match(configPage, /c\.innerHTML = html;\s*renderFriendHealth\(\);\s*applyDirectLinkStatus\(\);/);
+  assert.match(configPage, /if \(s\.Id === serverId\) \{ s\.DirectLinkMode = mode; \}/);
 });
 
 function makeSyncPlayMenu(menuIds, status, groups = []) {
