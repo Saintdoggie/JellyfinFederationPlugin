@@ -39,9 +39,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return false;
             }
 
+            // A paired friend's link address (100::/64) is never valid input: only the
+            // pairing service makes friends with one (see FederationHttp).
             return Uri.TryCreate(url, UriKind.Absolute, out var uri)
                 && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
                 && !string.IsNullOrWhiteSpace(uri.Host)
+                && !Services.FederationHttp.IsPairHost(uri.Host)
                 && string.IsNullOrEmpty(uri.UserInfo)
                 && string.IsNullOrEmpty(uri.Query)
                 && string.IsNullOrEmpty(uri.Fragment);
@@ -203,6 +206,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 // Treating that empty field like a Jellyfin/Plex source made every
                 // unrelated settings save fail as soon as a Companion friend existed.
                 if (servers[i].Kind == ServerKind.Companion && string.IsNullOrWhiteSpace(servers[i].Url))
+                {
+                    continue;
+                }
+
+                // A paired friend keeps its link address; the save handler copies both
+                // from the stored friend, so a client can't make one up.
+                if (servers[i].Paired && Services.FederationHttp.IsPairUrl(servers[i].Url))
                 {
                     continue;
                 }

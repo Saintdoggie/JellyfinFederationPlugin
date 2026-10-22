@@ -335,6 +335,16 @@ namespace Jellyfin.Plugin.Federation.Api
                     // top-level-field preservation block below this loop already
                     // guards against.
                     var oldServer = existing?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+
+                    // Pairing is made and changed only by the pairing service: a paired
+                    // friend keeps its link address and keys, and nothing posted here can
+                    // create a pairing or point a friend at a link.
+                    CopyPairing(oldServer != null && oldServer.Paired ? oldServer : new RemoteServer(), server);
+                    if (oldServer != null && oldServer.Paired)
+                    {
+                        server.Url = oldServer.Url;
+                    }
+
                     if (oldServer != null)
                     {
                         server.FederationId = oldServer.FederationId;
@@ -6848,6 +6858,23 @@ namespace Jellyfin.Plugin.Federation.Api
             return index;
         }
 
+        private static void CopyPairing(RemoteServer from, RemoteServer to)
+        {
+            to.Paired = from.Paired;
+            to.PairingId = from.PairingId;
+            to.PairPeerFingerprint = from.PairPeerFingerprint;
+            to.PairKey = from.PairKey;
+            to.PairRole = from.PairRole;
+            to.PairLastEndpoints = from.PairLastEndpoints;
+            to.PairSafetyNumber = from.PairSafetyNumber;
+            to.PairSafetyConfirmed = from.PairSafetyConfirmed;
+            to.PairPeerConfirmed = from.PairPeerConfirmed;
+            to.PairHelperIds = from.PairHelperIds;
+            to.PairMailCounterOut = from.PairMailCounterOut;
+            to.PairMailCounterIn = from.PairMailCounterIn;
+            to.PairedAtUtc = from.PairedAtUtc;
+        }
+
         private static object Sanitize(PluginConfiguration config, FriendDataLimits? limits = null)
         {
             return new
@@ -6896,6 +6923,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.WanMaxBitrateMbps,
                 s.WanMaxHeight,
                 HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
+                s.Paired,
                 HasIssuedApiKey = !string.IsNullOrEmpty(s.IssuedApiKey),
                 s.ShareAllLibraries,
                 s.SharedLibraryFolderIds,
