@@ -152,6 +152,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private readonly object _identityGate = new();
         private DirectLinkIdentity? _identity;
         private Task? _loop;
+        private int _stopped;
         private string _publicEndpoint = string.Empty;
         private NatKind _lastNat = NatKind.Unknown;
 
@@ -257,7 +258,22 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <inheritdoc />
         public async Task StopAsync(CancellationToken cancellationToken)
         {
-            _shutdown.Cancel();
+            // The host stops it, then disposes it, and it's registered twice (as
+            // itself and as a hosted service), so this runs more than once.
+            if (Interlocked.Exchange(ref _stopped, 1) == 1)
+            {
+                return;
+            }
+
+            try
+            {
+                _shutdown.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
             if (_loop != null)
             {
                 try
@@ -287,8 +303,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
+            // _shutdown and _responderPunches are left undisposed on purpose: late
+            // callbacks (Reconsider, a responder finishing) may still use them, and
+            // neither holds anything that needs releasing.
             await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _shutdown.Dispose();
         }
 
         /// <summary>The admin status.</summary>
