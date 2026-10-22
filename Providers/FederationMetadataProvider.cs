@@ -28,7 +28,7 @@ namespace Jellyfin.Plugin.Federation.Providers
         IRemoteMetadataProvider<Audio, SongInfo>,
         IHasOrder
     {
-        private static readonly HttpClient SharedHttpClient = new HttpClient();
+        private static readonly HttpClient SharedHttpClient = new HttpClient(Services.FederationHttp.Handler());
 
         private readonly ILogger<FederationMetadataProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;

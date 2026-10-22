@@ -26,7 +26,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationFriendService
     {
-        private static readonly HttpClient DefaultHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        private static readonly HttpClient DefaultHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromSeconds(20) };
 
         // Inbound origin-verify only: a 3xx from a public FromServerUrl must not be
         // followed onto loopback/RFC1918/metadata. Admin-initiated Send/Accept/Reject
@@ -35,10 +35,10 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             AllowAutoRedirect = false,
             UseProxy = false,
-            ConnectCallback = PublicCallbackConnection.ConnectAsync
+            ConnectCallback = FederationHttp.Guard(PublicCallbackConnection.ConnectAsync)
         };
 
-        private static readonly HttpClient DefaultVerifyHttpClient = new HttpClient(DefaultVerifyHandler, disposeHandler: false)
+        private static readonly HttpClient DefaultVerifyHttpClient = new HttpClient(FederationHttp.Stamp(DefaultVerifyHandler), disposeHandler: false)
         {
             Timeout = TimeSpan.FromSeconds(20)
         };
@@ -56,12 +56,9 @@ namespace Jellyfin.Plugin.Federation.Services
         // Carries X-Federation-Token, so it must never follow a redirect by itself:
         // a friend (or anything in front of it) answering 3xx to another host would
         // otherwise be handed the token. See TokenRedirect for the same-host hop.
-        internal static readonly SocketsHttpHandler DefaultTokenHandler = new()
-        {
-            AllowAutoRedirect = false
-        };
+        internal static readonly SocketsHttpHandler DefaultTokenHandler = FederationHttp.Sockets(allowAutoRedirect: false);
 
-        private static readonly HttpClient DefaultTokenHttpClient = new HttpClient(DefaultTokenHandler, disposeHandler: false)
+        private static readonly HttpClient DefaultTokenHttpClient = new HttpClient(FederationHttp.Stamp(DefaultTokenHandler), disposeHandler: false)
         {
             Timeout = TimeSpan.FromSeconds(20)
         };

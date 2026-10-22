@@ -48,13 +48,14 @@ namespace Jellyfin.Plugin.Federation.Services
             "DynamicHls", "Videos", "Audio", "UniversalAudio", "Subtitle", "VideoAttachments"
         };
 
-        private static readonly HttpClient Http = new(new SocketsHttpHandler
+        private static readonly HttpClient Http = new(FederationHttp.Stamp(new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
             AutomaticDecompression = System.Net.DecompressionMethods.None,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            UseCookies = false
-        })
+            UseCookies = false,
+            ConnectCallback = FederationHttp.ConnectAsync
+        }))
         {
             Timeout = TimeSpan.FromSeconds(30)
         };

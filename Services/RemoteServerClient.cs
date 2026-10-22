@@ -1658,7 +1658,7 @@ namespace Jellyfin.Plugin.Federation.Services
         // long-lived client (mirroring FederationStreamHandler's DefaultProxyHttpClient)
         // avoids either lengthening the shared client's timeout (which would let a
         // hung metadata call block for hours) or timing out large downloads.
-        private static readonly HttpClient DownloadHttpClient = new HttpClient { Timeout = TimeSpan.FromHours(6) };
+        private static readonly HttpClient DownloadHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromHours(6) };
 
         /// <summary>
         /// Downloads a remote item's whole media file straight to local disk. Separate

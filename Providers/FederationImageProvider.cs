@@ -22,7 +22,7 @@ namespace Jellyfin.Plugin.Federation.Providers
     public class FederationImageProvider : IRemoteImageProvider, IHasOrder
     {
         // Shared for the app lifetime; image responses are disposed by the caller.
-        private static readonly HttpClient SharedHttpClient = new HttpClient();
+        private static readonly HttpClient SharedHttpClient = new HttpClient(Services.FederationHttp.Handler());
 
         private readonly ILogger<FederationImageProvider> _logger;
         private readonly Services.FederationLibraryManager _federationManager;

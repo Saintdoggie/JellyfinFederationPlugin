@@ -171,7 +171,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Ok, DateTime AtUtc)> HttpsSeen = new(StringComparer.OrdinalIgnoreCase);
 
-        private static readonly System.Net.Http.HttpClient ProbeClient = new(new System.Net.Http.SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
+        private static readonly System.Net.Http.HttpClient ProbeClient = new(FederationHttp.Stamp(new System.Net.Http.SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectCallback = FederationHttp.ConnectAsync }))
         {
             Timeout = TimeSpan.FromSeconds(5)
         };

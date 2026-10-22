@@ -146,7 +146,7 @@ namespace Jellyfin.Plugin.Federation.Services
             private readonly Action<Uri, Uri>? _onBlocked;
 
             public FollowHandler(Action<Uri, Uri>? onBlocked = null)
-                : base(new SocketsHttpHandler { AllowAutoRedirect = false })
+                : base(FederationHttp.Handler(allowAutoRedirect: false))
             {
                 _onBlocked = onBlocked;
             }

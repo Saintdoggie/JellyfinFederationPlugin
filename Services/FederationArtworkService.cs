@@ -17,7 +17,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationArtworkService
     {
-        private static readonly HttpClient ImageHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+        private static readonly HttpClient ImageHttpClient = new(FederationHttp.Handler()) { Timeout = TimeSpan.FromSeconds(20) };
 
         internal const string PrimaryImageTagProviderId = "FederationPrimaryImageTag";
 
