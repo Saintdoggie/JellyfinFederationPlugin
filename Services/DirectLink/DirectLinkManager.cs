@@ -438,15 +438,24 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 var sessionSocket = socket;
                 socket = null;
                 handedOff = true;
+                var released = 0;
+                void ReleaseSlot()
+                {
+                    if (Interlocked.Exchange(ref released, 1) == 0)
+                    {
+                        _responderPunches.Release();
+                    }
+                }
+
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await RespondAsync(caller, offer, sessionSocket, candidates, peerNat, sessionKey, identity, _shutdown.Token).ConfigureAwait(false);
+                        await RespondAsync(caller, offer, sessionSocket, candidates, peerNat, sessionKey, identity, ReleaseSlot, _shutdown.Token).ConfigureAwait(false);
                     }
                     finally
                     {
-                        _responderPunches.Release();
+                        ReleaseSlot();
                     }
                 });
                 return (200, answer, null);
@@ -498,6 +507,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 attempts.Add(AttemptAsync(server, state, cancellationToken));
             }
 
+            await DropIneligibleInboundAsync(config).ConfigureAwait(false);
+
             foreach (var gone in _outbound.Keys.Where(id => !config.RemoteServers.Any(s => string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase))).ToList())
             {
                 if (_outbound.TryRemove(gone, out var removed) && removed.Link != null)
@@ -508,6 +519,40 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             await Task.WhenAll(attempts).ConfigureAwait(false);
         }
+
+        /// <summary>
+        /// Closes friends' links to this server that settings no longer allow:
+        /// direct links switched off, the friend switched off, disabled or
+        /// removed, or Jellyfin's remote-access/IP rules now refusing its address.
+        /// </summary>
+        internal async Task DropIneligibleInboundAsync(PluginConfiguration config)
+        {
+            foreach (var (friendId, link) in _inbound.ToList())
+            {
+                var friend = config.RemoteServers.FirstOrDefault(s => string.Equals(s.Id, friendId, StringComparison.OrdinalIgnoreCase));
+                string? reason = config.EnableDirectLink != true ? "direct links were switched off here"
+                    : friend == null ? "the friend was removed"
+                    : !friend.Enabled ? "the friend was disabled"
+                    : string.Equals(friend.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase) ? "direct links were switched off for this friend"
+                    : _network != null && _network.ShouldAllowServerAccess(link.RemoteEndPoint.Address) != MediaBrowser.Common.Net.RemoteAccessPolicyResult.Allow ? "Jellyfin's network settings no longer allow its address"
+                    : null;
+                if (reason == null)
+                {
+                    continue;
+                }
+
+                if (_inbound.TryRemove(new KeyValuePair<string, DirectLinkConnection>(friendId, link)))
+                {
+                    _logger.LogInformation("[Federation] Closed the direct link from {Friend}: {Reason}", friend?.Name ?? friendId, reason);
+                    link.MarkClosed(reason);
+                    await link.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+        }
+
+        /// <summary>The measured speed of friend <paramref name="serverId"/>'s link (0 when down or not measured).</summary>
+        public double LinkMbps(string serverId)
+            => _outbound.TryGetValue(serverId, out var state) && state.Link is { IsClosed: false } link ? link.Mbps : 0;
 
         /// <summary>Whether a link to this friend should be attempted, and why not.</summary>
         internal static (DirectLinkState State, string Detail) Eligibility(RemoteServer server, PluginConfiguration? config)
@@ -775,8 +820,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 state.CapabilityCheckedUtc = UtcNow();
                 if (info == null)
                 {
-                    // Usually the friend restarting: try again soon rather than backing off.
-                    return ("Couldn't reach the friend" + (string.IsNullOrEmpty(error) ? "." : ": " + error), false, Backoff[0]);
+                    // Usually the friend restarting: try again soon at first, then back off.
+                    return ("Couldn't reach the friend" + (string.IsNullOrEmpty(error) ? "." : ": " + error), false, state.Failures < 2 ? Backoff[0] : null);
                 }
 
                 state.PeerVersion = info.DirectLinkVersion;
@@ -983,7 +1028,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
         }
 
-        private async Task RespondAsync(RemoteServer caller, DirectLinkOffer offer, Socket socket, List<IPEndPoint> candidates, NatKind peerNat, byte[] sessionKey, DirectLinkIdentity identity, CancellationToken cancellationToken)
+        private async Task RespondAsync(RemoteServer caller, DirectLinkOffer offer, Socket socket, List<IPEndPoint> candidates, NatKind peerNat, byte[] sessionKey, DirectLinkIdentity identity, Action setupDone, CancellationToken cancellationToken)
         {
             var localPort = ((IPEndPoint)socket.LocalEndPoint!).Port;
             try
@@ -1022,6 +1067,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     TimeSpan.FromSeconds(10),
                     cancellationToken).ConfigureAwait(false);
 
+                // Setting up is over: the slot is for links being set up, not for
+                // links in use (those count against MaxInboundLinks).
+                setupDone();
                 DirectLinkConnection link;
                 try
                 {

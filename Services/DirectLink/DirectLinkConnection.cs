@@ -105,13 +105,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 {
                     MarkClosed(ex.Message);
                 }
-                catch (OperationCanceledException)
+                catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
                 {
                     MarkClosed("closed");
                 }
-                catch (ObjectDisposedException)
+                catch (Exception ex)
                 {
-                    MarkClosed("closed");
+                    // Whatever happened, a watch that stops means the link is no longer trusted.
+                    MarkClosed("the link failed: " + ex.GetType().Name);
                 }
             });
         }

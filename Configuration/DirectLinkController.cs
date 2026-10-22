@@ -87,15 +87,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
             HttpResponseMessage upstream;
-            try
+            using (var headers = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                upstream = await link.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            }
-            catch (HttpRequestException)
-            {
-                // The link dropped between the check and the request.
-                RedirectToFriend(server, target);
-                return;
+                headers.CancelAfter(TimeSpan.FromSeconds(30));
+                try
+                {
+                    upstream = await link.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headers.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or System.IO.IOException or ObjectDisposedException
+                    || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+                {
+                    // The link dropped or stalled: send the player to the friend instead.
+                    RedirectToFriend(server, target);
+                    return;
+                }
             }
 
             using (upstream)
@@ -152,9 +157,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     await using var stream = await upstream.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                     await stream.CopyToAsync(Response.Body, 64 * 1024, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is System.IO.IOException or HttpRequestException)
+                catch (Exception ex) when (ex is System.IO.IOException or HttpRequestException or ObjectDisposedException
+                    || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
                 {
-                    // The link or the player went away mid-piece; the player retries.
+                    // The link went away mid-piece; the player retries (and is sent
+                    // to the friend if the link is still down).
                     HttpContext.Abort();
                 }
             }

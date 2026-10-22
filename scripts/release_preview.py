@@ -48,6 +48,10 @@ See Companion-setup.md and the repository TODO for validation scope and limitati
     plugin = output / 'Jellyfin-Federation-preview.zip'
     with zipfile.ZipFile(plugin, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.write(ROOT / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', 'Jellyfin.Plugin.Federation.dll')
+        # The direct link's MsQuic, at the paths QuicTransportHost.BundledPath expects.
+        for rid in ('linux-x64', 'linux-arm64'):
+            archive.write(ROOT / 'native' / rid / 'libmsquic.so.2', f'native/{rid}/libmsquic.so.2')
+        archive.write(ROOT / 'native/LICENSE-msquic.txt', 'native/LICENSE-msquic.txt')
         archive.writestr('PREVIEW.txt', notes)
     checksum = output / 'SHA256SUMS.txt'
     checksum.write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n' for path in [windows, plugin]))

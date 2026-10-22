@@ -6905,6 +6905,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.AllowRemoteTranscode,
                 s.MonthlyDataCapGb,
                 s.MaxConcurrentStreams,
+                s.DirectLinkMode,
                 DataUsedThisMonthBytes = limits?.UsedThisMonth(s.FederationId ?? string.Empty) ?? 0,
                 ActiveStreams = limits?.ActiveStreams(s.FederationId ?? string.Empty) ?? 0,
                 RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
