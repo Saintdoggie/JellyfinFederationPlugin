@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.197",
+        "changelog": "Faster friend video at home over a direct link. One download from a friend's server can stop well short of your line's speed (about 110 Mbps in testing), so 4K could buffer. Now, while your player watches one piece of a friend's video, your server already fetches the next three over the link at the same time, so playback gets the speed of several downloads (about 178 Mbps in the same test). Only the server watching needs 0.0.197; your friend doesn't have to update. Seeking drops what was fetched for the old spot; memory use is capped at 384 MB. Includes everything in 0.0.196.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-22T18:11:26Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.197/Jellyfin.Federation.zip",
+        "checksum": "6f751722d124be5c58906fa78a8bb108"
+      },
+      {
         "version": "0.0.196",
         "changelog": "Direct links with friends (beta, off by default). An encrypted UDP connection straight between your server and a friend's, opened through both home routers without port forwarding. Your viewers at home get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS; viewers elsewhere keep going straight to the friend, so your upload is never used for friend video. Library downloads from a friend also use it. Privacy: a direct link shows the friend's server your home's internet address, so it stays off until you tick the box at the top of the Friends tab; if you use a tunnel or VPS to keep that address private, leave it off. While off, nothing about it runs. Viewers and players never see the address. Both servers need 0.0.196 with the box ticked; Linux servers (x64/arm64), Windows later. Status per friend on the Friends tab and a Direct link row in Playback Info. Security: keys pinned per session over the existing https friend channel, mutual TLS 1.3 (QUIC), only the friend's video, download and speed-test routes are carried, with the same token checks as today. Testers on 0.0.195: the switch starts off again, tick it to keep using direct links.",
         "targetAbi": "12.0.0.0",
