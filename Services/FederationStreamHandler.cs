@@ -19,7 +19,7 @@ namespace Jellyfin.Plugin.Federation.Services
     public class FederationStreamHandler
     {
         // Shared for the app lifetime: streaming responses can run for hours.
-        private static readonly HttpClient DefaultProxyHttpClient = new HttpClient
+        private static readonly HttpClient DefaultProxyHttpClient = new HttpClient(FederationHttp.Handler())
         {
             Timeout = TimeSpan.FromHours(3)
         };

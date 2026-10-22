@@ -68,12 +68,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
         // The probe carries the friend's federation token, so redirects are never
         // followed automatically (see TokenRedirect for the one same-host hop).
-        internal static readonly SocketsHttpHandler ProbeHandler = new()
-        {
-            AllowAutoRedirect = false
-        };
+        internal static readonly SocketsHttpHandler ProbeHandler = FederationHttp.Sockets(allowAutoRedirect: false);
 
-        private static readonly HttpClient ProbeHttpClient = new HttpClient(ProbeHandler, disposeHandler: false)
+        private static readonly HttpClient ProbeHttpClient = new HttpClient(FederationHttp.Stamp(ProbeHandler), disposeHandler: false)
         {
             Timeout = ProbeTimeout
         };

@@ -32,7 +32,7 @@ namespace Jellyfin.Plugin.Federation.Services
         // Mirrors RemoteServerClient's own DownloadHttpClient: a plain metadata
         // HttpClient's default timeout is far too short for a whole movie, and
         // this is a one-shot server-side fetch, not a live client-facing relay.
-        private static readonly HttpClient BrowseDownloadHttpClient = new HttpClient { Timeout = TimeSpan.FromHours(6) };
+        private static readonly HttpClient BrowseDownloadHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromHours(6) };
         private static readonly SemaphoreSlim BrowseDownloadSlots = new(2, 2);
 
         private readonly ILibraryManager _libraryManager;

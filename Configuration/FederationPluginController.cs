@@ -6016,7 +6016,7 @@ namespace Jellyfin.Plugin.Federation.Api
         // a cover image is small and should fail fast rather than hang a page
         // load; the long-timeout DownloadHttpClient equivalents elsewhere exist
         // for whole media files, which this is not.
-        private static readonly HttpClient BrowseImageHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        private static readonly HttpClient BrowseImageHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromSeconds(15) };
 
         /// <summary>
         /// Cover art for a whole Browse grid page, proxied through this server

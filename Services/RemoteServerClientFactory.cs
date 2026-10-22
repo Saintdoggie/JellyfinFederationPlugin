@@ -53,7 +53,7 @@ namespace Jellyfin.Plugin.Federation.Services
         // so editing a server's URL discards its old result.
         private static readonly ConcurrentDictionary<string, (string From, string? To, DateTime CheckedUtc)> HttpsUpgrades = new(StringComparer.OrdinalIgnoreCase);
 
-        private static readonly HttpClient RedirectProbeClient = new(new SocketsHttpHandler { AllowAutoRedirect = false });
+        private static readonly HttpClient RedirectProbeClient = new(FederationHttp.Handler(allowAutoRedirect: false));
 
         private readonly ILoggerFactory _loggerFactory;
         private readonly ConcurrentDictionary<string, HttpClient> _httpClients = new();
