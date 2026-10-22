@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Security;
@@ -132,6 +133,15 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     }
 
                     var local = _localBase();
+                    if (!IsThisMachine(local.Host))
+                    {
+                        // The link headers carry this process's secret: never off this machine
+                        // (an InternalServerUrl pointing at a proxy or another host).
+                        _logger.LogWarning("[Federation] Paired link: this server's own address {Base} isn't on this machine; set the internal server URL to a local address", local);
+                        await WriteAndFinishAsync(stream, BadGateway, cancel).ConfigureAwait(false);
+                        return;
+                    }
+
                     Stream upstream;
                     TcpClient? tcp = null;
                     try
@@ -211,6 +221,36 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// already arrived is a second request smuggled in, and refuses the whole stream.
         /// </summary>
         /// <returns>The head and body, or null with the reason.</returns>
+        /// <summary>True for loopback, "localhost" or an address on one of this machine's interfaces.</summary>
+        internal static bool IsThisMachine(string host)
+        {
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!System.Net.IPAddress.TryParse(host.Trim('[', ']'), out var ip))
+            {
+                return false;
+            }
+
+            if (System.Net.IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            try
+            {
+                return System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                    .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+                    .Any(a => a.Address.Equals(ip));
+            }
+            catch (System.Net.NetworkInformation.NetworkInformationException)
+            {
+                return false;
+            }
+        }
+
         internal static async Task<(PairedRequestGate? Head, byte[] Body, string? Refusal)> ReadRequestAsync(Stream stream, bool confirmed, CancellationToken cancellationToken)
         {
             var buffer = new byte[DirectLinkRequestHead.MaxHeadBytes + PairedRequestGate.MaxBodyBytes + 1];

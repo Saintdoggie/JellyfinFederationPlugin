@@ -38,7 +38,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         {
             (Get, R(P + "Peer/(SystemInfo|Libraries|Items|UserRules|Favorites|Popular|Users|BitrateTest|PlayLog|Hardware)"), PairedAuth.HeaderToken),
             (Get, R(P + "Peer/(Items|PlaybackInfo)/" + Seg), PairedAuth.HeaderToken),
-            (GetHead, R(P + "Peer/Play/" + Seg + "/.+"), PairedAuth.ItemToken),
+            (GetHead, R(P + "Peer/Play/" + Seg + "/[A-Za-z0-9._,~/-]{1,1024}"), PairedAuth.ItemToken),
             (Get, R(P + "Peer/Images/" + Seg + "/" + Seg + "(/[0-9]{1,4})?"), PairedAuth.ItemToken),
             (GetHead, R(P + "DirectStream/" + Seg), PairedAuth.ItemToken),
             (Post, R(P + "Peer/(CatalogChanged|PlayControl|Viewers|AvailabilitySchedule)"), PairedAuth.HeaderToken),
@@ -55,14 +55,16 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
 
         private static string[] Post => new[] { "POST" };
 
-        // Dropped before forwarding: connection management is the link's own, and the
-        // link headers are only ever set by the forwarder.
-        private static readonly HashSet<string> Dropped = new(StringComparer.OrdinalIgnoreCase)
+        // The only friend headers forwarded to Jellyfin: what this plugin's own friend
+        // requests carry. Everything else is dropped (proxy and client-address headers,
+        // Jellyfin's own auth headers, cookies, the link headers only the forwarder
+        // sets), including ones nobody has thought of yet.
+        private static readonly HashSet<string> Passed = new(StringComparer.OrdinalIgnoreCase)
         {
-            "Connection", "Keep-Alive", "Proxy-Connection", "TE", "Trailer", "Upgrade", "Host",
-            "Proxy-Authorization", "Proxy-Authenticate", "Forwarded", "X-Forwarded-For",
-            "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "X-Federation-Direct-Link",
-            "Content-Length", "Expect",
+            "Range", "If-Range", "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since",
+            "Accept", "Accept-Encoding", "Accept-Language", "User-Agent", "Cache-Control", "Pragma",
+            "Content-Type", "Origin",
+            FederationTokenAuth.Header, RemoteServerClient.RemoteUserIdHeader, RemoteServerClient.RemoteUserNameHeader,
         };
 
         private PairedRequestGate(string method, string target, PairedAuth auth, int contentLength, List<KeyValuePair<string, string>> headers)
@@ -130,6 +132,14 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
 
             var lines = text.Substring(0, text.Length - 4).Split("\r\n");
+            if (lines.Any(l => l.Contains('\r', StringComparison.Ordinal) || l.Contains('\n', StringComparison.Ordinal)))
+            {
+                // A bare CR or LF splits lines differently for whoever reads next:
+                // how injected headers get past this gate.
+                refusal = "bare CR or LF";
+                return null;
+            }
+
             var requestLine = lines[0].Split(' ');
             if (requestLine.Length != 3 || requestLine[2] != "HTTP/1.1")
             {
@@ -229,8 +239,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         }
 
         /// <summary>
-        /// The head to send to this server's own Jellyfin: the friend's headers minus
-        /// connection management and every reserved link header, then the link headers
+        /// The head to send to this server's own Jellyfin: the friend's headers that are
+        /// on the short list, then the link headers
         /// set here, the exact body length and <c>Connection: close</c>.
         /// </summary>
         /// <returns>ASCII bytes.</returns>
@@ -241,7 +251,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             builder.Append("Host: ").Append(localHostHeader).Append("\r\n");
             foreach (var header in Headers)
             {
-                if (!Dropped.Contains(header.Key) && !PairedLinkContext.IsReserved(header.Key))
+                if (Passed.Contains(header.Key) && !PairedLinkContext.IsReserved(header.Key))
                 {
                     builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
                 }
