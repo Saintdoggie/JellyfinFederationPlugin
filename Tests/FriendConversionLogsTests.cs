@@ -82,7 +82,7 @@ public class FriendConversionLogsTests : IDisposable
     public void LocalFileName_LooksLikeJellyfinsOwn_WithTheFriend()
     {
         var name = FriendConversionLogs.LocalFileName(new DateTime(2026, 10, 20, 10, 42, 19), Item, "friendflix", "cf92ce0dd0f04bd59eb81ab9aac8ebcc");
-        Assert.Equal($"FFmpeg.Transcode-2026-10-20_10-42-19_{Item:N}_netflix-cf92ce0d.log", name);
+        Assert.Equal($"FFmpeg.Transcode-2026-10-20_10-42-19_{Item:N}_friendflix-cf92ce0d.log", name);
         Assert.DoesNotContain("/", FriendConversionLogs.LocalFileName(DateTime.Now, Item, "../../etc", "../x"));
     }
 }

@@ -78,7 +78,7 @@ def guard(name, fn):
 def build_tools_image():
     if pm('image', 'exists', IMAGE_TOOLS, check=False).returncode == 0:
         return
-    ctx = Path(tempfile.mkdtemp(prefix='fdl-build-', dir=os.environ.get('TMPDIR', '/home/user/.t')))
+    ctx = Path(tempfile.mkdtemp(prefix='fdl-build-', dir=os.environ.get('TMPDIR', str(Path.home() / '.t'))))
     (ctx / 'Containerfile').write_text(f'FROM {ALPINE}\nRUN apk add --no-cache iptables python3 curl tcpdump\n')
     log('building fdl-tools image (alpine + iptables + python3 + curl)')
     pm('build', '-t', IMAGE_TOOLS, ctx)
@@ -714,7 +714,7 @@ def main():
     ap.add_argument('--topology-only', action='store_true', help='only prove the NAT plumbing (no Jellyfin)')
     ap.add_argument('--plugin-dir', default=str(qa.REPO / 'bin/Release/net10.0'), help='directory holding the built plugin dll')
     args = ap.parse_args()
-    os.environ.setdefault('TMPDIR', '/home/user/.t')
+    os.environ.setdefault('TMPDIR', str(Path.home() / '.t'))
     base_tmp = Path(os.environ['TMPDIR']) / 'fdl'
     base_tmp.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=base_tmp))

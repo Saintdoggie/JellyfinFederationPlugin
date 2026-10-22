@@ -1,5 +1,10 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.199 — friends' addresses out of logs (2026-10-22)
+
+- [x] Public addresses in direct-link and pairing logs, status details and error text shown as a per-run tag; private/LAN/Tailscale kept.
+- [x] Real friend names, home paths and the owner's domain removed from tests, docs and comments (public repo).
+
 ## 0.0.198 — pairing codes (beta) and link hardening (2026-10-22)
 
 - [x] Pairing codes, Beta tab, QUIC windows; security review + adversarial pass, all findings fixed (Tests/Adversarial).
