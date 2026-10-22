@@ -215,7 +215,7 @@ class Server:
         plugin = self.config / 'plugins/Federation'
         plugin.mkdir(parents=True, exist_ok=True)
         for f in self.dll.iterdir():
-            if f.suffix in ('.dll', '.json', '.so') or f.name.endswith('.deps.json'):
+            if (f.suffix in ('.dll', '.json', '.so') or f.name.endswith('.deps.json')) and 'QuicTransport' not in f.name:
                 shutil.copy(f, plugin)
         if (self.dll / 'native').is_dir():
             # The bundled MsQuic ships in the release zip under native/<rid>/.
@@ -250,8 +250,9 @@ class Server:
         cfg = self.call('/Plugins/Federation/Configuration')
         cfg['ServerUrl'] = self.public
         cfg['InternalServerUrl'] = 'http://127.0.0.1:8096'
-        cfg['DirectLinkStunServers'] = [f"{IP['stun']}:3478", f"{IP['stun']}:3479"]
         self.call('/Plugins/Federation/Configuration', data=cfg)
+        # Direct link settings have their own route (the main save keeps them as they were).
+        self.call('/Plugins/Federation/Settings/DirectLink', data={'EnableDirectLink': True, 'DirectLinkStunServers': [f"{IP['stun']}:3478", f"{IP['stun']}:3479"]})
 
     def status(self):
         return self.call('/Plugins/Federation/DirectLink/Status')

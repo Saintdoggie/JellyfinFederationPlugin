@@ -1,7 +1,5 @@
-#pragma warning disable CA2252, CA1416 // System.Net.Quic: only reached when MsQuicLoader says QUIC works.
 using System;
 using System.IO;
-using System.Net.Quic;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Text;
@@ -48,10 +46,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             {
                 while (!link.Closing.IsCancellationRequested)
                 {
-                    var stream = await link.Quic.AcceptInboundStreamAsync(link.Closing).ConfigureAwait(false);
-                    if (stream.Type != QuicStreamType.Bidirectional || !await slots.WaitAsync(0).ConfigureAwait(false))
+                    var stream = await QuicTransportHost.AcceptStream(link.Quic, link.Closing).ConfigureAwait(false);
+                    if (!await slots.WaitAsync(0).ConfigureAwait(false))
                     {
-                        stream.Abort(QuicAbortDirection.Both, 1);
+                        QuicTransportHost.Abort(stream);
                         await stream.DisposeAsync().ConfigureAwait(false);
                         continue;
                     }
@@ -69,9 +67,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     });
                 }
             }
-            catch (QuicException ex)
+            catch (IOException ex)
             {
-                link.MarkClosed(DirectLinkConnection.Describe(ex));
+                link.MarkClosed(ex.Message);
             }
             catch (OperationCanceledException)
             {
@@ -146,15 +144,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                                 link?.AddOut(read);
                             }
 
-                            if (stream is QuicStream quic)
-                            {
-                                quic.CompleteWrites();
-                            }
+                            FinishWrites(stream);
                         }
                     }
                 }
             }
-            catch (Exception ex) when (ex is QuicException or IOException or OperationCanceledException or ObjectDisposedException)
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
             {
                 // The friend's player gave up or the link dropped mid-answer.
             }
@@ -201,17 +196,24 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             return (null, 0, "request head too large");
         }
 
+        // Ends this side's writes so the friend reads end-of-answer (QUIC streams
+        // only; test streams end when disposed).
+        private static void FinishWrites(Stream stream)
+        {
+            if (QuicTransportHost.Available)
+            {
+                QuicTransportHost.CompleteWrites(stream);
+            }
+        }
+
         private static async Task WriteAndFinishAsync(Stream stream, byte[] response, CancellationToken cancellationToken)
         {
             try
             {
                 await stream.WriteAsync(response, cancellationToken).ConfigureAwait(false);
-                if (stream is QuicStream quic)
-                {
-                    quic.CompleteWrites();
-                }
+                FinishWrites(stream);
             }
-            catch (Exception ex) when (ex is QuicException or IOException or OperationCanceledException)
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
             {
                 // The friend is gone.
             }

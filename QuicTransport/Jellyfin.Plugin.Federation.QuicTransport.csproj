@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The direct link's QUIC code. It's embedded in the plugin and loaded into a
+       private AssemblyLoadContext with its own copy of System.Net.Quic (see
+       Services/DirectLink/QuicTransportHost.cs), because Jellyfin's web host checks
+       QUIC support before plugins load and the runtime remembers that "no".
+       Only BCL types cross the boundary. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Jellyfin.Plugin.Federation.QuicTransport</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.Federation.QuicTransport</RootNamespace>
+    <NoWarn>$(NoWarn);CA2252;CA1416</NoWarn>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>

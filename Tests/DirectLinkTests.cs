@@ -1,4 +1,3 @@
-#pragma warning disable CA2252, CA1416
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -345,14 +344,15 @@ public class DirectLinkTests
 
     // ---------- The real link ----------
     [Fact]
-    public void Quic_LoadsFromTheBundledLibrary()
+    public void Quic_LoadsFromTheBundledLibrary_InItsOwnContext()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
         {
             return;
         }
 
-        Assert.True(MsQuicLoader.Available, "QUIC should work here: " + MsQuicLoader.Reason);
+        Assert.True(QuicTransportHost.Available, "QUIC should work here: " + QuicTransportHost.Reason);
+        Assert.Contains("2.6.3", QuicTransportHost.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -368,8 +368,8 @@ public class DirectLinkTests
         var initiatorPort = FreeUdpPort();
 
         var accept = DirectLinkHandshake.AcceptAsync(responderPort, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
-        await using var client = await DirectLinkHandshake.ConnectAsync(initiatorPort, new IPEndPoint(IPAddress.Loopback, responderPort), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
-        await using var server = await accept;
+        var client = await DirectLinkHandshake.ConnectAsync(initiatorPort, new IPEndPoint(IPAddress.Loopback, responderPort), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
+        var server = await accept;
 
         var serverLink = new DirectLinkConnection(server, "friend", false, null);
         await using var clientLink = new DirectLinkConnection(client, "friend", true, "the-token");
@@ -407,7 +407,7 @@ public class DirectLinkTests
         var parallel = await Task.WhenAll(Enumerable.Range(0, 8).Select(i => clientLink.Http!.GetByteArrayAsync("/Plugins/Federation/DirectStream/item" + i)));
         Assert.All(parallel, b => Assert.Equal(TinyHttpServer.BodySize, b.Length));
 
-        await client.CloseAsync(0);
+        await QuicTransportHost.Close(client);
         await serving.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(serverLink.IsClosed);
     }
@@ -445,7 +445,7 @@ public class DirectLinkTests
         var port = FreeUdpPort();
         var accept = DirectLinkHandshake.AcceptAsync(port, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, DirectLinkProtocol.SessionKey(Key, Key, session), session, responder.Fingerprint, 16, TimeSpan.FromSeconds(6), CancellationToken.None);
         await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, DirectLinkProtocol.SessionKey(Key.Reverse().ToArray(), Key, session), session, initiator.Fingerprint, CancellationToken.None));
-        await Assert.ThrowsAsync<AuthenticationFailedException>(() => accept);
+        await Assert.ThrowsAsync<System.Security.Authentication.AuthenticationException>(() => accept);
     }
 
     [Fact]
@@ -480,22 +480,22 @@ public class DirectLinkTests
         }
 
         await Task.Delay(400);
-        await using var client = await DirectLinkHandshake.ConnectAsync(aPort, path.Path!, initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
-        await using var server = await responderSide;
+        var client = await DirectLinkHandshake.ConnectAsync(aPort, path.Path!, initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
+        var server = await responderSide;
         var serverLink = new DirectLinkConnection(server, "friend", false, null);
         await using var clientLink = new DirectLinkConnection(client, "friend", true, null);
         _ = new DirectLinkForwarder(() => new Uri("http://127.0.0.1:" + web.Port), NullLogger.Instance).RunAsync(serverLink, "friend");
         var bytes = await clientLink.Http!.GetByteArrayAsync("/Plugins/Federation/Peer/BitrateTest?size=10");
         Assert.Equal(TinyHttpServer.BodySize, bytes.Length);
-        Assert.Equal(aPort, ((IPEndPoint)client.LocalEndPoint).Port);
+        Assert.Equal(aPort, QuicTransportHost.LocalEndPoint(client).Port);
     }
 
     private static void RequireQuic()
     {
-        if (!MsQuicLoader.Available)
+        if (!QuicTransportHost.Available)
         {
             // Loud on purpose: this machine is expected to run these.
-            throw new InvalidOperationException("QUIC unavailable, direct link tests can't run: " + MsQuicLoader.Reason);
+            throw new InvalidOperationException("QUIC unavailable, direct link tests can't run: " + QuicTransportHost.Reason);
         }
     }
 

@@ -1,9 +1,7 @@
-#pragma warning disable CA2252, CA1416 // System.Net.Quic: only reached when MsQuicLoader says QUIC works.
 using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
-using System.Net.Quic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,16 +24,17 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>
         /// Initializes a new instance of the <see cref="DirectLinkConnection"/> class.
         /// </summary>
-        /// <param name="connection">The authenticated QUIC connection.</param>
+        /// <param name="connection">The authenticated QUIC connection (a <see cref="QuicTransportHost"/> handle).</param>
         /// <param name="serverId">The friend's configured server id.</param>
         /// <param name="isInitiator">True on the side that opens the streams.</param>
         /// <param name="federationToken">Initiator: the friend's federation token, sent on every request.</param>
-        public DirectLinkConnection(QuicConnection connection, string serverId, bool isInitiator, string? federationToken)
+        public DirectLinkConnection(object connection, string serverId, bool isInitiator, string? federationToken)
         {
             Quic = connection;
             ServerId = serverId;
             IsInitiator = isInitiator;
-            RemoteEndPoint = connection.RemoteEndPoint;
+            RemoteEndPoint = QuicTransportHost.RemoteEndPoint(connection);
+            LocalEndPoint = QuicTransportHost.LocalEndPoint(connection);
             ConnectedUtc = DateTime.UtcNow;
             if (isInitiator)
             {
@@ -43,8 +42,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
         }
 
-        /// <summary>Gets the QUIC connection.</summary>
-        public QuicConnection Quic { get; }
+        /// <summary>Gets the QUIC connection handle.</summary>
+        public object Quic { get; }
 
         /// <summary>Gets the friend's configured server id.</summary>
         public string ServerId { get; }
@@ -54,6 +53,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         /// <summary>Gets the friend's public UDP endpoint.</summary>
         public IPEndPoint RemoteEndPoint { get; }
+
+        /// <summary>Gets this side's UDP endpoint.</summary>
+        public IPEndPoint LocalEndPoint { get; }
 
         /// <summary>Gets when the link came up.</summary>
         public DateTime ConnectedUtc { get; }
@@ -95,12 +97,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             {
                 try
                 {
-                    await using var unexpected = await Quic.AcceptInboundStreamAsync(_closing.Token).ConfigureAwait(false);
+                    await using var unexpected = await QuicTransportHost.AcceptStream(Quic, _closing.Token).ConfigureAwait(false);
                     MarkClosed("the friend opened a stream it shouldn't have");
                 }
-                catch (QuicException ex)
+                catch (IOException ex)
                 {
-                    MarkClosed(Describe(ex));
+                    MarkClosed(ex.Message);
                 }
                 catch (OperationCanceledException)
                 {
@@ -139,16 +141,6 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>Notes a stream opening (+1) or ending (-1).</summary>
         internal void StreamDelta(int delta) => Interlocked.Add(ref _activeStreams, delta);
 
-        /// <summary>A readable reason for a QUIC failure.</summary>
-        internal static string Describe(QuicException ex) => ex.QuicError switch
-        {
-            QuicError.ConnectionIdle => "the link went quiet (no answer for 60 s)",
-            QuicError.ConnectionTimeout => "the friend didn't answer",
-            QuicError.ConnectionAborted => "the friend closed the link",
-            QuicError.ConnectionRefused => "the friend refused the link",
-            _ => "QUIC: " + ex.QuicError
-        };
-
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
@@ -159,16 +151,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             MarkClosed(CloseReason ?? "closed");
             Http?.Dispose();
-            try
-            {
-                await Quic.CloseAsync(0).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Closing a dead connection may throw; it's gone either way.
-            }
-
-            await Quic.DisposeAsync().ConfigureAwait(false);
+            await QuicTransportHost.Close(Quic).ConfigureAwait(false);
             _closing.Dispose();
         }
 
@@ -190,13 +173,13 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                     try
                     {
-                        var stream = await Quic.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, cancellationToken).ConfigureAwait(false);
+                        var stream = await QuicTransportHost.OpenStream(Quic, cancellationToken).ConfigureAwait(false);
                         return new CountingStream(stream, this);
                     }
-                    catch (QuicException ex)
+                    catch (IOException ex)
                     {
-                        MarkClosed(Describe(ex));
-                        throw new HttpRequestException("The direct link is closed: " + Describe(ex), ex);
+                        MarkClosed(ex.Message);
+                        throw new HttpRequestException("The direct link is closed: " + ex.Message, ex);
                     }
                 }
             };
