@@ -1704,7 +1704,7 @@
                                 + '<option value="Off"' + (server.DirectLinkMode === 'Off' ? ' selected' : '') + '>Off for this friend</option></select>';
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="direct-link-retry" data-id="' + escapeHtml(server.Id) + '">Try again now</button>';
                             html += '</div>';
-                            html += '<p class="fed-hint">An encrypted connection straight between your two servers, opened through both home routers without port forwarding. Viewers on your home network get this friend's video over it, so a friend behind a slow tunnel or VPS plays at their real speed. Viewers elsewhere keep going straight to the friend.</p>';
+                            html += '<p class="fed-hint">An encrypted connection straight between your two servers, opened through both home routers without port forwarding. Viewers on your home network get this friend\'s video over it, so a friend behind a slow tunnel or VPS plays at their real speed. Viewers elsewhere keep going straight to the friend.</p>';
                             html += '<div class="fed-srvstatus" id="fedDirectLinkStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                             html += '</div>';
                         }
@@ -7212,12 +7212,12 @@
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
                             q('#fedChkAdaptivePlayback').checked = currentConfig.EnableAdaptivePlayback === true;
                             loadRemoteTranscodeSettings();
-                            loadDirectLinkStatus();
                             loadFavoritesSettings();
                             loadWatchPartySettings();
                             loadDownloadDestinations();
                             loadViewerSettings();
                             loadHardwareSettings();
+                            loadDirectLinkStatus();
 
                             renderFriends();
                             loadFriendHealth(false);
