@@ -1,5 +1,14 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.196 — direct links released as beta, opt-in (2026-10-22)
+
+- [x] Opt-in (`DirectLinkOptIn`, default off; 0.0.195's saved `EnableDirectLink` ignored), Beta badge, switch at the top of the Friends tab.
+- [x] Dial back as soon as a friend links in (live: friendflix linked 14:21, our side waited until 14:34).
+- [x] Live on 0.0.195 between this server and friendflix: both directions up, 115 Mbps, both routers cone.
+- [ ] Live: a home viewer play over the link ("comes over the direct link to this home viewer" in the log).
+- [ ] Optional private relay through a friend's own VPS (UDP forward) for friends who keep their home address hidden.
+- [ ] Hide friends' home addresses from logs and the status page.
+
 ## 0.0.195 (test build, branch `test-branch-udp-connection`) — direct links (2026-10-22)
 
 - [x] Friend-to-friend direct link: STUN + UDP hole punching, QUIC with pinned mutual TLS + session proof,
