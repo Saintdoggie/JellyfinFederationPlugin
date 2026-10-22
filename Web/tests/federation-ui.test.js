@@ -1923,6 +1923,16 @@ test("admin page has the friends' favorites switches wired to their own settings
   assert.match(configPage, /loadRemoteTranscodeSettings\(\);\s*loadFavoritesSettings\(\);/);
 });
 
+test('admin page has the direct link switch, per-friend mode and retry wired to their own routes', () => {
+  assert.ok(configPage.includes('id="fedChkEnableDirectLink"'));
+  assert.match(configPage, /case 'save-direct-link':\s*saveDirectLinkSettings\(\);/);
+  assert.match(configPage, /case 'direct-link-retry':\s*retryDirectLink\(t\.getAttribute\('data-id'\)\);/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/DirectLink', \{\s*method: 'POST'/);
+  assert.match(configPage, /'\/Plugins\/Federation\/Friends\/' \+ encodeURIComponent\(serverId\) \+ '\/DirectLink'/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/DirectLink\/Status'\)/);
+  assert.match(configPage, /classList\.contains\('fedDirectLinkMode'\)/);
+});
+
 function makeSyncPlayMenu(menuIds, status, groups = []) {
   const items = menuIds.map((id) => '<button class="listItem actionSheetMenuItem" data-id="' + id + '">' + id + '</button>').join('');
   const dom = new JSDOM(

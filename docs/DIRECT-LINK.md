@@ -1,6 +1,31 @@
 # Direct link: friend-to-friend UDP connection (design spec)
 
-Status: building on branch `test-branch-udp-connection`. Linux first, Windows later.
+Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux first, Windows later.
+
+> Implementation notes (what changed from the first draft below):
+> - **QUIC runs in a private AssemblyLoadContext.** Jellyfin's web host asks
+>   `QuicListener.IsSupported` before plugins load, and the runtime caches that "no"
+>   for the process, so preloading `libmsquic` from the plugin is too late. The QUIC
+>   code lives in `QuicTransport/` (embedded in the plugin dll) and
+>   `QuicTransportHost` loads it with its own copy of `System.Net.Quic`, whose
+>   native lookup is answered with the bundled `native/<rid>/libmsquic.so.2`. Only
+>   BCL types cross (connections are opaque handles, streams are `Stream`s).
+> - **Keys:** both 32-byte secrets form one session key,
+>   `HMAC-SHA256(initiatorSecret || responderSecret, "jf-fed-dl/1|" + sessionId)`.
+>   Punch packets use the sub-key `HMAC(sessionKey, "punch")` and carry the sender's
+>   role, so reflected packets fail. The connect proofs are
+>   `HMAC(HMAC(sessionKey, "proof"), role | sessionId | initiatorFp | responderFp)`.
+>   The certificate pins are checked separately.
+> - **No clock sync:** the responder starts punching as soon as it answers, and the
+>   initiator when it gets the answer. Both send for up to 8 s.
+>   `PunchStartUnixMs` was dropped.
+> - **Responder-side https check:** not done. The initiator only sends its details
+>   over an https or Tailscale channel (or in test mode), and the answer returns on
+>   that same connection.
+> - **Results (two-home NAT harness, `scripts/federation_directlink_smoke.py`):** the
+>   cone NAT case connects in about 1 s at 1.2 to 1.4 Gbps. Home-network playback
+>   comes over the link. Symmetric NAT on both sides reports "strict routers" and
+>   falls back. Remote viewers keep going straight to the friend.
 
 ## Why
 
