@@ -506,6 +506,20 @@ public class DirectLinkTests
         Assert.False(string.IsNullOrEmpty(clientLink.CloseReason));
     }
 
+    [Fact]
+    public async Task Manager_StopsAndDisposesAnyNumberOfTimes_InAnyOrder()
+    {
+        // Jellyfin's host stops it, then the container disposes it once per
+        // registration; none of that may throw (it crashed Jellyfin's shutdown).
+        var manager = new DirectLinkManager(NullLogger<DirectLinkManager>.Instance, Moq.Mock.Of<Jellyfin.Plugin.Federation.Services.IRemoteServerClientFactory>());
+        await manager.StartAsync(CancellationToken.None);
+        await manager.StopAsync(CancellationToken.None);
+        await manager.DisposeAsync();
+        await manager.DisposeAsync();
+        await manager.StopAsync(CancellationToken.None);
+        manager.Reconsider("anyone");
+    }
+
     [Theory]
     [InlineData(0, null)]
     [InlineData(25, 20)]
