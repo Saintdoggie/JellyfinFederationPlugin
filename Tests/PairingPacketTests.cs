@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Security.Cryptography;
 using Jellyfin.Plugin.Federation.Services.Pairing;
 using Xunit;
@@ -100,5 +102,94 @@ public class PairingPacketTests
         Assert.False(PairingEndpoints.IsAcceptable(new IPEndPoint(IPAddress.IPv6Loopback, 47950), own));
         Assert.True(PairingEndpoints.IsAcceptable(new IPEndPoint(IPAddress.Parse("10.231.0.10"), 47950), own, allowPrivate: true));
         Assert.False(PairingEndpoints.IsAcceptable(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 47950), own, allowPrivate: true));
+    }
+}
+
+/// <summary>Punching between two pairing ports on loopback.</summary>
+public class PairPortTests
+{
+    private static Func<int, TimeSpan?> Fast => round => round == 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(100);
+
+    [Fact]
+    public async Task BothSides_FindEachOther()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        using var a = PairPort.Bind(0, 0);
+        using var b = PairPort.Bind(0, 1);
+        a.SetKey(key);
+        b.SetKey(key);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var toB = new[] { new IPEndPoint(IPAddress.Loopback, b.Port) };
+        var toA = new[] { new IPEndPoint(IPAddress.Loopback, a.Port) };
+        var pa = a.PunchAsync(() => toB, Fast, timeout.Token);
+        var pb = b.PunchAsync(() => toA, Fast, timeout.Token);
+        Assert.Equal(b.Port, (await pa)!.Port);
+        Assert.Equal(a.Port, (await pb)!.Port);
+    }
+
+    [Fact]
+    public async Task ASideWithoutTheKey_AnswersNothing_UntilItHasIt()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        using var a = PairPort.Bind(0, 0);
+        using var b = PairPort.Bind(0, 1);
+        b.SetKey(key);
+        var toA = new[] { new IPEndPoint(IPAddress.Loopback, a.Port) };
+        var toB = new[] { new IPEndPoint(IPAddress.Loopback, b.Port) };
+        using var early = new CancellationTokenSource(TimeSpan.FromSeconds(1.5));
+        var waitingA = a.PunchAsync(() => toB, Fast, early.Token);
+        Assert.Null(await b.PunchAsync(() => toA, Fast, early.Token));
+        Assert.Null(await waitingA);
+
+        a.SetKey(key);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var pa = a.PunchAsync(() => toB, Fast, timeout.Token);
+        Assert.NotNull(await b.PunchAsync(() => toA, Fast, timeout.Token));
+        Assert.NotNull(await pa);
+    }
+
+    [Fact]
+    public async Task AWrongKey_NeverGetsAnAck()
+    {
+        using var a = PairPort.Bind(0, 0);
+        using var b = PairPort.Bind(0, 1);
+        a.SetKey(RandomNumberGenerator.GetBytes(32));
+        b.SetKey(RandomNumberGenerator.GetBytes(32));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1.5));
+        var pa = a.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, b.Port) }, Fast, timeout.Token);
+        Assert.Null(await b.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, a.Port) }, Fast, timeout.Token));
+        Assert.Null(await pa);
+    }
+
+    [Fact]
+    public async Task JunkAndReplays_GetNoReply()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        using var port = PairPort.Bind(0, 1);
+        port.SetKey(key);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var punching = port.PunchAsync(() => Array.Empty<IPEndPoint>(), _ => null, timeout.Token);
+        using var attacker = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);
+        attacker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var target = new IPEndPoint(IPAddress.Loopback, port.Port);
+        var probe = PairPunchPacket.Build(PairPunchPacket.Probe, 0, PairPunchPacket.PairTag(key), key, DateTimeOffset.UtcNow);
+        attacker.SendTo(new byte[] { 0, 1, 0, 1, 0, 0, 0, 0 }, target);
+        attacker.SendTo(PairPunchPacket.Build(PairPunchPacket.Probe, 0, PairPunchPacket.PairTag(key), RandomNumberGenerator.GetBytes(32), DateTimeOffset.UtcNow), target);
+        attacker.SendTo(PairPunchPacket.Build(PairPunchPacket.Probe, 0, PairPunchPacket.PairTag(key), PairingCrypto.SubKey(key, "punch"), DateTimeOffset.UtcNow), target);
+        var buffer = new byte[2048];
+        var reply = attacker.ReceiveAsync(buffer, System.Net.Sockets.SocketFlags.None);
+        var first = await Task.WhenAny(reply, Task.Delay(800));
+        Assert.Same(reply, first);
+        Assert.Equal(PairPunchPacket.Length, await reply);
+
+        // The same probe again is a replay: no second answer.
+        var punchKeyProbe = PairPunchPacket.Build(PairPunchPacket.Probe, 0, PairPunchPacket.PairTag(key), PairingCrypto.SubKey(key, "punch"), DateTimeOffset.UtcNow);
+        attacker.SendTo(punchKeyProbe, target);
+        Assert.Equal(PairPunchPacket.Length, await attacker.ReceiveAsync(buffer, System.Net.Sockets.SocketFlags.None));
+        attacker.SendTo(punchKeyProbe, target);
+        var again = attacker.ReceiveAsync(buffer, System.Net.Sockets.SocketFlags.None);
+        Assert.NotSame(again, await Task.WhenAny(again, Task.Delay(800)));
+        _ = probe;
+        await punching;
     }
 }

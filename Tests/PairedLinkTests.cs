@@ -300,3 +300,26 @@ public class PairedLinkTests
         public void Dispose() => _listener.Stop();
     }
 }
+
+/// <summary>What a paired friend's stored settings report, whatever was saved.</summary>
+public class PairedFriendSettingsTests
+{
+    [Fact]
+    public void APairedFriend_AlwaysProxies_NeverHandsOff_AndHasNoDirectLink()
+    {
+        var friend = new Jellyfin.Plugin.Federation.Configuration.RemoteServer
+        {
+            StreamingMode = Jellyfin.Plugin.Federation.Configuration.StreamingMode.Direct,
+            AllowRemoteTranscode = true,
+            DirectLinkMode = "Auto",
+        };
+        Assert.Equal(Jellyfin.Plugin.Federation.Configuration.StreamingMode.Direct, friend.StreamingMode);
+        friend.Paired = true;
+        Assert.Equal(Jellyfin.Plugin.Federation.Configuration.StreamingMode.Proxy, friend.StreamingMode);
+        Assert.False(friend.AllowRemoteTranscode);
+        Assert.Equal("Off", friend.DirectLinkMode);
+        friend.StreamingMode = Jellyfin.Plugin.Federation.Configuration.StreamingMode.Direct;
+        Assert.Equal(Jellyfin.Plugin.Federation.Configuration.StreamingMode.Proxy, friend.StreamingMode);
+        Assert.False(Jellyfin.Plugin.Federation.Services.FederationMediaSourceProvider.UsesRemoteTranscode(friend));
+    }
+}

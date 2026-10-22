@@ -146,6 +146,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var configured = server.Url?.TrimEnd('/');
             if (string.IsNullOrEmpty(configured)
                 || server.Id == null
+                || server.Paired
                 || server.Kind != ServerKind.Jellyfin
                 || !Uri.TryCreate(configured, UriKind.Absolute, out var uri)
                 || uri.Scheme != Uri.UriSchemeHttp
