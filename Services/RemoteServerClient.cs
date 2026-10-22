@@ -1728,7 +1728,9 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
-                var response = await _httpClient.GetAsync("/System/Info/Public", cancellationToken).ConfigureAwait(false);
+                // A paired friend's link carries only Federation's own friend routes.
+                var path = _server.Paired ? "/Plugins/Federation/Peer/SystemInfo" : "/System/Info/Public";
+                var response = await _httpClient.GetAsync(path, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
                 return true;
             }
@@ -1778,6 +1780,13 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private async Task<FederationPeerStatus> ProbeFederationPeerStatusAsync(CancellationToken cancellationToken)
         {
+            // Pairing only works between two Federation servers, and the link carries
+            // only Federation's friend routes (not the admin page this probe uses).
+            if (_server.Paired)
+            {
+                return FederationPeerStatus.Installed;
+            }
+
             System.Net.HttpStatusCode statusCode;
             try
             {

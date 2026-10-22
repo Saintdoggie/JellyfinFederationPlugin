@@ -362,7 +362,7 @@ test('log tab is routable and routine errors use a quiet notice', () => {
 });
 
 test('all rendered tabs are routable and the inline configuration script parses', () => {
-  const tabNames = [...configPage.matchAll(/data-tab="([a-z]+)"/g)].map((match) => match[1]);
+  const tabNames = [...new Set([...configPage.matchAll(/data-tab="([a-z]+)"/g)].map((match) => match[1]))];
   const routerMatch = configPage.match(/var TAB_NAMES = \[([^\]]+)\]/);
   assert.ok(routerMatch);
   const routed = [...routerMatch[1].matchAll(/'([a-z]+)'/g)].map((match) => match[1]);
@@ -658,7 +658,7 @@ function pagingHarness(kind, { fallback = false } = {}) {
     var activePage = {isConnected:true,classList:{contains:()=>false}};
     var downloadsPollInterval, watchingPollInterval, healthPollInterval, logPollInterval, syncStatusPollInterval;
     var TAB_NAMES = ['friends','catalog','browse'], TAB_STORAGE_KEY = 'test', localStorage = {setItem:()=>{}};
-    function qa() {return [];} function stopWatchdog() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
+    function qa() {return [];} function stopWatchdog() {} function startPairingPoll() {} function stopPairingPoll() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
     function loadBrowseServers() {} function populateCatalogFriendPick() {}
     function renderCatalogGrid() {} function setCatalogStatus(msg) {q('#fedCatalogStatus').textContent = msg;}
     function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus(msg) {q('#fedBrowseStatus').textContent = msg;}
@@ -1651,7 +1651,7 @@ test('admin tab row is one scrollable row and switchTab keeps the active tab in 
     function qa(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
     function armCatalogSentinel() {} function armBrowseSentinel() {} function noop() {}
     var loadDownloads = noop, loadLogs = noop, clearLogBadge = noop, loadBrowseServers = noop, populateCatalogFriendPick = noop,
-      loadCatalog = noop, stopWatchdog = noop, setDownloadView = noop, loadBrowseItems = noop;
+      loadCatalog = noop, stopWatchdog = noop, startPairingPoll = noop, stopPairingPoll = noop, setDownloadView = noop, loadBrowseItems = noop;
     ${configPage.slice(start, end)}
     return switchTab;
   `)(doc);
@@ -1929,7 +1929,8 @@ test('admin page has the direct link switch, per-friend mode and retry wired to 
   assert.match(configPage, /<input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" \/>/);
   assert.match(configPage, /Direct links with friends <span class="fed-pill fed-pill-off">Beta<\/span>/);
   assert.match(configPage, /chk\.checked = res\.Enabled === true;/);
-  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') < configPage.indexOf('id="fedPanelPools"'), 'the switch sits on the Friends tab');
+  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') > configPage.indexOf('id="fedPanelBeta"'), 'the switch sits on the Beta tab');
+  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') < configPage.indexOf('id="fedPanelAdvanced"'), 'the card is inside the Beta panel');
   assert.match(configPage, /case 'save-direct-link':\s*saveDirectLinkSettings\(\);/);
   assert.match(configPage, /case 'direct-link-retry':\s*retryDirectLink\(t\.getAttribute\('data-id'\)\);/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/DirectLink', \{\s*method: 'POST'/);
@@ -2333,4 +2334,70 @@ test("admin page has the popular switches saved with the favorites settings", ()
   assert.ok(configPage.includes('id="fedChkShowFriendsPopular"'));
   assert.ok(configPage.includes('id="fedChkSharePopularWithFriends"'));
   assert.match(configPage, /SharePopularWithFriends: q\('#fedChkSharePopularWithFriends'\)\.checked/);
+});
+
+test('Beta tab sits before Advanced and holds the pairing card, off by default', () => {
+  assert.ok(configPage.indexOf('id="fedTabBeta"') > 0);
+  assert.ok(configPage.indexOf('id="fedTabBeta"') < configPage.indexOf('id="fedTabAdvanced"'));
+  assert.match(configPage, /id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1"[^>]*data-tab="beta" role="tab" aria-selected="false"/);
+  assert.match(configPage, /id="fedPanelBeta" aria-labelledby="fedTabBeta" class="fed-tabpanel" data-tab-panel="beta" role="tabpanel"/);
+  assert.match(configPage, /Pairing codes \(Beta\) <span class="fed-pill fed-pill-off">Beta<\/span>/);
+  assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" \/>/);
+  assert.ok(configPage.includes('Direct links and pairing codes are on the'));
+  const dom = new JSDOM(configPage);
+  const d = dom.window.document;
+  assert.equal(d.getElementById('fedChkEnablePairing').checked, false);
+  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedChkAdaptivePlayback')));
+  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortFirst')));
+  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortLast')));
+});
+
+test('pairing actions and routes are wired', () => {
+  for (const a of ['save-pairing', 'pairing-make', 'pairing-answer', 'pairing-complete', 'pairing-confirm', 'pairing-cancel']) {
+    assert.ok(configPage.includes("case '" + a + "':"), a);
+  }
+  assert.ok(configPage.includes('data-fed-action="save-pairing"'));
+  assert.ok(configPage.includes("'/Plugins/Federation/Settings/Pairing'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Answer'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Complete'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Status'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm'"));
+  assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer/' + encodeURIComponent(id), 'DELETE'"));
+  assert.match(configPage, /if \(tab === 'beta'\) \{\s*startPairingPoll\(\);\s*\} else \{\s*stopPairingPoll\(\);/);
+  assert.ok(configPage.includes('escapeHtml(f.CallsItself)'));
+  assert.ok(configPage.includes('escapeHtml(f.SafetyNumber)'));
+  assert.equal(/gradient/i.test(configPage.slice(configPage.indexOf('fed-pair-code'), configPage.indexOf('fed-pair-code') + 600)), false);
+  assert.equal(/gradient/i.test(configPage), false);
+});
+
+test('pairing status renders untrusted text safely and gates the confirm button', () => {
+  const block = configPage.match(/(var pairingTimer = null;[\s\S]*?)\n {20}function loadPairingStatus/);
+  assert.ok(block, 'pairing render script not found');
+  const dom = new JSDOM(configPage);
+  const doc = dom.window.document;
+  const helpers = {
+    q: (sel) => doc.querySelector(sel),
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'))
+  };
+  const api = new Function(...Object.keys(helpers), block[1] + '\nreturn { renderPairingStatus };')(...Object.values(helpers));
+  const friend = (extra) => Object.assign({ ServerId: 'abc', Name: 'Pal', CallsItself: '<img src=x onerror=alert(1)>', State: 'connecting', Detail: '<b>d</b>', SafetyNumber: '12345 <i>6</i>', Confirmed: false, FriendConfirmed: false, Ready: false }, extra);
+  api.renderPairingStatus({ Enabled: true, Available: true, PortFirst: 40000, PortLast: 40010, PendingCodes: [{ Id: 'p1', Expires: '2030-01-01T00:00:00Z', Port: 40001 }], Friends: [friend()] });
+  const list = doc.getElementById('fedPairingFriends');
+  assert.equal(list.querySelector('img'), null);
+  assert.equal(list.querySelector('b'), null);
+  assert.equal(list.querySelector('i'), null);
+  assert.match(list.textContent, /calls itself <img src=x onerror=alert\(1\)>/);
+  assert.match(list.textContent, /12345 <i>6<\/i>/);
+  assert.ok(doc.querySelector('[data-fed-action="pairing-cancel"][data-id="p1"]'));
+  assert.equal(doc.getElementById('fedChkEnablePairing').checked, true);
+  const btn = list.querySelector('[data-fed-action="pairing-confirm"]');
+  assert.equal(btn.disabled, true, 'confirm is disabled until the box is ticked');
+  assert.equal(btn.getAttribute('data-id'), 'abc');
+  api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true })] });
+  assert.match(list.textContent, /Waiting for your friend to confirm/);
+  api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true, FriendConfirmed: true, Ready: true })] });
+  assert.match(list.textContent, /Ready\. Choose what to share/);
+  api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
+  assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
 });

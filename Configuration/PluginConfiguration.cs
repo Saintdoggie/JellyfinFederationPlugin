@@ -1040,6 +1040,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <summary>Gets or sets when the pairing was made.</summary>
         public DateTime? PairedAtUtc { get; set; }
 
+        /// <summary>Gets or sets when this pairing's link was last up (null: never).</summary>
+        public DateTime? PairLastConnectedUtc { get; set; }
+
         /// <summary>Gets or sets this server's UDP port for this pairing.</summary>
         public int PairLocalPort { get; set; }
 

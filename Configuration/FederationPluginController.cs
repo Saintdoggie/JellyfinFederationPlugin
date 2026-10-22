@@ -6892,6 +6892,7 @@ namespace Jellyfin.Plugin.Federation.Api
             to.PairMailCounterIn = from.PairMailCounterIn;
             to.PairedAtUtc = from.PairedAtUtc;
             to.PairLocalPort = from.PairLocalPort;
+            to.PairLastConnectedUtc = from.PairLastConnectedUtc;
             to.PairClaimedName = from.PairClaimedName;
         }
 

@@ -576,15 +576,23 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
 
             foreach (var server in wanted.Values)
             {
-                if (_friends.ContainsKey(server.Id))
+                // A pairing that never connected goes away once its codes are long
+                // expired; one that connected stays until the admin removes it.
+                var neverConnected = server.PairLastConnectedUtc == null;
+                var stale = server.PairedAtUtc is { } made && Now().UtcDateTime - made > NeverConnectedLimit;
+                if (neverConnected && stale)
                 {
+                    if (_friends.TryRemove(server.Id, out var idle))
+                    {
+                        _ = idle.StopAsync();
+                    }
+
+                    RemoveNeverConnected(server.Id);
                     continue;
                 }
 
-                // A pairing that never connected goes away (its codes expired).
-                if (server.PairedAtUtc is { } made && Now().UtcDateTime - made > NeverConnectedLimit && string.IsNullOrEmpty(server.FederationId) && !server.PairSafetyConfirmed)
+                if (_friends.ContainsKey(server.Id))
                 {
-                    RemoveNeverConnected(server.Id);
                     continue;
                 }
 
@@ -781,6 +789,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var path = link.RemoteEndPoint;
             UpdateFriend(runtime.FriendId, s =>
             {
+                s.PairLastConnectedUtc = Now().UtcDateTime;
                 var list = new List<string> { path.ToString() };
                 list.AddRange(s.PairLastEndpoints.Where(e => e != path.ToString()).Take(PairingCode.MaxEndpoints - 1));
                 s.PairLastEndpoints = list;
@@ -1138,7 +1147,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         IPEndPoint? path;
                         using (port)
                         {
-                            port.SetKey(_key);
+                            port.SetKey(_key, Role);
                             State = LastConnectedUtc == null ? "connecting" : "reconnecting";
                             Detail = LastConnectedUtc == null ? "Looking for the friend…" : "The link dropped; looking for the friend again…";
                             var started = DateTime.UtcNow;
@@ -1190,7 +1199,13 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     {
                         failures++;
                         State = "reconnecting";
-                        Detail = "The link didn't come up: " + ex.Message;
+                        var detail = "The link didn't come up: " + ex.Message;
+                        if (detail != Detail)
+                        {
+                            _owner._logger.LogInformation("[Federation] Paired link to {Friend}: {Detail}", FriendId, detail);
+                        }
+
+                        Detail = detail;
                         _owner._logger.LogDebug(ex, "[Federation] Paired link to {Friend} didn't come up", FriendId);
                         try
                         {

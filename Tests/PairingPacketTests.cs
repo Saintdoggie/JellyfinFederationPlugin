@@ -116,8 +116,8 @@ public class PairPortTests
         var key = RandomNumberGenerator.GetBytes(32);
         using var a = PairPort.Bind(0, 0);
         using var b = PairPort.Bind(0, 1);
-        a.SetKey(key);
-        b.SetKey(key);
+        a.SetKey(key, 0);
+        b.SetKey(key, 1);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var toB = new[] { new IPEndPoint(IPAddress.Loopback, b.Port) };
         var toA = new[] { new IPEndPoint(IPAddress.Loopback, a.Port) };
@@ -133,7 +133,7 @@ public class PairPortTests
         var key = RandomNumberGenerator.GetBytes(32);
         using var a = PairPort.Bind(0, 0);
         using var b = PairPort.Bind(0, 1);
-        b.SetKey(key);
+        b.SetKey(key, 1);
         var toA = new[] { new IPEndPoint(IPAddress.Loopback, a.Port) };
         var toB = new[] { new IPEndPoint(IPAddress.Loopback, b.Port) };
         using var early = new CancellationTokenSource(TimeSpan.FromSeconds(1.5));
@@ -141,10 +141,25 @@ public class PairPortTests
         Assert.Null(await b.PunchAsync(() => toA, Fast, early.Token));
         Assert.Null(await waitingA);
 
-        a.SetKey(key);
+        a.SetKey(key, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var pa = a.PunchAsync(() => toB, Fast, timeout.Token);
         Assert.NotNull(await b.PunchAsync(() => toA, Fast, timeout.Token));
+        Assert.NotNull(await pa);
+    }
+
+    [Fact]
+    public async Task PortsBoundBeforeTheirRoleIsKnown_StillPunch()
+    {
+        // A code's port is bound before the answer says which role this side has.
+        var key = RandomNumberGenerator.GetBytes(32);
+        using var a = PairPort.Bind(0, 0);
+        using var b = PairPort.Bind(0, 0);
+        a.SetKey(key, 1);
+        b.SetKey(key, 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var pa = a.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, b.Port) }, Fast, timeout.Token);
+        Assert.NotNull(await b.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, a.Port) }, Fast, timeout.Token));
         Assert.NotNull(await pa);
     }
 
@@ -153,8 +168,8 @@ public class PairPortTests
     {
         using var a = PairPort.Bind(0, 0);
         using var b = PairPort.Bind(0, 1);
-        a.SetKey(RandomNumberGenerator.GetBytes(32));
-        b.SetKey(RandomNumberGenerator.GetBytes(32));
+        a.SetKey(RandomNumberGenerator.GetBytes(32), 0);
+        b.SetKey(RandomNumberGenerator.GetBytes(32), 1);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1.5));
         var pa = a.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, b.Port) }, Fast, timeout.Token);
         Assert.Null(await b.PunchAsync(() => new[] { new IPEndPoint(IPAddress.Loopback, a.Port) }, Fast, timeout.Token));
@@ -166,7 +181,7 @@ public class PairPortTests
     {
         var key = RandomNumberGenerator.GetBytes(32);
         using var port = PairPort.Bind(0, 1);
-        port.SetKey(key);
+        port.SetKey(key, 1);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var punching = port.PunchAsync(() => Array.Empty<IPEndPoint>(), _ => null, timeout.Token);
         using var attacker = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);

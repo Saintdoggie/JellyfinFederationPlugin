@@ -181,6 +181,8 @@
                     margin-top: 0.9em; padding: 0.1em 0 0.1em 1em; border-left: 2px solid var(--fed-border-soft);
                     display: flex; flex-direction: column; gap: 0.9em;
                 }
+                #federationConfigPage .fed-pair-code { width:100%; box-sizing:border-box; font-family:monospace; font-size:.9em; overflow-wrap:anywhere; word-break:break-all; }
+                #federationConfigPage .fed-pair-safety { font-family:monospace; font-size:1.8em; letter-spacing:.08em; font-weight:bold; margin:.4em 0; overflow-wrap:anywhere; }
                 #federationConfigPage .fed-subcard { padding-left: 1em; border-left: 2px solid var(--fed-border-soft); }
                 #federationConfigPage h4.fed-subhead { margin: 0 0 0.4em; font-size: 0.95em; font-weight: 600; }
                 #federationConfigPage h3.fed-subhead { margin: 1.4em 0 0.5em; font-size: 1em; font-weight: 600; }
@@ -520,19 +522,13 @@
                 <button id="fedTabCatalog" aria-controls="fedPanelCatalog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="catalog" role="tab" aria-selected="false">Catalog</button>
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
                 <button id="fedTabStorage" aria-controls="fedPanelStorage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="storage" role="tab" aria-selected="false">Storage</button>
+                <button id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="beta" role="tab" aria-selected="false">Beta</button>
                 <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
                 <button id="fedTabLog" aria-controls="fedPanelLog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="log" role="tab" aria-selected="false">Log <span id="fedLogBadge" class="fed-log-badge"></span></button>
             </div>
 
             <div id="fedPanelFriends" aria-labelledby="fedTabFriends" class="fed-tabpanel fed-tabpanel-active" data-tab-panel="friends" role="tabpanel">
-                <div class="verticalSection" id="fedDirectLinkCard">
-                    <h3 class="sectionTitle">Direct links with friends <span class="fed-pill fed-pill-off">Beta</span></h3>
-                    <label class="fed-check-label"><input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" /> Open direct links with friends (beta; shares this home's internet address with them)</label>
-                    <p class="fieldDescription"><strong>Off by default.</strong> A direct link connects your two servers without a tunnel or VPS in between, so each friend's server sees your home's internet (IP) address. If you use a tunnel or VPS to keep that address private, leave this off. Viewers and players never see it. An encrypted UDP connection straight between your server and each friend's, opened through both home routers the way Tailscale does, with no port forwarding. Your viewers at home then get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS. It only carries the friend's video, downloads and speed tests, with the same permissions as today. Both servers need Federation 0.0.195 or newer; Linux and Windows servers.</p>
-                    <p class="fed-hint" id="fedDirectLinkSummary">Checking…</p>
-                    <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-direct-link">Save direct link settings</button>
-                    <div class="fed-srvstatus" id="fedDirectLinkSaveStatus" style="display:none;"></div>
-                </div>
+                <p class="fieldDescription" id="fedBetaPointer">Direct links and pairing codes are on the <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="switch-tab" data-tab="beta">Beta tab</button>.</p>
                 <div class="verticalSection">
                     <h3 class="sectionTitle">Add a friend</h3>
                     <p class="fieldDescription">
@@ -1018,6 +1014,76 @@
                     </div>
                 </div>
 
+                <div id="fedPanelBeta" aria-labelledby="fedTabBeta" class="fed-tabpanel" data-tab-panel="beta" role="tabpanel">
+                    <div class="verticalSection" id="fedDirectLinkCard">
+                        <h3 class="sectionTitle">Direct links with friends <span class="fed-pill fed-pill-off">Beta</span></h3>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" /> Open direct links with friends (beta; shares this home's internet address with them)</label>
+                        <p class="fieldDescription"><strong>Off by default.</strong> A direct link connects your two servers without a tunnel or VPS in between, so each friend's server sees your home's internet (IP) address. If you use a tunnel or VPS to keep that address private, leave this off. Viewers and players never see it. An encrypted UDP connection straight between your server and each friend's, opened through both home routers the way Tailscale does, with no port forwarding. Your viewers at home then get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS. It only carries the friend's video, downloads and speed tests, with the same permissions as today. Both servers need Federation 0.0.195 or newer; Linux and Windows servers.</p>
+                        <p class="fed-hint" id="fedDirectLinkSummary">Checking…</p>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-direct-link">Save direct link settings</button>
+                        <div class="fed-srvstatus" id="fedDirectLinkSaveStatus" style="display:none;"></div>
+                    </div>
+                    <div class="verticalSection" id="fedPairingCard">
+                        <h3 class="sectionTitle">Pairing codes (Beta) <span class="fed-pill fed-pill-off">Beta</span></h3>
+                        <p class="fieldDescription">For friends whose server can't be reached from the internet (no port forwarding, no VPS, no Tailscale). You and your friend swap two codes. After that, the two servers talk over an encrypted direct connection. Your friend's server will see your home's internet address, and the code itself contains it, so only send a code to the friend. <strong>Off by default.</strong> While it is off, no pairing port is open.</p>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" /> Allow pairing codes (beta; shares this home's internet address with friends you pair with)</label>
+                        <div class="fed-inline">
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedPairPortFirst">First port</label>
+                                <input type="number" id="fedPairPortFirst" class="emby-input" min="1024" max="65535" step="1" />
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedPairPortLast">Last port</label>
+                                <input type="number" id="fedPairPortLast" class="emby-input" min="1024" max="65535" step="1" />
+                            </div>
+                        </div>
+                        <p class="fieldDescription">Your friend does not need to forward these ports. Leave pairing off if you don't plan to pair with anyone.</p>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-pairing">Save pairing settings</button>
+                        <div class="fed-srvstatus" id="fedPairingSaveStatus" style="display:none;"></div>
+                        <p class="fed-hint" id="fedPairingSummary"></p>
+
+                        <h4 class="fed-subhead">1. Make a pairing code</h4>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-make">Make a pairing code</button>
+                        <div class="fed-srvstatus" id="fedPairingMakeStatus" style="display:none;"></div>
+                        <div id="fedPairingOfferBox" style="display:none;">
+                            <textarea id="fedPairingOfferCode" class="fed-pair-code" rows="4" readonly spellcheck="false"></textarea>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="pairing-copy" data-target="fedPairingOfferCode">Copy</button>
+                            <p class="fed-hint" id="fedPairingOfferExpires"></p>
+                            <p class="fieldDescription">Send this to your friend. They enter it on their server and send you back an answer code. Enter that below. The code works once and expires in 15 minutes.</p>
+                        </div>
+                        <div id="fedPairingPending"></div>
+
+                        <h4 class="fed-subhead">2. Enter your friend's code</h4>
+                        <textarea id="fedPairingAnswerInput" class="fed-pair-code" rows="3" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Paste your friend's code here"></textarea>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-answer">Make an answer code</button>
+                        <div class="fed-srvstatus" id="fedPairingAnswerStatus" style="display:none;"></div>
+                        <div id="fedPairingAnswerBox" style="display:none;">
+                            <textarea id="fedPairingAnswerCode" class="fed-pair-code" rows="4" readonly spellcheck="false"></textarea>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="pairing-copy" data-target="fedPairingAnswerCode">Copy</button>
+                            <p class="fieldDescription">Send this answer back to your friend.</p>
+                        </div>
+
+                        <h4 class="fed-subhead">3. Enter your friend's answer</h4>
+                        <textarea id="fedPairingCompleteInput" class="fed-pair-code" rows="3" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Paste your friend's answer code here"></textarea>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-complete">Finish pairing</button>
+                        <div class="fed-srvstatus" id="fedPairingCompleteStatus" style="display:none;"></div>
+
+                        <h4 class="fed-subhead">Paired friends</h4>
+                        <div id="fedPairingFriends" class="fed-hint">Nobody paired yet.</div>
+                        <div class="fed-srvstatus" id="fedPairingFriendStatus" style="display:none;"></div>
+                    </div>
+                    <div class="verticalSection" id="fedOtherBeta">
+                        <h3 class="sectionTitle">Other beta features</h3>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkAdaptivePlayback" class="emby-checkbox fed-check" /> Adaptive movie playback (web preview)</label>
+                            <p class="fieldDescription">Prepare and switch between matching friends' copies during playback. Uses a web player with native controls; requires additional bandwidth and sometimes a second transcode. Reload the web client after saving. Other clients keep their normal player.</p>
+                        <p class="fieldDescription">The hardware-based choice of who converts a friend's title is also still in beta. You'll find it under Who converts friends' video on the Advanced tab.</p>
+                        <div class="fed-savebar">
+                            <button is="emby-button" type="submit" id="fedBtnSaveBeta" class="raised button-submit emby-button"><span>Save beta settings</span></button>
+                            <span class="fed-savemsg" id="fedSaveMsgBeta"></span>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="fedPanelAdvanced" aria-labelledby="fedTabAdvanced" class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
                     <details class="fed-details" id="fedAdvancedSettings">
                         <summary>Advanced settings</summary>
@@ -1037,8 +1103,6 @@
                                 <input type="text" id="fedTxtCachePath" class="emby-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
                             </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkAdaptivePlayback" class="emby-checkbox fed-check" /> Adaptive movie playback (web preview)</label>
-                            <p class="fieldDescription">Prepare and switch between matching friends' copies during playback. Uses a web player with native controls; requires additional bandwidth and sometimes a second transcode. Reload the web client after saving. Other clients keep their normal player.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingOverlay" class="emby-checkbox fed-check" /> Show a loading bar while a federated title starts</label>
                             <p class="fieldDescription">When a federated title is still a black screen 1.5 seconds after pressing play, a simple bar at the bottom shows a projected countdown, why it is taking a while, and a fun fact. It never covers the player controls and disappears as soon as video plays.</p>
@@ -1567,7 +1631,7 @@
                         // tab the admin actually saved from shows the result, since only
                         // one tab panel is visible at a time.
                         var className = 'fed-savemsg ' + (isError ? 'fed-savemsg-err' : (msg ? 'fed-savemsg-ok' : ''));
-                        ['#fedSaveMsg', '#fedSaveMsgStorage', '#fedSaveMsgAdvanced'].forEach(function (selector) {
+                        ['#fedSaveMsg', '#fedSaveMsgStorage', '#fedSaveMsgAdvanced', '#fedSaveMsgBeta'].forEach(function (selector) {
                             var el = q(selector);
                             if (!el) {
                                 return;
@@ -1926,6 +1990,152 @@
                         fedFetch('/Plugins/Federation/DirectLink/Retry/' + encodeURIComponent(serverId), { method: 'POST' })
                         .then(function () { setTimeout(function () { loadDirectLinkStatus(); showRemoteTranscodeStatus(id, 'Tried; see the line above.', 'ok'); }, 12000); })
                         .catch(function (e) { showRemoteTranscodeStatus(id, 'Could not retry: ' + e.message, 'err'); });
+                    }
+
+                    var pairingTimer = null;
+                    var pairingTicked = {};
+                    var pairingFormLoaded = false;
+
+                    function pairingStateText(f) {
+                        var labels = { connecting: 'Connecting', reconnecting: 'Reconnecting', connected: 'Connected', refused: 'Refused', stopped: 'Stopped' };
+                        return (labels[f.State] || f.State || 'Unknown') + (f.Detail ? ' - ' + f.Detail : '');
+                    }
+
+                    function renderPairingStatus(res) {
+                        var sum = q('#fedPairingSummary');
+                        // The form fields are filled once (and again after a save), so the
+                        // 5-second refresh never undoes something the admin is typing.
+                        if (!pairingFormLoaded) {
+                            pairingFormLoaded = true;
+                            q('#fedChkEnablePairing').checked = res.Enabled === true;
+                            if (res.PortFirst) { q('#fedPairPortFirst').value = res.PortFirst; }
+                            if (res.PortLast) { q('#fedPairPortLast').value = res.PortLast; }
+                        }
+                        if (sum) {
+                            sum.textContent = res.Available === false
+                                ? "Pairing isn't available on this server: " + (res.Reason || 'unknown')
+                                : (res.Enabled === true ? 'Pairing is on.' : 'Pairing is off. No pairing port is open.');
+                        }
+
+                        var pending = q('#fedPairingPending');
+                        if (pending) {
+                            pending.innerHTML = (res.PendingCodes || []).map(function (c) {
+                                return '<div class="fed-inline"><span class="fed-hint">Waiting code, expires ' + escapeHtml(new Date(c.Expires).toLocaleString()) + '</span> '
+                                    + '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="pairing-cancel" data-id="' + escapeHtml(c.Id) + '">Cancel</button></div>';
+                            }).join('');
+                        }
+
+                        var list = q('#fedPairingFriends');
+                        if (!list) { return; }
+                        Array.prototype.forEach.call(list.querySelectorAll('.fedPairConfirmChk'), function (c) {
+                            pairingTicked[c.getAttribute('data-id')] = c.checked;
+                        });
+                        var friends = res.Friends || [];
+                        if (!friends.length) {
+                            list.textContent = 'Nobody paired yet.';
+                            return;
+                        }
+
+                        list.innerHTML = friends.map(function (f) {
+                            var id = escapeHtml(f.ServerId);
+                            var h = '<div class="fed-subcard" style="margin:.8em 0;"><strong>' + escapeHtml(f.Name) + '</strong> '
+                                + '<span class="fed-muted">calls itself ' + escapeHtml(f.CallsItself) + ' (taken from the code, not checked)</span>'
+                                + '<div class="fed-hint">' + escapeHtml(pairingStateText(f)) + '</div>';
+                            if (!f.Confirmed) {
+                                var ticked = pairingTicked[f.ServerId] === true;
+                                h += '<div class="fed-pair-safety">' + escapeHtml(f.SafetyNumber) + '</div>'
+                                    + '<p class="fieldDescription">Call your friend (or meet in person) and read these numbers to each other. Only continue if they match exactly. If they don\'t, someone may have swapped the codes: remove this friend and make new codes.</p>'
+                                    + '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedPairConfirmChk" data-id="' + id + '"' + (ticked ? ' checked' : '') + ' /> I compared this number with my friend by voice or in person, and it matches</label>'
+                                    + '<button is="emby-button" type="button" class="raised emby-button fedPairConfirmBtn" data-fed-action="pairing-confirm" data-id="' + id + '"' + (ticked ? '' : ' disabled') + '>Confirm</button>';
+                            } else if (!f.FriendConfirmed) {
+                                h += '<p class="fieldDescription">Waiting for your friend to confirm the numbers on their side.</p>';
+                            } else if (f.Ready) {
+                                h += '<p class="fieldDescription">Ready. Choose what to share with this friend on the Friends tab.</p>';
+                            }
+
+                            return h + '</div>';
+                        }).join('');
+                    }
+
+                    function loadPairingStatus() {
+                        fedFetch('/Plugins/Federation/Pairing/Status')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) { if (res) { renderPairingStatus(res); } })
+                        .catch(function () { /* older server; stay quiet */ });
+                    }
+
+                    function startPairingPoll() {
+                        loadPairingStatus();
+                        if (!pairingTimer) { pairingTimer = setInterval(loadPairingStatus, 5000); }
+                    }
+
+                    function stopPairingPoll() {
+                        if (pairingTimer) { clearInterval(pairingTimer); pairingTimer = null; }
+                    }
+
+                    function pairingCall(path, method, body, statusId, done) {
+                        showRemoteTranscodeStatus(statusId, 'Working…', 'info');
+                        var opts = { method: method };
+                        if (body) { opts.body = JSON.stringify(body); }
+                        fedFetch(path, opts)
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (res && res.success === false) {
+                                showRemoteTranscodeStatus(statusId, res.message || 'That did not work.', 'err');
+                            } else {
+                                showRemoteTranscodeStatus(statusId, (res && res.message) || 'Done.', 'ok');
+                                if (done) { done(res || {}); }
+                            }
+
+                            loadPairingStatus();
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus(statusId, e.message, 'err'); });
+                    }
+
+                    function savePairingSettings() {
+                        pairingCall('/Plugins/Federation/Settings/Pairing', 'POST', {
+                            EnablePairing: q('#fedChkEnablePairing').checked,
+                            PortFirst: parseInt(q('#fedPairPortFirst').value, 10) || 0,
+                            PortLast: parseInt(q('#fedPairPortLast').value, 10) || 0
+                        }, '#fedPairingSaveStatus', function () { pairingFormLoaded = false; });
+                    }
+
+                    function makePairingCode() {
+                        pairingCall('/Plugins/Federation/Pairing/Offer', 'POST', {}, '#fedPairingMakeStatus', function (res) {
+                            q('#fedPairingOfferCode').value = res.code || '';
+                            q('#fedPairingOfferExpires').textContent = res.expires ? 'Expires ' + new Date(res.expires).toLocaleString() + '.' : '';
+                            q('#fedPairingOfferBox').style.display = 'block';
+                        });
+                    }
+
+                    function answerPairingCode() {
+                        pairingCall('/Plugins/Federation/Pairing/Answer', 'POST', { Code: q('#fedPairingAnswerInput').value.trim() }, '#fedPairingAnswerStatus', function (res) {
+                            q('#fedPairingAnswerCode').value = res.code || '';
+                            q('#fedPairingAnswerBox').style.display = 'block';
+                        });
+                    }
+
+                    function completePairing() {
+                        pairingCall('/Plugins/Federation/Pairing/Complete', 'POST', { Code: q('#fedPairingCompleteInput').value.trim() }, '#fedPairingCompleteStatus', function () {
+                            q('#fedPairingCompleteInput').value = '';
+                        });
+                    }
+
+                    function confirmPairing(id) {
+                        pairingCall('/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm', 'POST', {}, '#fedPairingFriendStatus');
+                    }
+
+                    function cancelPairingOffer(id) {
+                        pairingCall('/Plugins/Federation/Pairing/Offer/' + encodeURIComponent(id), 'DELETE', null, '#fedPairingFriendStatus');
+                    }
+
+                    function copyPairingCode(targetId) {
+                        var el = document.getElementById(targetId);
+                        if (!el) { return; }
+                        el.select();
+                        try {
+                            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(el.value); } else { document.execCommand('copy'); }
+                        } catch (e) { /* the text is selected; the admin can copy by hand */ }
                     }
 
                     function loadFavoritesSettings() {
@@ -7394,7 +7604,7 @@
 
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'plex', 'libraries', 'catalog', 'browse', 'storage', 'advanced', 'log'];
+                    var TAB_NAMES = ['friends', 'pools', 'companion', 'discovery', 'plex', 'libraries', 'catalog', 'browse', 'storage', 'beta', 'advanced', 'log'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
                     var activeTab = 'friends';
 
@@ -7423,6 +7633,12 @@
                         // Lazy: the catalog can be a large fetch, so it's only loaded
                         // the first time an admin actually opens this tab, not on
                         // every page load.
+                        if (tab === 'beta') {
+                            startPairingPoll();
+                        } else {
+                            stopPairingPoll();
+                        }
+
                         if (tab === 'plex') {
                             loadPlexSetup();
                         }
@@ -7688,6 +7904,27 @@
                                     break;
                                 case 'save-friend-limits':
                                     saveFriendLimits(t.getAttribute('data-id'));
+                                    break;
+                                case 'save-pairing':
+                                    savePairingSettings();
+                                    break;
+                                case 'pairing-make':
+                                    makePairingCode();
+                                    break;
+                                case 'pairing-answer':
+                                    answerPairingCode();
+                                    break;
+                                case 'pairing-complete':
+                                    completePairing();
+                                    break;
+                                case 'pairing-confirm':
+                                    confirmPairing(t.getAttribute('data-id'));
+                                    break;
+                                case 'pairing-cancel':
+                                    cancelPairingOffer(t.getAttribute('data-id'));
+                                    break;
+                                case 'pairing-copy':
+                                    copyPairingCode(t.getAttribute('data-target'));
                                     break;
                                 case 'save-direct-link':
                                     saveDirectLinkSettings();
@@ -8002,6 +8239,13 @@
                         page.addEventListener('change', function (e) {
                             var t = e.target;
                             if (!t || !t.classList) {
+                                return;
+                            }
+
+                            if (t.classList.contains('fedPairConfirmChk')) {
+                                pairingTicked[t.getAttribute('data-id')] = t.checked;
+                                var cb = t.parentNode && t.parentNode.parentNode ? t.parentNode.parentNode.querySelector('.fedPairConfirmBtn') : null;
+                                if (cb) { cb.disabled = !t.checked; }
                                 return;
                             }
 

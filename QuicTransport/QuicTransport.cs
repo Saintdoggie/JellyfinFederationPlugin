@@ -36,7 +36,41 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
         private static readonly TimeSpan PairedKeepAlive = TimeSpan.FromSeconds(10);
 
         /// <summary>Whether QUIC works in this load context.</summary>
+        // How much each side lets the other have in flight. The library's defaults
+        // keep one download to roughly 270 KB in flight, which over a 20 ms round trip
+        // caps it near 110 Mbps however fast both lines are. The connection window
+        // bounds the memory all streams together can hold.
+        private static long _connectionWindow = 32L * 1024 * 1024;
+        private static long _streamWindow = 8L * 1024 * 1024;
+
         public static bool IsSupported() => QuicConnection.IsSupported && QuicListener.IsSupported;
+
+        /// <summary>Sets the receive windows for new connections (bytes); 0 keeps the library defaults.</summary>
+        public static void ConfigureWindows(long connection, long stream)
+        {
+            Interlocked.Exchange(ref _connectionWindow, connection);
+            Interlocked.Exchange(ref _streamWindow, stream);
+        }
+
+        private static QuicReceiveWindowSizes Windows()
+        {
+            var sizes = new QuicReceiveWindowSizes();
+            var connection = Interlocked.Read(ref _connectionWindow);
+            var stream = Interlocked.Read(ref _streamWindow);
+            if (connection > 0)
+            {
+                sizes.Connection = (int)Math.Min(int.MaxValue, connection);
+            }
+
+            if (stream > 0)
+            {
+                var value = (int)Math.Min(int.MaxValue, stream);
+                sizes.LocallyInitiatedBidirectionalStream = value;
+                sizes.RemotelyInitiatedBidirectionalStream = value;
+            }
+
+            return sizes;
+        }
 
         /// <summary>The runtime's reason QUIC doesn't work (or the library version when it does).</summary>
         public static string Diagnostics()
@@ -84,6 +118,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 // that actually opens one is closed as misbehaving.
                 MaxInboundBidirectionalStreams = 1,
                 MaxInboundUnidirectionalStreams = 0,
+                InitialReceiveWindowSizes = Windows(),
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
                     ApplicationProtocols = Protocols,
@@ -151,6 +186,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 MaxInboundBidirectionalStreams = maxStreams,
                 MaxInboundUnidirectionalStreams = 0,
+                InitialReceiveWindowSizes = Windows(),
                 ServerAuthenticationOptions = new SslServerAuthenticationOptions
                 {
                     ApplicationProtocols = Protocols,
@@ -261,6 +297,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 MaxInboundBidirectionalStreams = maxInboundStreams,
                 MaxInboundUnidirectionalStreams = 0,
+                InitialReceiveWindowSizes = Windows(),
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
                     ApplicationProtocols = PairedProtocols,
@@ -346,6 +383,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 MaxInboundBidirectionalStreams = maxInboundStreams,
                 MaxInboundUnidirectionalStreams = 0,
+                InitialReceiveWindowSizes = Windows(),
                 ServerAuthenticationOptions = new SslServerAuthenticationOptions
                 {
                     ApplicationProtocols = PairedProtocols,

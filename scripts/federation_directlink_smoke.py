@@ -104,9 +104,17 @@ def ctr(name, *args, image=IMAGE_TOOLS, entry=None, tail=('sleep', 'infinity')):
     CREATED_CONTAINERS.append(name)
 
 
-def router_rules(side, random_fully):
-    """Shell to (re)program a router. WAN/LAN interfaces are looked up by address."""
+FORWARD = {'on': True}
+
+
+def router_rules(side, random_fully, forward=None):
+    """Shell to (re)program a router. WAN/LAN interfaces are looked up by address.
+
+    forward=False: no port forwarding at all (the paired scenario: neither home reachable)."""
+    forward = FORWARD['on'] if forward is None else forward
     mq = '-j MASQUERADE' + (' --random-fully' if random_fully else '')
+    fwd = (f"iptables -A FORWARD -i $WAN -o $LAN -p tcp -d {IP['jf-' + side]} --dport 8096 -j ACCEPT\n"
+           f"iptables -t nat -A PREROUTING -i $WAN -p tcp --dport 8096 -j DNAT --to-destination {IP['jf-' + side]}:8096\n") if forward else ''
     return f'''set -e
 WAN=$(ip -o -4 addr show | awk '/10\\.231\\.0\\./ {{print $2}}' | head -1)
 LAN=$(ip -o -4 addr show | awk '/10\\.231\\.[12]\\./ {{print $2}}' | head -1)
@@ -114,15 +122,14 @@ iptables -t nat -F; iptables -F
 iptables -P FORWARD DROP
 iptables -A FORWARD -i $LAN -o $WAN -j ACCEPT
 iptables -A FORWARD -i $WAN -o $LAN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -A FORWARD -i $WAN -o $LAN -p tcp -d {IP['jf-' + side]} --dport 8096 -j ACCEPT
-iptables -t nat -A PREROUTING -i $WAN -p tcp --dport 8096 -j DNAT --to-destination {IP['jf-' + side]}:8096
-iptables -t nat -A POSTROUTING -o $WAN {mq}
+{fwd}iptables -t nat -A POSTROUTING -o $WAN {mq}
 iptables -A INPUT -i $WAN -p udp -j DROP
 echo "wan=$WAN lan=$LAN"
 '''
 
 
-def build_topology():
+def build_topology(forward=True):
+    FORWARD['on'] = forward
     build_tools_image()
     net_create('fdl-wan', NETS['wan'])
     net_create('fdl-lan-a', NETS['lan-a'], internal=True, route=IP['router-a-lan'])
@@ -135,7 +142,7 @@ def build_topology():
         ctr(f'fdl-router-{s}', '--network', f"fdl-wan:ip={IP['router-' + s + '-wan']}", '--cap-add', 'NET_ADMIN',
             '--sysctl', 'net.ipv4.ip_forward=1')
         pm('network', 'connect', '--ip', IP[f'router-{s}-lan'], f'fdl-lan-{s}', f'fdl-router-{s}')
-        pm('exec', f'fdl-router-{s}', 'sh', '-c', router_rules(s, False))
+        pm('exec', f'fdl-router-{s}', 'sh', '-c', router_rules(s, False, forward))
         ctr(f'fdl-viewer-{s}', '--network', f"fdl-lan-{s}:ip={IP['viewer-' + s]}", '-v', scripts)
     ctr('fdl-viewer-w', '--network', f"fdl-wan:ip={IP['viewer-w']}", '-v', scripts)
 
@@ -498,6 +505,118 @@ def dial_back_checks(a, b):
     guard('[dial-back] 7b. B switches back on and dials A: A dials back within 90 s', on)
 
 
+def pair(a, b):
+    """Pair A and B with two codes and the safety check, through the admin APIs only."""
+    for s in (a, b):
+        s.call('/Plugins/Federation/Settings/Pairing', data={'EnablePairing': True, 'PortFirst': 47950, 'PortLast': 47959})
+    offer = a.call('/Plugins/Federation/Pairing/Offer', data={})
+    qa.check(offer.get('success') and offer.get('code'), f'no offer: {offer}')
+    answer = b.call('/Plugins/Federation/Pairing/Answer', data={'Code': offer['code']})
+    qa.check(answer.get('success'), f'answer failed: {answer}')
+    done = a.call('/Plugins/Federation/Pairing/Complete', data={'Code': answer['code']})
+    qa.check(done.get('success'), f'complete failed: {done}')
+    return offer['code'], answer['code'], done['friendId'], answer['friendId']
+
+
+def paired_status(server, friend_id):
+    return next((f for f in server.call('/Plugins/Federation/Pairing/Status')['Friends'] if f['ServerId'] == friend_id), None)
+
+
+def paired_checks(a, b):
+    """Two homes, no port forwarding, no reachable URL: pair, sync, play, recover, refuse attacks."""
+    def unreachable(url):
+        try:
+            return http('w', url, '/System/Info/Public', timeout=5)[0] == 0
+        except RuntimeError:
+            return True
+    guard('[paired] 0. neither server is reachable from the internet', lambda: (unreachable(PUBLIC['a']) and unreachable(PUBLIC['b']), 'both unreachable'))
+    holder = {}
+
+    def paired():
+        holder['offer'], holder['answer'], holder['b_on_a'], holder['a_on_b'] = pair(a, b)
+        st_a = wait_for(lambda: (lambda f: f if f and f['State'] == 'connected' else None)(paired_status(a, holder['b_on_a'])), 'A never connected', seconds=60)
+        st_b = wait_for(lambda: (lambda f: f if f and f['State'] == 'connected' else None)(paired_status(b, holder['a_on_b'])), 'B never connected', seconds=60)
+        return st_a['SafetyNumber'] == st_b['SafetyNumber'] and len(st_a['SafetyNumber']) == 35, f"A {st_a['SafetyNumber']} / B {st_b['SafetyNumber']} via {st_a['Detail']}"
+    guard('[paired] 1. two codes connect both servers, and both show the same safety number', paired)
+    if 'b_on_a' not in holder:
+        return
+
+    def reused():
+        status, _, body = http('a', LAN['a'], '/Plugins/Federation/Pairing/Complete', {**a.admin, 'Content-Type': 'application/json'}, json.dumps({'Code': holder['answer']}).encode())
+        return status == 400, f'HTTP {status} {body[:120]!r}'
+    guard('[paired] 2. a used answer is refused (codes are single use)', reused)
+
+    def nothing_before_check():
+        f = paired_status(a, holder['b_on_a'])
+        cfg = a.call('/Plugins/Federation/Configuration')
+        me = next(s for s in cfg['RemoteServers'] if s['Id'] == holder['b_on_a'])
+        return (not f['Ready']) and not me['HasApiKey'], f"Ready={f['Ready']} HasApiKey={me['HasApiKey']}"
+    guard('[paired] 3. before both admins confirm, no tokens are swapped', nothing_before_check)
+
+    def confirmed():
+        a.call(f"/Plugins/Federation/Pairing/{holder['b_on_a']}/Confirm", data={})
+        b.call(f"/Plugins/Federation/Pairing/{holder['a_on_b']}/Confirm", data={})
+        wait_for(lambda: paired_status(a, holder['b_on_a'])['Ready'] or None, 'A never ready', seconds=60)
+        wait_for(lambda: paired_status(b, holder['a_on_b'])['Ready'] or None, 'B never ready', seconds=60)
+        return True, 'ready on both'
+    guard('[paired] 4. after both confirm, the friendship is set up', confirmed)
+
+    def synced():
+        qa.check(b.call(f"/Plugins/Federation/Friends/{holder['a_on_b']}/Sharing", data={'ShareAll': True})['success'], 'sharing failed')
+        b.call('/Library/VirtualFolders?name=QA%20Native&collectionType=movies&refreshLibrary=true',
+               data={'LibraryOptions': {'PathInfos': [{'Path': '/media'}], 'EnableRealtimeMonitor': False, 'EnableInternetProviders': False}}, expected=204)
+        wait_for(lambda: b.call('/Items?Recursive=true&IncludeItemTypes=Movie')['Items'], 'B did not scan media', seconds=120)
+        lib = next(l['ItemId'] for l in b.call('/Library/VirtualFolders') if l['Name'] == 'QA Native')
+        cfg = a.call('/Plugins/Federation/Configuration')
+        cfg['LibraryMappings'] = [{'LocalLibraryName': 'QA Federated', 'MediaType': 'Movie', 'Enabled': True, 'AutoProvision': True,
+                                   'RemoteLibrarySources': [{'ServerId': holder['b_on_a'], 'RemoteLibraryId': lib}]}]
+        a.call('/Plugins/Federation/Configuration', data=cfg)
+        a.call('/Plugins/Federation/ProvisionLibraries', data={})
+
+        def imported():
+            a.call('/Plugins/Federation/Refresh', data={})
+            return a.call('/Items?Recursive=true&IncludeItemTypes=Movie&Fields=MediaSources,MediaStreams')['Items']
+        holder['item'] = wait_for(imported, 'catalog did not import over the link', seconds=180)[0]['Id']
+        return True, f"item {holder['item']}"
+    guard('[paired] 5. the catalog syncs over the link', synced)
+    if 'item' not in holder:
+        return
+
+    def played(where, base):
+        def run():
+            r = play(a, holder['item'], where, base)
+            return segments_ok(r), f'sizes={[(s, n) for s, n, _ in r["sizes"]]} first={r["segment_urls"][0][:90]}'
+        return run
+    guard('[paired] 6a. a home viewer plays through A (video over the link)', played('a', LAN['a']))
+
+    def attacks():
+        out = []
+        port = paired_status(a, holder['b_on_a'])['Port']
+        for payload in ('junk', 'quic'):
+            data = os.urandom(1200) if payload == 'quic' else b'hello'
+            if payload == 'quic':
+                data = bytes([0xC3, 0, 0, 0, 1]) + data[5:]
+            res = pm('exec', 'fdl-viewer-a', 'python3', '/fdl/fdl_udp_probe.py', IP['jf-a'], str(port), data.hex(), check=False)
+            out.append(res.stdout.strip() or res.stderr.strip()[:80])
+        return all(o.endswith('silent') for o in out), f'replies={out}'
+    guard('[paired] 7. junk and a QUIC Initial to the pairing port get no reply', attacks)
+
+    def recovers():
+        # Cut UDP between the homes long enough for QUIC to give up (idle 45 s),
+        # then let it through again: the link must come back without new codes.
+        block = 'iptables -I FORWARD 1 -p udp -j DROP'
+        for s in 'ab':
+            pm('exec', f'fdl-router-{s}', 'sh', '-c', block)
+        wait_for(lambda: paired_status(a, holder['b_on_a'])['State'] != 'connected' or None, 'the link never noticed UDP being cut', seconds=120)
+        for s in 'ab':
+            pm('exec', f'fdl-router-{s}', 'sh', '-c', 'iptables -D FORWARD -p udp -j DROP')
+        started = time.time()
+        st = wait_for(lambda: (lambda f: f if f['State'] == 'connected' else None)(paired_status(a, holder['b_on_a'])), 'the link did not come back', seconds=180)
+        return True, f"back {time.time() - started:.0f} s after UDP returned, via {st['Detail']}"
+    guard('[paired] 8. after UDP is cut long enough to drop the link, it comes back without codes', recovers)
+    guard('[paired] 9. and playback works again', played('a', LAN['a']))
+
+
 def security_checks(a, b):
     def no_token():
         out = []
@@ -590,7 +709,7 @@ def attack_checks(a, b, item_id, friend_id):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scenario', choices=['cone', 'symmetric', 'all'], default='all')
+    ap.add_argument('--scenario', choices=['cone', 'symmetric', 'paired', 'all'], default='all')
     ap.add_argument('--keep', action='store_true', help='leave containers/networks up for debugging')
     ap.add_argument('--topology-only', action='store_true', help='only prove the NAT plumbing (no Jellyfin)')
     ap.add_argument('--plugin-dir', default=str(qa.REPO / 'bin/Release/net10.0'), help='directory holding the built plugin dll')
@@ -602,7 +721,7 @@ def main():
     os.chmod(work, 0o700)
     stage = 'topology'
     try:
-        build_topology()
+        build_topology(forward=args.scenario != 'paired')
         topology_checks()
         if args.topology_only:
             http_ok = None
@@ -618,11 +737,15 @@ def main():
             for s in (a, b):
                 s.start_wizard()
                 s.configure_plugin()
-            guard('topology: TCP 8096 DNAT reaches Jellyfin A from the wan', lambda: (http('w', PUBLIC['a'], '/System/Info/Public', timeout=10)[0] == 200, PUBLIC['a']))
-            guard('topology: TCP 8096 DNAT reaches Jellyfin B from the wan', lambda: (http('w', PUBLIC['b'], '/System/Info/Public', timeout=10)[0] == 200, PUBLIC['b']))
-            stage = 'befriending'
-            item_id, friend_id, _ = befriend(a, b)
-            log(f'befriended: A imports B\'s catalog (item {item_id})')
+            if args.scenario == 'paired':
+                stage = 'paired scenario'
+                paired_checks(a, b)
+            else:
+                guard('topology: TCP 8096 DNAT reaches Jellyfin A from the wan', lambda: (http('w', PUBLIC['a'], '/System/Info/Public', timeout=10)[0] == 200, PUBLIC['a']))
+                guard('topology: TCP 8096 DNAT reaches Jellyfin B from the wan', lambda: (http('w', PUBLIC['b'], '/System/Info/Public', timeout=10)[0] == 200, PUBLIC['b']))
+                stage = 'befriending'
+                item_id, friend_id, _ = befriend(a, b)
+                log(f'befriended: A imports B\'s catalog (item {item_id})')
             if args.scenario in ('cone', 'all'):
                 stage = 'cone scenario'
                 scenario_checks(a, b, item_id, friend_id, 'cone', True)
