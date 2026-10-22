@@ -300,7 +300,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     endpoints: peerEndpoints,
                     port);
                 keep = true;
-                _logger.LogInformation("[Federation] Answered a pairing code from a server that calls itself {Name}; waiting for the link", offer.Name);
+                _logger.LogInformation("[Federation] Answered a pairing code from a server that calls itself {Name}; waiting for the link", Printable(offer.Name));
                 return (answerText, friendId, null);
             }
             catch (Exception ex) when (ex is SocketException or CryptographicException or IOException)
@@ -368,7 +368,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     safety: PairingCrypto.SafetyNumber(hash, pending.Offer.CertificateFingerprint, answer.CertificateFingerprint, pending.Offer.PublicKey, answer.PublicKey),
                     endpoints: peerEndpoints,
                     port);
-                _logger.LogInformation("[Federation] Accepted the answer from a server that calls itself {Name}; connecting", answer.Name);
+                _logger.LogInformation("[Federation] Accepted the answer from a server that calls itself {Name}; connecting", Printable(answer.Name));
                 return (friendId, null);
             }
             catch (Exception ex) when (ex is CryptographicException or IOException)
@@ -386,6 +386,12 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <returns>An error, or null.</returns>
         public async Task<string?> ConfirmAsync(string friendId, CancellationToken cancellationToken)
         {
+            // The number is only worth comparing once the link it describes is up.
+            if (!_friends.TryGetValue(friendId, out var runtime) || runtime.Link is not { IsClosed: false })
+            {
+                return "The link to this friend isn't up yet; confirm once it shows connected.";
+            }
+
             var updated = UpdateFriend(friendId, s => s.PairSafetyConfirmed = true);
             if (updated == null)
             {
@@ -393,7 +399,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
 
             _logger.LogInformation("[Federation] The safety number for paired friend {Name} was confirmed here", updated.Name);
-            await SendConfirmedAndHelloAsync(friendId, cancellationToken).ConfigureAwait(false);
+            await SendConfirmedAndHelloAsync(friendId, sendConfirmed: true, cancellationToken).ConfigureAwait(false);
             return null;
         }
 
@@ -438,9 +444,18 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <summary>The friend's admin confirmed the safety number on their side.</summary>
         public async Task OnPeerConfirmedAsync(string friendId, CancellationToken cancellationToken)
         {
-            if (UpdateFriend(friendId, s => s.PairPeerConfirmed = true) != null)
+            // Acts once: a repeat changes nothing, saves nothing and sends nothing back
+            // (two servers echoing Confirmed would call each other until a limit cut in).
+            var changed = false;
+            UpdateFriend(friendId, s =>
             {
-                await SendConfirmedAndHelloAsync(friendId, cancellationToken).ConfigureAwait(false);
+                changed = !s.PairPeerConfirmed;
+                s.PairPeerConfirmed = true;
+                return changed;
+            });
+            if (changed)
+            {
+                await SendConfirmedAndHelloAsync(friendId, sendConfirmed: false, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -488,7 +503,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 s.PairPeerConfirmed = true;
                 s.FederationId = hello.FederationId;
                 s.ApiKey = hello.Token;
-                s.FederationPluginVersion = hello.PluginVersion ?? string.Empty;
+                s.FederationPluginVersion = CleanVersion(hello.PluginVersion);
                 if (string.IsNullOrEmpty(s.IssuedApiKey))
                 {
                     s.IssuedApiKey = FederationTokenAuth.GenerateToken();
@@ -701,6 +716,14 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         }
 
         private RemoteServer? UpdateFriend(string friendId, Action<RemoteServer> change)
+            => UpdateFriend(friendId, s =>
+            {
+                change(s);
+                return true;
+            });
+
+        // Saves only when the change says it changed something.
+        private RemoteServer? UpdateFriend(string friendId, Func<RemoteServer, bool> change)
         {
             lock (_configGate)
             {
@@ -710,13 +733,16 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     return null;
                 }
 
-                change(friend);
-                Plugin.Instance!.SaveConfiguration();
+                if (change(friend))
+                {
+                    Plugin.Instance!.SaveConfiguration();
+                }
+
                 return friend;
             }
         }
 
-        private async Task SendConfirmedAndHelloAsync(string friendId, CancellationToken cancellationToken)
+        private async Task SendConfirmedAndHelloAsync(string friendId, bool sendConfirmed, CancellationToken cancellationToken)
         {
             var friend = Config?.RemoteServers.FirstOrDefault(s => s.Id == friendId && s.Paired);
             if (friend == null || !friend.PairSafetyConfirmed || !_friends.TryGetValue(friendId, out var runtime) || runtime.Link is not { IsClosed: false })
@@ -726,9 +752,11 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
 
             try
             {
-                using var client = new HttpClient(FederationHttp.Handler(allowAutoRedirect: false)) { Timeout = TimeSpan.FromSeconds(15) };
-                using (var confirmed = await client.PostAsync(friend.Url + "/Plugins/Federation/Pairing/Peer/Confirmed", new StringContent("{}", Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false))
+                // A friend's answers here are a few hundred bytes; anything bigger is refused.
+                using var client = new HttpClient(FederationHttp.Handler(allowAutoRedirect: false)) { Timeout = TimeSpan.FromSeconds(15), MaxResponseContentBufferSize = 16 * 1024 };
+                if (sendConfirmed)
                 {
+                    using var confirmed = await client.PostAsync(friend.Url + "/Plugins/Federation/Pairing/Peer/Confirmed", new StringContent("{}", Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false);
                     _ = confirmed.StatusCode;
                 }
 
@@ -774,7 +802,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 {
                     s.FederationId = answer.FederationId;
                     s.ApiKey = answer.Token;
-                    s.FederationPluginVersion = answer.PluginVersion ?? string.Empty;
+                    s.FederationPluginVersion = CleanVersion(answer.PluginVersion);
                 });
                 _logger.LogInformation("[Federation] Paired friend {Name} is ready", friend.Name);
             }
@@ -800,7 +828,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 var friend = Config?.RemoteServers.FirstOrDefault(s => s.Id == friendId && s.Paired && s.Enabled);
                 return friend == null ? null : (friend.Id, friend.IssuedApiKey, friend.PairSafetyConfirmed);
             });
-            _ = SendConfirmedAndHelloAsync(friendId, _shutdown.Token);
+            _ = SendConfirmedAndHelloAsync(friendId, sendConfirmed: true, _shutdown.Token);
         }
 
         private bool AllowedByJellyfin(IPAddress address)
@@ -913,6 +941,14 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
         }
 
+        // A friend's version string, only as a short plain version (it is shown and stored).
+        private static string CleanVersion(string? version)
+            => version is { Length: > 0 and <= 32 } && version.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '+') ? version : string.Empty;
+
+        // A name a code claims, made safe for one log line.
+        private static string Printable(string? name)
+            => new string((name ?? string.Empty).Where(c => !char.IsControl(c)).Take(64).ToArray());
+
         private static string PluginVersion()
             => typeof(Plugin).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : string.Empty;
 
@@ -957,8 +993,19 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
 
-            File.WriteAllBytes(temp, certificate.Export(X509ContentType.Pkcs12));
-            File.Move(temp, path, overwrite: false);
+            try
+            {
+                File.WriteAllBytes(temp, certificate.Export(X509ContentType.Pkcs12));
+                File.Move(temp, path, overwrite: false);
+            }
+            finally
+            {
+                // Only this call's own temporary file; gone already after the move.
+                if (File.Exists(temp))
+                {
+                    File.Delete(temp);
+                }
+            }
         }
 
         private X509Certificate2 LoadCertificate(string friendId)
@@ -1151,11 +1198,22 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                             State = LastConnectedUtc == null ? "connecting" : "reconnecting";
                             Detail = LastConnectedUtc == null ? "Looking for the friend…" : "The link dropped; looking for the friend again…";
                             var started = DateTime.UtcNow;
-                            path = await port.PunchAsync(Targets, round => Schedule(round, DateTime.UtcNow - started), cancellationToken).ConfigureAwait(false);
+                            var everConnected = LastConnectedUtc != null || Config?.RemoteServers.FirstOrDefault(s => s.Id == FriendId)?.PairLastConnectedUtc != null;
+                            path = await port.PunchAsync(Targets, round => Schedule(round, DateTime.UtcNow - started, everConnected), cancellationToken).ConfigureAwait(false);
                         }
 
                         if (path == null)
                         {
+                            continue;
+                        }
+
+                        // The path is where an authenticated packet came from, which the
+                        // friend can choose: the same rules as any endpoint it lists.
+                        if (!PairingEndpoints.IsAcceptable(path, OwnSubnets(), AllowPrivateForTests))
+                        {
+                            State = "refused";
+                            Detail = "The friend answered from an address that isn't allowed.";
+                            await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
                             continue;
                         }
 
@@ -1229,12 +1287,16 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     .ToList();
             }
 
-            /// <summary>Probe at once, then every 250 ms for 8 s, every 15 s for 10 minutes, then every 2 minutes.</summary>
-            private static TimeSpan? Schedule(int round, TimeSpan elapsed)
+            /// <summary>
+            /// Probe at once, then every 250 ms for 8 s, every 15 s for 10 minutes, then every
+            /// 2 minutes. A pairing that never connected only knows addresses from a code, so it
+            /// stops probing them after 10 minutes (it still answers the friend's probes).
+            /// </summary>
+            internal static TimeSpan? Schedule(int round, TimeSpan elapsed, bool everConnected = true)
                 => round == 0 ? TimeSpan.Zero
                     : elapsed < TimeSpan.FromSeconds(8) ? TimeSpan.FromMilliseconds(250)
                     : elapsed < TimeSpan.FromMinutes(10) ? TimeSpan.FromSeconds(15)
-                    : TimeSpan.FromMinutes(2);
+                    : everConnected ? TimeSpan.FromMinutes(2) : null;
 
             private byte[] Transcript()
             {

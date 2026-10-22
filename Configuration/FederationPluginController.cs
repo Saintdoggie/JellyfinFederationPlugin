@@ -1086,6 +1086,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { error = "Plugin not initialized" });
             }
 
+            // Only the pairing service makes paired friends.
+            CopyPairing(new RemoteServer(), server);
             server.Id = Guid.NewGuid().ToString();
             config.RemoteServers ??= new List<RemoteServer>();
             config.RemoteServers.Add(server);
@@ -1108,6 +1110,13 @@ namespace Jellyfin.Plugin.Federation.Api
             if (!ConfigValidator.IsValidServerUrl(server.Url))
             {
                 return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
+            }
+
+            // A paired friend's address and token come from its link and its hello; a
+            // new address would send the token somewhere else.
+            if (existing.Paired && (!string.Equals(server.Url, existing.Url, StringComparison.Ordinal) || (!string.IsNullOrEmpty(server.ApiKey) && server.ApiKey != existing.ApiKey)))
+            {
+                return BadRequest(new { error = "A paired friend's address and token can't be changed; remove and pair again instead." });
             }
 
             existing.Name = server.Name;
@@ -2108,7 +2117,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private IActionResult PartyAnswer(PartyResult result)
             => StatusCode(result.Status, new { success = result.Status == 200, message = result.Message, groupId = result.GroupId?.ToString("N") });
 
-        private string RemoteIp() => HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        // Over a paired link the connection is loopback; the friend's address is the link's.
+        private string RemoteIp() => (Services.Pairing.PairedLinkContext.PeerAddress(Request) ?? HttpContext.Connection.RemoteIpAddress)?.ToString() ?? string.Empty;
 
         /// <summary>Admin: the friends' favorites settings, both directions.</summary>
         [HttpGet("Settings/Favorites")]

@@ -17,8 +17,15 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
     /// </summary>
     public sealed class PairPort : IDisposable
     {
-        /// <summary>Most packets handled per second; the rest are dropped unread.</summary>
+        /// <summary>
+        /// Most packets carrying this pairing's tag handled per second from one address.
+        /// Packets without the tag are dropped at a glance and never use the budget, so a
+        /// stranger's junk can't crowd out the friend's probes.
+        /// </summary>
         public const int MaxPacketsPerSecond = 50;
+
+        private const int MaxSourcesPerSecond = 64;
+        private const int MaxSentNonces = 512;
 
         private static readonly TimeSpan Linger = TimeSpan.FromMilliseconds(1200);
 
@@ -28,6 +35,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private readonly ReplayWindow _replay = new();
         private byte[]? _punchKey;
         private byte[]? _pairTag;
+        private readonly HashSet<UInt128> _expectedAcks = new();
+        private readonly Queue<UInt128> _expectedOrder = new();
 
         private PairPort(Socket socket, byte ownRole, Func<DateTimeOffset>? now)
         {
@@ -173,7 +182,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
 
                     foreach (var target in targets())
                     {
-                        await SendAsync(PairPunchPacket.Build(PairPunchPacket.Probe, _ownRole, _pairTag, _punchKey, _now()), target, cancellationToken).ConfigureAwait(false);
+                        var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+                        Expect(AckNonce(nonce));
+                        await SendAsync(PairPunchPacket.Build(PairPunchPacket.Probe, _ownRole, _pairTag, _punchKey, _now(), nonce), target, cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
@@ -186,7 +197,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private async Task ReceiveLoopAsync(TaskCompletionSource<IPEndPoint> acked, CancellationToken cancellationToken)
         {
             var buffer = new byte[2048];
-            var budget = MaxPacketsPerSecond;
+            var budgets = new Dictionary<IPEndPoint, int>();
             var window = Stopwatch.StartNew();
             try
             {
@@ -203,13 +214,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         continue;
                     }
 
-                    if (window.ElapsedMilliseconds >= 1000)
-                    {
-                        window.Restart();
-                        budget = MaxPacketsPerSecond;
-                    }
-
-                    if (--budget < 0 || received.RemoteEndPoint is not IPEndPoint from)
+                    if (received.RemoteEndPoint is not IPEndPoint from)
                     {
                         continue;
                     }
@@ -219,17 +224,36 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     var tag = _pairTag;
                     if (key == null || tag == null || PairPunchPacket.PeekPairTag(packet) is not { } theirs || !theirs.AsSpan().SequenceEqual(tag))
                     {
-                        // Not ours, or the key isn't known yet: never answered.
+                        // Not ours, or the key isn't known yet: never answered, never counted.
                         continue;
                     }
+
+                    // Only someone who has seen this pairing's packets knows the tag; even
+                    // they get a budget per address, so the friend's own probes still count.
+                    if (window.ElapsedMilliseconds >= 1000)
+                    {
+                        window.Restart();
+                        budgets.Clear();
+                    }
+
+                    budgets.TryGetValue(from, out var used);
+                    if (used >= MaxPacketsPerSecond || (used == 0 && budgets.Count >= MaxSourcesPerSecond))
+                    {
+                        continue;
+                    }
+
+                    budgets[from] = used + 1;
 
                     var type = PairPunchPacket.Verify(packet, _ownRole, key, _now(), _replay);
                     if (type == PairPunchPacket.Probe)
                     {
-                        await SendAsync(PairPunchPacket.Build(PairPunchPacket.Ack, _ownRole, tag, key, _now()), from, cancellationToken).ConfigureAwait(false);
+                        // The ack carries a nonce made from the probe's, so it answers only that probe.
+                        var answer = AckNonce(PairPunchPacket.Nonce(packet));
+                        await SendAsync(PairPunchPacket.Build(PairPunchPacket.Ack, _ownRole, tag, key, _now(), answer), from, cancellationToken).ConfigureAwait(false);
                     }
-                    else if (type == PairPunchPacket.Ack)
+                    else if (type == PairPunchPacket.Ack && WasExpected(PairPunchPacket.Nonce(packet)))
                     {
+                        // An old ack replayed from elsewhere answers no probe sent from this port.
                         acked.TrySetResult(from);
                     }
                 }
@@ -241,6 +265,42 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             catch (ObjectDisposedException)
             {
                 // Closed.
+            }
+        }
+
+        /// <summary>The nonce an ack to a probe with <paramref name="probeNonce"/> carries.</summary>
+        /// <returns>16 bytes.</returns>
+        internal static byte[] AckNonce(ReadOnlySpan<byte> probeNonce)
+        {
+            Span<byte> input = stackalloc byte[19];
+            "ack"u8.CopyTo(input);
+            probeNonce.Slice(0, 16).CopyTo(input.Slice(3));
+            return System.Security.Cryptography.SHA256.HashData(input).AsSpan(0, 16).ToArray();
+        }
+
+        private void Expect(byte[] ackNonce)
+        {
+            var key = System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(ackNonce);
+            lock (_expectedAcks)
+            {
+                if (_expectedAcks.Add(key))
+                {
+                    _expectedOrder.Enqueue(key);
+                }
+
+                while (_expectedOrder.Count > MaxSentNonces)
+                {
+                    _expectedAcks.Remove(_expectedOrder.Dequeue());
+                }
+            }
+        }
+
+        private bool WasExpected(byte[] ackNonce)
+        {
+            var key = System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(ackNonce);
+            lock (_expectedAcks)
+            {
+                return _expectedAcks.Contains(key);
             }
         }
 
