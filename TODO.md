@@ -1,5 +1,19 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.195 (test build, branch `test-branch-udp-connection`) — direct links (2026-10-22)
+
+- [x] Friend-to-friend direct link: STUN + UDP hole punching, QUIC with pinned mutual TLS + session proof,
+      HTTP/1.1 per QUIC stream; only Peer/Play, DirectStream and Peer/BitrateTest carried (`docs/DIRECT-LINK.md`).
+- [x] QUIC runs in a private AssemblyLoadContext with the bundled MsQuic 2.6.3 (Jellyfin caches "no QUIC" before plugins load).
+- [x] Home-network viewers get handed-off video through `DirectLink/{serverId}/...` on this server; others go to the friend.
+- [x] Library downloads from a friend over the link; Friends tab status/mode/retry; Advanced switch; Playback Info row.
+- [x] Sonnet security review + ultra review: all findings fixed (`edeaf92`, `0d4d16b`).
+- [x] Two-home NAT harness `scripts/federation_directlink_smoke.py` (cone connects ~1.2–1.4 Gbps; symmetric both sides falls back).
+- [ ] Live: install on this server and friendflix (both need 0.0.195); check Friends tab "Connected · N Mbps" and Playback Info.
+- [ ] Live: does rootless Podman (pasta) keep UDP ports for punching here? Is friendflix's VPS a full tunnel / are they behind CGNAT?
+- [ ] Windows servers (MsQuic ships with .NET there; needs testing + firewall prompt). IPv6 candidates.
+- [ ] Merge to master after a day or two of real use.
+
 ## 0.0.194 — data limits, Popular on friends' servers, direct downloads, review fixes (2026-10-21)
 
 - [x] Per-friend monthly GB and simultaneous-stream limits on the owner, counted on DirectStream and the
