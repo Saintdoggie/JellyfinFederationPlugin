@@ -497,6 +497,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool DirectLinkOptIn { get; set; }
 
         /// <summary>
+        /// Gets or sets how many video segments the direct-link relay fetches ahead
+        /// of the player (0 turns it off, at most 6). One download from a friend can
+        /// stop well short of the line's speed; a few at once fill it, so the
+        /// player's next segments are already here when it asks.
+        /// </summary>
+        public int DirectLinkReadAhead { get; set; } = 3;
+
+        /// <summary>
         /// Gets or sets the STUN servers (<c>host:port</c>) a direct link asks for
         /// this server's public address. Two are needed to tell router kinds apart.
         /// </summary>
