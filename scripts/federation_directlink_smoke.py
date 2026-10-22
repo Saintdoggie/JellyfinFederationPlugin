@@ -436,6 +436,14 @@ def scenario_checks(a, b, item_id, friend_id, name, expect_connected):
             return ok_urls and segments_ok(r), f'sizes={[(s, n) for s, n, _ in r["sizes"]]} first={urls[0][:120]}'
         guard(f'[{name}] 3a. in-LAN viewer: segments come through A\'s DirectLink relay with 200 + bytes', lan_play)
         guard(f'[{name}] 3b. A link BytesIn increased', lambda: ((a.entry() or {}).get('BytesIn', 0) > before, f"BytesIn {before} -> {(a.entry() or {}).get('BytesIn')}"))
+
+        def read_ahead():
+            served = a.status().get('ReadAheadServed') or 0
+            r = play(a, item_id, 'a', a.lan, segments=6)
+            after = a.status()
+            got = (after.get('ReadAheadServed') or 0) - served
+            return segments_ok(r) and got >= 3, f"segments={[(s, n) for s, n, _ in r['sizes']]} served-ahead={got} missed={after.get('ReadAheadMissed')}"
+        guard(f'[{name}] 3c. in-LAN viewer playing in order gets later segments from read-ahead', read_ahead)
     else:
         def failed():
             # The first attempt may only find B still starting; wait for the verdict on the NAT itself.

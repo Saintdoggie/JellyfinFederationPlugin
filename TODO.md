@@ -1,5 +1,11 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.197 — relay read-ahead (2026-10-22)
+
+- [x] Direct-link relay fetches the player's next 3 segments over the link (one download to netflix++ stopped near 110 Mbps; four at once 178).
+- [ ] Live: one-at-a-time playback speed to netflix++ with read-ahead.
+- [ ] Read-ahead for the Proxy streaming path.
+
 ## 0.0.196 — direct links released as beta, opt-in (2026-10-22)
 
 - [x] Opt-in (`DirectLinkOptIn`, default off; 0.0.195's saved `EnableDirectLink` ignored), Beta badge, switch at the top of the Friends tab.
