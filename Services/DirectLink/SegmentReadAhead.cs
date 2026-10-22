@@ -40,7 +40,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         public static readonly TimeSpan Keep = TimeSpan.FromSeconds(60);
 
         private const int ChunkSize = 256 * 1024;
-        private const int MaxPlaylists = 64;
+        private const int MaxPlaylists = 16;
+
+        // A playlist this long (25 hours of 3 s segments) isn't a film: no read-ahead,
+        // so a friend's oversized playlist can't fill memory here.
+        private const int MaxSegmentsPerPlaylist = 30000;
         private const int MaxEntries = 4 * MaxDepth;
         private const long MaxSegmentBytes = 512L * 1024 * 1024;
         private static readonly TimeSpan HeadTimeout = TimeSpan.FromSeconds(60);
@@ -128,6 +132,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
 
                 targets.Add(pathAndQuery.Substring(at));
+                if (targets.Count > MaxSegmentsPerPlaylist)
+                {
+                    return;
+                }
             }
 
             if (targets.Count < 2)

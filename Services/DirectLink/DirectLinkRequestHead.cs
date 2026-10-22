@@ -32,12 +32,17 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             "/Plugins/Federation/Peer/BitrateTest",
         };
 
-        // Dropped before forwarding: connection management is the link's own.
-        private static readonly HashSet<string> HopByHop = new(StringComparer.OrdinalIgnoreCase)
+        // The only friend headers forwarded to Jellyfin: what the link's own
+        // callers send (relay, handoff, downloads, speed test). Everything else is
+        // dropped, so no proxy or client-address header (X-Forwarded-*, Forwarded,
+        // X-Real-IP, CF-Connecting-IP, ...) or routing header (Host, Connection,
+        // Upgrade) a friend adds ever reaches this server's Jellyfin, including
+        // ones nobody has thought of yet.
+        private static readonly HashSet<string> Passed = new(StringComparer.OrdinalIgnoreCase)
         {
-            "Connection", "Keep-Alive", "Proxy-Connection", "TE", "Trailer", "Upgrade", "Host",
-            "Proxy-Authorization", "Proxy-Authenticate", "Forwarded", "X-Forwarded-For",
-            "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "X-Federation-Direct-Link",
+            "Range", "If-Range", "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since",
+            "Accept", "Accept-Encoding", "Accept-Language", "User-Agent", "Cache-Control", "Pragma",
+            FederationTokenAuth.Header,
         };
 
         private DirectLinkRequestHead(string method, string target, List<KeyValuePair<string, string>> headers)
@@ -210,8 +215,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         /// <summary>
         /// The head to send to this server's own Jellyfin: the same request line,
-        /// the friend's end-to-end headers, and this side's own Host, Connection
-        /// and marker headers.
+        /// the friend's headers that are on the short list, and this side's own
+        /// Host, Connection and marker headers.
         /// </summary>
         public byte[] BuildForward(string localHostHeader, string basePath)
         {
@@ -220,7 +225,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             builder.Append("Host: ").Append(localHostHeader).Append("\r\n");
             foreach (var header in Headers)
             {
-                if (!HopByHop.Contains(header.Key))
+                if (Passed.Contains(header.Key))
                 {
                     builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
                 }

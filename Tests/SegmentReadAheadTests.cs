@@ -127,6 +127,21 @@ public class SegmentReadAheadTests
     }
 
     [Fact]
+    public async Task AnOversizedPlaylist_GetsNoReadAhead()
+    {
+        using var readAhead = new SegmentReadAhead(now: () => DateTime.UtcNow);
+        var calls = 0;
+        readAhead.RememberPlaylist("f1", Gateway + "main.m3u8", PlaylistText(30001));
+        readAhead.After("f1", Segment(0), 3, (_, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        await Task.Delay(50);
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
     public async Task ASeek_DropsWhatWasFetchedForTheOldPosition()
     {
         using var readAhead = new SegmentReadAhead(now: () => DateTime.UtcNow);
