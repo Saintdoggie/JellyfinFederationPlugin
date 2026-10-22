@@ -70,30 +70,30 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void SlowFirstChoice_LosesToAFastAlternative()
     {
-        // freakbob (8 Mbps link) holding a 93 Mbps remux vs a gigabit friend: ~74 s vs ~5 s.
-        Server("freakbob", 8);
+        // plexpal (8 Mbps link) holding a 93 Mbps remux vs a gigabit friend: ~74 s vs ~5 s.
+        Server("plexpal", 8);
         Server("gig", 900);
 
-        Assert.Equal("gig", Pick(Entry(("freakbob", 93), ("gig", 83))));
+        Assert.Equal("gig", Pick(Entry(("plexpal", 93), ("gig", 83))));
     }
 
     [Fact]
     public void FirstChoiceThatStartsWithinTheBudget_StaysInPriorityOrder()
     {
         // 12.7 Mbps over 7.6 Mbps is ~14 s: fine, even though the other copy is faster.
-        Server("freakbob", 7.6);
+        Server("plexpal", 7.6);
         Server("gig", 900);
 
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 12.7), ("gig", 83))));
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 12.7), ("gig", 83))));
     }
 
     [Fact]
     public void UnmeasuredAlternative_IsNeverPreferredOnAGuess()
     {
-        Server("freakbob", 8);
+        Server("plexpal", 8);
         Server("unknown", null);
 
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 93), ("unknown", 20))));
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("unknown", 20))));
     }
 
     [Fact]
@@ -136,36 +136,36 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void OfflineSources_AreNeverChosen_EvenIfTheyWouldBeFastest()
     {
-        Server("freakbob", 8);
+        Server("plexpal", 8);
         Server("gig", 900);
 
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 93), ("gig", 83)), "gig"));
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83)), "gig"));
     }
 
     [Fact]
     public void DisabledSources_AreNeverChosen()
     {
-        Server("freakbob", 8);
+        Server("plexpal", 8);
         Server("gig", 900).Enabled = false;
 
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 93), ("gig", 83))));
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83))));
     }
 
     [Fact]
     public void WithoutAMonitor_PriorityOrderIsUntouched()
     {
-        Server("freakbob", 8);
+        Server("plexpal", 8);
         Server("gig", 900);
         FederationItemPersistenceService.BandwidthOverride = null;
 
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 93), ("gig", 83))));
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83))));
     }
 
     [Fact]
     public void SingleSource_IsReturnedAsIs()
     {
-        Server("freakbob", 1);
-        Assert.Equal("freakbob", Pick(Entry(("freakbob", 93))));
+        Server("plexpal", 1);
+        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93))));
     }
 
     [Fact]
@@ -191,12 +191,12 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void ProjectedStart_ForADirectModePeerUsesTheCapNotTheFile()
     {
-        // Inspired: Direct mode, Auto cap, ~2 Mbps link. The peer sends a capped stream,
+        // Slowpoke: Direct mode, Auto cap, ~2 Mbps link. The peer sends a capped stream,
         // so a 90 Mbps file must not be projected as if it were all crossing the link.
-        var server = Server("inspired", null, StreamingMode.Direct);
+        var server = Server("slowpoke", null, StreamingMode.Direct);
         server.WanCapMode = WanCapMode.Manual;
         server.WanMaxBitrateMbps = 10;
-        _monitor.SeedLinkForTests("inspired", 20);
+        _monitor.SeedLinkForTests("slowpoke", 20);
 
         Assert.Equal(10_000_000, _monitor.EffectiveSourceBitrate(server, 90_000_000));
         Assert.Equal(10_000_000, _monitor.EffectiveSourceBitrate(server, null));

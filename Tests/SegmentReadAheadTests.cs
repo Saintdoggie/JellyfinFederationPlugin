@@ -16,7 +16,7 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 /// <summary>
 /// The direct-link relay fetches the player's next segments alongside the one it
-/// is on (live, 2026-10-22: one download to netflix++ stopped near 110 Mbps, four
+/// is on (live, 2026-10-22: one download to friendflix stopped near 110 Mbps, four
 /// at once reached 178), and serves each once to the exact address the playlist
 /// listed.
 /// </summary>

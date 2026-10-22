@@ -14,7 +14,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Jellyfin builds a federated item's own (primary) media source from its stamped path and
     /// names it after the movie, while this plugin's extra sources are named after their server.
-    /// The version picker then reads "Civil War" next to "freakbob" and you cannot tell which server is
+    /// The version picker then reads "Civil War" next to "plexpal" and you cannot tell which server is
     /// which. This renames the item's own source after the server it plays from, in every item and
     /// playback-info response, so every client (web, Android, TV) shows one label per server.
     /// </summary>

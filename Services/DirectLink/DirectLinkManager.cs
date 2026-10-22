@@ -339,14 +339,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     lock (state)
                     {
                         entry.State = state.State.ToString().ToLowerInvariant();
-                        entry.Detail = state.Detail;
+                        entry.Detail = DirectLinkProtocol.RedactText(state.Detail);
                         entry.NatLocal = DirectLinkProtocol.NatName(state.NatLocal);
                         entry.NatRemote = DirectLinkProtocol.NatName(state.NatRemote);
-                        entry.LastError = state.LastError;
+                        entry.LastError = DirectLinkProtocol.RedactText(state.LastError);
                         entry.NextRetryUtc = state.State == DirectLinkState.Failed ? state.NextAttemptUtc : null;
                         if (state.Link is { IsClosed: false } link)
                         {
-                            entry.RemoteEndpoint = DirectLinkProtocol.Describe(link.RemoteEndPoint);
+                            entry.RemoteEndpoint = DirectLinkProtocol.Redact(link.RemoteEndPoint);
                             entry.Mbps = Math.Round(link.Mbps, 1);
                             entry.ConnectedSinceUtc = link.ConnectedUtc;
                             entry.BytesIn = link.BytesIn;
@@ -359,7 +359,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 {
                     var (state0, detail) = Eligibility(server, config);
                     entry.State = state0.ToString().ToLowerInvariant();
-                    entry.Detail = detail;
+                    entry.Detail = DirectLinkProtocol.RedactText(detail);
                 }
 
                 if (_inbound.TryGetValue(server.Id, out var inbound) && !inbound.IsClosed)
@@ -569,7 +569,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 if (_inbound.TryRemove(new KeyValuePair<string, DirectLinkConnection>(friendId, link)))
                 {
-                    _logger.LogInformation("[Federation] Closed the direct link from {Friend}: {Reason}", friend?.Name ?? friendId, reason);
+                    _logger.LogInformation("[Federation] Closed the direct link from {Friend}: {Reason}", friend?.Name ?? friendId, DirectLinkProtocol.RedactText(reason));
                     link.MarkClosed(reason);
                     await link.DisposeAsync().ConfigureAwait(false);
                 }
@@ -689,6 +689,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             var (publicEndpoint, nat) = await StunClient.DiscoverAsync(socket, servers, cancellationToken).ConfigureAwait(false);
             if (publicEndpoint != null)
             {
+                // This server's own address, shown only to its admin.
                 _publicEndpoint = DirectLinkProtocol.Describe(publicEndpoint);
                 _lastNat = nat;
             }
@@ -833,7 +834,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             if (changed)
             {
-                _logger.LogInformation("[Federation] Direct link to {Friend}: {Detail}", server.Name, detail);
+                _logger.LogInformation("[Federation] Direct link to {Friend}: {Detail}", server.Name, DirectLinkProtocol.RedactText(detail));
             }
         }
 
@@ -934,8 +935,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 _logger.LogInformation(
                     "[Federation] Direct link to {Friend}: punching from {Local} reached none of {Targets}",
                     server.Name,
-                    string.Join(", ", own.Select(c => c.Kind + " " + DirectLinkProtocol.Describe(c.Endpoint))),
-                    string.Join(", ", peerCandidates.Select(DirectLinkProtocol.Describe)));
+                    string.Join(", ", own.Select(c => c.Kind + " " + DirectLinkProtocol.Redact(c.Endpoint))),
+                    string.Join(", ", peerCandidates.Select(DirectLinkProtocol.Redact)));
                 return ("Couldn't get through the routers: " + punch.Failure + strict + ".", false, null);
             }
 
@@ -985,7 +986,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _logger.LogInformation(
                 "[Federation] Direct link to {Friend} is up via {Endpoint} in {Ms} ms ({Mbps:F0} Mbps; routers: here {NatLocal}, friend {NatRemote})",
                 server.Name,
-                DirectLinkProtocol.Describe(punch.Path),
+                DirectLinkProtocol.Redact(punch.Path),
                 sw.ElapsedMilliseconds,
                 link.Mbps,
                 DirectLinkProtocol.NatName(nat),
@@ -1013,7 +1014,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                     if (wasCurrent)
                     {
-                        _logger.LogInformation("[Federation] Direct link to {Friend} dropped ({Reason}); trying again later", server.Name, link.CloseReason);
+                        _logger.LogInformation("[Federation] Direct link to {Friend} dropped ({Reason}); trying again later", server.Name, DirectLinkProtocol.RedactText(link.CloseReason));
                         _ = link.DisposeAsync().AsTask();
                     }
                 },
@@ -1068,7 +1069,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 if (punch.Path == null)
                 {
-                    _logger.LogInformation("[Federation] Direct link from {Friend}: couldn't get through the routers ({Reason})", caller.Name, punch.Failure);
+                    _logger.LogInformation("[Federation] Direct link from {Friend}: couldn't get through the routers ({Reason})", caller.Name, DirectLinkProtocol.RedactText(punch.Failure));
                     return;
                 }
 
@@ -1077,7 +1078,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 // them here to the friend's real address instead.
                 if (_network != null && _network.ShouldAllowServerAccess(punch.Path.Address) != MediaBrowser.Common.Net.RemoteAccessPolicyResult.Allow)
                 {
-                    _logger.LogInformation("[Federation] Direct link from {Friend} refused: Jellyfin's network settings don't allow {Address}", caller.Name, punch.Path.Address);
+                    _logger.LogInformation("[Federation] Direct link from {Friend} refused: Jellyfin's network settings don't allow {Address}", caller.Name, DirectLinkProtocol.Redact(punch.Path.Address));
                     return;
                 }
 
@@ -1119,7 +1120,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     await previous.DisposeAsync().ConfigureAwait(false);
                 }
 
-                _logger.LogInformation("[Federation] Direct link from {Friend} is up via {Endpoint}", caller.Name, DirectLinkProtocol.Describe(punch.Path));
+                _logger.LogInformation("[Federation] Direct link from {Friend} is up via {Endpoint}", caller.Name, DirectLinkProtocol.Redact(punch.Path));
 
                 // A link only carries the dialler's requests, so this home's viewers
                 // still need our own link to the friend. The friend just proved it
@@ -1132,7 +1133,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 await Forwarder.RunAsync(link, caller.Name).ConfigureAwait(false);
                 _inbound.TryRemove(new KeyValuePair<string, DirectLinkConnection>(caller.Id, link));
-                _logger.LogInformation("[Federation] Direct link from {Friend} ended ({Reason})", caller.Name, link.CloseReason);
+                _logger.LogInformation("[Federation] Direct link from {Friend} ended ({Reason})", caller.Name, DirectLinkProtocol.RedactText(link.CloseReason));
                 await link.DisposeAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1141,7 +1142,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
             catch (Exception ex) when (ex is System.IO.IOException or System.Security.Authentication.AuthenticationException or OperationCanceledException or SocketException)
             {
-                _logger.LogInformation("[Federation] Direct link from {Friend} didn't come up: {Reason}", caller.Name, ex.Message);
+                _logger.LogInformation("[Federation] Direct link from {Friend} didn't come up: {Reason}", caller.Name, DirectLinkProtocol.RedactText(ex.Message));
             }
             catch (Exception ex)
             {

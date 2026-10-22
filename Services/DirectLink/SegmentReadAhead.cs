@@ -13,7 +13,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
     /// <summary>
     /// Read-ahead for the direct-link relay. A player fetches one segment at a
     /// time, and one download from a friend can stop well short of the line's
-    /// speed (live, 2026-10-22: about 110 Mbps on one download to netflix++, 178
+    /// speed (live, 2026-10-22: about 110 Mbps on one download to friendflix, 178
     /// with four at once). While the player gets segment N, the next few are
     /// fetched over the link at the same time and held here; the player's request
     /// for one takes it (joining it while it is still arriving), so playback gets

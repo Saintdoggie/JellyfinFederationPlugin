@@ -1,0 +1,7 @@
+<Project>
+  <!-- The repository is public: builds record /_/ instead of the builder's own folder
+       (source and PDB paths are compiled into every assembly). -->
+  <PropertyGroup>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+  </PropertyGroup>
+</Project>

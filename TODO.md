@@ -1,5 +1,10 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.199 — friends' addresses out of logs (2026-10-22)
+
+- [x] Public addresses in direct-link and pairing logs, status details and error text shown as a per-run tag; private/LAN/Tailscale kept.
+- [x] Real friend names, home paths and the owner's domain removed from tests, docs and comments (public repo).
+
 ## 0.0.198 — pairing codes (beta) and link hardening (2026-10-22)
 
 - [x] Pairing codes, Beta tab, QUIC windows; security review + adversarial pass, all findings fixed (Tests/Adversarial).
@@ -9,15 +14,15 @@
 
 ## 0.0.197 — relay read-ahead (2026-10-22)
 
-- [x] Direct-link relay fetches the player's next 3 segments over the link (one download to netflix++ stopped near 110 Mbps; four at once 178).
-- [ ] Live: one-at-a-time playback speed to netflix++ with read-ahead.
+- [x] Direct-link relay fetches the player's next 3 segments over the link (one download to friendflix stopped near 110 Mbps; four at once 178).
+- [ ] Live: one-at-a-time playback speed to friendflix with read-ahead.
 - [ ] Read-ahead for the Proxy streaming path.
 
 ## 0.0.196 — direct links released as beta, opt-in (2026-10-22)
 
 - [x] Opt-in (`DirectLinkOptIn`, default off; 0.0.195's saved `EnableDirectLink` ignored), Beta badge, switch at the top of the Friends tab.
-- [x] Dial back as soon as a friend links in (live: netflix++ linked 14:21, our side waited until 14:34).
-- [x] Live on 0.0.195 between this server and netflix++: both directions up, 115 Mbps, both routers cone.
+- [x] Dial back as soon as a friend links in (live: friendflix linked 14:21, our side waited until 14:34).
+- [x] Live on 0.0.195 between this server and friendflix: both directions up, 115 Mbps, both routers cone.
 - [ ] Live: a home viewer play over the link ("comes over the direct link to this home viewer" in the log).
 - [ ] Optional private relay through a friend's own VPS (UDP forward) for friends who keep their home address hidden.
 - [ ] Hide friends' home addresses from logs and the status page.
@@ -31,8 +36,8 @@
 - [x] Library downloads from a friend over the link; Friends tab status/mode/retry; Advanced switch; Playback Info row.
 - [x] Sonnet security review + ultra review: all findings fixed (`edeaf92`, `0d4d16b`).
 - [x] Two-home NAT harness `scripts/federation_directlink_smoke.py` (cone connects ~1.2–1.4 Gbps; symmetric both sides falls back).
-- [ ] Live: install on this server and netflix++ (both need 0.0.195); check Friends tab "Connected · N Mbps" and Playback Info.
-- [ ] Live: does rootless Podman (pasta) keep UDP ports for punching here? Is netflix++'s VPS a full tunnel / are they behind CGNAT?
+- [ ] Live: install on this server and friendflix (both need 0.0.195); check Friends tab "Connected · N Mbps" and Playback Info.
+- [ ] Live: does rootless Podman (pasta) keep UDP ports for punching here? Is friendflix's VPS a full tunnel / are they behind CGNAT?
 - [ ] Windows servers (MsQuic ships with .NET there; needs testing + firewall prompt). IPv6 candidates.
 - [ ] Merge to master after a day or two of real use.
 
@@ -42,13 +47,13 @@
       Peer/Play gateway (adapted from svoeth's PR #3; its activity card, user hiding and collections not taken).
 - [x] "Popular on <friend>" Home rows: distinct local users' plays of the owner's own titles, last 30 days.
 - [x] Device downloads redirect straight to the friend (https rebuilt for http-configured friends).
-- [x] WAN speed test: cap never above the measured speed (live: "Inspired Jellyfin" measures 1–7 Mbps and was capped at 10).
+- [x] WAN speed test: cap never above the measured speed (live: "Slowpoke Jellyfin" measures 1–7 Mbps and was capped at 10).
 - [x] Fixes from the 2026-10-21 review (`~/Documents/federation-review-2026-10-21/`): rating scales, corrupt-cache
       mass delete, `{}` library prune, disk full, batch image tokens, segment hot path, pool/discovery address checks,
       token never sent to another host on redirect, web rescans and stuck progress.
 - [x] Gate twice (1215 plugin / 170 Companion / 139 web); two-server peer 9/9, handoff 9/9, party 8/8 on 12.2.
 - [ ] Live checks: a cap reached mid-HLS and mid-download; an apex→www friend redirect; first Popular load on a big
-      library; a client that omits PlaySessionId with a transcode limit set; netflix++'s WAN classification (new Info line).
+      library; a client that omits PlaySessionId with a transcode limit set; friendflix's WAN classification (new Info line).
 - [ ] PR #3: reply to svoeth (split into small PRs: end dates + preview, friends-of-friends control).
 
 ## 0.0.189 — watch parties with friends (2026-10-20)
@@ -118,7 +123,7 @@ Completed work is removed from this file. Git history and GitHub releases keep t
 ## Fast federated playback start (target: 4-30 s from click)
 
 Findings (measured 2026-10-03, live server): start time is roughly `6 s x file bitrate / link speed`.
-Jellyfin serves the first HLS segment only once the next exists (2 x 3 s of source). freakbob (Plex, Proxy
+Jellyfin serves the first HLS segment only once the next exists (2 x 3 s of source). plexpal (Plex, Proxy
 mode) delivers ~8 Mbps whatever the connection count, so a 93 Mbps remux takes ~75 s. The transcode broker
 already trims ffmpeg's probe to 1 s / 1 MB on the Windows GPU box, so the analysis-window change is harmless but
 does not help this setup. Fewer bytes from the friend's side is the only fix for link-bound titles.
@@ -129,7 +134,7 @@ Done
 - [x] Persist stream info when a source reports duplicate stream indexes (avoids Jellyfin's slow first-play probe).
 
 In progress
-- [x] Link-speed measurement: daily, on new server, on reconnect; Jellyfin peers and Plex (consented files only). Live: freakbob measured 7.1-7.6 Mbps automatically.
+- [x] Link-speed measurement: daily, on new server, on reconnect; Jellyfin peers and Plex (consented files only). Live: plexpal measured 7.1-7.6 Mbps automatically.
 
 Loading experience
 - [x] Start-time estimator and `GET /Plugins/Federation/StartEstimate/{itemId}` with tests. Live check: 93 Mbps title projected 78 s vs 75-85 s measured.
@@ -139,15 +144,15 @@ Loading experience
 - [x] Timing logs: media-source resolution time and slow upstream responses (`[Federation][timing]`). Still wanted: time to first segment.
 
 Real speed-up (fewer bytes from the friend)
-- [x] Probe whether freakbob's Plex allows transcoding (`Diagnostics/PlexTranscodeProbe/{itemId}`). Result 2026-10-03: HTTP 403 with an empty body from BOTH Plex's decision call and the transcode call. Cause: `Companion/PlexFederationRelay.cs` is an allowlist (sections, metadata, parts) and answers everything else 403, so the friend's consent scope blocks transcoding.
-- [x] Prefer the faster source for titles on several servers when the first choice would exceed a 30 s start budget (hysteresis, measured sources only). Simulated on the real catalog: 26 of 104 multi-server movies would move to netflix++ once it is online, saving 28-74 s each.
-- [ ] Owner decision needed: Auto WAN cap floor is 10 Mbps (set at the owner's request) but Inspired measures 2.0 Mbps, so its capped stream is 5x too fast for the link. Consider a floor that follows the link.
+- [x] Probe whether plexpal's Plex allows transcoding (`Diagnostics/PlexTranscodeProbe/{itemId}`). Result 2026-10-03: HTTP 403 with an empty body from BOTH Plex's decision call and the transcode call. Cause: `Companion/PlexFederationRelay.cs` is an allowlist (sections, metadata, parts) and answers everything else 403, so the friend's consent scope blocks transcoding.
+- [x] Prefer the faster source for titles on several servers when the first choice would exceed a 30 s start budget (hysteresis, measured sources only). Simulated on the real catalog: 26 of 104 multi-server movies would move to friendflix once it is online, saving 28-74 s each.
+- [ ] Owner decision needed: Auto WAN cap floor is 10 Mbps (set at the owner's request) but Slowpoke measures 2.0 Mbps, so its capped stream is 5x too fast for the link. Consider a floor that follows the link.
 - [ ] Capped Plex stream for link-bound titles. BLOCKED on friend consent: needs an opt-in Companion setting (default off) that lets the relay pass `/video/:/transcode/universal/{decision,start.mkv,stop}` for shared items only, the friend updating Companion and enabling it, then the plugin path (bitrate = min(client max, ~80% of measured link)), original-quality copy kept as a version, seek/resume, audio track and subtitles.
 - [ ] Mid-stream sharpening: multi-level HLS playlist (for example 3 / 8 / original Mbps) so the player starts low and switches up; investigate jellyfin-web / hls.js behaviour and TV native players first.
 - [ ] Optional: warm a title when its detail page opens or the next episode is queued (small capped LRU, no bulk caching).
 
 Diagnosis and release
-- [ ] Diagnose netflix++ (gigabit peer, still slow) once it is online, using the new stage timings.
+- [ ] Diagnose friendflix (gigabit peer, still slow) once it is online, using the new stage timings.
 - [ ] Full gate before publishing: commit on `feature/fast-start`, run the suite twice, two-server ordinary-user/admin matrix, update `manifest.json` / `meta.json` / zip checksum, push, GitHub release (needs GitHub login on this machine).
 - [ ] Rollback if needed: previous plugin folder is in `/config/plugin-backups/Jellyfin Federation_0.0.170` inside the `jellyfin` container.
 

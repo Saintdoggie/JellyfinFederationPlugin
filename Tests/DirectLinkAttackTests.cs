@@ -155,3 +155,43 @@ public class DirectLinkAttackTests
         Assert.Equal(6, lines.Count(l => l.Length > 0));
     }
 }
+
+/// <summary>A friend's home address never appears in logs or on the status page (2026-10-22).</summary>
+public class AddressRedactionTests
+{
+    [Theory]
+    [InlineData("203.0.113.164")]
+    [InlineData("198.51.100.8")]
+    [InlineData("::ffff:203.0.113.164")]
+    [InlineData("2001:db8::8888")]
+    public void PublicAddresses_BecomeATag(string ip)
+    {
+        var text = DirectLinkProtocol.Redact(new System.Net.IPEndPoint(System.Net.IPAddress.Parse(ip), 51876));
+        Assert.StartsWith("public #", text, StringComparison.Ordinal);
+        Assert.EndsWith(":51876", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(ip.Replace("::ffff:", string.Empty, StringComparison.Ordinal), text, StringComparison.Ordinal);
+        Assert.Equal(text, DirectLinkProtocol.Redact(new System.Net.IPEndPoint(System.Net.IPAddress.Parse(ip), 51876)));
+    }
+
+    [Theory]
+    [InlineData("192.168.1.20")]
+    [InlineData("10.0.0.5")]
+    [InlineData("172.20.0.3")]
+    [InlineData("100.64.0.97")]
+    [InlineData("127.0.0.1")]
+    [InlineData("fd7a:115c:a1e0::1")]
+    public void PrivateAndTailscaleAddresses_StayForTroubleshooting(string ip)
+    {
+        Assert.Equal(ip, DirectLinkProtocol.Redact(System.Net.IPAddress.Parse(ip)));
+    }
+
+    [Fact]
+    public void ErrorText_HasEveryPublicAddressReplaced()
+    {
+        var text = DirectLinkProtocol.RedactText("Connection to 203.0.113.164:443 failed; LAN 192.168.1.20 fine; version 0.0.198.0 kept");
+        Assert.DoesNotContain("203.0.113.164", text, StringComparison.Ordinal);
+        Assert.Contains("192.168.1.20", text, StringComparison.Ordinal);
+        Assert.Contains("0.0.198.0", text, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, DirectLinkProtocol.RedactText(null));
+    }
+}

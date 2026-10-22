@@ -1132,7 +1132,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>How a linked server's viewers appear in a group: "bob, carol (netflix++)".</summary>
+        /// <summary>How a linked server's viewers appear in a group: "bob, carol (friendflix)".</summary>
         internal static string LinkLabel(IReadOnlyCollection<string>? participants, string serverName)
         {
             var names = (participants ?? Array.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).Take(4).ToList();

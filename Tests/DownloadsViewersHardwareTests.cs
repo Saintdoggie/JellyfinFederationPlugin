@@ -161,11 +161,11 @@ public class DownloadsViewersHardwareTests
         try
         {
             File.WriteAllText(Path.Combine(dir, "Film (2021).mkv"), "x");
-            var path = FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "netflix++");
-            Assert.Equal(Path.Combine(dir, "Film (2021) - netflix++.mkv"), path);
+            var path = FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friendflix");
+            Assert.Equal(Path.Combine(dir, "Film (2021) - friendflix.mkv"), path);
 
             File.WriteAllText(path, "x");
-            Assert.Equal(Path.Combine(dir, "Film (2021) - netflix++ (2).mkv"), FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "netflix++"));
+            Assert.Equal(Path.Combine(dir, "Film (2021) - friendflix (2).mkv"), FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friendflix"));
         }
         finally
         {
@@ -205,7 +205,7 @@ public class DownloadsViewersHardwareTests
     // ---- Friends' viewers --------------------------------------------------
 
     private static RemoteServer Friend(StreamingMode mode = StreamingMode.Direct)
-        => new() { Id = "f1", Name = "netflix++", Kind = ServerKind.Jellyfin, StreamingMode = mode, Enabled = true };
+        => new() { Id = "f1", Name = "friendflix", Kind = ServerKind.Jellyfin, StreamingMode = mode, Enabled = true };
 
     [Fact]
     public void Route_FollowsPlayMethodModeAndHandoff()
@@ -251,10 +251,10 @@ public class DownloadsViewersHardwareTests
     [Fact]
     public void FriendsViewers_AreLabelledWithTheirServer()
     {
-        Assert.Equal("bob (netflix++)", FederationRemoteViewerService.Label("bob", "netflix++"));
-        Assert.Equal("Someone (netflix++)", FederationRemoteViewerService.Label("  ", "netflix++"));
-        Assert.Equal("Chrome · via netflix++", FederationRemoteViewerService.DeviceLabel("Chrome", "netflix++"));
-        Assert.Equal("Device · via netflix++", FederationRemoteViewerService.DeviceLabel(null, "netflix++"));
+        Assert.Equal("bob (friendflix)", FederationRemoteViewerService.Label("bob", "friendflix"));
+        Assert.Equal("Someone (friendflix)", FederationRemoteViewerService.Label("  ", "friendflix"));
+        Assert.Equal("Chrome · via friendflix", FederationRemoteViewerService.DeviceLabel("Chrome", "friendflix"));
+        Assert.Equal("Device · via friendflix", FederationRemoteViewerService.DeviceLabel(null, "friendflix"));
         Assert.Equal("dev-1", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { DeviceId = "dev-1", Key = "k" }));
         Assert.StartsWith("federation-viewer-f1-", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { Key = "k" }), StringComparison.Ordinal);
     }

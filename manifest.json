@@ -161,7 +161,7 @@
       },
       {
         "version": "0.0.178",
-        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"freakbob (primary)\") instead of the movie title, in every client.",
+        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"plexpal (primary)\") instead of the movie title, in every client.",
         "targetAbi": "12.0.0.0",
         "timestamp": "2026-10-13T16:24:00Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.178/Jellyfin.Federation.zip",

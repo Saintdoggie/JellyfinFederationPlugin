@@ -44,11 +44,11 @@ public sealed class BrowseExternalSourceFailureTests
     [Fact]
     public void UnavailableResponse_Is503WithServerNameAndNoAddress()
     {
-        var server = new RemoteServer { Name = "freakbob", Url = "https://freakbob.example.ts.net/plex/secret-peer" };
+        var server = new RemoteServer { Name = "plexpal", Url = "https://plexpal.example.ts.net/plex/secret-peer" };
         var result = FederationController.ExternalSourceUnavailable(server);
         Assert.Equal(503, result.StatusCode);
         var message = (string)result.Value!.GetType().GetProperty("message")!.GetValue(result.Value)!;
-        Assert.Contains("freakbob", message);
+        Assert.Contains("plexpal", message);
         Assert.DoesNotContain("ts.net", message);
         Assert.DoesNotContain("secret-peer", message);
     }

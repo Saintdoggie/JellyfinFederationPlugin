@@ -377,7 +377,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Owner side: friends' viewers watching this server's titles, shown as
     /// sessions on the dashboard (title, position, paused, play method) under
-    /// "bob (netflix++)". The sessions have no local user, so nothing is
+    /// "bob (friendflix)". The sessions have no local user, so nothing is
     /// recorded against anyone's watch history here. A viewer that goes quiet
     /// for 90 s is stopped.
     /// </summary>
@@ -561,11 +561,11 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>How a friend's viewer is named on the dashboard: "bob (netflix++)".</summary>
+        /// <summary>How a friend's viewer is named on the dashboard: "bob (friendflix)".</summary>
         internal static string Label(string? viewerName, string friendName)
             => (Clean(viewerName, 64) ?? "Someone") + " (" + friendName + ")";
 
-        /// <summary>The device line: "Chrome · via netflix++".</summary>
+        /// <summary>The device line: "Chrome · via friendflix".</summary>
         internal static string DeviceLabel(string? deviceName, string friendName)
             => (Clean(deviceName, 64) ?? "Device") + " · via " + friendName;
 

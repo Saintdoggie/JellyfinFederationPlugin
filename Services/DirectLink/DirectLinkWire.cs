@@ -246,5 +246,92 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>Invariant formatting for log lines and status.</summary>
         public static string Describe(IPEndPoint? endpoint)
             => endpoint == null ? string.Empty : string.Create(CultureInfo.InvariantCulture, $"{endpoint.Address}:{endpoint.Port}");
+
+        // Keyed per process: the same address gets the same tag in one run's logs, and
+        // a tag can't be turned back into an address by hashing every IPv4 address.
+        private static readonly byte[] RedactKey = RandomNumberGenerator.GetBytes(32);
+
+        /// <summary>
+        /// An endpoint for logs and the status page. A public address is a home's
+        /// internet address, so it becomes a short tag (<c>public #3f9a2c:51876</c>);
+        /// private, LAN, loopback and Tailscale addresses identify no home and stay as
+        /// they are, for troubleshooting.
+        /// </summary>
+        /// <returns>The text.</returns>
+        public static string Redact(IPEndPoint? endpoint)
+            => endpoint == null ? string.Empty : string.Create(CultureInfo.InvariantCulture, $"{Redact(endpoint.Address)}:{endpoint.Port}");
+
+        /// <summary>An address for logs and the status page (see <see cref="Redact(IPEndPoint?)"/>).</summary>
+        /// <returns>The text.</returns>
+        public static string Redact(IPAddress? address)
+        {
+            if (address == null)
+            {
+                return string.Empty;
+            }
+
+            if (address.IsIPv4MappedToIPv6)
+            {
+                address = address.MapToIPv4();
+            }
+
+            if (!IsPublic(address))
+            {
+                return address.ToString();
+            }
+
+            var tag = HMACSHA256.HashData(RedactKey, address.GetAddressBytes());
+            return "public #" + Convert.ToHexString(tag, 0, 3).ToLowerInvariant();
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex Ipv4InText = new(
+            @"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(100));
+
+        /// <summary>
+        /// Free text (an error message, a detail line) with every public IPv4 address in
+        /// it replaced by its tag, as <see cref="Redact(IPAddress?)"/> does.
+        /// </summary>
+        /// <returns>The text.</returns>
+        public static string RedactText(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text ?? string.Empty;
+            }
+
+            try
+            {
+                return Ipv4InText.Replace(text, m => IPAddress.TryParse(m.Value, out var ip) ? Redact(ip) : m.Value);
+            }
+            catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+            {
+                return "(details hidden)";
+            }
+        }
+
+        private static bool IsPublic(IPAddress address)
+        {
+            if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any))
+            {
+                return false;
+            }
+
+            if (address.AddressFamily == AddressFamily.InterNetwork)
+            {
+                var b = address.GetAddressBytes();
+                // 0/8, multicast and reserved aren't anyone's home (and 0.x looks like a version number).
+                return !(b[0] == 0 || b[0] >= 224 || b[0] == 10
+                    || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                    || (b[0] == 192 && b[1] == 168)
+                    || (b[0] == 169 && b[1] == 254)
+                    || (b[0] == 100 && b[1] >= 64 && b[1] <= 127));
+            }
+
+            // IPv6: unique-local (fc00::/7) and link-local stay; global ones are redacted.
+            var v6 = address.GetAddressBytes();
+            return !((v6[0] & 0xFE) == 0xFC || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal);
+        }
     }
 }

@@ -29,7 +29,7 @@ Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux
 
 ## Why
 
-A friend whose server is only reachable through a forwarding VPS (e.g. netflix++:
+A friend whose server is only reachable through a forwarding VPS (e.g. friendflix:
 home -> Hetzner Hillsboro -> everyone) streams at ~25 Mbps on one connection even
 though both homes have 500 Mbps. The direct link opens an encrypted UDP (QUIC)
 connection straight between the two Jellyfin servers, punched through both home

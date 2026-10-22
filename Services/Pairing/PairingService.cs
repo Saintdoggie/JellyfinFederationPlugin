@@ -426,7 +426,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         Name = s.Name,
                         CallsItself = s.PairClaimedName,
                         State = runtime?.State ?? "stopped",
-                        Detail = runtime?.Detail ?? string.Empty,
+                        Detail = DirectLink.DirectLinkProtocol.RedactText(runtime?.Detail),
                         SafetyNumber = s.PairSafetyNumber,
                         Confirmed = s.PairSafetyConfirmed,
                         FriendConfirmed = s.PairPeerConfirmed,
@@ -1226,7 +1226,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         if (!_owner.AllowedByJellyfin(path.Address))
                         {
                             State = "refused";
-                            Detail = "Jellyfin's network settings don't allow the friend's address " + path.Address + ".";
+                            Detail = "Jellyfin's network settings don't allow the friend's address " + DirectLink.DirectLinkProtocol.Redact(path.Address) + ".";
                             await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
                             continue;
                         }
@@ -1247,11 +1247,11 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         LastConnectedUtc = DateTime.UtcNow;
                         failures = 0;
                         State = "connected";
-                        Detail = "Connected via " + path;
-                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} is up via {Path}", FriendId, path);
+                        Detail = "Connected via " + DirectLink.DirectLinkProtocol.Redact(path);
+                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} is up via {Path}", FriendId, DirectLink.DirectLinkProtocol.Redact(path));
                         _owner.OnLinkUp(this, link);
                         await link.Closed.WaitAsync(cancellationToken).ConfigureAwait(false);
-                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} dropped: {Reason}", FriendId, link.CloseReason);
+                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} dropped: {Reason}", FriendId, DirectLink.DirectLinkProtocol.RedactText(link.CloseReason));
                         Link = null;
                         await link.DisposeAsync().ConfigureAwait(false);
                     }
@@ -1266,7 +1266,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         var detail = "The link didn't come up: " + ex.Message;
                         if (detail != Detail)
                         {
-                            _owner._logger.LogInformation("[Federation] Paired link to {Friend}: {Detail}", FriendId, detail);
+                            _owner._logger.LogInformation("[Federation] Paired link to {Friend}: {Detail}", FriendId, DirectLink.DirectLinkProtocol.RedactText(detail));
                         }
 
                         Detail = detail;
