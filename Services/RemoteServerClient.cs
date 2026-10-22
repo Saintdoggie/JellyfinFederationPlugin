@@ -1706,9 +1706,15 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var url = $"{RemoteServerClientFactory.EffectiveUrl(_server)}/Plugins/Federation/DirectStream/{itemId}?token={Uri.EscapeDataString(token)}&download=true";
+
+            // Over the direct link when it's up: a friend behind a slow tunnel
+            // sends the file at its home speed. A resumed download may switch
+            // between the two; both serve the same bytes.
+            HttpClient? link = null;
+            var viaLink = DirectLink.DirectLinkManager.Current is { } links && links.TryGetClient(_server.Id, out link);
             await DownloadTransfer.CopyUrlToFileAsync(
-                DownloadHttpClient,
-                url,
+                viaLink ? link! : DownloadHttpClient,
+                viaLink ? DirectLink.DirectLinkRelay.ToLinkUri(url).ToString() : url,
                 destinationPath,
                 resumeFrom,
                 progress,

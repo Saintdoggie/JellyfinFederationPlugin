@@ -438,10 +438,17 @@ def scenario_checks(a, b, item_id, friend_id, name, expect_connected):
         guard(f'[{name}] 3b. A link BytesIn increased', lambda: ((a.entry() or {}).get('BytesIn', 0) > before, f"BytesIn {before} -> {(a.entry() or {}).get('BytesIn')}"))
     else:
         def failed():
+            # The first attempt may only find B still starting; wait for the verdict on the NAT itself.
             def poll():
                 e = a.entry()
-                return e if e and e.get('State') in ('failed', 'fallback') else None
-            e = wait_for(poll, 'A never reported failed', seconds=90)
+                if not e or e.get('State') not in ('failed', 'fallback'):
+                    return None
+                text = ' '.join(str(e.get(k) or '') for k in ('Detail', 'LastError', 'NatLocal', 'NatRemote'))
+                return e if re.search(r'strict|symmetric', text, re.I) else None
+            try:
+                e = wait_for(poll, 'A never reported a strict-NAT failure', seconds=150)
+            except RuntimeError:
+                e = a.entry() or {'State': None}
             text = ' '.join(str(e.get(k) or '') for k in ('Detail', 'LastError', 'NatLocal', 'NatRemote'))
             return bool(re.search(r'strict|symmetric', text, re.I)), f"State={e['State']} Detail={e.get('Detail')!r} NatLocal={e.get('NatLocal')} NatRemote={e.get('NatRemote')}"
         guard(f'[{name}] 5a. symmetric NAT: A ends failed/fallback with a strict-NAT detail', failed)

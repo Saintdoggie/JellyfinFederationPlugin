@@ -1054,6 +1054,14 @@
                                 <div class="fed-srvstatus" id="fedRemoteTranscodeStatus" style="display:none;"></div>
                                 <div id="fedRemoteTranscodeFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
+                            <div class="fed-subcard" id="fedDirectLinkCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Direct links with friends</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" checked /> Open direct links with friends that support them</label>
+                                <p class="fieldDescription">An encrypted UDP connection straight between your server and each friend's, opened through both home routers the way Tailscale does, with no port forwarding. Your viewers at home then get a friend's video at your two homes' real speeds, even when the friend's server is only reachable through a slow tunnel or VPS. It only carries the friend's video, downloads and speed tests, with the same permissions as today. Both servers need Federation 0.0.195 or newer; Linux and Windows servers.</p>
+                                <p class="fed-hint" id="fedDirectLinkSummary">Checking…</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-direct-link">Save direct link settings</button>
+                                <div class="fed-srvstatus" id="fedDirectLinkSaveStatus" style="display:none;"></div>
+                            </div>
                             <div class="fed-subcard" id="fedFavoritesCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Friends' favorites</h4>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsFavorites" class="emby-checkbox fed-check" /> Show friends' favorites on my Favorites tab</label>
@@ -1686,6 +1694,19 @@
                             html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-friend-limits" data-id="' + escapeHtml(server.Id) + '">Save limits</button>';
                             html += '<div class="fed-srvstatus" id="fedFriendLimitsStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                             html += '</div>';
+
+                            html += '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                            html += '<label class="fed-label">Direct link</label>';
+                            html += '<p class="fed-hint fedDirectLinkLine" data-id="' + escapeHtml(server.Id) + '">Checking…</p>';
+                            html += '<div class="fed-inline">';
+                            html += '<select is="emby-select" class="emby-select fed-input fedDirectLinkMode" data-id="' + escapeHtml(server.Id) + '">'
+                                + '<option value="Auto"' + (server.DirectLinkMode !== 'Off' ? ' selected' : '') + '>Use a direct link when possible</option>'
+                                + '<option value="Off"' + (server.DirectLinkMode === 'Off' ? ' selected' : '') + '>Off for this friend</option></select>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="direct-link-retry" data-id="' + escapeHtml(server.Id) + '">Try again now</button>';
+                            html += '</div>';
+                            html += '<p class="fed-hint">An encrypted connection straight between your two servers, opened through both home routers without port forwarding. Viewers on your home network get this friend's video over it, so a friend behind a slow tunnel or VPS plays at their real speed. Viewers elsewhere keep going straight to the friend.</p>';
+                            html += '<div class="fed-srvstatus" id="fedDirectLinkStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                            html += '</div>';
                         }
 
                         html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
@@ -1811,6 +1832,82 @@
                             loadRemoteTranscodeSettings();
                         })
                         .catch(function (e) { showRemoteTranscodeStatus('#fedRemoteTranscodeStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function directLinkText(f) {
+                        var mb = function (bytes) { return (bytes / 1e9).toFixed(1) + ' GB'; };
+                        switch (f.State) {
+                            case 'connected':
+                                return 'Connected' + (f.Mbps > 0 ? ' · ' + Math.round(f.Mbps) + ' Mbps measured' : '') + ' · ' + mb(f.BytesIn || 0) + ' received';
+                            case 'connecting':
+                                return 'Connecting…';
+                            case 'failed':
+                                return 'Not connected: ' + (f.LastError || f.Detail || 'unknown') + (f.NextRetryUtc ? ' Next try ' + new Date(f.NextRetryUtc).toLocaleTimeString() + '.' : '') + ' Video uses the friend\'s address meanwhile.';
+                            case 'unsupported':
+                                return f.Detail || 'Not available.';
+                            default:
+                                return f.Detail || 'Off.';
+                        }
+                    }
+
+                    function loadDirectLinkStatus() {
+                        fedFetch('/Plugins/Federation/DirectLink/Status')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { return; }
+                            var chk = q('#fedChkEnableDirectLink');
+                            if (chk) { chk.checked = res.Enabled !== false; }
+                            var summary = q('#fedDirectLinkSummary');
+                            if (summary) {
+                                summary.textContent = res.Available
+                                    ? 'Ready on this server' + (res.PublicEndpoint ? ' · public address ' + res.PublicEndpoint + (res.Nat && res.Nat !== 'unknown' ? ' (' + res.Nat + ' router)' : '') : '') + '.'
+                                    : 'Not available on this server: ' + (res.Reason || 'unknown') + '.';
+                            }
+                            (res.Friends || []).forEach(function (f) {
+                                var line = q('.fedDirectLinkLine[data-id="' + f.ServerId + '"]');
+                                if (line) {
+                                    line.textContent = directLinkText(f) + (f.InboundConnected ? ' · They also have a link to you.' : '');
+                                }
+                            });
+                        })
+                        .catch(function () { /* older server; the lines keep "Checking…" */ });
+                    }
+
+                    function saveDirectLinkSettings() {
+                        showRemoteTranscodeStatus('#fedDirectLinkSaveStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Settings/DirectLink', {
+                            method: 'POST',
+                            body: JSON.stringify({ EnableDirectLink: q('#fedChkEnableDirectLink').checked })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus('#fedDirectLinkSaveStatus', (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            setTimeout(loadDirectLinkStatus, 1500);
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus('#fedDirectLinkSaveStatus', 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function saveFriendDirectLink(serverId, mode) {
+                        var id = '#fedDirectLinkStatus-' + serverId;
+                        showRemoteTranscodeStatus(id, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/DirectLink', {
+                            method: 'POST',
+                            body: JSON.stringify({ Mode: mode })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            showRemoteTranscodeStatus(id, (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            setTimeout(loadDirectLinkStatus, 1500);
+                        })
+                        .catch(function (e) { showRemoteTranscodeStatus(id, 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function retryDirectLink(serverId) {
+                        var id = '#fedDirectLinkStatus-' + serverId;
+                        showRemoteTranscodeStatus(id, 'Trying…', 'info');
+                        fedFetch('/Plugins/Federation/DirectLink/Retry/' + encodeURIComponent(serverId), { method: 'POST' })
+                        .then(function () { setTimeout(function () { loadDirectLinkStatus(); showRemoteTranscodeStatus(id, 'Tried; see the line above.', 'ok'); }, 12000); })
+                        .catch(function (e) { showRemoteTranscodeStatus(id, 'Could not retry: ' + e.message, 'err'); });
                     }
 
                     function loadFavoritesSettings() {
@@ -7115,6 +7212,7 @@
                             q('#fedChkPreferQuality').checked = currentConfig.PreferHigherQualityRemotes === true;
                             q('#fedChkAdaptivePlayback').checked = currentConfig.EnableAdaptivePlayback === true;
                             loadRemoteTranscodeSettings();
+                            loadDirectLinkStatus();
                             loadFavoritesSettings();
                             loadWatchPartySettings();
                             loadDownloadDestinations();
@@ -7572,6 +7670,12 @@
                                 case 'save-friend-limits':
                                     saveFriendLimits(t.getAttribute('data-id'));
                                     break;
+                                case 'save-direct-link':
+                                    saveDirectLinkSettings();
+                                    break;
+                                case 'direct-link-retry':
+                                    retryDirectLink(t.getAttribute('data-id'));
+                                    break;
                                 case 'save-remote-transcode':
                                     saveRemoteTranscodeSettings();
                                     break;
@@ -7965,6 +8069,11 @@
 
                             if (t.classList.contains('fedAllowRemoteTranscode')) {
                                 saveFriendRemoteTranscode(t.getAttribute('data-id'), t.checked);
+                                return;
+                            }
+
+                            if (t.classList.contains('fedDirectLinkMode')) {
+                                saveFriendDirectLink(t.getAttribute('data-id'), t.value);
                                 return;
                             }
 

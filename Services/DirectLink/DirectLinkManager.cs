@@ -163,7 +163,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _clients = clients;
             _library = library;
             Forwarder = new DirectLinkForwarder(LocalBase, logger);
+            Current = this;
         }
+
+        /// <summary>
+        /// Gets the running manager, for code built outside dependency injection
+        /// (friend clients). Null before the plugin starts.
+        /// </summary>
+        public static DirectLinkManager? Current { get; private set; }
 
         /// <summary>Gets the responder's request forwarder.</summary>
         internal DirectLinkForwarder Forwarder { get; }
@@ -711,7 +718,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 state.CapabilityCheckedUtc = UtcNow();
                 if (info == null)
                 {
-                    return ("Couldn't reach the friend" + (string.IsNullOrEmpty(error) ? "." : ": " + error), false, null);
+                    // Usually the friend restarting: try again soon rather than backing off.
+                    return ("Couldn't reach the friend" + (string.IsNullOrEmpty(error) ? "." : ": " + error), false, Backoff[0]);
                 }
 
                 state.PeerVersion = info.DirectLinkVersion;

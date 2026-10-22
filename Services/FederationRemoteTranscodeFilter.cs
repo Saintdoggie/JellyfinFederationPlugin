@@ -67,6 +67,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly RemoteAccessControlService _access;
         private readonly RemoteTranscodeHandoffs _handoffs;
         private readonly ILogger<FederationRemoteTranscodeFilter> _logger;
+        private readonly DirectLink.DirectLinkManager? _directLinks;
+        private readonly MediaBrowser.Common.Net.INetworkManager? _network;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationRemoteTranscodeFilter"/> class.
@@ -79,8 +81,12 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationLibraryManager federationManager,
             RemoteAccessControlService access,
             RemoteTranscodeHandoffs handoffs,
-            ILogger<FederationRemoteTranscodeFilter> logger)
+            ILogger<FederationRemoteTranscodeFilter> logger,
+            DirectLink.DirectLinkManager? directLinks = null,
+            MediaBrowser.Common.Net.INetworkManager? network = null)
         {
+            _directLinks = directLinks;
+            _network = network;
             _authorization = authorization;
             _users = users;
             _library = library;
@@ -139,12 +145,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 // The URL carries an item-scoped token; never log it.
                 context.HttpContext.Response.Headers.CacheControl = "private, no-store";
-                context.Result = new RedirectResult(handoff.Url, permanent: false);
+                context.Result = new RedirectResult(handoff.PlayerUrl, permanent: false);
                 return;
             }
 
             var playlist = path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.SubtitlePlaylist;
-            var relayPrefix = HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value);
+            string? relayPrefix = HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value);
             var (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted).ConfigureAwait(false);
             if (status == StatusCodes.Status403Forbidden)
             {
@@ -180,7 +186,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     _handoffs.Record(playSessionId, handoff.ServerId);
                 }
 
-                _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts and streams straight to the player", path.Kind, path.ItemId, handoff.ServerName);
+                if (handoff.ViaLink)
+                {
+                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts, and the video comes over the direct link to this home viewer", path.Kind, path.ItemId, handoff.ServerName);
+                }
+                else
+                {
+                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts and streams straight to the player", path.Kind, path.ItemId, handoff.ServerName);
+                }
+
                 context.HttpContext.Response.Headers.CacheControl = "private, no-store";
                 context.Result = fetched;
                 return;
@@ -321,7 +335,16 @@ namespace Jellyfin.Plugin.Federation.Services
             var peerBase = RemoteServerClientFactory.EffectiveUrl(server).TrimEnd('/');
             var clientScheme = FederationDirectStreamRedirectFilter.RequestScheme(request);
             var playerSeesPeer = !path.FetchedByReceiver || path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant;
+
+            // A viewer on this home's network, with the direct link to the friend
+            // up: the player fetches from this server, which gets the video over
+            // the link (home download speed; never the home upload). Others go
+            // straight to the friend as before.
+            var viaLink = _directLinks?.IsConnected(server.Id) == true
+                && DirectLink.DirectLinkRelay.IsHomeViewer(context.HttpContext, _network);
+            var playerBase = viaLink ? DirectLink.DirectLinkRelay.PlayerBase(request.PathBase.Value, server.Id) : peerBase;
             if (playerSeesPeer
+                && !viaLink
                 && string.Equals(clientScheme, "https", StringComparison.OrdinalIgnoreCase)
                 && !peerBase.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
@@ -334,7 +357,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
-            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind);
+            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink);
         }
 
         /// <summary>
@@ -393,13 +416,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Fetches a playlist/subtitle from the friend: the result, or null and
         /// the status to give the player (502 when the friend can't be reached).
         /// </summary>
-        private async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, bool playlist, string relayPrefix, CancellationToken cancellationToken)
+        private async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, bool playlist, string? relayPrefix, CancellationToken cancellationToken)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, handoff.Url);
+                // Over the direct link when it's up (faster for this server's own
+                // fetches too), otherwise to the friend's address.
+                HttpClient? link = null;
+                var overLink = _directLinks?.TryGetClient(handoff.ServerId, out link) == true;
+                using var request = new HttpRequestMessage(HttpMethod.Get, overLink ? DirectLink.DirectLinkRelay.ToLinkUri(handoff.Url) : new Uri(handoff.Url));
                 request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
-                using var response = await Send(request, cancellationToken).ConfigureAwait(false);
+                using var response = overLink
+                    ? await link!.SendAsync(request, cancellationToken).ConfigureAwait(false)
+                    : await Send(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return (null, (int)response.StatusCode);
@@ -412,8 +441,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     // The friend's addresses can be http behind its proxy; put
                     // them on the address this server uses for it.
                     var text = HandoffPlaylistLinks.Decode(bytes);
-                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PeerBase, relayPrefix));
-                    if (handoff.Kind == RemoteMediaKind.HlsMaster)
+                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PlayerBase, handoff.ViaLink ? null : relayPrefix));
+                    if (handoff.Kind == RemoteMediaKind.HlsMaster && !handoff.ViaLink)
                     {
                         HandoffPlaylistLinks.WarmUp(text, handoff.PeerBase, PeerTranscodeCapability.HasSharedSegments(handoff.ServerId), _logger);
                     }
@@ -432,6 +461,10 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind);
+        private sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind, string PlayerBase, bool ViaLink)
+        {
+            /// <summary>Gets where the player is sent: the friend, or this server's direct link relay.</summary>
+            public string PlayerUrl => ViaLink ? HandoffPlaylistLinks.ToPeer(Url, PlayerBase) ?? Url : Url;
+        }
     }
 }

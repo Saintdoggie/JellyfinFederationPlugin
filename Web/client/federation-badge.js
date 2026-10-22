@@ -1617,6 +1617,7 @@
     if (typeof data.latencyMs === 'number') { rows.push(['Round trip', Math.round(data.latencyMs) + ' ms']); }
     if (typeof data.linkMbps === 'number') { rows.push(['Link speed', data.linkMbps.toFixed(data.linkMbps < 10 ? 1 : 0) + ' Mbps']); }
     if (data.speedNote) { rows.push(['Speed test', data.speedNote]); }
+    if (data.directLink) { rows.push(['Direct link', data.directLink]); }
     if (typeof data.capMbps === 'number') { rows.push(['Bitrate cap', data.capMbps + ' Mbps']); }
     if (data.friendHardware) { rows.push([data.friend + ' converts with', data.friendHardware]); }
     if (data.thisServerHardware) { rows.push(['This server converts with', data.thisServerHardware]); }

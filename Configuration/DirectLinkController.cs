@@ -1,7 +1,9 @@
 using System;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Common.Net;
 using Jellyfin.Plugin.Federation.Services;
 using Jellyfin.Plugin.Federation.Services.DirectLink;
 using Microsoft.AspNetCore.Authorization;
@@ -18,15 +20,158 @@ namespace Jellyfin.Plugin.Federation.Configuration
     [Route("Plugins/Federation")]
     public class DirectLinkController : ControllerBase
     {
+        private static readonly string[] PassedRequestHeaders = { "Range", "If-Range", "If-None-Match", "If-Modified-Since", "Accept", "User-Agent" };
+        private static readonly string[] PassedResponseHeaders = { "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Content-Disposition" };
+
         private readonly DirectLinkManager _manager;
+        private readonly INetworkManager? _network;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DirectLinkController"/> class.
         /// </summary>
         /// <param name="manager">The direct link manager.</param>
-        public DirectLinkController(DirectLinkManager manager)
+        /// <param name="network">Jellyfin's network rules (who is on this home's network).</param>
+        public DirectLinkController(DirectLinkManager manager, INetworkManager? network = null)
         {
             _manager = manager;
+            _network = network;
+        }
+
+        /// <summary>
+        /// A viewer on this home's network fetches a friend's handed-off video
+        /// here; this server gets it from the friend over the direct link. The
+        /// friend checks the token in the path exactly as when the player asks it
+        /// directly. Viewers elsewhere are refused (they go to the friend), so a
+        /// friend's video never uses this home's upload. When the link is down,
+        /// the player is sent to the friend's own address.
+        /// </summary>
+        /// <param name="serverId">The friend's configured server id.</param>
+        /// <param name="cancellationToken">Request aborted.</param>
+        /// <returns>The friend's answer.</returns>
+        [HttpGet("DirectLink/{serverId}/Plugins/Federation/Peer/Play/{**rest}")]
+        [HttpHead("DirectLink/{serverId}/Plugins/Federation/Peer/Play/{**rest}")]
+        [AllowAnonymous]
+        public async Task Relay(string serverId, CancellationToken cancellationToken)
+        {
+            Response.Headers.CacheControl = "private, no-store";
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId && s.Enabled);
+            var escapedPath = Request.Path.ToUriComponent();
+            var at = escapedPath.IndexOf(DirectLinkRelay.GatewayPath, StringComparison.OrdinalIgnoreCase);
+            if (server == null || at < 0)
+            {
+                Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            if (!DirectLinkRelay.IsHomeViewer(HttpContext, _network))
+            {
+                Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+
+            var target = escapedPath.Substring(at) + Request.QueryString.Value;
+            if (!_manager.TryGetClient(server.Id, out var link))
+            {
+                RedirectToFriend(server, target);
+                return;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get, new Uri("http://federation-direct-link" + target));
+            foreach (var name in PassedRequestHeaders)
+            {
+                if (Request.Headers.TryGetValue(name, out var value))
+                {
+                    request.Headers.TryAddWithoutValidation(name, value.ToArray());
+                }
+            }
+
+            request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+            HttpResponseMessage upstream;
+            try
+            {
+                upstream = await link.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException)
+            {
+                // The link dropped between the check and the request.
+                RedirectToFriend(server, target);
+                return;
+            }
+
+            using (upstream)
+            {
+                Response.StatusCode = (int)upstream.StatusCode;
+                var contentType = upstream.Content.Headers.ContentType?.ToString();
+                if (contentType != null)
+                {
+                    Response.ContentType = contentType;
+                }
+
+                foreach (var name in PassedResponseHeaders)
+                {
+                    if (upstream.Headers.TryGetValues(name, out var values) || upstream.Content.Headers.TryGetValues(name, out values))
+                    {
+                        Response.Headers[name] = values.ToArray();
+                    }
+                }
+
+                if (HttpMethods.IsHead(Request.Method))
+                {
+                    if (upstream.Content.Headers.ContentLength is { } headLength)
+                    {
+                        Response.ContentLength = headLength;
+                    }
+
+                    return;
+                }
+
+                if (upstream.IsSuccessStatusCode && DirectLinkRelay.IsPlaylist(Request.Path.Value ?? string.Empty, contentType))
+                {
+                    if (upstream.Content.Headers.ContentLength > 8 * 1024 * 1024)
+                    {
+                        Response.StatusCode = StatusCodes.Status502BadGateway;
+                        return;
+                    }
+
+                    var text = await upstream.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    var body = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, DirectLinkRelay.PlayerBase(Request.PathBase.Value, server.Id), null));
+                    Response.ContentLength = body.Length;
+                    await Response.Body.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (upstream.Content.Headers.ContentLength is { } length)
+                {
+                    Response.ContentLength = length;
+                }
+
+                try
+                {
+                    await using var stream = await upstream.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                    await stream.CopyToAsync(Response.Body, 64 * 1024, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is System.IO.IOException or HttpRequestException)
+                {
+                    // The link or the player went away mid-piece; the player retries.
+                    HttpContext.Abort();
+                }
+            }
+        }
+
+        // The link isn't up: send the player to the friend's own address (today's
+        // handoff), unless that would put http media on an https page.
+        private void RedirectToFriend(RemoteServer server, string target)
+        {
+            var friend = RemoteServerClientFactory.EffectiveUrl(server).TrimEnd('/');
+            if (string.Equals(Request.Scheme, "https", StringComparison.OrdinalIgnoreCase)
+                && !friend.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                Response.StatusCode = StatusCodes.Status502BadGateway;
+                return;
+            }
+
+            Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            Response.Headers.Location = friend + target;
         }
 
         /// <summary>

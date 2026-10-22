@@ -61,7 +61,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// everything else to the friend URL on <paramref name="peerBase"/>.
         /// Lines without a friend gateway address are left as they are.
         /// </summary>
-        public static string Rewrite(string playlist, string peerBase, string relayPrefix)
+        public static string Rewrite(string playlist, string peerBase, string? relayPrefix)
         {
             var lines = playlist.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
             for (var i = 0; i < lines.Length; i++)
@@ -87,7 +87,9 @@ namespace Jellyfin.Plugin.Federation.Services
                     return uri;
                 }
 
-                return IsPlaylist(friendUrl) ? relayPrefix + Uri.EscapeDataString(friendUrl) : friendUrl;
+                // Without a relay prefix (direct link: peerBase is this server's own
+                // relay), nested playlists go to peerBase like everything else.
+                return IsPlaylist(friendUrl) && relayPrefix != null ? relayPrefix + Uri.EscapeDataString(friendUrl) : friendUrl;
             }
         }
 
