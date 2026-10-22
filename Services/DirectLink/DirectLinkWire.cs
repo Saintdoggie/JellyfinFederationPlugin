@@ -148,12 +148,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <summary>
         /// The endpoint in a candidate when it's one this server may send
         /// packets to: IPv4, port 1024 or higher, never loopback, multicast,
-        /// broadcast, link-local or unspecified. Public candidates must be public
-        /// (or Tailscale). Local ones must be Tailscale unless
-        /// <paramref name="allowPrivate"/> (same-LAN friends, tests), so a friend
-        /// can't point this server's packets at other machines on its LAN.
+        /// broadcast, link-local, unspecified or reserved/documentation ranges.
+        /// Private (RFC 1918) addresses only with <paramref name="allowPrivate"/>
+        /// (a friend configured by a LAN address, tests), and Tailscale's range
+        /// only with <paramref name="allowTailscale"/> (a friend reached over
+        /// Tailscale), so a friend can't point this server's packets at other
+        /// machines on its LAN or tailnet.
         /// </summary>
-        public static IPEndPoint? AcceptCandidate(DirectLinkCandidate? candidate, bool allowPrivate)
+        public static IPEndPoint? AcceptCandidate(DirectLinkCandidate? candidate, bool allowPrivate, bool allowTailscale = false)
         {
             if (candidate == null
                 || candidate.Port is < 1024 or > 65535
@@ -165,7 +167,16 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             var b = address.GetAddressBytes();
-            if (b[0] == 0 || b[0] == 127 || b[0] >= 224 || (b[0] == 169 && b[1] == 254))
+            if (b[0] == 0 || b[0] == 127 || b[0] >= 224 || (b[0] == 169 && b[1] == 254)
+                || (b[0] == 192 && b[1] == 0 && (b[2] == 0 || b[2] == 2))
+                || (b[0] == 198 && (b[1] == 18 || b[1] == 19))
+                || (b[0] == 198 && b[1] == 51 && b[2] == 100)
+                || (b[0] == 203 && b[1] == 0 && b[2] == 113))
+            {
+                return null;
+            }
+
+            if (IsTailscale(address) && !allowTailscale)
             {
                 return null;
             }
@@ -182,16 +193,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return null;
             }
 
-            // Shared address space (100.64/10) is Tailscale's or a carrier's: fine
-            // to aim at, nothing else of either LAN lives there.
             return new IPEndPoint(address, candidate.Port);
         }
 
         /// <summary>The acceptable endpoints of a candidate list (at most <see cref="MaxCandidates"/>, no duplicates).</summary>
-        public static List<IPEndPoint> AcceptCandidates(IEnumerable<DirectLinkCandidate>? candidates, bool allowPrivate)
+        public static List<IPEndPoint> AcceptCandidates(IEnumerable<DirectLinkCandidate>? candidates, bool allowPrivate, bool allowTailscale = false)
             => (candidates ?? Enumerable.Empty<DirectLinkCandidate>())
                 .Take(MaxCandidates)
-                .Select(c => AcceptCandidate(c, allowPrivate))
+                .Select(c => AcceptCandidate(c, allowPrivate, allowTailscale))
                 .OfType<IPEndPoint>()
                 .Distinct()
                 .ToList();

@@ -9,8 +9,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
     /// The responder's gate for each request a friend sends over the direct link:
     /// a strict HTTP/1.1 request-head parser plus the short list of friend routes
     /// the link may carry. Everything the routes return is already authorized by
-    /// the friend's token in the request, exactly as over the normal address; the
-    /// link adds no access of its own.
+    /// the friend's token in the request, exactly as over the normal address.
+    /// Jellyfin sees these requests as local (they arrive on loopback), so the
+    /// manager applies Jellyfin's remote-access and IP rules to the friend's real
+    /// UDP address before a link is accepted.
     /// </summary>
     public sealed class DirectLinkRequestHead
     {
@@ -171,6 +173,16 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             if (string.IsNullOrEmpty(target) || target[0] != '/' || target.Length > 8192)
             {
                 return false;
+            }
+
+            foreach (var c in target)
+            {
+                // No spaces, tabs, CR/LF or other controls: they'd let a target
+                // split the forwarded request line.
+                if (c <= ' ' || c >= 0x7F)
+                {
+                    return false;
+                }
             }
 
             var query = target.IndexOf('?', StringComparison.Ordinal);

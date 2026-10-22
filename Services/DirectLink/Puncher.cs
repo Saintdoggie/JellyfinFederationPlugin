@@ -106,6 +106,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _allowedSources = candidates.Select(c => c.Address).ToHashSet();
         }
 
+        /// <summary>Most endpoints probed in one session.</summary>
+        internal const int MaxTargets = 16;
+
         /// <summary>Gets or sets how long to try.</summary>
         public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(8);
 
@@ -130,7 +133,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 targets.Add(candidate);
                 if (peerSymmetric)
                 {
-                    for (var delta = 1; delta <= 4; delta++)
+                    for (var delta = 1; delta <= 2; delta++)
                     {
                         foreach (var port in new[] { candidate.Port + delta, candidate.Port - delta })
                         {
@@ -143,7 +146,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
             }
 
-            return targets.Distinct().ToList();
+            // Bounded: a friend can't make this server spray many addresses.
+            return targets.Distinct().Take(MaxTargets).ToList();
         }
 
         /// <summary>Punches until the path is found or <see cref="Timeout"/> passes.</summary>
@@ -194,10 +198,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     {
                         received = await _socket.ReceiveFromAsync(buffer, SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), stop.Token).ConfigureAwait(false);
                     }
-                    catch (SocketException)
+                    catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionRefused or SocketError.HostUnreachable or SocketError.NetworkUnreachable)
                     {
                         // ICMP errors from targets that don't exist; keep listening.
                         continue;
+                    }
+                    catch (SocketException ex)
+                    {
+                        return new PunchResult(null, false, "the UDP socket failed (" + ex.SocketErrorCode + ")");
                     }
 
                     if (received.RemoteEndPoint is not IPEndPoint from || !_allowedSources.Contains(from.Address))

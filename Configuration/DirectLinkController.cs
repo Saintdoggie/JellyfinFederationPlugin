@@ -101,11 +101,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
             using (upstream)
             {
                 Response.StatusCode = (int)upstream.StatusCode;
+
+                // The friend's answer is served from this server's own address:
+                // only media types, never sniffed, never run as a page.
                 var contentType = upstream.Content.Headers.ContentType?.ToString();
-                if (contentType != null)
-                {
-                    Response.ContentType = contentType;
-                }
+                Response.ContentType = IsMediaType(contentType) ? contentType! : "application/octet-stream";
+                Response.Headers["X-Content-Type-Options"] = "nosniff";
+                Response.Headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
 
                 foreach (var name in PassedResponseHeaders)
                 {
@@ -127,13 +129,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
                 if (upstream.IsSuccessStatusCode && DirectLinkRelay.IsPlaylist(Request.Path.Value ?? string.Empty, contentType))
                 {
-                    if (upstream.Content.Headers.ContentLength > 8 * 1024 * 1024)
+                    var text = await ReadPlaylistAsync(upstream, cancellationToken).ConfigureAwait(false);
+                    if (text == null)
                     {
                         Response.StatusCode = StatusCodes.Status502BadGateway;
                         return;
                     }
 
-                    var text = await upstream.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                     var body = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, DirectLinkRelay.PlayerBase(Request.PathBase.Value, server.Id), null));
                     Response.ContentLength = body.Length;
                     await Response.Body.WriteAsync(body, cancellationToken).ConfigureAwait(false);
@@ -156,6 +158,49 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     HttpContext.Abort();
                 }
             }
+        }
+
+        private static bool IsMediaType(string? contentType)
+        {
+            if (string.IsNullOrEmpty(contentType))
+            {
+                return false;
+            }
+
+            var type = contentType.Split(';')[0].Trim();
+            return type.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                || type.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("mpegurl", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("text/vtt", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("application/x-subrip", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("application/mp4", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // A playlist answer, read up to 8 MB (null when larger: the friend sent garbage).
+        private static async Task<string?> ReadPlaylistAsync(HttpResponseMessage upstream, CancellationToken cancellationToken)
+        {
+            const int Max = 8 * 1024 * 1024;
+            if (upstream.Content.Headers.ContentLength > Max)
+            {
+                return null;
+            }
+
+            await using var stream = await upstream.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var copy = new System.IO.MemoryStream();
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (copy.Length + read > Max)
+                {
+                    return null;
+                }
+
+                copy.Write(buffer, 0, read);
+            }
+
+            return System.Text.Encoding.UTF8.GetString(copy.GetBuffer(), 0, (int)copy.Length);
         }
 
         // The link isn't up: send the player to the friend's own address (today's
@@ -184,6 +229,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <returns>This server's connection details, or a refusal.</returns>
         [HttpPost("Peer/DirectLink/Offer")]
         [AllowAnonymous]
+        [RequestSizeLimit(16 * 1024)]
         public async Task<IActionResult> Offer([FromBody] DirectLinkOffer? offer, CancellationToken cancellationToken)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);

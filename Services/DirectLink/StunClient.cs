@@ -149,7 +149,16 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             var buffer = new byte[1500];
             for (var attempt = 0; attempt < 3; attempt++)
             {
-                await socket.SendToAsync(request, SocketFlags.None, server, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await socket.SendToAsync(request, SocketFlags.None, server, cancellationToken).ConfigureAwait(false);
+                }
+                catch (SocketException)
+                {
+                    // No route to this STUN server right now.
+                    return null;
+                }
+
                 using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 wait.CancelAfter(TimeSpan.FromMilliseconds(500));
                 try
