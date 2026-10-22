@@ -23,7 +23,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private static readonly TimeSpan Linger = TimeSpan.FromMilliseconds(1200);
 
         private readonly Socket _socket;
-        private readonly byte _ownRole;
+        private byte _ownRole;
         private readonly Func<DateTimeOffset> _now;
         private readonly ReplayWindow _replay = new();
         private byte[]? _punchKey;
@@ -88,9 +88,18 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             return null;
         }
 
-        /// <summary>Sets the pair key once it is known (the offerer learns it from the answer).</summary>
-        public void SetKey(byte[] pairKey)
+        /// <summary>
+        /// Sets the pair key and this side's role once they are known (the offerer
+        /// learns both from the answer; a port bound for a code doesn't know its role).
+        /// </summary>
+        public void SetKey(byte[] pairKey, byte ownRole)
         {
+            if (ownRole > 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ownRole));
+            }
+
+            _ownRole = ownRole;
             _punchKey = PairingCrypto.SubKey(pairKey, "punch");
             _pairTag = PairPunchPacket.PairTag(pairKey);
         }
