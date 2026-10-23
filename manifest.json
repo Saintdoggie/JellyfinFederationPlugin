@@ -9,11 +9,11 @@
     "versions": [
       {
         "version": "0.0.199",
-        "changelog": "Privacy: a friend's home internet address no longer appears in this server's logs or on the status page. Public addresses are shown as a short tag (for example \"public #3f9a2c:51876\") that stays the same for one address while the server runs, so log lines can still be matched up; private, LAN and Tailscale addresses are shown as before for troubleshooting. Error messages that mention an address are cleaned the same way. Your own server's public address is still shown to you on the Beta tab. Includes everything in 0.0.198.",
+        "changelog": "Privacy: a friend's home internet address no longer appears in this server's logs or on the status page. Public addresses are shown as a short tag (for example \"public #3f9a2c:51876\") that stays the same for one address while the server runs, so log lines can still be matched up; private, LAN and Tailscale addresses are shown as before for troubleshooting. Error messages that mention an address are cleaned the same way. Your own server's public address is still shown to you on the Beta tab. Pairing codes are disabled in this build while the feature is under review; direct links are unchanged. Includes everything in 0.0.198.",
         "targetAbi": "12.0.0.0",
-        "timestamp": "2026-10-22T19:53:17Z",
+        "timestamp": "2026-10-23T17:40:19Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.199/Jellyfin.Federation.zip",
-        "checksum": "2c29a2923cd84c97bb8be41b980af4cb"
+        "checksum": "cdf1d6f652d2f02262dc65351722507b"
       },
       {
         "version": "0.0.198",
