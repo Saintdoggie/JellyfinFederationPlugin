@@ -695,7 +695,7 @@
                         See who else your friends are already federated with. This asks each of your current friends for
                         their own friends list - it never contacts anyone you're not already connected to, and nobody is
                         added automatically. A friend only shows up here if they've turned on "Allow friends-of-friends"
-                        under Advanced settings themselves.
+                        under Advanced settings themselves, and only with the friends they chose to show you.
                     </p>
 
                     <div class="fed-inline">
@@ -1383,6 +1383,9 @@
                     // by "<serverId>::<remoteUserId>".
                     var expandedUserRuleEditors = {};
 
+                    // Pending per-friend "friends they can see" selections, keyed by server.Id.
+                    var pendingFriendSharing = {};
+
                     // Whether a friend's Advanced panel (sharing, per-user rules,
                     // pools, connection details) is expanded, keyed by server.Id.
                     // Collapsed by default: Manage only shows status + a single
@@ -1774,6 +1777,10 @@
                             html += '</div>';
                         }
 
+                        if (server.Kind !== 1) {
+                            html += renderFriendSharingBlock(server);
+                        }
+
                         html += '<label class="fed-label" style="margin-top:0.6em;">Exclude specific items (never shared, regardless of the above)</label>';
                         html += '<div class="fed-inline">';
                         html += '<div class="fed-input-container"><input type="text" class="emby-input fed-input fedExcludeItemSearch" data-id="' + escapeHtml(server.Id) + '" placeholder="Search your library by name…" /></div>';
@@ -1812,6 +1819,75 @@
                         html += '<div class="fed-srvstatus" id="fedSharingStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
                         html += '</div>';
                         return html;
+                    }
+
+                    // Other friends this friend could be told about: the server's
+                    // FederationPeerAccessService.IsFriendVisible rules.
+                    function introducibleFriends(server) {
+                        return (currentConfig.RemoteServers || []).filter(function (s) {
+                            return s.Id !== server.Id && s.Enabled !== false && (s.Kind || 0) === 0 && !s.Paired;
+                        });
+                    }
+
+                    function renderFriendSharingBlock(server) {
+                        var id = escapeHtml(server.Id);
+                        var pending = pendingFriendSharing[server.Id] || {
+                            ShareAll: server.ShareAllFriends !== false,
+                            FriendIds: (server.SharedFriendIds || []).slice()
+                        };
+                        pendingFriendSharing[server.Id] = pending;
+
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">Friends they can see</label>';
+                        html += currentConfig.AllowFriendsOfFriends === true
+                            ? '<p class="fed-hint" style="margin-top:0;">For friends-of-friends: they see the name and address of the friends you pick here and can send them a friend request.</p>'
+                            : '<p class="fed-hint" style="margin-top:0;">Friends-of-friends is off (Advanced), so nobody sees your friends right now. What you pick here applies once you turn it on.</p>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedFriendSharingAll" data-id="' + id + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Show all my friends, including ones added later</label>';
+                        html += '<div class="fedFriendSharingList" data-id="' + id + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.4em;">';
+                        var others = introducibleFriends(server);
+                        if (others.length === 0) {
+                            html += '<p class="fed-muted">You have no other friends to show.</p>';
+                        } else {
+                            others.forEach(function (o) {
+                                var checked = pending.FriendIds.indexOf(o.Id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedFriendSharingFriend" data-id="' + id + '" data-friend="' + escapeHtml(o.Id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(o.Name || o.Url) + '</label>';
+                            });
+                        }
+
+                        html += '</div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-friend-sharing" data-id="' + id + '">Save</button>';
+                        html += '<div class="fed-srvstatus" id="fedFriendSharingStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function saveFriendSharing(serverId) {
+                        var pending = pendingFriendSharing[serverId] || { ShareAll: true, FriendIds: [] };
+                        var status = q('#fedFriendSharingStatus-' + serverId);
+                        var show = function (msg, kind) {
+                            if (!status) {
+                                return;
+                            }
+
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        };
+
+                        show('Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/FriendSharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, FriendIds: pending.FriendIds })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            show(res.message || (res.success ? 'Saved.' : 'Could not save.'), res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                delete pendingFriendSharing[serverId];
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { show('Failed: ' + e.message, 'err'); });
                     }
 
                     function setSharingStatus(serverId, msg, kind) {
@@ -7906,6 +7982,9 @@
                                 case 'save-friend-limits':
                                     saveFriendLimits(t.getAttribute('data-id'));
                                     break;
+                                case 'save-friend-sharing':
+                                    saveFriendSharing(t.getAttribute('data-id'));
+                                    break;
                                 case 'save-pairing':
                                     savePairingSettings();
                                     break;
@@ -8416,6 +8495,34 @@
                                 }
 
                                 pendingSharing[lsid] = lp;
+                                return;
+                            }
+
+                            if (t.classList.contains('fedFriendSharingAll')) {
+                                var fsid = t.getAttribute('data-id');
+                                var fp = pendingFriendSharing[fsid] || { ShareAll: true, FriendIds: [] };
+                                fp.ShareAll = t.checked;
+                                pendingFriendSharing[fsid] = fp;
+                                var friendsDiv = q('.fedFriendSharingList[data-id="' + fsid + '"]');
+                                if (friendsDiv) {
+                                    friendsDiv.style.display = t.checked ? 'none' : 'block';
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedFriendSharingFriend')) {
+                                var ffsid = t.getAttribute('data-id');
+                                var otherId = t.getAttribute('data-friend');
+                                var ffp = pendingFriendSharing[ffsid] || { ShareAll: false, FriendIds: [] };
+                                var fpos = ffp.FriendIds.indexOf(otherId);
+                                if (t.checked && fpos === -1) {
+                                    ffp.FriendIds.push(otherId);
+                                } else if (!t.checked && fpos !== -1) {
+                                    ffp.FriendIds.splice(fpos, 1);
+                                }
+
+                                pendingFriendSharing[ffsid] = ffp;
                                 return;
                             }
 

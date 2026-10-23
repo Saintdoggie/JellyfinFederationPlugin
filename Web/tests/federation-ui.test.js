@@ -2336,6 +2336,62 @@ test("admin page has the popular switches saved with the favorites settings", ()
   assert.match(configPage, /SharePopularWithFriends: q\('#fedChkSharePopularWithFriends'\)\.checked/);
 });
 
+function friendSharingApi(config) {
+  const block = configPage.match(/\n {20}(\/\/ Other friends this friend could be told about[\s\S]*?)\n {20}function setSharingStatus/);
+  assert.ok(block, 'friend sharing script not found');
+  const posts = [];
+  const helpers = {
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    currentConfig: config,
+    fedFetch: (url, options) => {
+      posts.push({ url, body: JSON.parse(options.body) });
+      return Promise.resolve({ json: () => Promise.resolve({ success: true, message: 'Saved.' }) });
+    }
+  };
+  const api = new Function(...Object.keys(helpers),
+    'var pendingFriendSharing = {};\n' + block[1] + '\nreturn { renderFriendSharingBlock, saveFriendSharing, pending: () => pendingFriendSharing };')(...Object.values(helpers));
+  return { api, posts };
+}
+
+test('friends they can see: all by default, lists only friends that can be introduced', () => {
+  const servers = [
+    { Id: 'a', Name: 'Asker', Kind: 0 },
+    { Id: 'b', Name: 'Bea <i>', Kind: 0 },
+    { Id: 'c', Name: 'Off', Kind: 0, Enabled: false },
+    { Id: 'd', Name: 'Paired', Kind: 0, Paired: true },
+    { Id: 'p', Name: 'Plex', Kind: 1 },
+    { Id: 'm', Name: 'Companion', Kind: 2 }
+  ];
+  const { api } = friendSharingApi({ AllowFriendsOfFriends: true, RemoteServers: servers });
+  const host = new JSDOM('<div id="x"></div>').window.document.getElementById('x');
+  host.innerHTML = api.renderFriendSharingBlock(servers[0]);
+  assert.equal(host.querySelector('.fedFriendSharingAll').checked, true);
+  assert.equal(host.querySelector('.fedFriendSharingList').style.display, 'none');
+  assert.deepEqual([...host.querySelectorAll('.fedFriendSharingFriend')].map((c) => c.getAttribute('data-friend')), ['b']);
+  assert.equal(host.querySelector('i'), null);
+  assert.match(host.textContent, /Bea <i>/);
+  assert.doesNotMatch(host.textContent, /is off/);
+
+  host.innerHTML = api.renderFriendSharingBlock({ Id: 'b', ShareAllFriends: false, SharedFriendIds: ['a'] });
+  assert.equal(host.querySelector('.fedFriendSharingAll').checked, false);
+  assert.deepEqual([...host.querySelectorAll('.fedFriendSharingFriend:checked')].map((c) => c.getAttribute('data-friend')), ['a']);
+});
+
+test('friends they can see says when friends-of-friends is off, and saves the selection', async () => {
+  const { api, posts } = friendSharingApi({ AllowFriendsOfFriends: false, RemoteServers: [{ Id: 'a', Kind: 0 }] });
+  const html = api.renderFriendSharingBlock({ Id: 'a', ShareAllFriends: false, SharedFriendIds: [] });
+  assert.match(html, /Friends-of-friends is off/);
+  assert.match(html, /no other friends to show/);
+  api.saveFriendSharing('a');
+  await settle();
+  assert.equal(posts[0].url, '/Plugins/Federation/Friends/a/FriendSharing');
+  assert.deepEqual(posts[0].body, { ShareAll: false, FriendIds: [] });
+  assert.equal(api.pending().a, undefined);
+});
+
 test('Beta tab sits before Advanced and holds the pairing card, off by default', () => {
   assert.ok(configPage.indexOf('id="fedTabBeta"') > 0);
   assert.ok(configPage.indexOf('id="fedTabBeta"') < configPage.indexOf('id="fedTabAdvanced"'));
