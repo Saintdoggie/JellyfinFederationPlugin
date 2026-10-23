@@ -1135,8 +1135,9 @@
                                 <p class="fieldDescription">Friends see the titles only, never who favorited them, and only titles you already share with that viewer. Titles you get from other friends are never included.</p>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsPopular" class="emby-checkbox fed-check" /> Show what's popular on friends' servers on my Home tab</label>
                                 <p class="fieldDescription">Adds a "Popular on (friend)" row per friend, with the titles most played there in the last 30 days. Each viewer only sees titles they can already open here.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkSharePopularWithFriends" class="emby-checkbox fed-check" /> Share what's popular here with friends</label>
-                                <p class="fieldDescription">Friends see which of your titles your users played most in the last 30 days, as counts only, never who played them, and only titles you already share with that viewer. Taken from Jellyfin's own watch history; nothing extra is recorded.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkSharePopularWithFriends" class="emby-checkbox fed-check" /> Share what's popular here with friends (default for each friend)</label>
+                                <p class="fieldDescription">Friends see which of your titles your users played most in the last 30 days, as counts only, never who played them, and only titles you already share with that viewer. Taken from Jellyfin's own watch history; nothing extra is recorded. On a server with only a few users this still shows what those people watch, so it is off unless you turn it on. Below you can choose differently for single friends.</p>
+                                <div id="fedPopularFriendChoices" style="margin:.4em 0 .8em;"></div>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-favorites">Save favorites settings</button>
                                 <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
                                 <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
@@ -1153,9 +1154,12 @@
                             <div class="fed-subcard" id="fedViewersCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Who is watching across friends</h4>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsViewers" class="emby-checkbox fed-check" /> Show friends' viewers on my dashboard</label>
-                                <p class="fieldDescription">When someone on a friend's server watches one of your titles, it shows under Active devices like a viewer connected to you: the title, how far in, paused or playing, and how it plays. They appear as "name (friend)" and nothing is added to your users' watch history.</p>
+                                <p class="fieldDescription">When someone on a friend's server watches one of your titles, it shows under Active devices like a viewer connected to you: the title, how far in, paused or playing, and how it plays. They appear as "name (friend)", or "Someone (friend)" when that friend keeps names private, and nothing is added to your users' watch history.</p>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkShareViewersWithFriends" class="emby-checkbox fed-check" /> Tell friends what my viewers watch of theirs</label>
-                                <p class="fieldDescription">Sends the viewer's name, device, position and pause state to the friend whose title it is, so it shows on their dashboard. Nothing is sent about your own titles.</p>
+                                <p class="fieldDescription">Sends the position and pause state to the friend whose title it is, so it shows on their dashboard as "Someone (this server)". Nothing is sent about your own titles.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareViewerNames" class="emby-checkbox fed-check" /> Include my viewers' names and devices (default for each friend)</label>
+                                <p class="fieldDescription">Off by default: friends see that someone watches, not who. Below you can choose differently for single friends.</p>
+                                <div id="fedViewerNameFriendChoices" style="margin:.4em 0 .8em;"></div>
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-viewers">Save viewer settings</button>
                                 <div class="fed-srvstatus" id="fedViewersStatus" style="display:none;"></div>
                             </div>
@@ -2139,6 +2143,42 @@
                         } catch (e) { /* the text is selected; the admin can copy by hand */ }
                     }
 
+                    // Per-friend choice for a sharing setting: follow the default
+                    // (null), or on/off for this friend only.
+                    function renderFriendChoices(hostId, friends, field, defaultOn, onLabel, offLabel) {
+                        var host = q('#' + hostId);
+                        if (!host) {
+                            return;
+                        }
+
+                        if (!friends || friends.length === 0) {
+                            host.innerHTML = '';
+                            return;
+                        }
+
+                        host.innerHTML = friends.map(function (f) {
+                            var value = f[field] === true ? 'on' : f[field] === false ? 'off' : 'default';
+                            return '<div class="fed-inline" style="align-items:center;">'
+                                + '<span class="fed-grow">' + escapeHtml(f.Name || f.Id) + '</span>'
+                                + '<select is="emby-select" class="emby-select fed-input fedFriendChoice" data-id="' + escapeHtml(f.Id) + '" style="max-width:16em;">'
+                                + '<option value="default"' + (value === 'default' ? ' selected' : '') + '>Default (' + (defaultOn ? escapeHtml(onLabel) : escapeHtml(offLabel)) + ')</option>'
+                                + '<option value="on"' + (value === 'on' ? ' selected' : '') + '>' + escapeHtml(onLabel) + '</option>'
+                                + '<option value="off"' + (value === 'off' ? ' selected' : '') + '>' + escapeHtml(offLabel) + '</option>'
+                                + '</select></div>';
+                        }).join('');
+                    }
+
+                    function readFriendChoices(hostId) {
+                        var host = q('#' + hostId);
+                        if (!host) {
+                            return null;
+                        }
+
+                        return Array.prototype.slice.call(host.querySelectorAll('.fedFriendChoice')).map(function (sel) {
+                            return { Id: sel.getAttribute('data-id'), Share: sel.value === 'on' ? true : sel.value === 'off' ? false : null };
+                        });
+                    }
+
                     function loadFavoritesSettings() {
                         fedFetch('/Plugins/Federation/Settings/Favorites')
                         .then(function (r) { return readJson(r); })
@@ -2147,7 +2187,8 @@
                             q('#fedChkShowFriendsFavorites').checked = res.ShowFriendsFavorites !== false;
                             q('#fedChkShareFavoritesWithFriends').checked = res.ShareFavoritesWithFriends !== false;
                             q('#fedChkShowFriendsPopular').checked = res.ShowFriendsPopular !== false;
-                            q('#fedChkSharePopularWithFriends').checked = res.SharePopularWithFriends !== false;
+                            q('#fedChkSharePopularWithFriends').checked = res.SharePopularWithFriends === true;
+                            renderFriendChoices('fedPopularFriendChoices', res.Friends, 'SharePopular', res.SharePopularWithFriends === true, 'Share', "Don't share");
                             var lines = (res.Friends || []).map(function (f) {
                                 var favorites = f.SharesFavorites === true ? 'shares its favorites'
                                     : f.SharesFavorites === false ? 'doesn\'t share its favorites'
@@ -2195,6 +2236,8 @@
                             if (!res) { return; }
                             q('#fedChkShowFriendsViewers').checked = res.ShowFriendsViewers !== false;
                             q('#fedChkShareViewersWithFriends').checked = res.ShareViewersWithFriends !== false;
+                            q('#fedChkShareViewerNames').checked = res.ShareViewerNamesWithFriends === true;
+                            renderFriendChoices('fedViewerNameFriendChoices', res.Friends, 'ShareViewerNames', res.ShareViewerNamesWithFriends === true, 'With names', 'Without names');
                         })
                         .catch(function () { /* older server or offline; the card keeps its defaults */ });
                     }
@@ -2205,7 +2248,9 @@
                             method: 'POST',
                             body: JSON.stringify({
                                 ShowFriendsViewers: q('#fedChkShowFriendsViewers').checked,
-                                ShareViewersWithFriends: q('#fedChkShareViewersWithFriends').checked
+                                ShareViewersWithFriends: q('#fedChkShareViewersWithFriends').checked,
+                                ShareViewerNamesWithFriends: q('#fedChkShareViewerNames').checked,
+                                ViewerNameFriends: readFriendChoices('fedViewerNameFriendChoices')
                             })
                         })
                         .then(function (r) { return readJson(r); })
@@ -2289,7 +2334,8 @@
                                 ShowFriendsFavorites: q('#fedChkShowFriendsFavorites').checked,
                                 ShareFavoritesWithFriends: q('#fedChkShareFavoritesWithFriends').checked,
                                 ShowFriendsPopular: q('#fedChkShowFriendsPopular').checked,
-                                SharePopularWithFriends: q('#fedChkSharePopularWithFriends').checked
+                                SharePopularWithFriends: q('#fedChkSharePopularWithFriends').checked,
+                                PopularFriends: readFriendChoices('fedPopularFriendChoices')
                             })
                         })
                         .then(function (r) { return readJson(r); })

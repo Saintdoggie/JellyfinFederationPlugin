@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace Jellyfin.Plugin.Federation.Services
@@ -66,9 +67,18 @@ namespace Jellyfin.Plugin.Federation.Services
         /// when this friend never started it.
         /// </summary>
         public bool TryGetForLog(string friendFederationId, string playSessionId, out Guid itemId, out DateTime startedUtc)
+            => TryGetForLog(friendFederationId, playSessionId, out itemId, out startedUtc, out _);
+
+        /// <summary>
+        /// Same, with the conversions Jellyfin ran for this session
+        /// (<see cref="RememberConversion"/>): the output files whose names mark
+        /// this session's ffmpeg logs.
+        /// </summary>
+        public bool TryGetForLog(string friendFederationId, string playSessionId, out Guid itemId, out DateTime startedUtc, out IReadOnlyCollection<string> conversions)
         {
             itemId = Guid.Empty;
             startedUtc = default;
+            conversions = Array.Empty<string>();
             if (!_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) || entry.ItemId == Guid.Empty)
             {
                 return false;
@@ -76,7 +86,34 @@ namespace Jellyfin.Plugin.Federation.Services
 
             itemId = entry.ItemId;
             startedUtc = entry.StartedUtc;
+            lock (entry.Conversions)
+            {
+                conversions = entry.Conversions.ToArray();
+            }
+
             return true;
+        }
+
+        /// <summary>
+        /// Remembers the output file of a conversion Jellyfin runs for a known
+        /// session, so only that session's logs are shared later. Ignored for a
+        /// session this friend did not start.
+        /// </summary>
+        public void RememberConversion(string friendFederationId, string playSessionId, string? outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)
+                || !_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry))
+            {
+                return;
+            }
+
+            lock (entry.Conversions)
+            {
+                if (entry.Conversions.Count < 16)
+                {
+                    entry.Conversions.Add(outputPath);
+                }
+            }
         }
 
         /// <summary>Marks a known session as alive (a pause ping). False when unknown.</summary>
@@ -141,6 +178,8 @@ namespace Jellyfin.Plugin.Federation.Services
             public Guid ItemId { get; set; }
 
             public bool Ended { get; set; }
+
+            public HashSet<string> Conversions { get; } = new(StringComparer.Ordinal);
         }
     }
 }

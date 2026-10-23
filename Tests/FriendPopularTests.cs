@@ -36,6 +36,12 @@ public class FriendPopularTests : IDisposable
     private readonly Mock<IUserManager> _users = new();
     private readonly Mock<IUserDataManager> _userData = new();
 
+    public FriendPopularTests()
+    {
+        // Off on new installs; these owner tests share by default unless they say otherwise.
+        _plugin.Configuration.SharePopularWithFriends = true;
+    }
+
     public void Dispose() => _plugin.Dispose();
 
     private static User NewUser(string name, bool disabled = false)
@@ -197,10 +203,10 @@ public class FriendPopularTests : IDisposable
     }
 
     [Fact]
-    public void Settings_DefaultOn()
+    public void Settings_ShowOnSharingOff_ByDefault()
     {
         var config = new PluginConfiguration();
-        Assert.True(config.SharePopularWithFriends);
+        Assert.False(config.SharePopularWithFriends);
         Assert.True(config.ShowFriendsPopular);
     }
 
