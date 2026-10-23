@@ -363,6 +363,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.DirectLinkMode = oldServer.DirectLinkMode;
                         server.PeerAllowsDownloads = oldServer.PeerAllowsDownloads;
                         server.PeerSharesFavorites = oldServer.PeerSharesFavorites;
+                        server.ShareAllFriends = oldServer.ShareAllFriends;
+                        server.SharedFriendIds = oldServer.SharedFriendIds;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -1383,13 +1385,15 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Server-to-server: a friend asking (using the federation token we gave
         /// them) who our other friends are, for friends-of-friends discovery.
         /// Gated on AllowFriendsOfFriends and a valid federation token - see
-        /// <see cref="FederationTokenAuth"/>.
+        /// <see cref="FederationTokenAuth"/> - and lists only the friends this
+        /// caller may see (<see cref="FederationPeerAccessService.IsFriendVisible"/>).
         /// </summary>
         [HttpGet("Friends/List")]
         [AllowAnonymous]
         public IActionResult GetFriendsList()
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
@@ -1401,7 +1405,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var friends = (config.RemoteServers ?? new List<RemoteServer>())
-                .Where(s => s.Enabled)
+                .Where(s => FederationPeerAccessService.IsFriendVisible(caller, s))
                 .Select(s => new { name = s.Name, url = s.Url });
             return Ok(new { allowsIntroductions = true, friends });
         }
@@ -1524,6 +1528,32 @@ namespace Jellyfin.Plugin.Federation.Api
             server.MonthlyDataCapGb = body.MonthlyDataCapGb;
             Plugin.Instance!.SaveConfiguration();
             return Ok(new { success = true, message = "Limits saved." });
+        }
+
+        /// <summary>
+        /// Admin-triggered: which of this server's other friends a friend may see
+        /// for friends-of-friends discovery. Enforced by <see cref="GetFriendsList"/>;
+        /// nothing is pushed to the friend.
+        /// </summary>
+        [HttpPost("Friends/{id}/FriendSharing")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendFriendSharing(string id, [FromBody] FriendSharingBody? body)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            var known = config.RemoteServers.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+            server.ShareAllFriends = body?.ShareAll ?? true;
+            server.SharedFriendIds = (body?.FriendIds ?? new List<string>())
+                .Where(f => known.Contains(f) && f != server.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved." });
         }
 
         /// <summary>Admin: the remote-transcode handoff settings, both directions.</summary>
@@ -6967,6 +6997,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.MonthlyDataCapGb,
                 s.MaxConcurrentStreams,
                 s.DirectLinkMode,
+                s.ShareAllFriends,
+                s.SharedFriendIds,
                 DataUsedThisMonthBytes = limits?.UsedThisMonth(s.FederationId ?? string.Empty) ?? 0,
                 ActiveStreams = limits?.ActiveStreams(s.FederationId ?? string.Empty) ?? 0,
                 RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
@@ -7333,5 +7365,12 @@ namespace Jellyfin.Plugin.Federation.Api
         public bool AllowDownloads { get; set; } = true;
 
         public bool AllowBulkDownloads { get; set; } = false;
+    }
+
+    public class FriendSharingBody
+    {
+        public bool ShareAll { get; set; } = true;
+
+        public List<string>? FriendIds { get; set; }
     }
 }

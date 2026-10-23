@@ -326,6 +326,27 @@ namespace Jellyfin.Plugin.Federation.Services
             return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// Whether <paramref name="caller"/> may learn about this server's other
+        /// friend <paramref name="other"/> through <c>Friends/List</c>. Only
+        /// enabled Jellyfin friends with an address of their own can be
+        /// introduced: a Plex server or Companion cannot accept a friend request,
+        /// and a paired friend's address is only its link. Never the caller itself.
+        /// </summary>
+        public static bool IsFriendVisible(RemoteServer caller, RemoteServer other)
+        {
+            if (!other.Enabled
+                || other.Kind != ServerKind.Jellyfin
+                || other.Paired
+                || string.Equals(other.Id, caller.Id, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return caller.ShareAllFriends
+                || (caller.SharedFriendIds ?? new System.Collections.Generic.List<string>()).Contains(other.Id, StringComparer.Ordinal);
+        }
+
         private static RemoteUserAccessRule? FindRule(RemoteServer caller, string? remoteUserId)
         {
             if (string.IsNullOrEmpty(remoteUserId))

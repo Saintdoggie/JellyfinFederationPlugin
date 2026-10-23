@@ -1004,6 +1004,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// </summary>
         public bool Paired { get; set; }
 
+        /// <summary>
+        /// Gets or sets a value indicating whether this friend may see all of this
+        /// server's other friends in <c>Friends/List</c> (friends-of-friends,
+        /// which <see cref="PluginConfiguration.AllowFriendsOfFriends"/> must turn
+        /// on first). True by default, also for friends made before this setting
+        /// existed. When false, only <see cref="SharedFriendIds"/> are listed.
+        /// Managed by <c>Friends/{id}/FriendSharing</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareAllFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the ids (<see cref="Id"/>) of this server's other friends
+        /// this friend may see when <see cref="ShareAllFriends"/> is false.
+        /// </summary>
+        public List<string> SharedFriendIds { get; set; } = new List<string>();
+
         /// <summary>Gets or sets the 64-bit pairing id (16 hex digits) in this friend's link address.</summary>
         public string PairingId { get; set; } = string.Empty;
 
