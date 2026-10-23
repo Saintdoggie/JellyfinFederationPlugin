@@ -827,6 +827,23 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> ExcludedItemIds { get; set; } = new List<string>();
 
         /// <summary>
+        /// Gets or sets when everything shared with this friend stops being
+        /// shared (UTC), or null to share without an end date. After it the
+        /// friend sees nothing of this server's libraries, as if blocked;
+        /// enforced at request and stream time by
+        /// <see cref="Services.FederationPeerAccessService"/>. Managed by
+        /// <c>Friends/{id}/Expiry</c>, preserved by the main Save.
+        /// </summary>
+        public DateTime? SharingExpiresUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets end dates for individual shared libraries. An expired
+        /// library is no longer visible to this friend even when
+        /// <see cref="ShareAllLibraries"/> is on.
+        /// </summary>
+        public List<LibraryShareExpiry> LibraryShareExpiries { get; set; } = new List<LibraryShareExpiry>();
+
+        /// <summary>
         /// Gets or sets a value indicating whether this server is enabled.
         /// </summary>
         public bool Enabled { get; set; } = true;
@@ -1119,6 +1136,19 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// allows.
         /// </summary>
         Blocked = 3
+    }
+
+    /// <summary>
+    /// End date for sharing one library with a friend. A list entry rather
+    /// than a dictionary: the plugin configuration is XML-serialized.
+    /// </summary>
+    public class LibraryShareExpiry
+    {
+        /// <summary>Gets or sets the library folder id (same id space as <see cref="RemoteServer.SharedLibraryFolderIds"/>).</summary>
+        public string FolderId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets when sharing this library ends (UTC).</summary>
+        public DateTime ExpiresUtc { get; set; }
     }
 
     /// <summary>

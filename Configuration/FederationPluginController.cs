@@ -30,7 +30,7 @@ namespace Jellyfin.Plugin.Federation.Api
     /// </summary>
     [ApiController]
     [Route("Plugins/Federation")]
-    public class FederationController : ControllerBase
+    public partial class FederationController : ControllerBase
     {
         /// <summary>
         /// The first plugin version whose Peer/* endpoints accept a scoped
@@ -357,6 +357,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
                         server.AllowDownloads = oldServer.AllowDownloads;
                         server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
+                        server.SharingExpiresUtc = oldServer.SharingExpiresUtc;
+                        server.LibraryShareExpiries = oldServer.LibraryShareExpiries;
                         server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
                         server.MonthlyDataCapGb = oldServer.MonthlyDataCapGb;
                         server.MaxConcurrentStreams = oldServer.MaxConcurrentStreams;
@@ -6963,6 +6965,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 s.ExcludedItemIds,
                 s.AllowDownloads,
                 s.AllowBulkDownloads,
+                s.SharingExpiresUtc,
+                s.LibraryShareExpiries,
                 s.AllowRemoteTranscode,
                 s.MonthlyDataCapGb,
                 s.MaxConcurrentStreams,
