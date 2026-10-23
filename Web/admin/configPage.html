@@ -1026,7 +1026,8 @@
                     <div class="verticalSection" id="fedPairingCard">
                         <h3 class="sectionTitle">Pairing codes (Beta) <span class="fed-pill fed-pill-off">Beta</span></h3>
                         <p class="fieldDescription">For friends whose server can't be reached from the internet (no port forwarding, no VPS, no Tailscale). You and your friend swap two codes. After that, the two servers talk over an encrypted direct connection. Your friend's server will see your home's internet address, and the code itself contains it, so only send a code to the friend. <strong>Off by default.</strong> While it is off, no pairing port is open.</p>
-                        <label class="fed-check-label"><input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" /> Allow pairing codes (beta; shares this home's internet address with friends you pair with)</label>
+                        <label class="fed-check-label"><input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" disabled title="Pairing codes are disabled in this build while the feature is under review." /> Allow pairing codes (temporarily unavailable while under review)</label>
+                        <p class="fieldDescription"><strong>Disabled in this build.</strong> Pairing codes are being reviewed and cannot be turned on right now. Paired friends are kept, but their links stay off until pairing is re-enabled. Direct links are not affected.</p>
                         <div class="fed-inline">
                             <div class="inputContainer">
                                 <label class="inputLabel" for="fedPairPortFirst">First port</label>
@@ -1043,7 +1044,7 @@
                         <p class="fed-hint" id="fedPairingSummary"></p>
 
                         <h4 class="fed-subhead">1. Make a pairing code</h4>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-make">Make a pairing code</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-make" disabled>Make a pairing code</button>
                         <div class="fed-srvstatus" id="fedPairingMakeStatus" style="display:none;"></div>
                         <div id="fedPairingOfferBox" style="display:none;">
                             <textarea id="fedPairingOfferCode" class="fed-pair-code" rows="4" readonly spellcheck="false"></textarea>
@@ -1055,7 +1056,7 @@
 
                         <h4 class="fed-subhead">2. Enter your friend's code</h4>
                         <textarea id="fedPairingAnswerInput" class="fed-pair-code" rows="3" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Paste your friend's code here"></textarea>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-answer">Make an answer code</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-answer" disabled>Make an answer code</button>
                         <div class="fed-srvstatus" id="fedPairingAnswerStatus" style="display:none;"></div>
                         <div id="fedPairingAnswerBox" style="display:none;">
                             <textarea id="fedPairingAnswerCode" class="fed-pair-code" rows="4" readonly spellcheck="false"></textarea>
@@ -1065,7 +1066,7 @@
 
                         <h4 class="fed-subhead">3. Enter your friend's answer</h4>
                         <textarea id="fedPairingCompleteInput" class="fed-pair-code" rows="3" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Paste your friend's answer code here"></textarea>
-                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-complete">Finish pairing</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-fed-action="pairing-complete" disabled>Finish pairing</button>
                         <div class="fed-srvstatus" id="fedPairingCompleteStatus" style="display:none;"></div>
 
                         <h4 class="fed-subhead">Paired friends</h4>
