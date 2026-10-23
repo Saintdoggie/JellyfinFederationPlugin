@@ -35,6 +35,17 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <summary>Most paired friends.</summary>
         public const int MaxPairedFriends = 50;
 
+        /// <summary>
+        /// Build gate for the Beta review: while true, pairing codes cannot be turned
+        /// on, no pairing port opens, and any saved <see cref="PluginConfiguration.PairingOptIn"/>
+        /// is ignored. Paired-friend records are kept, so flipping this back to false
+        /// restores them. Direct links are deliberately not affected.
+        /// </summary>
+        public const bool ReviewLocked = true;
+
+        /// <summary>The message shown wherever the review gate blocks pairing.</summary>
+        public const string ReviewLockedMessage = "Pairing codes are disabled in this build while the feature is under review.";
+
         internal const string CertificateFolder = "pairing";
 
         private static readonly TimeSpan ListenWindow = TimeSpan.FromSeconds(10);
@@ -75,6 +86,21 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private static bool AllowPrivateForTests => Environment.GetEnvironmentVariable("FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE") == "1";
 
         private static PluginConfiguration? Config => Plugin.Instance?.Configuration;
+
+        /// <summary>
+        /// Whether pairing may run, after both the admin's opt-in and the build's
+        /// review gate. Used for every route, the supervisor and the status page so
+        /// a stale saved <c>PairingOptIn=true</c> cannot bypass the gate.
+        /// </summary>
+        /// <param name="config">The plugin configuration, or null.</param>
+        /// <returns>True only when pairing is opted in and not review-locked.</returns>
+        internal static bool IsEnabled(PluginConfiguration? config) => IsEnabled(config?.PairingOptIn == true, ReviewLocked);
+
+        /// <summary>Pure form of <see cref="IsEnabled(PluginConfiguration?)"/> (tests).</summary>
+        /// <param name="configuredOn">The saved admin opt-in.</param>
+        /// <param name="reviewLocked">The build's review gate.</param>
+        /// <returns>True only when both allow pairing.</returns>
+        internal static bool IsEnabled(bool configuredOn, bool reviewLocked) => configuredOn && !reviewLocked;
 
         /// <inheritdoc />
         public Task StartAsync(CancellationToken cancellationToken)
@@ -134,9 +160,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         public async Task<(string? Code, DateTimeOffset Expires, string? Error)> CreateOfferAsync(CancellationToken cancellationToken)
         {
             var config = Config;
-            if (config?.PairingOptIn != true)
+            if (!IsEnabled(config))
             {
-                return (null, default, "Pairing codes are switched off on the Beta tab.");
+                return (null, default, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
             }
 
             if (!QuicTransportHost.Available)
@@ -150,7 +176,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 return (null, default, "This server already has " + MaxPendingOffers + " unused codes. Cancel one or wait for them to expire.");
             }
 
-            if (config.RemoteServers.Count(s => s.Paired) >= MaxPairedFriends)
+            if (config!.RemoteServers.Count(s => s.Paired) >= MaxPairedFriends)
             {
                 return (null, default, "This server has the most paired friends it allows.");
             }
@@ -220,9 +246,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         public async Task<(string? Answer, string? FriendId, string? Error)> AnswerOfferAsync(string offerText, CancellationToken cancellationToken)
         {
             var config = Config;
-            if (config?.PairingOptIn != true)
+            if (!IsEnabled(config))
             {
-                return (null, null, "Pairing codes are switched off on the Beta tab.");
+                return (null, null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
             }
 
             if (!QuicTransportHost.Available)
@@ -248,7 +274,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 return (null, null, "The code has no internet address this server may send to.");
             }
 
-            if (config.RemoteServers.Count(s => s.Paired) >= MaxPairedFriends)
+            if (config!.RemoteServers.Count(s => s.Paired) >= MaxPairedFriends)
             {
                 return (null, null, "This server has the most paired friends it allows.");
             }
@@ -321,9 +347,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <returns>The new (not yet confirmed) friend's id, or an error.</returns>
         public (string? FriendId, string? Error) CompleteOffer(string answerText)
         {
-            if (Config?.PairingOptIn != true)
+            if (!IsEnabled(Config))
             {
-                return (null, "Pairing codes are switched off on the Beta tab.");
+                return (null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
             }
 
             var hash = PairingCode.PeekOfferHash(answerText);
@@ -411,9 +437,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var config = Config;
             return new PairingStatus
             {
-                Enabled = config?.PairingOptIn == true,
-                Available = QuicTransportHost.Available,
-                Reason = QuicTransportHost.Reason,
+                Enabled = IsEnabled(config),
+                Available = !ReviewLocked && QuicTransportHost.Available,
+                Reason = ReviewLocked ? ReviewLockedMessage : QuicTransportHost.Reason,
                 PortFirst = config?.PairingPortFirst ?? 0,
                 PortLast = config?.PairingPortLast ?? 0,
                 PendingCodes = _offers.Select(o => new PendingCodeStatus { Id = o.Key, Expires = o.Value.Offer.Expires, Port = o.Value.Port }).ToList(),
@@ -578,8 +604,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         {
             PruneOffers();
             var config = Config;
-            var wanted = config?.PairingOptIn == true && QuicTransportHost.Available
-                ? config.RemoteServers.Where(s => s.Paired && s.Enabled).ToDictionary(s => s.Id, StringComparer.Ordinal)
+            var wanted = IsEnabled(config) && QuicTransportHost.Available
+                ? config!.RemoteServers.Where(s => s.Paired && s.Enabled).ToDictionary(s => s.Id, StringComparer.Ordinal)
                 : new Dictionary<string, RemoteServer>(StringComparer.Ordinal);
             foreach (var (id, runtime) in _friends.ToList())
             {

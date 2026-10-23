@@ -38,7 +38,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public IActionResult GetSettings()
         {
             var config = Plugin.Instance!.Configuration;
-            return Ok(new PairingSettingsBody { EnablePairing = config.PairingOptIn, PortFirst = config.PairingPortFirst, PortLast = config.PairingPortLast });
+            return Ok(new PairingSettingsBody { EnablePairing = PairingService.IsEnabled(config), PortFirst = config.PairingPortFirst, PortLast = config.PairingPortLast });
         }
 
         /// <summary>Admin: saves the pairing settings.</summary>
@@ -51,6 +51,11 @@ namespace Jellyfin.Plugin.Federation.Configuration
             if (body == null || body.PortFirst < 1024 || body.PortLast > 65535 || body.PortLast < body.PortFirst || body.PortLast - body.PortFirst > 1000)
             {
                 return BadRequest(new { success = false, message = "Use a port range between 1024 and 65535, at most 1000 ports wide." });
+            }
+
+            if (body.EnablePairing && PairingService.ReviewLocked)
+            {
+                return BadRequest(new { success = false, message = PairingService.ReviewLockedMessage });
             }
 
             var config = Plugin.Instance!.Configuration;
