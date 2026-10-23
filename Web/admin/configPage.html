@@ -172,6 +172,8 @@
                 #federationConfigPage .fed-pill { font-size: 0.85em; line-height: 1.4; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
                 #federationConfigPage .fed-pill-off { color: var(--fed-warn-text); opacity: 1; }
                 #federationConfigPage .fed-pill-pool { margin: 0 0.7em 0.3em 0; display: inline-block; }
+                #federationConfigPage .fed-preview-list { margin: 0.2em 0 0.6em; padding-left: 1.2em; }
+                #federationConfigPage .fed-preview-list li { margin: 0.15em 0; overflow-wrap: anywhere; }
 
                 /* Per-friend management panel: a plain toggled block one level below
                    the friend row, with sharing and pools shown directly - only the
@@ -1379,6 +1381,9 @@
                     // access override picker below the sharing block.
                     var remoteUsersCache = {};
 
+                    // Loaded "what does this friend see" previews, keyed by server.Id.
+                    var friendPreviews = {};
+
                     // Which per-remote-user override editor is currently open, keyed
                     // by "<serverId>::<remoteUserId>".
                     var expandedUserRuleEditors = {};
@@ -1707,13 +1712,32 @@
                             // re-searched - same tradeoff pendingUserRuleEdits makes
                             // for RemoteUserAccessRule.ItemIds, for the same reason
                             // (no second round trip just to look up names already known).
-                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; })
+                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; }),
+                            Until: isoToDateInput(server.SharingExpiresUtc),
+                            LibraryUntil: (server.LibraryShareExpiries || []).reduce(function (acc, e) { acc[e.FolderId] = isoToDateInput(e.ExpiresUtc); return acc; }, {})
                         };
                         pendingSharing[server.Id] = pending;
+                        pending.LibraryUntil = pending.LibraryUntil || {};
 
                         var html = '<div class="fed-subcard">';
                         html += '<h4 class="fed-subhead">What ' + escapeHtml(server.Name || server.Url) + ' can see of my library</h4>';
+                        html += '<div class="fed-inline" style="margin-bottom:0.5em;">';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="preview-friend" data-id="' + escapeHtml(server.Id) + '">' + (friendPreviews[server.Id] ? 'Hide preview' : 'Preview what they see') + '</button>';
+                        html += '</div>';
+                        if (friendPreviews[server.Id]) {
+                            html += renderFriendPreview(friendPreviews[server.Id]);
+                        }
+
                         html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingAll" data-id="' + escapeHtml(server.Id) + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Share everything</label>';
+                        html += '<div class="fed-inline" style="margin:0.3em 0;">';
+                        html += '<label class="fed-label" for="fedSharingUntil-' + escapeHtml(server.Id) + '">Share until (optional)</label>';
+                        html += '<input type="date" id="fedSharingUntil-' + escapeHtml(server.Id) + '" class="emby-input fed-input fedSharingUntil" data-id="' + escapeHtml(server.Id) + '" value="' + escapeHtml(pending.Until || '') + '" style="max-width:12em;" />';
+                        html += '</div>';
+                        if (server.SharingExpiresUtc && new Date(server.SharingExpiresUtc).getTime() <= Date.now()) {
+                            html += '<p class="fed-hint fed-danger">Sharing with this friend ended on ' + escapeHtml(formatShareDate(server.SharingExpiresUtc)) + '. They see none of your libraries until you change or clear the date.</p>';
+                        } else {
+                            html += '<p class="fed-hint" style="margin-top:0;">After this day they see none of your libraries, as if blocked. Leave empty to share without an end date.</p>';
+                        }
 
                         // Enforced entirely by this plugin's own code on every
                         // request from this friend (see FederationPeerAccessService)
@@ -1727,11 +1751,14 @@
                         } else {
                             localLibrariesCache.forEach(function (lib) {
                                 var checked = pending.FolderIds.indexOf(lib.id) !== -1;
+                                html += '<div class="fed-inline">';
                                 html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingLib" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                                html += '<input type="date" class="emby-input fed-input fedLibUntil" aria-label="Share ' + escapeHtml(lib.name) + ' until" title="Share until (optional)" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" value="' + escapeHtml(pending.LibraryUntil[lib.id] || '') + '" style="max-width:12em;" />';
+                                html += '</div>';
                             });
                         }
 
-                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend.</p>';
+                        html += '<p class="fed-hint" style="margin-top:0.5em;">Unchecked libraries are invisible to this friend. A date next to a library ends sharing it after that day.</p>';
                         html += '</div>';
 
                         if (server.Kind !== 1) {
@@ -1843,12 +1870,136 @@
                         })
                         .then(function (r) { return readJson(r); })
                         .then(function (res) {
+                            if (!res.success) {
+                                return res;
+                            }
+
+                            var libraryExpiries = Object.keys(pending.LibraryUntil || {})
+                                .filter(function (lib) { return !!pending.LibraryUntil[lib]; })
+                                .map(function (lib) { return { FolderId: lib, ExpiresUtc: dateInputToIso(pending.LibraryUntil[lib]) }; });
+                            return fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Expiry', {
+                                method: 'POST',
+                                body: JSON.stringify({ ExpiresUtc: dateInputToIso(pending.Until), LibraryExpiries: libraryExpiries })
+                            })
+                            .then(function (r) { return readJson(r); })
+                            .then(function (expiryRes) { return expiryRes.success ? res : expiryRes; });
+                        })
+                        .then(function (res) {
                             setSharingStatus(serverId, res.message, res.success ? 'ok' : 'err');
                             if (res.success) {
+                                delete friendPreviews[serverId];
                                 return loadConfiguration(true);
                             }
                         })
                         .catch(function (e) { setSharingStatus(serverId, 'Failed: ' + e.message, 'err'); });
+                    }
+
+                    // Date inputs hold local days; the server stores the end of
+                    // that day as UTC.
+                    function isoToDateInput(iso) {
+                        if (!iso) {
+                            return '';
+                        }
+
+                        var d = new Date(iso);
+                        if (isNaN(d.getTime())) {
+                            return '';
+                        }
+
+                        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+                        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+                    }
+
+                    function dateInputToIso(value) {
+                        if (!value) {
+                            return null;
+                        }
+
+                        var d = new Date(value + 'T23:59:59');
+                        return isNaN(d.getTime()) ? null : d.toISOString();
+                    }
+
+                    function formatShareDate(iso) {
+                        var d = new Date(iso);
+                        return isNaN(d.getTime()) ? '' : d.toLocaleDateString();
+                    }
+
+                    function togglePreview(serverId) {
+                        if (friendPreviews[serverId]) {
+                            delete friendPreviews[serverId];
+                            renderFriends();
+                            return;
+                        }
+
+                        friendPreviews[serverId] = { loading: true };
+                        renderFriends();
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Preview')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) { friendPreviews[serverId] = res || { error: 'No answer.' }; renderFriends(); })
+                        .catch(function (e) { friendPreviews[serverId] = { error: e.message }; renderFriends(); });
+                    }
+
+                    // What one friend currently gets, as the server computes it
+                    // for their requests (Friends/{id}/Preview).
+                    function renderFriendPreview(p) {
+                        var html = '<div class="fed-subcard fed-preview" style="margin-bottom:0.8em;">';
+                        if (p.loading) {
+                            return html + '<p class="fed-muted">Checking what they see…</p></div>';
+                        }
+
+                        if (p.error || !p.success) {
+                            return html + '<p class="fed-muted">Could not build the preview: ' + escapeHtml(p.error || p.message || 'unknown error') + '</p></div>';
+                        }
+
+                        html += '<h4 class="fed-subhead">What ' + escapeHtml(p.name || 'they') + ' sees right now</h4>';
+                        if (p.expired) {
+                            html += '<p class="fed-hint fed-danger">Sharing ended on ' + escapeHtml(formatShareDate(p.expiresUtc)) + ': they see none of your libraries.</p>';
+                        } else if (p.expiresUtc) {
+                            html += '<p class="fed-hint">Your libraries stay shared until ' + escapeHtml(formatShareDate(p.expiresUtc)) + '.</p>';
+                        }
+
+                        if (p.enabled === false) {
+                            html += '<p class="fed-hint">This friend is switched off here; your sharing still applies to them.</p>';
+                        }
+
+                        var visibleLibs = (p.libraries || []).filter(function (l) { return l.visible; });
+                        html += '<label class="fed-label">Libraries (' + visibleLibs.length + ' of ' + (p.libraries || []).length + ')</label><ul class="fed-preview-list">';
+                        (p.libraries || []).forEach(function (l) {
+                            var detail = l.visible
+                                ? (l.titles == null ? 'shared' : l.titles + ' title' + (l.titles === 1 ? '' : 's')) + (l.expiresUtc ? ', until ' + formatShareDate(l.expiresUtc) : '')
+                                : (l.expired ? 'ended ' + formatShareDate(l.expiresUtc) : 'not shared');
+                            html += '<li' + (l.visible ? '' : ' class="fed-muted"') + '>' + escapeHtml(l.name) + ' — ' + escapeHtml(detail) + '</li>';
+                        });
+                        html += '</ul>';
+
+                        if ((p.excludedTitles || []).length > 0 || p.globallyExcludedCount > 0) {
+                            html += '<label class="fed-label">Hidden titles</label><p class="fed-hint">'
+                                + escapeHtml((p.excludedTitles || []).join(', '))
+                                + (p.globallyExcludedCount > 0 ? ((p.excludedTitles || []).length ? '; ' : '') + p.globallyExcludedCount + ' hidden from every friend' : '')
+                                + '</p>';
+                        }
+
+                        html += '<label class="fed-label">Your users their admin can see</label><p class="fed-hint">'
+                            + ((p.users || []).length ? escapeHtml(p.users.join(', ')) : 'None') + '</p>';
+                        html += '<label class="fed-label">Your friends they can see</label><p class="fed-hint">'
+                            + (!p.friendsOfFriendsEnabled ? 'None (friends-of-friends is off)' : ((p.friends || []).length ? escapeHtml(p.friends.join(', ')) : 'None')) + '</p>';
+                        if ((p.userRules || []).length > 0) {
+                            html += '<label class="fed-label">Rules for their users</label><ul class="fed-preview-list">';
+                            p.userRules.forEach(function (r) {
+                                var modeLabel = { AllLibraries: 'all shared libraries', CertainLibraries: 'certain libraries', CertainItems: 'certain titles', Blocked: 'blocked' }[r.mode] || r.mode;
+                                html += '<li>' + escapeHtml(r.name) + ' — ' + escapeHtml(modeLabel) + (r.maxRating ? ', up to ' + escapeHtml(r.maxRating) : '') + (r.allowDownload === false ? ', no downloads' : '') + '</li>';
+                            });
+                            html += '</ul>';
+                        }
+
+                        html += '<label class="fed-label">Other</label><p class="fed-hint">'
+                            + (p.allowDownloads ? (p.allowBulkDownloads ? 'Downloads and bulk downloads allowed' : 'Single downloads allowed') : 'No downloads')
+                            + ' · ' + (p.allowRemoteTranscode ? 'you convert video for them' : 'you don\'t convert video for them')
+                            + ' · ' + (p.maxConcurrentStreams ? 'up to ' + p.maxConcurrentStreams + ' streams at once' : 'no stream limit')
+                            + ' · ' + (p.monthlyDataCapGb ? p.monthlyDataCapGb + ' GB per month' : 'no data limit')
+                            + '</p>';
+                        html += '</div>';
+                        return html;
                     }
 
                     function showRemoteTranscodeStatus(id, msg, kind) {
@@ -2815,6 +2966,10 @@
 
                         if (excludedCount > 0) {
                             parts.push(excludedCount + ' item' + (excludedCount === 1 ? '' : 's') + ' excluded');
+                        }
+
+                        if (server.SharingExpiresUtc) {
+                            parts.push((new Date(server.SharingExpiresUtc).getTime() <= Date.now() ? 'sharing ended ' : 'until ') + formatShareDate(server.SharingExpiresUtc));
                         }
 
                         return parts.join(' · ');
@@ -7903,6 +8058,9 @@
                                 case 'save-download-access':
                                     saveDownloadAccess(t.getAttribute('data-id'));
                                     break;
+                                case 'preview-friend':
+                                    togglePreview(t.getAttribute('data-id'));
+                                    break;
                                 case 'save-friend-limits':
                                     saveFriendLimits(t.getAttribute('data-id'));
                                     break;
@@ -8377,6 +8535,21 @@
                                 var idx = parseInt(t.getAttribute('data-idx'), 10);
                                 if (pickerLibs[idx]) {
                                     pickerLibs[idx].selected = t.checked;
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedSharingUntil') || t.classList.contains('fedLibUntil')) {
+                                var esid = t.getAttribute('data-id');
+                                var ep = pendingSharing[esid];
+                                if (ep) {
+                                    if (t.classList.contains('fedSharingUntil')) {
+                                        ep.Until = t.value;
+                                    } else {
+                                        ep.LibraryUntil = ep.LibraryUntil || {};
+                                        ep.LibraryUntil[t.getAttribute('data-lib')] = t.value;
+                                    }
                                 }
 
                                 return;

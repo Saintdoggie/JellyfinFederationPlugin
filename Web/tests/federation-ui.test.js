@@ -2352,6 +2352,98 @@ test('Beta tab sits before Advanced and holds the pairing card, off by default',
   assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortLast')));
 });
 
+function shareDatesApi(responses) {
+  const helpersSrc = configPage.match(/\n {20}(\/\/ Date inputs hold local days[\s\S]*?)\n {20}function showRemoteTranscodeStatus/);
+  const saveSrc = configPage.match(/\n {20}(function saveSharing\(serverId\) \{[\s\S]*?)\n {20}\/\/ Date inputs hold local days/);
+  assert.ok(helpersSrc && saveSrc, 'end date / preview script not found');
+  const posts = [];
+  const statuses = [];
+  const helpers = {
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    renderFriends: () => {},
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    setSharingStatus: (id, msg, kind) => statuses.push([msg, kind]),
+    fedFetch: (url, options) => {
+      posts.push({ url, body: options && options.body ? JSON.parse(options.body) : null });
+      const key = Object.keys(responses || {}).find((k) => url.endsWith(k));
+      return Promise.resolve({ json: () => Promise.resolve(key ? responses[key] : { success: true, message: 'Sharing saved.' }) });
+    }
+  };
+  const api = new Function(...Object.keys(helpers),
+    'var pendingSharing = {}; var friendPreviews = {};\n' + saveSrc[1] + '\n' + helpersSrc[1]
+    + '\nreturn { saveSharing, isoToDateInput, dateInputToIso, renderFriendPreview, togglePreview, pendingSharing, friendPreviews };')(...Object.values(helpers));
+  return { api, posts, statuses };
+}
+
+test('share-until dates: a picked day ends at its last second, and reads back as the same day', () => {
+  const { api } = shareDatesApi();
+  const iso = api.dateInputToIso('2030-05-01');
+  const d = new Date(iso);
+  assert.equal(d.getFullYear(), 2030);
+  assert.equal(d.getMonth(), 4);
+  assert.equal(d.getDate(), 1);
+  assert.equal(d.getHours(), 23);
+  assert.equal(d.getMinutes(), 59);
+  assert.equal(api.isoToDateInput(iso), '2030-05-01');
+  assert.equal(api.dateInputToIso(''), null);
+  assert.equal(api.isoToDateInput(null), '');
+  assert.equal(api.isoToDateInput('garbage'), '');
+});
+
+test('saving sharing also saves the end dates, and a refused end date is reported', async () => {
+  const { api, posts, statuses } = shareDatesApi();
+  api.pendingSharing.f1 = { ShareAll: false, FolderIds: ['m'], ExcludedItems: [], Until: '2030-05-01', LibraryUntil: { m: '2030-04-01', t: '' } };
+  api.friendPreviews.f1 = { success: true };
+  api.saveSharing('f1');
+  await settle(); await settle();
+  assert.deepEqual(posts.map((p) => p.url), ['/Plugins/Federation/Friends/f1/Sharing', '/Plugins/Federation/Friends/f1/Expiry']);
+  assert.equal(posts[1].body.ExpiresUtc, api.dateInputToIso('2030-05-01'));
+  assert.deepEqual(posts[1].body.LibraryExpiries, [{ FolderId: 'm', ExpiresUtc: api.dateInputToIso('2030-04-01') }]);
+  assert.deepEqual(statuses.at(-1), ['Sharing saved.', 'ok']);
+  assert.equal(api.friendPreviews.f1, undefined, 'a stale preview is dropped after saving');
+
+  const refused = shareDatesApi({ '/Expiry': { success: false, message: 'Friend not found.' } });
+  refused.api.pendingSharing.f1 = { ShareAll: true, FolderIds: [], ExcludedItems: [], Until: '', LibraryUntil: {} };
+  refused.api.saveSharing('f1');
+  await settle(); await settle();
+  assert.deepEqual(refused.posts[1].body, { ExpiresUtc: null, LibraryExpiries: [] });
+  assert.deepEqual(refused.statuses.at(-1), ['Friend not found.', 'err']);
+});
+
+test('preview shows what a friend gets, escaped, and says when sharing ended', () => {
+  const { api } = shareDatesApi();
+  const host = new JSDOM('<div id="x"></div>').window.document.getElementById('x');
+  host.innerHTML = api.renderFriendPreview({
+    success: true, name: 'Pal <b>', expired: false, expiresUtc: '2030-05-01T21:59:59Z',
+    libraries: [{ name: 'Movies <i>', visible: true, titles: 3, expiresUtc: null }, { name: 'Kids', visible: false, expired: true, expiresUtc: '2020-01-01T00:00:00Z' }, { name: 'Music', visible: false }],
+    excludedTitles: ['Secret (2001)'], globallyExcludedCount: 2,
+    users: ['anna', 'ben'], friendsOfFriendsEnabled: false, friends: [],
+    userRules: [{ name: 'Kid', mode: 'Blocked', maxRating: null, allowDownload: false }],
+    allowDownloads: true, allowBulkDownloads: false, allowRemoteTranscode: true, maxConcurrentStreams: 2, monthlyDataCapGb: 0
+  });
+  assert.equal(host.querySelector('b'), null);
+  assert.equal(host.querySelector('i'), null);
+  const text = host.textContent;
+  assert.match(text, /What Pal <b> sees right now/);
+  assert.match(text, /Libraries \(1 of 3\)/);
+  assert.match(text, /Movies <i> — 3 titles/);
+  assert.match(text, /Kids — ended/);
+  assert.match(text, /Music — not shared/);
+  assert.match(text, /Secret \(2001\); 2 hidden from every friend/);
+  assert.match(text, /anna, ben/);
+  assert.match(text, /None \(friends-of-friends is off\)/);
+  assert.match(text, /Kid — blocked, no downloads/);
+  assert.match(text, /Single downloads allowed · you convert video for them · up to 2 streams at once · no data limit/);
+  assert.match(text, /stay shared until/);
+
+  const ended = api.renderFriendPreview({ success: true, name: 'Pal', expired: true, expiresUtc: '2020-01-01T00:00:00Z', libraries: [] });
+  assert.match(ended, /Sharing ended on .*: they see none of your libraries/);
+  assert.match(api.renderFriendPreview({ loading: true }), /Checking what they see/);
+  assert.match(api.renderFriendPreview({ error: '<x>' }), /Could not build the preview: &lt;x&gt;/);
+});
+
 test('pairing actions and routes are wired', () => {
   for (const a of ['save-pairing', 'pairing-make', 'pairing-answer', 'pairing-complete', 'pairing-confirm', 'pairing-cancel']) {
     assert.ok(configPage.includes("case '" + a + "':"), a);
