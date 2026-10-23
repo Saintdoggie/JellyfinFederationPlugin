@@ -2401,3 +2401,77 @@ test('pairing status renders untrusted text safely and gates the confirm button'
   api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
   assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
 });
+
+function userSharingApi(extra) {
+  const block = configPage.match(/\n {20}(function loadLocalUsers\(\) \{[\s\S]*?)\n {20}function renderSharingBlock/);
+  assert.ok(block, 'user sharing script not found');
+  const posts = [];
+  const helpers = Object.assign({
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    renderFriends: () => {},
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    fedFetch: (url, options) => {
+      posts.push({ url, body: options && options.body ? JSON.parse(options.body) : null });
+      return Promise.resolve({ json: () => Promise.resolve(url.endsWith('/LocalUsers') ? [{ id: 'u1', name: 'Anna <b>', isAdministrator: true }, { id: 'u2', name: 'Ben', isAdministrator: false }] : { success: true, message: 'Saved.' }) });
+    }
+  }, extra || {});
+  const api = new Function(...Object.keys(helpers),
+    'var localUsersCache = null; var pendingUserSharing = {};\n' + block[1]
+    + '\nreturn { loadLocalUsers, renderUserSharingBlock, saveUserSharing, pending: () => pendingUserSharing };')(...Object.values(helpers));
+  return { api, posts };
+}
+
+test('friends see none of my users unless I pick them, and names are escaped', async () => {
+  const { api } = userSharingApi();
+  await api.loadLocalUsers();
+  const dom = new JSDOM('<div id="x"></div>');
+  const host = dom.window.document.getElementById('x');
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f1', Name: 'Pal' });
+  assert.equal(host.querySelector('.fedUserSharingAll').checked, false);
+  assert.equal(host.querySelectorAll('.fedUserSharingUser').length, 2);
+  assert.equal(host.querySelectorAll('.fedUserSharingUser:checked').length, 0);
+  assert.equal(host.querySelector('b'), null);
+  assert.match(host.textContent, /Anna <b>/);
+  assert.ok(host.querySelector('[data-fed-action="save-user-sharing"][data-id="f1"]'));
+
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f2', ShareAllUsers: false, SharedUserIds: ['u2'] });
+  assert.deepEqual([...host.querySelectorAll('.fedUserSharingUser:checked')].map((c) => c.getAttribute('data-user')), ['u2']);
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f3', ShareAllUsers: true });
+  assert.equal(host.querySelector('.fedUserSharingAll').checked, true);
+  assert.equal(host.querySelector('.fedUserSharingList').style.display, 'none');
+});
+
+test('saving user sharing posts the selection to the friend endpoint', async () => {
+  const { api, posts } = userSharingApi();
+  api.renderUserSharingBlock({ Id: 'f 1', SharedUserIds: ['u1'] });
+  api.saveUserSharing('f 1');
+  await settle();
+  const post = posts.find((p) => p.url.includes('/UserSharing'));
+  assert.equal(post.url, '/Plugins/Federation/Friends/f%201/UserSharing');
+  assert.deepEqual(post.body, { ShareAll: false, UserIds: ['u1'] });
+  assert.equal(api.pending()['f 1'], undefined, 'pending selection is dropped once saved');
+});
+
+test('their people: rules stay listed when the friend stops showing that user', () => {
+  const block = configPage.match(/\n {20}(function renderRemoteUserAccessBlock\(server\) \{[\s\S]*?)\n {20}function renderUserRuleEditor/);
+  assert.ok(block, 'remote user block not found');
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const make = (users) => new Function('remoteUsersCache', 'loadRemoteUsersFor', 'escapeHtml', 'ruleKey', 'existingUserRule', 'expandedUserRuleEditors', 'ruleStatusLabel', 'renderUserRuleEditor',
+    block[1] + '\nreturn renderRemoteUserAccessBlock;')(
+    { f1: { loading: false, users } }, () => {}, esc, (s, u) => s + '::' + u,
+    (server, id) => (server.RemoteUserAccessRules || []).filter((r) => r.RemoteUserId === id)[0] || null,
+    {}, (rule) => (rule ? 'Blocked' : 'Everything shared'), () => '');
+  const server = { Id: 'f1', Name: 'Pal', RemoteUserAccessRules: [{ RemoteUserId: 'gone', RemoteUserName: 'Carla', Mode: 3 }] };
+
+  const withRule = make([])(server);
+  assert.match(withRule, /Carla \(no longer shown by them\)/);
+  assert.match(withRule, /data-key="f1::gone"/);
+
+  const none = make([])({ Id: 'f1', Name: 'Pal' });
+  assert.match(none, /haven't shown you any of their users/);
+  const shown = make([{ id: 'u', name: 'Dora' }])(server);
+  assert.match(shown, /Dora/);
+  assert.match(shown, /Carla \(no longer shown by them\)/);
+});

@@ -861,6 +861,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> SharedLibraryFolderIds { get; set; } = new List<string>();
 
         /// <summary>
+        /// Gets or sets a value indicating whether this friend may see every one
+        /// of this server's local user accounts (names, for their per-user
+        /// rules). False by default, also for friends made before this setting
+        /// existed: a friend sees no users unless shared here or in
+        /// <see cref="SharedUserIds"/>. Enforced by <c>Peer/Users</c>. Managed
+        /// by <c>Friends/{id}/UserSharing</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareAllUsers { get; set; }
+
+        /// <summary>
+        /// Gets or sets the ids (normalized "N" form) of this server's own local
+        /// users this friend may see when <see cref="ShareAllUsers"/> is false.
+        /// </summary>
+        public List<string> SharedUserIds { get; set; } = new List<string>();
+
+        /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
         /// </summary>
         public StreamingMode StreamingMode

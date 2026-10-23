@@ -352,6 +352,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.FederationId = oldServer.FederationId;
                         server.ShareAllLibraries = oldServer.ShareAllLibraries;
                         server.SharedLibraryFolderIds = oldServer.SharedLibraryFolderIds;
+                        server.ShareAllUsers = oldServer.ShareAllUsers;
+                        server.SharedUserIds = oldServer.SharedUserIds;
                         server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
@@ -1483,6 +1485,32 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: which of this server's local users a friend may see
+        /// (names only, so their admin can set per-user rules). Enforced by
+        /// <see cref="GetPeerUsers"/>; nothing is pushed to the friend.
+        /// </summary>
+        [HttpPost("Friends/{id}/UserSharing")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendUserSharing(string id, [FromBody] UserSharingBody? body)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            server.ShareAllUsers = body?.ShareAll ?? false;
+            server.SharedUserIds = (body?.UserIds ?? new List<string>())
+                .Select(u => Guid.TryParse(u, out var g) ? g.ToString("N") : null)
+                .Where(u => u != null)
+                .Select(u => u!)
+                .Distinct()
+                .ToList();
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved. They see " + (server.ShareAllUsers ? "all your users." : server.SharedUserIds.Count == 0 ? "none of your users." : server.SharedUserIds.Count + " of your users.") });
+        }
+
+        /// <summary>
         /// Admin: whether this friend may convert our titles on this server for its
         /// viewers (owner side of the remote-transcode handoff).
         /// </summary>
@@ -2247,6 +2275,27 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             return Ok();
+        }
+
+        /// <summary>
+        /// Admin-only: this server's own local users (id and name), for choosing
+        /// which ones a friend may see.
+        /// </summary>
+        [HttpGet("LocalUsers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLocalUsers()
+        {
+            var users = new List<object>();
+            foreach (var u in EnumerateLocalUsers())
+            {
+                var t = u.GetType();
+                if (t.GetProperty("Id")?.GetValue(u) is Guid guid && t.GetProperty("Username")?.GetValue(u) is string name)
+                {
+                    users.Add(new { id = guid.ToString("N"), name, isAdministrator = IsAdministratorUser(u) });
+                }
+            }
+
+            return Ok(users);
         }
 
         /// <summary>
@@ -4920,6 +4969,8 @@ namespace Jellyfin.Plugin.Federation.Api
         /// a <see cref="RemoteUserAccessRule"/> (see <c>GetRemoteUsers</c>) - the
         /// only remaining reason anything needs this list under the new model,
         /// since sync/playback no longer impersonates any of this server's users.
+        /// Only the users this server's admin shares with the caller
+        /// (<see cref="FederationPeerAccessService.IsUserVisible"/>); none by default.
         /// Same shape as native <c>/Users</c> (Id, Name, Policy.IsAdministrator)
         /// so <see cref="Services.UserDto"/>'s existing deserialization needs no
         /// changes.
@@ -4928,7 +4979,8 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public IActionResult GetPeerUsers()
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
@@ -4939,7 +4991,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 var t = u.GetType();
                 var id = t.GetProperty("Id")?.GetValue(u);
                 var name = t.GetProperty("Username")?.GetValue(u) as string;
-                if (id is Guid guid && name != null)
+                if (id is Guid guid && name != null && FederationPeerAccessService.IsUserVisible(caller, guid))
                 {
                     users.Add(new { Id = guid.ToString("N"), Name = name, Policy = new { IsAdministrator = IsAdministratorUser(u) } });
                 }
@@ -6960,6 +7012,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 HasIssuedApiKey = !string.IsNullOrEmpty(s.IssuedApiKey),
                 s.ShareAllLibraries,
                 s.SharedLibraryFolderIds,
+                s.ShareAllUsers,
+                s.SharedUserIds,
                 s.ExcludedItemIds,
                 s.AllowDownloads,
                 s.AllowBulkDownloads,
@@ -7326,6 +7380,13 @@ namespace Jellyfin.Plugin.Federation.Api
         public List<string>? FolderIds { get; set; }
 
         public List<string>? ExcludedItemIds { get; set; }
+    }
+
+    public class UserSharingBody
+    {
+        public bool ShareAll { get; set; }
+
+        public List<string>? UserIds { get; set; }
     }
 
     public class DownloadAccessBody
