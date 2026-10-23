@@ -318,13 +318,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 Route = route,
                 PlayMethod = FederatedRoute.OwnerPlayMethod(route, session.PlayState?.PlayMethod),
                 ViewerId = session.UserId == Guid.Empty ? null : session.UserId.ToString("N"),
-                ViewerName = session.UserName,
+                ViewerName = SharesNamesWith(server) ? session.UserName : null,
                 Client = session.Client,
                 ClientVersion = session.ApplicationVersion,
-                DeviceName = session.DeviceName,
+                DeviceName = SharesNamesWith(server) ? session.DeviceName : null,
                 DeviceId = session.DeviceId,
                 PlaySessionId = playSessionId
             };
+
+        /// <summary>
+        /// Whether reports to <paramref name="friend"/> carry user and device
+        /// names: its own choice, else the default. Without them the friend
+        /// shows "Someone (this server)".
+        /// </summary>
+        internal static bool SharesNamesWith(RemoteServer friend)
+            => friend.ShareViewerNames ?? Plugin.Instance?.Configuration?.ShareViewerNamesWithFriends ?? false;
 
         /// <summary>An opaque, stable id for one playback: friends never see this server's own session ids.</summary>
         internal static string ReportKey(string sessionId, string? playSessionId)

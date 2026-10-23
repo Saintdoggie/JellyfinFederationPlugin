@@ -568,10 +568,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Gets or sets whether friends may see which of this server's own titles
         /// were most played here in the last 30 days: counts of distinct users,
         /// never who, and only titles already shared with the viewer asking.
-        /// Shown on their Home tab as "Popular on (this server)". Managed by
-        /// <c>Settings/Favorites</c>, preserved by the main Save.
+        /// Shown on their Home tab as "Popular on (this server)". This is the
+        /// default for friends without their own choice
+        /// (<see cref="RemoteServer.SharePopular"/>); off on new installs, since
+        /// on a server with few users it shows what those people watch.
+        /// Managed by <c>Settings/Favorites</c>, preserved by the main Save.
         /// </summary>
-        public bool SharePopularWithFriends { get; set; } = true;
+        public bool SharePopularWithFriends { get; set; }
 
         /// <summary>
         /// Gets or sets whether this server's Home tab shows a "Popular on
@@ -599,6 +602,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets whether friends' viewers watching this server's titles show on the dashboard like local sessions.</summary>
         public bool ShowFriendsViewers { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether the viewer reports of <see cref="ShareViewersWithFriends"/>
+        /// include this server's user and device names. Off by default: the
+        /// friend then sees "Someone" watching, with position and pause state.
+        /// The default for friends without their own choice
+        /// (<see cref="RemoteServer.ShareViewerNames"/>). Managed by
+        /// <c>Settings/Viewers</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareViewerNamesWithFriends { get; set; }
 
         /// <summary>Gets or sets whether friends may see what this server converts video with (GPU/CPU model and codecs; nothing else).</summary>
         public bool ShareTranscodeHardware { get; set; } = true;
@@ -981,6 +994,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Managed by <c>Friends/{id}/Limits</c>, preserved by the main Save.
         /// </summary>
         public int MaxConcurrentStreams { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether this friend sees what is popular on this server:
+        /// null follows <see cref="PluginConfiguration.SharePopularWithFriends"/>.
+        /// Managed by <c>Settings/Favorites</c>, preserved by the main Save.
+        /// </summary>
+        public bool? SharePopular { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether viewer reports to this friend include user and
+        /// device names: null follows <see cref="PluginConfiguration.ShareViewerNamesWithFriends"/>.
+        /// Managed by <c>Settings/Viewers</c>, preserved by the main Save.
+        /// </summary>
+        public bool? ShareViewerNames { get; set; }
 
         /// <summary>
         /// Gets or sets whether a direct link to this friend is used: <c>Auto</c>

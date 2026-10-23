@@ -2371,6 +2371,42 @@ test('pairing actions and routes are wired', () => {
   assert.equal(/gradient/i.test(configPage), false);
 });
 
+test('popular titles and viewer names: a default plus a choice per friend', () => {
+  const src = configPage.match(/\n {20}(\/\/ Per-friend choice for a sharing setting[\s\S]*?)\n {20}function loadFavoritesSettings/);
+  assert.ok(src, 'friend choice script not found');
+  const dom = new JSDOM('<div id="fedPopularFriendChoices"></div><div id="fedViewerNameFriendChoices"></div>');
+  const doc = dom.window.document;
+  const helpers = {
+    q: (sel) => doc.querySelector(sel),
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'))
+  };
+  const api = new Function(...Object.keys(helpers), src[1] + '\nreturn { renderFriendChoices, readFriendChoices };')(...Object.values(helpers));
+  const friends = [{ Id: 'a', Name: 'Ann <b>', SharePopular: null }, { Id: 'b', Name: 'Bo', SharePopular: true }, { Id: 'c', Name: 'Cy', SharePopular: false }];
+  api.renderFriendChoices('fedPopularFriendChoices', friends, 'SharePopular', false, 'Share', "Don't share");
+  const host = doc.getElementById('fedPopularFriendChoices');
+  assert.equal(host.querySelector('b'), null);
+  assert.match(host.textContent, /Ann <b>/);
+  const selects = [...host.querySelectorAll('select')];
+  assert.deepEqual(selects.map((sel) => sel.value), ['default', 'on', 'off']);
+  assert.equal(selects[0].options[0].textContent, "Default (Don't share)");
+  assert.deepEqual(api.readFriendChoices('fedPopularFriendChoices'), [{ Id: 'a', Share: null }, { Id: 'b', Share: true }, { Id: 'c', Share: false }]);
+  selects[2].value = 'default';
+  assert.deepEqual(api.readFriendChoices('fedPopularFriendChoices')[2], { Id: 'c', Share: null });
+
+  api.renderFriendChoices('fedViewerNameFriendChoices', [{ Id: 'a', Name: 'Ann', ShareViewerNames: null }], 'ShareViewerNames', true, 'With names', 'Without names');
+  assert.equal(doc.querySelector('#fedViewerNameFriendChoices option').textContent, 'Default (With names)');
+  api.renderFriendChoices('fedViewerNameFriendChoices', [], 'ShareViewerNames', true, 'With names', 'Without names');
+  assert.equal(doc.getElementById('fedViewerNameFriendChoices').innerHTML, '');
+});
+
+test('popular and viewer-name defaults are on the page and saved with their cards', () => {
+  assert.match(configPage, /id="fedChkSharePopularWithFriends"[^>]*\/> Share what's popular here with friends \(default for each friend\)/);
+  assert.match(configPage, /id="fedChkShareViewerNames"[^>]*\/> Include my viewers' names and devices \(default for each friend\)/);
+  assert.match(configPage, /PopularFriends: readFriendChoices\('fedPopularFriendChoices'\)/);
+  assert.match(configPage, /ShareViewerNamesWithFriends: q\('#fedChkShareViewerNames'\)\.checked,\s*ViewerNameFriends: readFriendChoices\('fedViewerNameFriendChoices'\)/);
+  assert.match(configPage, /q\('#fedChkSharePopularWithFriends'\)\.checked = res\.SharePopularWithFriends === true;/);
+});
+
 test('pairing status renders untrusted text safely and gates the confirm button', () => {
   const block = configPage.match(/(var pairingTimer = null;[\s\S]*?)\n {20}function loadPairingStatus/);
   assert.ok(block, 'pairing render script not found');
