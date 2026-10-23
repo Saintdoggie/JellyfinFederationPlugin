@@ -26,6 +26,23 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILibraryManager _libraryManager;
 
         /// <summary>
+        /// Whether <paramref name="caller"/> may see this server's local user
+        /// <paramref name="userId"/> in <c>Peer/Users</c>. Nobody is visible
+        /// unless shared through <see cref="RemoteServer.ShareAllUsers"/> or
+        /// <see cref="RemoteServer.SharedUserIds"/>.
+        /// </summary>
+        public static bool IsUserVisible(RemoteServer caller, Guid userId)
+        {
+            if (caller.ShareAllUsers)
+            {
+                return true;
+            }
+
+            return (caller.SharedUserIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => Guid.TryParse(id, out var shared) && shared == userId);
+        }
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="FederationPeerAccessService"/> class.
         /// </summary>
         public FederationPeerAccessService(ILibraryManager libraryManager)

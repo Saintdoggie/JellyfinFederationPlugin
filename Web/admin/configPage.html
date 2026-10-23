@@ -1373,6 +1373,11 @@
                     // needing its own local state machine.
                     var pendingSharing = {};
 
+                    // This server's own users (LocalUsers), and per-friend pending
+                    // "users they can see" selections, keyed by server.Id.
+                    var localUsersCache = null;
+                    var pendingUserSharing = {};
+
                     // Each friend's own local user list (fetched via GetRemoteUsers,
                     // the same endpoint originally added for picking a remote
                     // playback account), keyed by server.Id - for the per-remote-user
@@ -1698,6 +1703,82 @@
                         .catch(function () { return []; });
                     }
 
+                    function loadLocalUsers() {
+                        if (localUsersCache) {
+                            return Promise.resolve(localUsersCache);
+                        }
+
+                        return fedFetch('/Plugins/Federation/LocalUsers')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (users) {
+                            localUsersCache = users || [];
+                            renderFriends();
+                            return localUsersCache;
+                        })
+                        .catch(function () { return []; });
+                    }
+
+                    function renderUserSharingBlock(server) {
+                        var id = escapeHtml(server.Id);
+                        var pending = pendingUserSharing[server.Id] || {
+                            ShareAll: server.ShareAllUsers === true,
+                            UserIds: (server.SharedUserIds || []).slice()
+                        };
+                        pendingUserSharing[server.Id] = pending;
+
+                        var html = '<div style="margin:.8em 0;padding:.75em 0;border-top:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-label">People they can see</label>';
+                        html += '<p class="fed-hint" style="margin-top:0;">Their admin sees the names of the people you pick here, so they can set rules for one of them. Nobody is shown unless you pick them. Playing and syncing work either way.</p>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedUserSharingAll" data-id="' + id + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Show all my users, including ones added later</label>';
+                        html += '<div class="fedUserSharingList" data-id="' + id + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:0.4em;">';
+                        if (!localUsersCache) {
+                            loadLocalUsers();
+                            html += '<p class="fed-muted">Loading your users…</p>';
+                        } else if (localUsersCache.length === 0) {
+                            html += '<p class="fed-muted">No users found.</p>';
+                        } else {
+                            localUsersCache.forEach(function (u) {
+                                var checked = pending.UserIds.indexOf(u.id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedUserSharingUser" data-id="' + id + '" data-user="' + escapeHtml(u.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(u.name) + (u.isAdministrator ? ' <span class="fed-pill">admin</span>' : '') + '</label>';
+                            });
+                        }
+
+                        html += '</div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-user-sharing" data-id="' + id + '">Save</button>';
+                        html += '<div class="fed-srvstatus" id="fedUserSharingStatus-' + id + '" style="display:none;"></div>';
+                        html += '</div>';
+                        return html;
+                    }
+
+                    function saveUserSharing(serverId) {
+                        var pending = pendingUserSharing[serverId] || { ShareAll: false, UserIds: [] };
+                        var status = q('#fedUserSharingStatus-' + serverId);
+                        var show = function (msg, kind) {
+                            if (!status) {
+                                return;
+                            }
+
+                            status.style.display = 'block';
+                            status.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                            status.textContent = msg;
+                        };
+
+                        show('Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/UserSharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, UserIds: pending.UserIds })
+                        })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            show(res.message || (res.success ? 'Saved.' : 'Could not save.'), res.success ? 'ok' : 'err');
+                            if (res.success) {
+                                delete pendingUserSharing[serverId];
+                                return loadConfiguration(true);
+                            }
+                        })
+                        .catch(function (e) { show('Failed: ' + e.message, 'err'); });
+                    }
+
                     function renderSharingBlock(server) {
                         var pending = pendingSharing[server.Id] || {
                             ShareAll: server.ShareAllLibraries !== false,
@@ -1735,6 +1816,7 @@
                         html += '</div>';
 
                         if (server.Kind !== 1) {
+                            html += renderUserSharingBlock(server);
                             html += '<div style="margin:.8em 0;padding:.75em 0;border-top:1px solid var(--fed-border-soft);border-bottom:1px solid var(--fed-border-soft);">';
                             html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowDownloads !== false ? 'checked' : '') + ' /> Allow this friend and their viewers to download my titles</label>';
                             html += '<p class="fed-hint">Covers their viewers saving a title to their own phone or computer (straight from this server) and their admin copying a title to their server. Per-viewer rules can still turn it off for one person.</p>';
@@ -2506,12 +2588,21 @@
                             return html;
                         }
 
-                        if (cached.users.length === 0) {
-                            html += '<p class="fed-muted">No users found on their server.</p></div>';
+                        // Rules for people they no longer show stay in force and
+                        // stay editable, so they never vanish silently.
+                        var listed = cached.users.slice();
+                        (server.RemoteUserAccessRules || []).forEach(function (r) {
+                            if (r.RemoteUserId && !listed.some(function (u) { return u.id === r.RemoteUserId; })) {
+                                listed.push({ id: r.RemoteUserId, name: (r.RemoteUserName || 'Unknown user') + ' (no longer shown by them)', isAdministrator: false });
+                            }
+                        });
+
+                        if (listed.length === 0) {
+                            html += '<p class="fed-muted">They haven\'t shown you any of their users. What you share above applies to all of them. To set rules for one person, ask their admin to show that user to you (Friends → Manage → People they can see).</p></div>';
                             return html;
                         }
 
-                        cached.users.forEach(function (u) {
+                        listed.forEach(function (u) {
                             var key = ruleKey(server.Id, u.id);
                             var rule = existingUserRule(server, u.id);
                             var isOpen = expandedUserRuleEditors[key] === true;
@@ -2657,6 +2748,12 @@
 
                         var cached = remoteUsersCache[serverId];
                         var remoteUser = cached ? cached.users.filter(function (u) { return u.id === remoteUserId; })[0] : null;
+                        if (!remoteUser) {
+                            // Someone they no longer show: keep the name the rule has.
+                            var ruleServer = (currentConfig.RemoteServers || []).filter(function (srv) { return srv.Id === serverId; })[0];
+                            var kept = ruleServer ? existingUserRule(ruleServer, remoteUserId) : null;
+                            remoteUser = kept && kept.RemoteUserName ? { id: remoteUserId, name: kept.RemoteUserName } : null;
+                        }
 
                         setUserRuleStatus(key, 'Saving…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/RemoteUserRule', {
@@ -6624,7 +6721,7 @@
                             }
 
                             if (cached.users.length === 0) {
-                                userSel.innerHTML = '<option value="">No users found on their server</option>';
+                                userSel.innerHTML = '<option value="">They haven\'t shown you any of their users</option>';
                                 return;
                             }
 
@@ -7900,6 +7997,9 @@
                                 case 'save-sharing':
                                     saveSharing(t.getAttribute('data-id'));
                                     break;
+                                case 'save-user-sharing':
+                                    saveUserSharing(t.getAttribute('data-id'));
+                                    break;
                                 case 'save-download-access':
                                     saveDownloadAccess(t.getAttribute('data-id'));
                                     break;
@@ -8401,6 +8501,34 @@
                                     libsDiv.style.display = t.checked ? 'none' : 'block';
                                 }
 
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserSharingAll')) {
+                                var usid = t.getAttribute('data-id');
+                                var up = pendingUserSharing[usid] || { ShareAll: false, UserIds: [] };
+                                up.ShareAll = t.checked;
+                                pendingUserSharing[usid] = up;
+                                var usersDiv = q('.fedUserSharingList[data-id="' + usid + '"]');
+                                if (usersDiv) {
+                                    usersDiv.style.display = t.checked ? 'none' : 'block';
+                                }
+
+                                return;
+                            }
+
+                            if (t.classList.contains('fedUserSharingUser')) {
+                                var uusid = t.getAttribute('data-id');
+                                var userId = t.getAttribute('data-user');
+                                var uup = pendingUserSharing[uusid] || { ShareAll: false, UserIds: [] };
+                                var upos = uup.UserIds.indexOf(userId);
+                                if (t.checked && upos === -1) {
+                                    uup.UserIds.push(userId);
+                                } else if (!t.checked && upos !== -1) {
+                                    uup.UserIds.splice(upos, 1);
+                                }
+
+                                pendingUserSharing[uusid] = uup;
                                 return;
                             }
 
