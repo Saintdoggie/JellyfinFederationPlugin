@@ -354,6 +354,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
+            if (playerSeesPeer
+                && !viaLink
+                && IsBrowser(request)
+                && BrowserPlaybackHeaders.Origin(BrowserPlaybackHeaders.OwnOrigin() ?? $"{clientScheme}://{request.Host.Value}") is { } playerOrigin
+                && await BrowserPlaybackHeaders.ConvertedProblemAsync(server, peerBase, playerOrigin, _logger).ConfigureAwait(false) != null)
+            {
+                // A web-server header (the friend's or ours) would make the browser
+                // refuse every segment; converted here, the video stays on this site.
+                return null;
+            }
+
             // Over the link, the measured link is what carries the video, not the
             // friend's tunnel the Auto cap was measured on; manual caps still apply.
             var cap = viaLink && server.WanCapMode == WanCapMode.Auto
@@ -364,6 +375,14 @@ namespace Jellyfin.Plugin.Federation.Services
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
             return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink);
         }
+
+        /// <summary>
+        /// A web player (jellyfin-web, also inside the mobile apps), which enforces
+        /// CORS and the page's security headers; native players do not.
+        /// </summary>
+        internal static bool IsBrowser(HttpRequest request)
+            => request.Headers.Origin.Count > 0
+                || request.Headers.UserAgent.ToString().StartsWith("Mozilla/", StringComparison.Ordinal);
 
         /// <summary>
         /// The source a request addresses: the item's own id is the primary source
