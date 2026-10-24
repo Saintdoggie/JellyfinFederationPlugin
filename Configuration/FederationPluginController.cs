@@ -748,11 +748,32 @@ namespace Jellyfin.Plugin.Federation.Api
         public IActionResult GetClientSettings()
         {
             var config = Plugin.Instance?.Configuration;
+            CheckBrowserPlaybackHeaders(config);
             return Ok(new
             {
                 showFederatedCloudBadges = config?.ShowFederatedCloudBadges == true,
                 loadingOverlay = config?.LoadingOverlay != false
             });
+        }
+
+        /// <summary>
+        /// Every web client loads <see cref="GetClientSettings"/> first: a good
+        /// moment to (re)check, in the background, the web-server headers that
+        /// decide whether a browser can play friends' video at all. Results are
+        /// cached per friend, so this costs a few requests per friend per half hour.
+        /// </summary>
+        private void CheckBrowserPlaybackHeaders(PluginConfiguration? config)
+        {
+            var origin = Services.BrowserPlaybackHeaders.OwnOrigin();
+            if (origin == null || config?.RemoteServers == null || !Services.FederationRemoteTranscodeFilter.IsBrowser(Request))
+            {
+                return;
+            }
+
+            foreach (var server in config.RemoteServers.Where(s => s is { Enabled: true, Kind: ServerKind.Jellyfin, StreamingMode: StreamingMode.Direct }))
+            {
+                _ = Services.BrowserPlaybackHeaders.CheckAsync(server, RemoteServerClientFactory.EffectiveUrl(server).TrimEnd('/'), origin, _logger);
+            }
         }
 
         #endregion
