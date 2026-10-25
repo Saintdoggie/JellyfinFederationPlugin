@@ -83,7 +83,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <summary>Gets or sets the plugin data folder (tests); defaults to the plugin's.</summary>
         internal string? DataFolder { get; set; }
 
-        private static bool AllowPrivateForTests => Environment.GetEnvironmentVariable("FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE") == "1";
+        private static bool AllowPrivateForTests => DirectLink.DirectLinkProtocol.TestMode;
 
         private static PluginConfiguration? Config => Plugin.Instance?.Configuration;
 

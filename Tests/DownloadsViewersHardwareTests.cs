@@ -311,6 +311,22 @@ public class DownloadsViewersHardwareTests
     }
 
     [Fact]
+    public void Describe_BoundsAndFlattensPeerSuppliedHardwareNames()
+    {
+        var info = new TranscodeHardwareInfo
+        {
+            Gpu = "GPU\r\nForged: yes" + new string('x', 100),
+            Cpu = new string('c', 100),
+            CpuThreads = 8
+        };
+        var description = info.Describe();
+        Assert.DoesNotContain('\r', description);
+        Assert.DoesNotContain('\n', description);
+        Assert.Contains("GPUForged: yes", description);
+        Assert.True(description.Length < 220);
+    }
+
+    [Fact]
     public void Levels_DependOnSourceCodecAndDepth()
     {
         var info = TranscodeHardware.Local(new PluginConfiguration(), Vaapi(), 0);

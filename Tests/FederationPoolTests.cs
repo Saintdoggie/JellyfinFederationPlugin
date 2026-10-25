@@ -107,7 +107,7 @@ public class FederationPoolTests : IDisposable
             IsOwner = true,
             OwnerFederationId = "self",
             OwnerName = "This Server",
-            IconBase64 = "aWNvbg==",
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
             Members =
             {
                 new PoolMember { FederationId = "self", Name = "This Server", Url = "http://local.test:8096" }
@@ -119,7 +119,20 @@ public class FederationPoolTests : IDisposable
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
         var pool = Assert.Single(doc.RootElement.EnumerateArray());
         Assert.Equal("pool-1", pool.GetProperty("Id").GetString());
-        Assert.Equal("aWNvbg==", pool.GetProperty("IconBase64").GetString());
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.GetProperty("IconBase64").GetString());
+    }
+
+    [Fact]
+    public async Task SetPoolIcon_RejectsAttributeInjectionAndNonPngData()
+    {
+        var pool = _service.CreatePool("Movie Night");
+
+        var hostile = await _service.SetPoolIconAsync(pool.Id, "\" onerror=\"globalThis.compromised=true", CancellationToken.None);
+        var notPng = await _service.SetPoolIconAsync(pool.Id, "aWNvbg==", CancellationToken.None);
+
+        Assert.False(hostile.Success);
+        Assert.False(notPng.Success);
+        Assert.Null(_plugin.Configuration.Pools.Single().IconBase64);
     }
 
     [Fact]
@@ -379,7 +392,7 @@ public class FederationPoolTests : IDisposable
                 PoolName = "Movie Night",
                 OwnerFederationId = "fed-owner",
                 OwnerName = "Owner",
-                IconBase64 = "aWNvbg==",
+                IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
                 Roster = new List<PoolMember>
                 {
                     new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
@@ -393,7 +406,7 @@ public class FederationPoolTests : IDisposable
         Assert.Equal("pool-1", pool.Id);
         Assert.Equal(3, pool.Members.Count); // us, Bob, Owner
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
 
         // Fanned out to Owner (not already known) via a real friend request; never
         // re-sent anything to Bob, who is how we learned about this in the first place.
@@ -643,7 +656,7 @@ public class FederationPoolTests : IDisposable
         {
             Id = "pool-1",
             Name = "Movie Night",
-            IconBase64 = "aWNvbg==",
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
             Members = new List<PoolMember>
             {
                 new PoolMember { FederationId = "self-fed-id", Name = "This Server", Url = "http://local.test:8096" },
@@ -680,7 +693,7 @@ public class FederationPoolTests : IDisposable
             CancellationToken.None);
 
         var pool = Assert.Single(_plugin.Configuration.Pools);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://owner.example");
     }
 
@@ -734,7 +747,7 @@ public class FederationPoolTests : IDisposable
         {
             Id = "pool-1",
             Name = "Movie Night",
-            IconBase64 = "aWNvbg=="
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
@@ -754,7 +767,7 @@ public class FederationPoolTests : IDisposable
 
         Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
         var pool = Assert.Single(_plugin.Configuration.Pools);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
     }
 
@@ -784,7 +797,7 @@ public class FederationPoolTests : IDisposable
                 new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
                 new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
             },
-            IconBase64 = "aWNvbg=="
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         });
 
         var introducedTo = new List<string>();
@@ -812,7 +825,7 @@ public class FederationPoolTests : IDisposable
 
         var pool = Assert.Single(_plugin.Configuration.Pools);
         Assert.Equal("pool-1", pool.Id);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
         Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");

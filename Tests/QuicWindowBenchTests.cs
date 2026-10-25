@@ -45,14 +45,14 @@ public class QuicWindowBenchTests
         {
             QuicTransportHost.ConfigureWindows(-1, -1);
             var before = await MeasureAsync(128L * 1024 * 1024);
-            QuicTransportHost.ConfigureWindows(32L * 1024 * 1024, 8L * 1024 * 1024);
+            QuicTransportHost.ConfigureWindows(0, 0);
             var after = await MeasureAsync(256L * 1024 * 1024);
-            _output.WriteLine($"20 ms round trip, one download: library defaults {before:F0} Mbps, our windows {after:F0} Mbps");
+            _output.WriteLine($"20 ms round trip, one download: library defaults {before:F0} Mbps, paired 16/4 MiB windows {after:F0} Mbps");
             Assert.True(after > 250, $"still capped: {after:F0} Mbps (defaults {before:F0})");
         }
         finally
         {
-            QuicTransportHost.ConfigureWindows(32L * 1024 * 1024, 8L * 1024 * 1024);
+            QuicTransportHost.ConfigureWindows(0, 0);
         }
     }
 

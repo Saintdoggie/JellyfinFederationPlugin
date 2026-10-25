@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
 using Microsoft.Extensions.Primitives;
@@ -156,12 +157,30 @@ public class RemoteTranscodeHandoffTests
         // again, but stays known for fetching its conversion log.
         Assert.False(registry.TryEnd("friend-a", "s1", out _));
         Assert.False(registry.TryPing("friend-a", "s1"));
+        Assert.False(registry.TryTouch("friend-a", "s1", "dev", limit: 2));
         Assert.True(registry.TryTouch("friend-a", "s3", "dev", limit: 2));
         registry.TryEnd("friend-a", "s3", out _);
 
         now += RemoteTranscodeSessionRegistry.ActiveWindow + TimeSpan.FromSeconds(1);
         Assert.True(registry.TryTouch("friend-a", "s4", "dev", limit: 2));
         Assert.True(registry.TryTouch("friend-a", "s5", "dev", limit: 2));
+    }
+
+    [Fact]
+    public void OwnerRegistry_ConcurrentAdmissionNeverExceedsTheLimit()
+    {
+        var registry = new RemoteTranscodeSessionRegistry();
+        var admitted = 0;
+        Parallel.For(0, 500, i =>
+        {
+            if (registry.TryTouch("friend", "session-" + i, "device", limit: 3))
+            {
+                Interlocked.Increment(ref admitted);
+            }
+        });
+
+        Assert.Equal(3, admitted);
+        Assert.Equal(3, registry.ActiveCount("friend"));
     }
 
     [Fact]

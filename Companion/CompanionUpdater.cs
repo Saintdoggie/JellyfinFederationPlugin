@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace FederationCompanion;
@@ -69,10 +70,10 @@ public sealed class CompanionUpdater
         var zipPath = staging + ".zip";
         try
         {
-            await using (var remote = await _http.GetStreamAsync(CompanionVersion.AssetDownloadUrl(), cancellationToken).ConfigureAwait(false))
-            await using (var file = File.Create(zipPath))
+            var download = await DownloadVerifiedArchiveAsync(zipPath, cancellationToken).ConfigureAwait(false);
+            if (!download.Success)
             {
-                await remote.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+                return (false, download.Message);
             }
 
             Directory.CreateDirectory(staging);
@@ -82,13 +83,140 @@ public sealed class CompanionUpdater
             LaunchRestarter(script);
             return (true, "Update downloaded. Companion will restart in a moment — refresh this page after it comes back.");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or InvalidDataException)
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or InvalidDataException)
         {
             TryDelete(staging);
-            TryDelete(zipPath);
             return (false, "Could not download or unpack the new Companion build. Check your internet connection and try again.");
         }
+        finally
+        {
+            TryDelete(zipPath);
+        }
     }
+
+    internal async Task<(bool Success, string Message)> DownloadVerifiedArchiveAsync(string zipPath, CancellationToken cancellationToken)
+    {
+        var keepArchive = false;
+        try
+        {
+            using var checksumResponse = await _http.GetAsync(ChecksumDownloadUrl(), cancellationToken).ConfigureAwait(false);
+            if (!checksumResponse.IsSuccessStatusCode)
+            {
+                return (false, "The Companion update could not be checked because its SHA256SUMS file is unavailable. Nothing was installed; try again.");
+            }
+
+            var checksums = await ReadChecksumFileAsync(checksumResponse.Content, cancellationToken).ConfigureAwait(false);
+            if (!TryParseChecksum(checksums, CompanionVersion.AssetName(), out var expected))
+            {
+                return (false, "The Companion update could not be checked because its SHA256SUMS entry is missing or malformed. Nothing was installed; try again.");
+            }
+
+            await using (var remote = await _http.GetStreamAsync(CompanionVersion.AssetDownloadUrl(), cancellationToken).ConfigureAwait(false))
+            await using (var file = File.Create(zipPath))
+            {
+                await remote.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+            }
+
+            await using (var file = File.OpenRead(zipPath))
+            {
+                var actual = await SHA256.HashDataAsync(file, cancellationToken).ConfigureAwait(false);
+                if (!CryptographicOperations.FixedTimeEquals(actual, expected))
+                {
+                    return (false, "The Companion update ZIP did not match its published SHA-256 checksum. Nothing was installed; try again.");
+                }
+            }
+
+            keepArchive = true;
+            return (true, "Update archive checked against its published SHA-256 checksum.");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or InvalidDataException)
+        {
+            return (false, "Could not download or verify the new Companion build. Check your internet connection and try again.");
+        }
+        finally
+        {
+            if (!keepArchive)
+            {
+                TryDelete(zipPath);
+            }
+        }
+    }
+
+    private static async Task<string> ReadChecksumFileAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        const int MaximumBytes = 64 * 1024;
+        if (content.Headers.ContentLength > MaximumBytes)
+        {
+            throw new InvalidDataException("The checksum file is too large.");
+        }
+
+        await using var source = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var output = new MemoryStream();
+        var buffer = new byte[4096];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return System.Text.Encoding.UTF8.GetString(output.GetBuffer(), 0, (int)output.Length);
+            }
+
+            if (output.Length + read > MaximumBytes)
+            {
+                throw new InvalidDataException("The checksum file is too large.");
+            }
+
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal static bool TryParseChecksum(string checksums, string assetName, out byte[] expectedChecksum)
+    {
+        expectedChecksum = Array.Empty<byte>();
+        if (string.IsNullOrEmpty(checksums) || string.IsNullOrEmpty(assetName))
+        {
+            return false;
+        }
+
+        byte[]? expected = null;
+        foreach (var rawLine in checksums.Split('\n'))
+        {
+            var line = rawLine.EndsWith('\r') ? rawLine[..^1] : rawLine;
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (line.Length < 67 || line[64] != ' ' || (line[65] != ' ' && line[65] != '*')
+                || !line[..64].All(Uri.IsHexDigit))
+            {
+                return false;
+            }
+
+            if (!string.Equals(line[66..], assetName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (expected != null)
+            {
+                return false;
+            }
+
+            expected = Convert.FromHexString(line[..64]);
+        }
+
+        if (expected == null)
+        {
+            return false;
+        }
+
+        expectedChecksum = expected;
+        return true;
+    }
+
+    private static string ChecksumDownloadUrl()
+        => $"https://github.com/{CompanionVersion.Repo}/releases/download/{CompanionVersion.ReleaseTag}/SHA256SUMS";
 
     internal static string WriteRestartScript(string installDir, string stagingDir, string processPath, int pid)
     {

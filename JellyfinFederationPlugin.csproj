@@ -13,6 +13,7 @@
     <!-- Keep the catalog DLL reproducible when its archive/checksum are committed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <EnableSourceLink>false</EnableSourceLink>
+    <DefineConstants Condition="'$(FederationTestHooks)' == 'true'">$(DefineConstants);FEDERATION_TEST_HOOKS</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

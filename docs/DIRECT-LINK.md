@@ -249,6 +249,20 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
 
 ## Testing
 
+The NAT fixture uses private addresses as its isolated "internet". Production builds
+always refuse that relaxation. Build a separate test-hooks copy before running the
+fixture, and pass that output directory explicitly so a normal Release build is not
+silently reused:
+
+```sh
+dotnet build JellyfinFederationPlugin.csproj -c Release -p:FederationTestHooks=true
+python3 scripts/federation_directlink_smoke.py --plugin-dir bin/Release/net10.0
+```
+
+Run `dotnet build JellyfinFederationPlugin.csproj -c Release` afterward to restore the
+normal production output. The test build still requires the fixture's
+`FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE=1`; never set it for a real server.
+
 - Unit tests: STUN encode/decode (incl. XOR-MAPPED-ADDRESS, IPv4), probe packet
   MAC and rejection, offer validation, request-head parser and allowlist (fuzz-ish
   table of bad inputs), relay header copying, backoff schedule, and the

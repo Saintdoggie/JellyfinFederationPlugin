@@ -370,7 +370,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return await HttpContentReader.ReadTextAsync(response.Content, FriendConversionLogs.MaxBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -2384,6 +2384,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 // Per request rather than on the shared client: the same client
                 // relays media, whose byte ranges must never be re-encoded.
+                request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("br"));
                 request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("gzip"));
             }
 

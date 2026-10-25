@@ -2342,7 +2342,7 @@ test('Beta tab sits before Advanced and holds the pairing card, off by default',
   assert.match(configPage, /id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1"[^>]*data-tab="beta" role="tab" aria-selected="false"/);
   assert.match(configPage, /id="fedPanelBeta" aria-labelledby="fedTabBeta" class="fed-tabpanel" data-tab-panel="beta" role="tabpanel"/);
   assert.match(configPage, /Pairing codes \(Beta\) <span class="fed-pill fed-pill-off">Beta<\/span>/);
-  assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" \/>/);
+  assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" disabled title="Pairing codes are disabled in this build while the feature is under review\." \/>/);
   assert.ok(configPage.includes('Direct links and pairing codes are on the'));
   const dom = new JSDOM(configPage);
   const d = dom.window.document;
@@ -2400,4 +2400,20 @@ test('pairing status renders untrusted text safely and gates the confirm button'
   assert.match(list.textContent, /Ready\. Choose what to share/);
   api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
   assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
+});
+
+test('HTML helper escapes quoted attribute breakouts and pool icons are escaped', () => {
+  const dom = new JSDOM('');
+  const source = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  assert.ok(source, 'escapeHtml not found');
+  const escape = new Function('document', source[0] + '\nreturn escapeHtml;')(dom.window.document);
+  const hostile = '" onerror="globalThis.compromised=true\' data-x=';
+  const html = '<img src="data:image/png;base64,' + escape(hostile) + '" alt="" />';
+  const rendered = new JSDOM(html);
+  const image = rendered.window.document.querySelector('img');
+  assert.equal(image.getAttribute('onerror'), null);
+  assert.equal(rendered.window.compromised, undefined);
+  assert.match(configPage, /data:image\/png;base64,' \+ escapeHtml\(p\.IconBase64\)/);
+  dom.window.close();
+  rendered.window.close();
 });

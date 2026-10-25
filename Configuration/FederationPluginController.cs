@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -1750,10 +1750,11 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             Response.Headers.CacheControl = "private, no-store";
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
             var relayPrefix = HandoffPlaylistLinks.RelayPrefix(Request.PathBase.Value);
             if (HandoffPlaylistLinks.TakePrefetched(u!) is { } ready)
             {
-                return Content(HandoffPlaylistLinks.Rewrite(ready.Text, RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix), ready.ContentType);
+                return Content(HandoffPlaylistLinks.Rewrite(ready.Text, RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix), "application/vnd.apple.mpegurl");
             }
 
             try
@@ -1766,14 +1767,9 @@ namespace Jellyfin.Plugin.Federation.Api
                     return StatusCode((int)response.StatusCode);
                 }
 
-                if (response.Content.Headers.ContentLength > 8 * 1024 * 1024)
-                {
-                    return StatusCode(StatusCodes.Status502BadGateway);
-                }
-
-                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                var rewritten = HandoffPlaylistLinks.Rewrite(text, RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix);
-                return Content(rewritten, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
+                var bytes = await HttpContentReader.ReadBytesAsync(response.Content, 8 * 1024 * 1024, cancellationToken).ConfigureAwait(false);
+                var rewritten = HandoffPlaylistLinks.Rewrite(Encoding.UTF8.GetString(bytes), RemoteServerClientFactory.EffectiveUrl(friend), relayPrefix);
+                return Content(rewritten, "application/vnd.apple.mpegurl");
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -6199,22 +6195,18 @@ namespace Jellyfin.Plugin.Federation.Api
                 await fetchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    using var response = await BrowseImageHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
-                    if (!response.IsSuccessStatusCode)
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    using var response = await BrowseImageHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode
+                        || !BrowseImagePolicy.TryGetContentType(response.Content.Headers.ContentType?.MediaType, out var contentType))
                     {
                         return (rawId, (string?)null, false);
                     }
 
-                    var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                    if (bytes.Length == 0 || bytes.Length > 5 * 1024 * 1024)
+                    var bytes = await HttpContentReader.ReadBytesAsync(response.Content, BrowseImagePolicy.MaximumBytes, cancellationToken).ConfigureAwait(false);
+                    if (bytes.Length == 0)
                     {
                         return (rawId, (string?)null, false);
-                    }
-
-                    var contentType = response.Content.Headers.ContentType?.MediaType;
-                    if (string.IsNullOrWhiteSpace(contentType) || !contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                    {
-                        contentType = "image/jpeg";
                     }
 
                     return (rawId, (string?)$"data:{contentType};base64,{Convert.ToBase64String(bytes)}", false);
@@ -6252,6 +6244,7 @@ namespace Jellyfin.Plugin.Federation.Api
         [Authorize(Policy = "RequiresElevation")]
         public async Task<IActionResult> BrowseImage(string serverId, [FromQuery] string itemId, CancellationToken cancellationToken)
         {
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
             if (string.IsNullOrWhiteSpace(itemId))
             {
                 return NotFound();
@@ -6289,11 +6282,11 @@ namespace Jellyfin.Plugin.Federation.Api
                     if (localItem?.HasImage(MediaBrowser.Model.Entities.ImageType.Primary, 0) == true)
                     {
                         var imagePath = localItem.GetImagePath(MediaBrowser.Model.Entities.ImageType.Primary, 0);
-                        if (!string.IsNullOrEmpty(imagePath) && System.IO.File.Exists(imagePath))
+                        if (!string.IsNullOrEmpty(imagePath)
+                            && System.IO.File.Exists(imagePath)
+                            && BrowseImagePolicy.TryGetContentType(MediaBrowser.Model.Net.MimeTypes.GetMimeType(imagePath, string.Empty), out var localContentType))
                         {
-                            return PhysicalFile(
-                                imagePath,
-                                MediaBrowser.Model.Net.MimeTypes.GetMimeType(imagePath, "image/jpeg"));
+                            return PhysicalFile(imagePath, localContentType);
                         }
                     }
                 }
@@ -6324,15 +6317,16 @@ namespace Jellyfin.Plugin.Federation.Api
 
             try
             {
-                using var response = await BrowseImageHttpClient.GetAsync(imageUrl, cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
+                using var request = new HttpRequestMessage(HttpMethod.Get, imageUrl);
+                using var response = await BrowseImageHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode
+                    || !BrowseImagePolicy.TryGetContentType(response.Content.Headers.ContentType?.MediaType, out var contentType))
                 {
                     return NotFound();
                 }
 
-                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-                return File(bytes, contentType);
+                var bytes = await HttpContentReader.ReadBytesAsync(response.Content, BrowseImagePolicy.MaximumBytes, cancellationToken).ConfigureAwait(false);
+                return bytes.Length == 0 ? NotFound() : File(bytes, contentType);
             }
             catch (Exception ex)
             {

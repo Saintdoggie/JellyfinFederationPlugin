@@ -79,6 +79,17 @@ public class FriendConversionLogsTests : IDisposable
     }
 
     [Fact]
+    public void DescribeSource_IsSingleLineAndBounded()
+    {
+        var header = FriendConversionLogs.DescribeSource("friend\r\nForged: yes" + new string('x', 100), "session\r\nnext");
+        Assert.DoesNotContain('\r', header);
+        Assert.DoesNotContain('\n', header);
+        Assert.Contains("friendForged: yes", header);
+        Assert.Contains("sessionnext", header);
+        Assert.True(header.Length < 220);
+    }
+
+    [Fact]
     public void LocalFileName_LooksLikeJellyfinsOwn_WithTheFriend()
     {
         var name = FriendConversionLogs.LocalFileName(new DateTime(2026, 10, 20, 10, 42, 19), Item, "friendflix", "cf92ce0dd0f04bd59eb81ab9aac8ebcc");

@@ -116,14 +116,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Whether <paramref name="rating"/> is at or below <paramref name="ceiling"/> in rank.
         /// An unrecognised ceiling fails closed for rated items (a typo must not switch filtering off).
-        /// An unrecognised ITEM rating (NR, empty, regional) stays fail-open: blocking every unrated item
-        /// would hide a large part of most libraries.
+        /// An unrecognised non-empty ITEM rating also fails closed: a ceiling is an access rule,
+        /// so NR and unfamiliar regional labels must not bypass it.
         /// </summary>
         public static bool IsWithinRatingCeiling(string rating, string ceiling)
         {
             if (!RatingRank.TryGetValue(rating.Trim(), out var itemRank))
             {
-                return true;
+                return false;
             }
 
             if (!TryRankCeiling(ceiling, out var ceilingRank))

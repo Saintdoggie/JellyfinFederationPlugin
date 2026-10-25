@@ -61,12 +61,28 @@ namespace Jellyfin.Plugin.Federation.Services
                 var html = File.ReadAllText(indexPath);
                 var updated = FederationClientScriptHtml.Inject(html, Plugin.Instance?.Configuration.EnableAdaptivePlayback == true);
                 if (html == updated) return;
-                File.WriteAllText(indexPath, updated);
-
+                WriteAllTextAtomic(indexPath, updated);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Could not inject badge script into index.html; the server-icon badge will not appear, everything else is unaffected");
+            }
+        }
+
+        internal static void WriteAllTextAtomic(string path, string contents)
+        {
+            var temporary = path + ".federation-" + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, contents);
+                File.Move(temporary, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                {
+                    File.Delete(temporary);
+                }
             }
         }
 
@@ -103,7 +119,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var updated = html.Replace(FederationClientScriptHtml.Early, string.Empty, StringComparison.Ordinal)
                     .Replace(FederationClientScriptHtml.Deferred, string.Empty, StringComparison.Ordinal);
-                File.WriteAllText(indexPath, updated);
+                WriteAllTextAtomic(indexPath, updated);
                 _logger.LogInformation("[Federation] Removed badge script tag from {Path}", indexPath);
             }
             catch (Exception ex)

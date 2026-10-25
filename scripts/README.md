@@ -33,6 +33,22 @@ raw browser probe and measure converted playback. Use a separate `--output` path
 for each case to retain comparable reports. This is forced conversion of synthetic
 SDR media, not HDR tone mapping or automatic device-profile negotiation.
 
+## Direct-link NAT checks
+
+The isolated NAT networks require a deliberately relaxed test build. Normal Release
+binaries ignore `FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE`, even when it is present:
+
+```sh
+dotnet build JellyfinFederationPlugin.csproj -c Release -p:FederationTestHooks=true
+python3 scripts/federation_directlink_smoke.py --plugin-dir bin/Release/net10.0
+dotnet build JellyfinFederationPlugin.csproj -c Release
+```
+
+The final normal build is required before any standard gate, package, or deployment.
+Use a separate output directory instead if the normal Release output must be retained.
+The fixture creates its own networks and generated credentials; do not point it at a
+live server or publish its private logs.
+
 ## Two-server federation checks
 
 After a Release build:

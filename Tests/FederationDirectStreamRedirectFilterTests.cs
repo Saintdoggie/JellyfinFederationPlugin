@@ -75,6 +75,10 @@ public class FederationDirectStreamRedirectFilterTests
         Assert.Equal("http", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
         context.Request.Headers["X-Forwarded-Proto"] = "https, http";
         Assert.Equal("https", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
+        context.Request.Headers["X-Forwarded-Proto"] = "javascript:alert(1)";
+        Assert.Equal("http", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
+        context.Request.Headers["X-Forwarded-Proto"] = "HTTPS";
+        Assert.Equal("https", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
     }
 
     [Fact]

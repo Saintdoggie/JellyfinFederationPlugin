@@ -95,6 +95,40 @@ public class PairingPacketTests
         Assert.Equal(allowed, PairingEndpoints.IsAcceptable(new IPEndPoint(IPAddress.Parse(address), port), own));
     }
 
+#if !FEDERATION_TEST_HOOKS
+    [Fact]
+    public void ProductionBuild_IgnoresThePrivateAddressTestOverride()
+    {
+        var previous = Environment.GetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv);
+        try
+        {
+            Environment.SetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv, "1");
+            Assert.False(Services.DirectLink.DirectLinkProtocol.TestMode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv, previous);
+        }
+    }
+#else
+    [Fact]
+    public void TestHooksBuild_StillRequiresTheExplicitEnvironmentOptIn()
+    {
+        var previous = Environment.GetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv);
+        try
+        {
+            Environment.SetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv, null);
+            Assert.False(Services.DirectLink.DirectLinkProtocol.TestMode);
+            Environment.SetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv, "1");
+            Assert.True(Services.DirectLink.DirectLinkProtocol.TestMode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Services.DirectLink.DirectLinkProtocol.TestAllowPrivateEnv, previous);
+        }
+    }
+#endif
+
     [Fact]
     public void Endpoints_IPv6_AreRefused_AndTestModeAllowsPrivate()
     {

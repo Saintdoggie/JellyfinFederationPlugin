@@ -112,7 +112,12 @@ namespace Jellyfin.Plugin.Federation.Services
             var forwarded = request.Headers["X-Forwarded-Proto"].ToString();
             if (!string.IsNullOrEmpty(forwarded))
             {
-                return forwarded.Split(',')[0].Trim();
+                var scheme = forwarded.Split(',')[0].Trim();
+                if (string.Equals(scheme, "http", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase))
+                {
+                    return scheme.ToLowerInvariant();
+                }
             }
 
             return request.Scheme;

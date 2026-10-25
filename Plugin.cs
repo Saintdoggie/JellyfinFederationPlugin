@@ -79,11 +79,9 @@ namespace Jellyfin.Plugin.Federation
         /// in place. Safe to mutate directly (rather than needing a clone, the way
         /// <see cref="SaveConfiguration(PluginConfiguration)"/> does) because this
         /// runs once, synchronously, before the constructor returns - nothing else
-        /// in the process can have a reference to this object yet. A value that
-        /// isn't valid ciphertext is left as-is by <see cref="ApiKeyProtector.Unprotect"/>
-        /// rather than throwing, so an existing install upgrading from a version
-        /// before this feature existed keeps working with no explicit migration -
-        /// the plaintext keys it already has just get encrypted on the next save.
+        /// in the process can have a reference to this object yet. Legacy plaintext
+        /// stays readable and is encrypted on the next save; damaged protected values
+        /// become empty rather than being trusted as credentials.
         /// </summary>
         private void DecryptConfigurationInPlace()
         {

@@ -117,7 +117,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         var text = await client.GetPlayLogAsync(playSessionId, token).ConfigureAwait(false);
                         if (!string.IsNullOrEmpty(text))
                         {
-                            var header = $"Conversion log from friend \"{server.Name}\" for play session {playSessionId} (it converted this play; fetched {DateTime.Now:yyyy-MM-dd HH:mm:ss})\n\n";
+                            var header = FriendConversionLogs.DescribeSource(server.Name, playSessionId)
+                                + $" (it converted this play; fetched {DateTime.Now:yyyy-MM-dd HH:mm:ss})\n\n";
                             await File.WriteAllTextAsync(Path.Combine(logDirectory, fileName), header + text, token).ConfigureAwait(false);
                         }
                     }

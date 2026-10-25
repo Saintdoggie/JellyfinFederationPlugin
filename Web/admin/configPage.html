@@ -1536,11 +1536,17 @@
                     }
 
                     function q(selector) {
+                        if (selector.charAt(0) === '#' && selector.indexOf(' ') < 0) { return document.getElementById(selector.substring(1)); }
                         return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
                     }
 
                     function qa(selector) {
                         return (pageEl ? pageEl : document).querySelectorAll(selector);
+                    }
+
+                    function cssEscape(value) {
+                        if (window.CSS && typeof window.CSS.escape === 'function') { return window.CSS.escape(String(value)); }
+                        return String(value).replace(/[^a-zA-Z0-9_-]/g, function (c) { return '\\' + c.charCodeAt(0).toString(16) + ' '; });
                     }
 
                     function isRoutineNotice(msg) {
@@ -1650,7 +1656,7 @@
 
                         var d = document.createElement('div');
                         d.textContent = String(s);
-                        return d.innerHTML;
+                        return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
                     }
 
                     function normalizeUrl(u) {
@@ -2317,8 +2323,8 @@
                     }
 
                     function saveDownloadAccess(serverId) {
-                        var allow = q('.fedAllowDownloads[data-id="' + serverId + '"]');
-                        var bulk = q('.fedAllowBulkDownloads[data-id="' + serverId + '"]');
+                        var allow = q('.fedAllowDownloads[data-id="' + cssEscape(serverId) + '"]');
+                        var bulk = q('.fedAllowBulkDownloads[data-id="' + cssEscape(serverId) + '"]');
                         var status = q('#fedDownloadAccessStatus-' + serverId);
                         function show(msg, kind) {
                             if (!status) { return; }
@@ -2343,8 +2349,8 @@
                     }
 
                     function saveFriendLimits(serverId) {
-                        var gb = q('.fedLimitDataGb[data-id="' + serverId + '"]');
-                        var streams = q('.fedLimitStreams[data-id="' + serverId + '"]');
+                        var gb = q('.fedLimitDataGb[data-id="' + cssEscape(serverId) + '"]');
+                        var streams = q('.fedLimitStreams[data-id="' + cssEscape(serverId) + '"]');
                         var id = '#fedFriendLimitsStatus-' + serverId;
                         showRemoteTranscodeStatus(id, 'Saving…', 'info');
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Limits', {
@@ -2369,7 +2375,7 @@
                     }
 
                     function searchExcludeItems(serverId) {
-                        var input = q('.fedExcludeItemSearch[data-id="' + serverId + '"]');
+                        var input = q('.fedExcludeItemSearch[data-id="' + cssEscape(serverId) + '"]');
                         var query = input ? input.value : '';
                         if (!query) {
                             return;
@@ -4291,7 +4297,7 @@
                             html += '<div class="fed-server">';
                             html += '<div class="fed-server-head">';
                             if (p.IconBase64) {
-                                html += '<img src="data:image/png;base64,' + p.IconBase64 + '" alt="" style="width:1.6em;height:1.6em;border-radius:3px;object-fit:cover;margin-right:0.4em;" />';
+                                html += '<img src="data:image/png;base64,' + escapeHtml(p.IconBase64) + '" alt="" style="width:1.6em;height:1.6em;border-radius:3px;object-fit:cover;margin-right:0.4em;" />';
                             } else {
                                 html += '<span class="fed-dot fed-dot-ok"></span>';
                             }

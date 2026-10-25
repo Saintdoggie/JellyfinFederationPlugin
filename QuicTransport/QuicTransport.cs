@@ -35,28 +35,35 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
         private static readonly TimeSpan PairedIdleTimeout = TimeSpan.FromSeconds(45);
         private static readonly TimeSpan PairedKeepAlive = TimeSpan.FromSeconds(10);
 
-        /// <summary>Whether QUIC works in this load context.</summary>
-        // How much each side lets the other have in flight. The library's defaults
-        // keep one download to roughly 270 KB in flight, which over a 20 ms round trip
-        // caps it near 110 Mbps however fast both lines are. The connection window
-        // bounds the memory all streams together can hold.
-        private static long _connectionWindow = 32L * 1024 * 1024;
-        private static long _streamWindow = 8L * 1024 * 1024;
+        // Explicit values are benchmarks only. Zero selects the production profile;
+        // a negative value selects the library defaults for comparison.
+        private static long _connectionWindow;
+        private static long _streamWindow;
 
         public static bool IsSupported() => QuicConnection.IsSupported && QuicListener.IsSupported;
 
-        /// <summary>Sets the receive windows for new connections (bytes); 0 keeps the library defaults.</summary>
+        /// <summary>Overrides receive windows for new connections (bytes); zero restores the production profile.</summary>
         public static void ConfigureWindows(long connection, long stream)
         {
             Interlocked.Exchange(ref _connectionWindow, connection);
             Interlocked.Exchange(ref _streamWindow, stream);
         }
 
-        private static QuicReceiveWindowSizes Windows()
+        private static QuicReceiveWindowSizes Windows(bool paired = false)
         {
             var sizes = new QuicReceiveWindowSizes();
             var connection = Interlocked.Read(ref _connectionWindow);
             var stream = Interlocked.Read(ref _streamWindow);
+            if (connection == 0)
+            {
+                connection = paired ? 16L * 1024 * 1024 : 32L * 1024 * 1024;
+            }
+
+            if (stream == 0)
+            {
+                stream = paired ? 4L * 1024 * 1024 : 8L * 1024 * 1024;
+            }
+
             if (connection > 0)
             {
                 sizes.Connection = (int)Math.Min(int.MaxValue, connection);
@@ -297,7 +304,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 MaxInboundBidirectionalStreams = maxInboundStreams,
                 MaxInboundUnidirectionalStreams = 0,
-                InitialReceiveWindowSizes = Windows(),
+                InitialReceiveWindowSizes = Windows(paired: true),
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
                     ApplicationProtocols = PairedProtocols,
@@ -383,7 +390,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 MaxInboundBidirectionalStreams = maxInboundStreams,
                 MaxInboundUnidirectionalStreams = 0,
-                InitialReceiveWindowSizes = Windows(),
+                InitialReceiveWindowSizes = Windows(paired: true),
                 ServerAuthenticationOptions = new SslServerAuthenticationOptions
                 {
                     ApplicationProtocols = PairedProtocols,

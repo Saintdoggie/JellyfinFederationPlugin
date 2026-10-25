@@ -51,7 +51,31 @@ public class ApiKeyProtectionTests : IDisposable
         var ciphertext = ApiKeyProtector.Protect("a-real-federation-token");
 
         Assert.NotEqual("a-real-federation-token", ciphertext);
+        Assert.StartsWith("fedenc:v1:", ciphertext, StringComparison.Ordinal);
         Assert.Equal("a-real-federation-token", ApiKeyProtector.Unprotect(ciphertext));
+    }
+
+    [Fact]
+    public void Unprotect_DamagedProtectedValues_FailsClosedInsteadOfUsingCiphertext()
+    {
+        var damagedCurrent = ApiKeyProtector.Protect("secret");
+        damagedCurrent = damagedCurrent[..^1] + (damagedCurrent[^1] == 'A' ? 'B' : 'A');
+        Assert.Equal(string.Empty, ApiKeyProtector.Unprotect(damagedCurrent));
+        Assert.DoesNotContain(damagedCurrent, ApiKeyProtector.Protect(ApiKeyProtector.Unprotect(damagedCurrent)), StringComparison.Ordinal);
+
+        const string legacyPrefix = "fedenc:v1:";
+        var legacy = ApiKeyProtector.Protect("secret")[legacyPrefix.Length..];
+        var damagedLegacy = legacy[..^1] + (legacy[^1] == 'A' ? 'B' : 'A');
+        Assert.Equal(string.Empty, ApiKeyProtector.Unprotect(damagedLegacy));
+    }
+
+    [Fact]
+    public void Unprotect_LegacyProtectedValue_StillRoundTrips()
+    {
+        const string legacyPrefix = "fedenc:v1:";
+        var legacy = ApiKeyProtector.Protect("legacy-secret")[legacyPrefix.Length..];
+
+        Assert.Equal("legacy-secret", ApiKeyProtector.Unprotect(legacy));
     }
 
     [Fact]

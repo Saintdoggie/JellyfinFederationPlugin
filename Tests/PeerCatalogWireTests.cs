@@ -129,10 +129,33 @@ public sealed class PeerCatalogWireTests
     }
 
     [Fact]
+    public async Task BrotliPage_RoundTrips_AndUsesFewerBytesThanGzip()
+    {
+        var page = Page(FullItem);
+        var brotli = PeerCatalogWire.Encode(page, "br, gzip");
+        var gzip = PeerCatalogWire.Encode(page, "gzip");
+        Assert.Equal("br", brotli.ContentEncoding);
+        Assert.True(brotli.Body.Length < gzip.Body.Length, $"Brotli {brotli.Body.Length} vs gzip {gzip.Body.Length}");
+
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(brotli.Body) };
+        response.Content.Headers.ContentEncoding.Add("br");
+        Assert.Equal(page, await PeerCatalogWire.ReadBodyAsync(response, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReadBody_EnforcesTheExpandedSizeLimit()
+    {
+        var encoded = PeerCatalogWire.Encode(Page(FullItem), "br");
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(encoded.Body) };
+        response.Content.Headers.ContentEncoding.Add("br");
+        await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => PeerCatalogWire.ReadBodyAsync(response, CancellationToken.None, maximumBytes: 100));
+    }
+
+    [Fact]
     public async Task ReadBody_RejectsAnEncodingItCannotUndo()
     {
         using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1, 2, 3 }) };
-        response.Content.Headers.ContentEncoding.Add("br");
+        response.Content.Headers.ContentEncoding.Add("deflate");
         await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => PeerCatalogWire.ReadBodyAsync(response, CancellationToken.None));
     }
 

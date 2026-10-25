@@ -1584,7 +1584,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 RemoteServerName = sender.Name,
                 RemoteServerId = sender.FederationId,
                 Roster = payload.Roster ?? new List<PoolMember>(),
-                IconBase64 = CapInboundPoolIcon(payload.IconBase64)
+                IconBase64 = NormalizePoolIcon(payload.IconBase64)
             });
             Plugin.Instance.SaveConfiguration();
             return Task.CompletedTask;
@@ -1785,12 +1785,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Pool not found.");
             }
 
-            if (!string.IsNullOrEmpty(iconBase64) && iconBase64.Length > MaxPoolIconBase64Length)
+            var normalizedIcon = NormalizePoolIcon(iconBase64);
+            if (!string.IsNullOrEmpty(iconBase64) && normalizedIcon == null)
             {
-                return (false, "Icon is too large - please use a smaller image.");
+                return (false, "Icon must be a valid PNG image no larger than 150,000 base64 characters.");
             }
 
-            pool.IconBase64 = string.IsNullOrEmpty(iconBase64) ? null : iconBase64;
+            pool.IconBase64 = normalizedIcon;
             Plugin.Instance.SaveConfiguration();
 
             await BroadcastPoolNoticeAsync(pool, excludeFederationId: null, cancellationToken).ConfigureAwait(false);
@@ -2423,23 +2424,38 @@ namespace Jellyfin.Plugin.Federation.Services
             return false;
         }
 
-        // Oversized peer icons are dropped; the rest of the notice still applies.
-        private static string? CapInboundPoolIcon(string? iconBase64)
+        private static string? NormalizePoolIcon(string? iconBase64)
         {
-            if (string.IsNullOrEmpty(iconBase64) || iconBase64.Length > MaxPoolIconBase64Length)
+            if (string.IsNullOrEmpty(iconBase64))
             {
                 return null;
             }
 
-            return iconBase64;
+            if (iconBase64.Length > MaxPoolIconBase64Length)
+            {
+                return null;
+            }
+
+            try
+            {
+                var bytes = Convert.FromBase64String(iconBase64);
+                ReadOnlySpan<byte> pngSignature = stackalloc byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
+                return bytes.Length > pngSignature.Length && bytes.AsSpan(0, pngSignature.Length).SequenceEqual(pngSignature)
+                    ? Convert.ToBase64String(bytes)
+                    : null;
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
         }
 
         private static void ApplyInboundPoolIcon(FederationPool pool, string? iconBase64)
         {
-            var capped = CapInboundPoolIcon(iconBase64);
-            if (capped != null)
+            var normalized = NormalizePoolIcon(iconBase64);
+            if (normalized != null)
             {
-                pool.IconBase64 = capped;
+                pool.IconBase64 = normalized;
             }
         }
 
