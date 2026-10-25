@@ -2600,15 +2600,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return string.Empty;
             }
 
-            var scheme = request.Scheme;
-            var forwardedProto = request.Headers["X-Forwarded-Proto"].FirstOrDefault();
-            if (!string.IsNullOrEmpty(forwardedProto)
-                && (forwardedProto == Uri.UriSchemeHttp || forwardedProto == Uri.UriSchemeHttps))
-            {
-                scheme = forwardedProto;
-            }
-
-            var derived = $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
+            var derived = $"{request.Scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
 
             // An admin managing Jellyfin from their own LAN (very common - even a
             // publicly-tunnelled server's admin dashboard is usually opened over the

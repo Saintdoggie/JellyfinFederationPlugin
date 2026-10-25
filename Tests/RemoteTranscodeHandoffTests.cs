@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Xunit;
 
@@ -19,6 +20,18 @@ public class RemoteTranscodeHandoffTests
 {
     private static readonly Guid Item = Guid.Parse("0123456789abcdef0123456789abcdef");
     private static readonly Guid Source = Guid.Parse("fedcba9876543210fedcba9876543210");
+
+    [Fact]
+    public void GatewayBase_UsesTrustedProxyMiddlewareResult_NotRawHeaders()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Scheme = "https";
+        context.Request.Host = new HostString("media.example");
+        context.Request.PathBase = "/jellyfin";
+        context.Request.Headers["X-Forwarded-Proto"] = "http";
+        context.Request.Headers["X-Forwarded-Host"] = "attacker.example";
+        Assert.Equal("https://media.example/jellyfin/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.PublicGatewayBase(context.Request));
+    }
 
     [Theory]
     [InlineData("/videos/0123456789abcdef0123456789abcdef/master.m3u8", RemoteMediaKind.HlsMaster, false)]

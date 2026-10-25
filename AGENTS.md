@@ -184,7 +184,7 @@ Tests and project history:
   capability bound to server, item, media kind, and optional normalized user.
   Stream time also verifies server enabled state, cache/source membership, and
   the current access rule. Rotating/removing the server credential revokes old
-  URLs. These capabilities do not yet carry an expiry; see `TODO.md`.
+  URLs. Current v2 capabilities expire and bind download/auto-selection purpose; non-expiring legacy signatures are rejected and stored paths are restamped.
 - Per-request provider URLs cryptographically bind `requestingUserId`; never
   regress to appending an unsigned user id. Userless static paths must continue
   to pass `IsAllowedForEveryConfiguredUser` both when built and when streamed.

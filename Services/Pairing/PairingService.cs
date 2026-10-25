@@ -408,9 +408,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
         }
 
-        /// <summary>The admin compared the safety number with the friend and it matched.</summary>
+        /// <summary>The admin compared the displayed safety number with the friend and it matched.</summary>
         /// <returns>An error, or null.</returns>
-        public async Task<string?> ConfirmAsync(string friendId, CancellationToken cancellationToken)
+        public async Task<string?> ConfirmAsync(string friendId, string safetyNumber, CancellationToken cancellationToken)
         {
             // The number is only worth comparing once the link it describes is up.
             if (!_friends.TryGetValue(friendId, out var runtime) || runtime.Link is not { IsClosed: false })
@@ -418,15 +418,38 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 return "The link to this friend isn't up yet; confirm once it shows connected.";
             }
 
-            var updated = UpdateFriend(friendId, s => s.PairSafetyConfirmed = true);
+            var matched = false;
+            var updated = UpdateFriend(friendId, s =>
+            {
+                var changed = !s.PairSafetyConfirmed;
+                matched = TryConfirmSafetyNumber(s, safetyNumber);
+                return matched && changed;
+            });
             if (updated == null)
             {
                 return "No paired friend with that id.";
             }
 
+            if (!matched)
+            {
+                return "The safety number changed. Compare the number shown now before confirming.";
+            }
+
             _logger.LogInformation("[Federation] The safety number for paired friend {Name} was confirmed here", updated.Name);
             await SendConfirmedAndHelloAsync(friendId, sendConfirmed: true, cancellationToken).ConfigureAwait(false);
             return null;
+        }
+
+        internal static bool TryConfirmSafetyNumber(RemoteServer friend, string displayedSafetyNumber)
+        {
+            if (string.IsNullOrEmpty(friend.PairSafetyNumber)
+                || !string.Equals(friend.PairSafetyNumber, displayedSafetyNumber, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            friend.PairSafetyConfirmed = true;
+            return true;
         }
 
         /// <summary>Status for the admin page: pending codes and paired friends (no secrets).</summary>

@@ -68,16 +68,14 @@ public class FederationDirectStreamRedirectFilterTests
     }
 
     [Fact]
-    public void RequestScheme_PrefersReverseProxyHeader()
+    public void RequestScheme_UsesTrustedProxyMiddlewareResult_NotRawHeaders()
     {
         var context = new DefaultHttpContext();
         context.Request.Scheme = "http";
+        context.Request.Headers["X-Forwarded-Proto"] = "https";
         Assert.Equal("http", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
-        context.Request.Headers["X-Forwarded-Proto"] = "https, http";
-        Assert.Equal("https", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
-        context.Request.Headers["X-Forwarded-Proto"] = "javascript:alert(1)";
-        Assert.Equal("http", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
-        context.Request.Headers["X-Forwarded-Proto"] = "HTTPS";
+        context.Request.Scheme = "https";
+        context.Request.Headers["X-Forwarded-Proto"] = "http";
         Assert.Equal("https", FederationDirectStreamRedirectFilter.RequestScheme(context.Request));
     }
 
@@ -92,6 +90,8 @@ public class FederationDirectStreamRedirectFilterTests
         var redirect = Assert.IsType<RedirectResult>(result);
         Assert.Equal(PeerUrl, redirect.Url);
         Assert.False(redirect.Permanent);
+        Assert.Equal("private, no-store", harness.Response.Headers.CacheControl.ToString());
+        Assert.Equal("no-referrer", harness.Response.Headers["Referrer-Policy"].ToString());
     }
 
     [Fact]
@@ -157,6 +157,8 @@ public class FederationDirectStreamRedirectFilterTests
 
         public Mock<IMediaSourceManager> MediaSources { get; } = new();
 
+        public HttpResponse Response { get; private set; } = null!;
+
         public async Task<(IActionResult? Result, bool NextCalled)> RunAsync()
         {
             var item = new Movie { Id = Guid.NewGuid() };
@@ -188,6 +190,7 @@ public class FederationDirectStreamRedirectFilterTests
                 NullLogger<FederationDirectStreamRedirectFilter>.Instance);
 
             var http = new DefaultHttpContext();
+            Response = http.Response;
             http.Request.Scheme = "https";
             var descriptor = new ActionDescriptor
             {

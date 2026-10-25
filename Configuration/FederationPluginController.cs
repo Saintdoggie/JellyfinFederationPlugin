@@ -3279,6 +3279,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] string? fileName = null,
             [FromQuery] string? sig = null)
         {
+            Response.Headers.CacheControl = "private, no-store";
+            Response.Headers["Referrer-Policy"] = "no-referrer";
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
                 return BadRequest("Invalid item id");
@@ -3738,6 +3740,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] int? capMbps = null,
             [FromQuery] int maxHeight = 0)
         {
+            Response.Headers.CacheControl = "private, no-store";
+            Response.Headers["Referrer-Policy"] = "no-referrer";
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
                 return BadRequest("Invalid item id");
@@ -4098,6 +4102,8 @@ namespace Jellyfin.Plugin.Federation.Api
             CancellationToken cancellationToken,
             [FromQuery] int? maxWidth = null)
         {
+            Response.Headers.CacheControl = "private, no-store";
+            Response.Headers["Referrer-Policy"] = "no-referrer";
             if (!Guid.TryParse(itemId, out var itemGuid))
             {
                 return BadRequest("Invalid item id");

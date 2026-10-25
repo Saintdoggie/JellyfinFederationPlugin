@@ -79,20 +79,12 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// The absolute base every gateway URL starts with, as the caller reached
-        /// this server (through a reverse proxy or tunnel when one reports it).
+        /// The absolute base every gateway URL starts with, after Jellyfin's
+        /// trusted-proxy middleware has processed any forwarding headers.
         /// Ends with a slash; the token and native path follow.
         /// </summary>
         public static string PublicGatewayBase(HttpRequest request)
-        {
-            static string First(string value) => value.Split(',')[0].Trim();
-
-            var proto = request.Headers["X-Forwarded-Proto"].ToString();
-            var host = request.Headers["X-Forwarded-Host"].ToString();
-            var scheme = string.IsNullOrEmpty(proto) ? request.Scheme : First(proto);
-            var authority = string.IsNullOrEmpty(host) ? request.Host.Value : First(host);
-            return $"{scheme}://{authority}{request.PathBase}/Plugins/Federation/Peer/Play/";
-        }
+            => $"{request.Scheme}://{request.Host}{request.PathBase}/Plugins/Federation/Peer/Play/";
 
         /// <summary>Adds CORS headers: players fetch playlists/segments with XHR from another origin.</summary>
         public static void ApplyCors(HttpContext context)

@@ -376,3 +376,4 @@ Jellyfin.Federation.zip
 
 # Local Companion credentials and server linkage
 companion-state.json
+media-mount.conf

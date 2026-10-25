@@ -1307,6 +1307,7 @@ function poolMembershipHarness(success) {
   q('.fedPoolPick[data-friend="friend-1"]').value = 'pool-1';
   q('#fedPoolInvite-pool-1').value = 'https://friend.example';
   const api = new Function('fedFetch', 'q', `
+    function cssEscape(value) { return value; }
     function setFriendPoolStatus() {}
     function setPoolStatus() {}
     function readJson(r) { return r.json(); }
@@ -2363,6 +2364,8 @@ test('pairing actions and routes are wired', () => {
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Complete'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Status'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm'"));
+  assert.ok(configPage.includes("confirmPairing(t.getAttribute('data-id'), t.getAttribute('data-safety-number'))"));
+  assert.ok(configPage.includes("'POST', { SafetyNumber: safetyNumber }, '#fedPairingFriendStatus'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer/' + encodeURIComponent(id), 'DELETE'"));
   assert.match(configPage, /if \(tab === 'beta'\) \{\s*startPairingPoll\(\);\s*\} else \{\s*stopPairingPoll\(\);/);
   assert.ok(configPage.includes('escapeHtml(f.CallsItself)'));
@@ -2394,12 +2397,33 @@ test('pairing status renders untrusted text safely and gates the confirm button'
   const btn = list.querySelector('[data-fed-action="pairing-confirm"]');
   assert.equal(btn.disabled, true, 'confirm is disabled until the box is ticked');
   assert.equal(btn.getAttribute('data-id'), 'abc');
+  assert.equal(btn.getAttribute('data-safety-number'), '12345 <i>6</i>');
+  list.querySelector('.fedPairConfirmChk').checked = true;
+  api.renderPairingStatus({ Available: true, Friends: [friend({ SafetyNumber: '98765 43210' })] });
+  const refreshed = list.querySelector('[data-fed-action="pairing-confirm"]');
+  assert.equal(refreshed.getAttribute('data-safety-number'), '98765 43210');
+  assert.equal(refreshed.disabled, true, 'approval does not carry over to a changed safety number');
+  assert.equal(list.querySelector('.fedPairConfirmChk').checked, false);
   api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true })] });
   assert.match(list.textContent, /Waiting for your friend to confirm/);
   api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true, FriendConfirmed: true, Ready: true })] });
   assert.match(list.textContent, /Ready\. Choose what to share/);
   api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
   assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
+});
+
+test('dynamic CSS selectors safely match hostile quote and backslash IDs', () => {
+  const dom = new JSDOM('<div class="fedDirectLinkLine"></div><div class="fedDirectLinkLine" data-id="other"></div>');
+  const source = configPage.match(/function cssEscape\([\s\S]*?\n {20}\}\n/);
+  assert.ok(source, 'cssEscape not found');
+  const escape = new Function('window', source[0] + '\nreturn cssEscape;')(dom.window.window);
+  const hostile = 'friend\\"] , [data-id="other';
+  const expected = dom.window.document.querySelector('.fedDirectLinkLine');
+  expected.setAttribute('data-id', hostile);
+  const selected = dom.window.document.querySelector('.fedDirectLinkLine[data-id="' + escape(hostile) + '"]');
+  assert.equal(selected, expected);
+  assert.notEqual(selected.getAttribute('data-id'), 'other');
+  dom.window.close();
 });
 
 test('HTML helper escapes quoted attribute breakouts and pool icons are escaped', () => {

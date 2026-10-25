@@ -1536,7 +1536,7 @@
                     }
 
                     function q(selector) {
-                        if (selector.charAt(0) === '#' && selector.indexOf(' ') < 0) { return document.getElementById(selector.substring(1)); }
+                        if (selector.charAt(0) === '#') { return document.getElementById(selector.substring(1)); }
                         return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
                     }
 
@@ -1927,7 +1927,7 @@
                     function applyDirectLinkStatus() {
                         if (!lastDirectLinkStatus) { return; }
                         (lastDirectLinkStatus.Friends || []).forEach(function (f) {
-                            var line = q('.fedDirectLinkLine[data-id="' + f.ServerId + '"]');
+                            var line = q('.fedDirectLinkLine[data-id="' + cssEscape(f.ServerId) + '"]');
                             if (line) {
                                 line.textContent = directLinkText(f) + (f.InboundConnected ? ' · They also have a link to you.' : '');
                             }
@@ -2035,7 +2035,7 @@
                         var list = q('#fedPairingFriends');
                         if (!list) { return; }
                         Array.prototype.forEach.call(list.querySelectorAll('.fedPairConfirmChk'), function (c) {
-                            pairingTicked[c.getAttribute('data-id')] = c.checked;
+                            pairingTicked[c.getAttribute('data-id') + ':' + c.getAttribute('data-safety-number')] = c.checked;
                         });
                         var friends = res.Friends || [];
                         if (!friends.length) {
@@ -2045,15 +2045,16 @@
 
                         list.innerHTML = friends.map(function (f) {
                             var id = escapeHtml(f.ServerId);
+                            var safetyNumber = escapeHtml(f.SafetyNumber);
                             var h = '<div class="fed-subcard" style="margin:.8em 0;"><strong>' + escapeHtml(f.Name) + '</strong> '
                                 + '<span class="fed-muted">calls itself ' + escapeHtml(f.CallsItself) + ' (taken from the code, not checked)</span>'
                                 + '<div class="fed-hint">' + escapeHtml(pairingStateText(f)) + '</div>';
                             if (!f.Confirmed) {
-                                var ticked = pairingTicked[f.ServerId] === true;
-                                h += '<div class="fed-pair-safety">' + escapeHtml(f.SafetyNumber) + '</div>'
+                                var ticked = pairingTicked[f.ServerId + ':' + f.SafetyNumber] === true;
+                                h += '<div class="fed-pair-safety">' + safetyNumber + '</div>'
                                     + '<p class="fieldDescription">Call your friend (or meet in person) and read these numbers to each other. Only continue if they match exactly. If they don\'t, someone may have swapped the codes: remove this friend and make new codes.</p>'
-                                    + '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedPairConfirmChk" data-id="' + id + '"' + (ticked ? ' checked' : '') + ' /> I compared this number with my friend by voice or in person, and it matches</label>'
-                                    + '<button is="emby-button" type="button" class="raised emby-button fedPairConfirmBtn" data-fed-action="pairing-confirm" data-id="' + id + '"' + (ticked ? '' : ' disabled') + '>Confirm</button>';
+                                    + '<label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedPairConfirmChk" data-id="' + id + '" data-safety-number="' + safetyNumber + '"' + (ticked ? ' checked' : '') + ' /> I compared this number with my friend by voice or in person, and it matches</label>'
+                                    + '<button is="emby-button" type="button" class="raised emby-button fedPairConfirmBtn" data-fed-action="pairing-confirm" data-id="' + id + '" data-safety-number="' + safetyNumber + '"' + (ticked ? '' : ' disabled') + '>Confirm</button>';
                             } else if (!f.FriendConfirmed) {
                                 h += '<p class="fieldDescription">Waiting for your friend to confirm the numbers on their side.</p>';
                             } else if (f.Ready) {
@@ -2128,8 +2129,8 @@
                         });
                     }
 
-                    function confirmPairing(id) {
-                        pairingCall('/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm', 'POST', {}, '#fedPairingFriendStatus');
+                    function confirmPairing(id, safetyNumber) {
+                        pairingCall('/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm', 'POST', { SafetyNumber: safetyNumber }, '#fedPairingFriendStatus');
                     }
 
                     function cancelPairingOffer(id) {
@@ -2640,7 +2641,7 @@
                     }
 
                     function searchRuleItems(key) {
-                        var input = q('.fedUserRuleItemSearch[data-key="' + key + '"]');
+                        var input = q('.fedUserRuleItemSearch[data-key="' + cssEscape(key) + '"]');
                         var query = input ? input.value : '';
                         if (!query) {
                             return;
@@ -2747,7 +2748,7 @@
                     }
 
                     function addFriendToPool(friendId) {
-                        var sel = q('.fedPoolPick[data-friend="' + friendId + '"]');
+                        var sel = q('.fedPoolPick[data-friend="' + cssEscape(friendId) + '"]');
                         var poolId = sel ? sel.value : '';
                         if (!poolId) {
                             setFriendPoolStatus(friendId, 'No pool selected.', 'err');
@@ -3323,7 +3324,8 @@
                     }
 
                     function plexMetaChecked(id) {
-                        return qa('#' + id + ' input[type=checkbox]').filter(function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-value'); });
+                        var el = document.getElementById(id);
+                        return el ? Array.prototype.filter.call(el.querySelectorAll('input[type=checkbox]'), function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-value'); }) : [];
                     }
 
                     function setPlexStep(id, state) {
@@ -3964,7 +3966,7 @@
 
                     function acceptFriendRequest(id) {
                         setFriendStatus('Confirming with your friend\'s server…', 'info');
-                        var chooser = q('.fedChooseLibs[data-group="accept-' + id + '"]');
+                        var chooser = q('.fedChooseLibs[data-group="accept-' + cssEscape(id) + '"]');
                         var sharing = chooser ? readShareChooser('accept-' + id) : null;
                         fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(id) + '/Accept', {
                             method: 'POST',
@@ -5567,7 +5569,7 @@
                         if (!panel) { return; }
                         var grouped = groupQualityUpgrades(qualityUpgradeCandidates);
                         grouped.shows.forEach(function (show) {
-                            var showBox = panel.querySelector('input[data-fed-action="quality-select-show"][data-id="' + show.seriesId + '"]');
+                            var showBox = panel.querySelector('input[data-fed-action="quality-select-show"][data-id="' + cssEscape(show.seriesId) + '"]');
                             var selected = show.episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
                             if (showBox) {
                                 showBox.indeterminate = selected > 0 && selected < show.episodes.length;
@@ -5579,7 +5581,7 @@
                             });
                             Object.keys(seasons).forEach(function (seasonKey) {
                                 var episodes = seasons[seasonKey];
-                                var box = panel.querySelector('input[data-fed-action="quality-select-season"][data-series="' + show.seriesId + '"][data-season="' + seasonKey + '"]');
+                                var box = panel.querySelector('input[data-fed-action="quality-select-season"][data-series="' + cssEscape(show.seriesId) + '"][data-season="' + cssEscape(seasonKey) + '"]');
                                 var n = episodes.filter(function (ep) { return !!qualityUpgradeSelected[ep.localItemId]; }).length;
                                 if (box) {
                                     box.indeterminate = n > 0 && n < episodes.length;
@@ -7925,7 +7927,7 @@
                                     completePairing();
                                     break;
                                 case 'pairing-confirm':
-                                    confirmPairing(t.getAttribute('data-id'));
+                                    confirmPairing(t.getAttribute('data-id'), t.getAttribute('data-safety-number'));
                                     break;
                                 case 'pairing-cancel':
                                     cancelPairingOffer(t.getAttribute('data-id'));
@@ -8348,7 +8350,7 @@
                             }
 
                             if (t.classList.contains('fedAllowDownloads')) {
-                                var bulkToggle = q('.fedAllowBulkDownloads[data-id="' + t.getAttribute('data-id') + '"]');
+                                var bulkToggle = q('.fedAllowBulkDownloads[data-id="' + cssEscape(t.getAttribute('data-id')) + '"]');
                                 if (bulkToggle && !t.checked) { bulkToggle.checked = false; }
                                 return;
                             }
@@ -8364,7 +8366,7 @@
                                 shareChoices[group] = choice;
                                 if (t.classList.contains('fedChooseAll')) {
                                     choice.ShareAll = t.checked;
-                                    var libsBox = q('.fedChooseLibs[data-group="' + group + '"]');
+                                    var libsBox = q('.fedChooseLibs[data-group="' + cssEscape(group) + '"]');
                                     if (libsBox) {
                                         libsBox.style.display = t.checked ? 'none' : 'block';
                                     }
@@ -8402,7 +8404,7 @@
                                 var p = pendingSharing[sid] || { ShareAll: true, FolderIds: [] };
                                 p.ShareAll = t.checked;
                                 pendingSharing[sid] = p;
-                                var libsDiv = q('.fedSharingLibs[data-id="' + sid + '"]');
+                                var libsDiv = q('.fedSharingLibs[data-id="' + cssEscape(sid) + '"]');
                                 if (libsDiv) {
                                     libsDiv.style.display = t.checked ? 'none' : 'block';
                                 }

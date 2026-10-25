@@ -441,7 +441,7 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void ProxySignature_LegacyV1_IsPlayOnly()
+    public void ProxySignature_LegacyV1WithoutExpiry_IsRefused()
     {
         AddServer(StreamingMode.Proxy);
         var itemId = Guid.NewGuid();
@@ -450,7 +450,7 @@ public class FederationStreamPathTests : IDisposable
         var v1 = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
 
         Assert.Equal(64, v1.Length);
-        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1, download: true));
     }
 

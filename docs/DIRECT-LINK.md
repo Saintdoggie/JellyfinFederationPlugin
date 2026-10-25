@@ -29,9 +29,8 @@ Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux
 
 ## Why
 
-A friend whose server is only reachable through a forwarding VPS (e.g. friendflix:
-home -> Hetzner Hillsboro -> everyone) streams at ~25 Mbps on one connection even
-though both homes have 500 Mbps. The direct link opens an encrypted UDP (QUIC)
+A friend whose server is only reachable through a forwarding VPS may get much
+less throughput on one connection than both homes' internet links can carry. The direct link opens an encrypted UDP (QUIC)
 connection straight between the two Jellyfin servers, punched through both home
 routers like Tailscale does, with no port forwarding. Only the small connection
 details go over the existing (slow) route.
@@ -232,6 +231,9 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   answers no offers.
 - `DirectLinkStunServers` (string[], defaults above)
 - per friend `DirectLinkMode`: `Auto` (default) | `Off`
+- Production paired-link receive windows are bounded to 16 MiB per connection and
+  4 MiB per stream. These replace the library's much smaller defaults to allow
+  more in-flight data on higher-latency links without unbounded buffering.
 
 ## Status and UI
 
