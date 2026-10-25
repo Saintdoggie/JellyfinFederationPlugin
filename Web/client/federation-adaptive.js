@@ -362,7 +362,7 @@
           this.policy.currentId = field(next, 'Id'); this.policy.reference = next;
           this.policy.audio = tracks.audio; this.policy.subtitle = tracks.subtitle; this.policy.lastSwitch = Date.now(); this.policy.pendingId = null;
           this.audioStreamIndex = tracks.audio; this.subtitleStreamIndex = tracks.subtitle;
-          this.streamInfo.mediaSource = source; this.streamInfo.playSessionId = entry.session; this.streamInfo.url = entry.url;
+          if (this.streamInfo) { this.streamInfo.mediaSource = source; this.streamInfo.playSessionId = entry.session; this.streamInfo.url = entry.url; }
           preparation.candidate = null; preparation.session = null;
           this.disposeSource(current); this.refreshTrackControls(); this.emit('timeupdate');
           this.notice.textContent = 'Switched to ' + field(next, 'Name'); this.notice.style.display = 'block';
@@ -372,7 +372,7 @@
           clearTimeout(timeout);
           if (preparation.candidate) this.disposeSource(preparation.candidate);
           else if (preparation.session) this.stopEncoding(preparation.session, api);
-          if (preparation.lease) fetch(api.getUrl('Plugins/Federation/Adaptive/Preparation/' + preparation.lease), { method: 'DELETE', headers: { Authorization: this.authorization(api) } }).catch(function () {});
+          if (preparation.lease) fetch(api.getUrl('Plugins/Federation/Adaptive/Preparation/' + encodeURIComponent(String(preparation.lease))), { method: 'DELETE', headers: { Authorization: this.authorization(api) } }).catch(function () {});
           if (this.preparing === preparation) this.preparing = null;
         }
       }

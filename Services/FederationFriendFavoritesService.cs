@@ -288,7 +288,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return Array.Empty<PeerFavorite>();
                 }
 
-                var items = (IReadOnlyList<PeerFavorite>)(body.Items ?? new List<PeerFavorite>()).Take(MaxShared).ToList();
+                var items = (IReadOnlyList<PeerFavorite>)(body.Items ?? new List<PeerFavorite>()).Where(f => f != null).Take(MaxShared).ToList();
                 _viewerCache[key] = (DateTime.UtcNow, items);
                 _failedAt.TryRemove(key, out _);
                 return items;

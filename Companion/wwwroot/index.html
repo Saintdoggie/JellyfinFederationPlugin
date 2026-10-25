@@ -1301,7 +1301,7 @@ autostartToggle.addEventListener('change', async () => {
     autostartToggle.checked = !wanted;
     appStatus.textContent = e.message || 'Could not save the sign-in setting.';
   } finally {
-    autostartToggle.disabled = !autostartRow.classList.contains('hidden') ? false : true;
+    autostartToggle.disabled = autostartRow.classList.contains('hidden');
   }
 });
 

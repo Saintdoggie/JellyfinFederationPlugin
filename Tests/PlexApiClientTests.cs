@@ -414,4 +414,20 @@ public class PlexApiClientTests
         var acStream = Assert.Single(audioStreams, s => s.Codec == "ac3");
         Assert.True(acStream.IsDefault);
     }
+
+    [Theory]
+    [InlineData("/library/metadata/1/thumb/2", true)]
+    [InlineData("/", true)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    [InlineData("library/metadata/1", false)]
+    [InlineData("@other.example.com/x", false)]
+    [InlineData(".other.example.com/x", false)]
+    [InlineData("//other.example.com/x", false)]
+    [InlineData("/\\other.example.com/x", false)]
+    public void PlexRelativePath_OnlyAcceptsAPathOnThePlexServerItself(string? path, bool expected)
+    {
+        // The Plex token is sent with the request, so a path that could change the host must be refused.
+        Assert.Equal(expected, PlexApiClient.IsPlexRelativePath(path));
+    }
 }

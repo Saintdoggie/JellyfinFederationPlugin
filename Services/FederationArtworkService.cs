@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -88,8 +89,35 @@ namespace Jellyfin.Plugin.Federation.Services
                     return false;
                 }
 
-                var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 var mimeType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+                if (!mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (response.Content.Headers.ContentLength > MaxPosterBytes)
+                {
+                    return false;
+                }
+
+                // Read at most the cap, so a friend can't stream an endless body into memory.
+                using var stream = new MemoryStream();
+                using (var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var buffer = new byte[81920];
+                    int read;
+                    while ((read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                    {
+                        if (stream.Length + read > MaxPosterBytes)
+                        {
+                            return false;
+                        }
+
+                        stream.Write(buffer, 0, read);
+                    }
+                }
+
+                stream.Position = 0;
                 // The Plex credential was sent as a server-side request header;
                 // only image bytes cross into Jellyfin's local image cache.
                 await _providerManager.SaveImage(
@@ -128,6 +156,9 @@ namespace Jellyfin.Plugin.Federation.Services
             => string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase) ? EpisodeImageMaxWidth : null;
 
         internal const int EpisodeImageMaxWidth = 640;
+
+        /// <summary>Largest poster accepted from a friend's server.</summary>
+        internal const int MaxPosterBytes = 20 * 1024 * 1024;
 
         internal static string BuildPosterUrl(string serverUrl, Guid remoteItemId, string token, int? maxWidth)
             => $"{serverUrl.TrimEnd('/')}/Plugins/Federation/Peer/Images/{remoteItemId:N}/Primary?token={Uri.EscapeDataString(token)}"
