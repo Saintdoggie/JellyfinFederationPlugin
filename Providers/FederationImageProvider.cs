@@ -244,7 +244,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 {
                     images.Add(new RemoteImageInfo
                     {
-                        Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{ImageType.Primary}?{tokenParam}&tag={remoteItem.ImageTags[ImageType.Primary]}",
+                        Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{ImageType.Primary}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.ImageTags[ImageType.Primary])}",
                         Type = ImageType.Primary,
                         ProviderName = Name
                     });
@@ -256,7 +256,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/Backdrop/{i}?{tokenParam}&tag={remoteItem.BackdropImageTags[i]}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/Backdrop/{i}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.BackdropImageTags[i])}",
                             Type = ImageType.Backdrop,
                             ProviderName = Name
                         });
@@ -269,7 +269,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{imageType}?{tokenParam}&tag={remoteItem.ImageTags[imageType]}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{imageType}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.ImageTags[imageType])}",
                             Type = imageType,
                             ProviderName = Name
                         });

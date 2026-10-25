@@ -70,6 +70,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<string, Channel<Func<Task>>> _outboxes = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Guid, HostParty> _hosted = new();
         private readonly Dictionary<Guid, RemoteParty> _remote = new();
+
+        /// <summary>How many parties one friend can have announced here at once.</summary>
+        private const int MaxRemotePartiesPerHost = 10;
         private readonly CancellationTokenSource _stopping = new();
         private Timer? _timer;
 
@@ -358,6 +361,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     return 200;
+                }
+
+                if (existing == null && _remote.Values.Count(r => string.Equals(r.HostServerId, caller.Id, StringComparison.Ordinal)) >= MaxRemotePartiesPerHost)
+                {
+                    return 429;
                 }
 
                 existing ??= _remote[announcement.PartyId] = new RemoteParty(announcement.PartyId, caller.Id);

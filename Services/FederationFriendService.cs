@@ -1573,11 +1573,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Task.CompletedTask;
             }
 
+            // One friend can't fill the pending list (it is stored in the plugin config).
+            if (config.IncomingPoolInvites.Count >= MaxPendingPoolInvites
+                || config.IncomingPoolInvites.Count(i => string.Equals(i.RemoteServerId, sender.FederationId, StringComparison.Ordinal)) >= MaxPendingPoolInvitesPerFriend)
+            {
+                return Task.CompletedTask;
+            }
+
             config.IncomingPoolInvites.Add(new PoolInvite
             {
                 Id = payload.InviteId,
                 PoolId = payload.PoolId,
-                PoolName = payload.PoolName ?? payload.PoolId,
+                PoolName = TrimTo(payload.PoolName, MaxPoolNameLength) ?? payload.PoolId,
                 OwnerFederationId = payload.OwnerFederationId ?? string.Empty,
                 OwnerName = payload.OwnerName ?? sender.Name,
                 RemoteServerUrl = sender.Url,
@@ -2633,6 +2640,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Most roster entries or discovery candidates acted on from one notice.</summary>
         internal const int MaxPoolRosterEntries = 50;
+        internal const int MaxPendingPoolInvites = 100;
+        internal const int MaxPendingPoolInvitesPerFriend = 10;
+        internal const int MaxPoolNameLength = 100;
+
+        private static string? TrimTo(string? value, int max)
+            => value != null && value.Length > max ? value[..max] : value;
 
         /// <summary>
         /// Addresses another server handed us are only contacted automatically when

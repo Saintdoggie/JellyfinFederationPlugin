@@ -501,6 +501,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (viewer == null)
                 {
+                    var callerPrefix = caller.Id + "|";
+                    if (_viewers.Keys.Count(k => k.StartsWith(callerPrefix, StringComparison.Ordinal)) >= MaxViewersPerFriend)
+                    {
+                        return 429;
+                    }
+
                     var session = await _sessions.LogSessionActivity(
                         Clean(report.Client, 64) ?? "Jellyfin",
                         Clean(report.ClientVersion, 32) ?? "0",
@@ -568,6 +574,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>The device line: "Chrome · via friendflix".</summary>
         internal static string DeviceLabel(string? deviceName, string friendName)
             => (Clean(deviceName, 64) ?? "Device") + " · via " + friendName;
+
+        /// <summary>How many viewer sessions one friend can have open here at once.</summary>
+        private const int MaxViewersPerFriend = 20;
 
         /// <summary>
         /// The viewer's own device id, so a conversion this server runs for them
