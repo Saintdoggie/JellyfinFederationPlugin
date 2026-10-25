@@ -42,6 +42,8 @@ namespace Jellyfin.Plugin.Federation.Services
     internal static class BrowseImagePolicy
     {
         public const int MaximumBytes = 5 * 1024 * 1024;
+        public const int GridPosterMaxWidth = 480;
+        public const int DetailPosterMaxWidth = 800;
 
         public static bool TryGetContentType(string? value, out string contentType)
         {

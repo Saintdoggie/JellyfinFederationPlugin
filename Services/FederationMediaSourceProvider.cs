@@ -466,7 +466,11 @@ namespace Jellyfin.Plugin.Federation.Services
                         Size = advertised.Size,
                         Bitrate = advertised.Bitrate,
                         MediaStreams = advertised.MediaStreams,
-                        SupportsDirectPlay = !mustConvert,
+                        // These URLs serve the original container, not HLS. Android's
+                        // direct-play HTTP path forces an HLS media source and rejects
+                        // the raw file; direct streaming preserves its container-aware
+                        // native URL instead of forcing a transcode on every client.
+                        SupportsDirectPlay = false,
                         SupportsDirectStream = !mustConvert,
 
                         // Enabled so a client that cannot direct-play the remote's

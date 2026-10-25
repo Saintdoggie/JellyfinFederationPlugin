@@ -21,7 +21,7 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// <summary>
 /// One download over a link with a 20 ms round trip (a UDP proxy holds every packet
 /// 10 ms each way), with the QUIC library's default receive windows and with ours.
-/// Live, 2026-10-22: one download over the link to friendflix stopped near 110 Mbps on
+/// Live, 2026-10-22: one download over the link to friend-a stopped near 110 Mbps on
 /// two fast lines; this reproduces the cap and checks the fix. Run with
 /// FEDERATION_QUIC_BENCH=1 (it moves a few hundred MB).
 /// </summary>

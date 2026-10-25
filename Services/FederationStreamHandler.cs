@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -805,6 +806,17 @@ namespace Jellyfin.Plugin.Federation.Services
                                     response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
                             }
 
+                            // A retry cannot turn an already-started successful
+                            // response into an upstream error page or a normally
+                            // completed, truncated body. Before the first client
+                            // body byte, however, return the status so the caller
+                            // can still re-mint a rejected playback token.
+                            if (firstByteWritten || response.HasStarted)
+                            {
+                                response.HttpContext.Abort();
+                                return null;
+                            }
+
                             return (int)remoteResp.StatusCode;
                         }
 
@@ -877,6 +889,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         if (HttpMethods.IsHead(request.Method)) return null;
 
                         await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                        var expectedAttemptBytes = remoteResp.Content.Headers.ContentLength;
+                        long attemptBytesRead = 0;
                         buffer ??= ArrayPool<byte>.Shared.Rent(bufferSize);
                         while (true)
                         {
@@ -902,10 +916,21 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             if (read == 0)
                             {
+                                if (expectedAttemptBytes.HasValue && attemptBytesRead < expectedAttemptBytes.Value)
+                                {
+                                    // A clean TCP/HTTP EOF is still a failed
+                                    // attempt when the declared body is short.
+                                    // Enter the same bounded resume path as a
+                                    // dropped connection instead of completing a
+                                    // truncated client response normally.
+                                    throw new IOException("Upstream response ended before its declared Content-Length");
+                                }
+
                                 if (observationServerId != null) _ranking.ObserveTransfer(observationServerId, observedBytes, observedReadTime);
                                 return null;
                             }
 
+                            attemptBytesRead += read;
                             observedBytes += read;
                             if (observedReadTime.TotalSeconds >= 5)
                             {

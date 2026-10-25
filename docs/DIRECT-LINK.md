@@ -1,6 +1,6 @@
 # Direct link: friend-to-friend UDP connection (design spec)
 
-Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux first, Windows later.
+Status: shipped on `master`; direct links remain opt-in. Linux x64/arm64 are supported by the bundled native library; Windows still needs physical-host validation.
 
 > Implementation notes (what changed from the first draft below):
 > - **QUIC runs in a private AssemblyLoadContext.** Jellyfin's web host asks
@@ -107,11 +107,10 @@ Response (responder -> initiator), or 403 if the responder has the link off for
 this friend, 409/503 if it can't (no QUIC, busy):
 ```json
 { "Version": 1, "Fingerprint": "<hex>", "Secret": "<base64 32B>",
-  "Candidates": [ ... ], "NatType": "...", "PunchStartUnixMs": 1760000000000 }
+  "Candidates": [ ... ], "NatType": "..." }
 ```
-`PunchStartUnixMs` = responder time + 300 ms; both sides start punching then, so
-neither side's router drops the first packets as unsolicited. The initiator
-adjusts for the request's round-trip time.
+No clock synchronization is required: the responder starts punching when it
+answers, and the initiator starts when it receives that answer.
 
 Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
 (`DirectLinkVersion`). The initiator only offers to friends that advertise it.
@@ -135,8 +134,8 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   2 = ack) + sessionId (16 bytes) + 32-byte HMAC-SHA256 tag over the previous bytes,
   keyed with the **peer's** secret for probes we send. Anything else is ignored
   (never answered), so the socket can't be used for reflection or scanning.
-- From `PunchStartUnixMs`: both sides send a probe to every candidate every 50 ms
-  for up to 6 s. Received valid probe -> reply ack to that source endpoint and mark
+- Both sides send a probe to every candidate on a short interval for up to 8 s.
+  Received valid probe -> reply ack to that source endpoint and mark
   it working; received valid ack -> mark working. The first working endpoint is
   the path.
 - Hand-over to QUIC (the QUIC stack owns its own socket, so the punch socket is
@@ -162,9 +161,13 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   backoff 30 s, 2 m, 10 m, 30 m, 1 h (reset on success). The new session gets new
   secrets and candidates each time.
 - After connecting, measure throughput with `Peer/BitrateTest` (8 MB) over the
-  link, and record it.
-- Responder caps: at most 1 active link per friend and 32 total, and at most 10
-  offers per friend per 10 minutes (429 otherwise).
+  link asynchronously, and record it. The authenticated link is usable while the
+  sample runs; until a valid result arrives, Auto mode retains the existing WAN
+  cap instead of becoming unlimited. A late result cannot update a replacement link.
+- Responder caps: at most 1 active link per friend and 32 total, at most 256
+  forwarded requests across all direct links (429 above that), and at most 10
+  offers per friend per 10 minutes (429 otherwise). Four inbound and four outbound
+  setups may run at once; eligibility and capacity are rechecked before serving.
 
 ## HTTP over the link
 

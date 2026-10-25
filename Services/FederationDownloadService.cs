@@ -1870,7 +1870,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// A free file name in <paramref name="directory"/>. When the name is
         /// taken (another version of the same film), the friend's name is added
-        /// the way Jellyfin groups versions: "Name (2021) - friendflix.mkv".
+        /// the way Jellyfin groups versions: "Name (2021) - friend-a.mkv".
         /// </summary>
         internal static string GetUniqueDestinationPath(string directory, string fileName, string? versionLabel = null)
         {

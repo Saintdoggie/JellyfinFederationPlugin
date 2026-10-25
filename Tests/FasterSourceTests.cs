@@ -4,6 +4,7 @@ using System.Linq;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -70,30 +71,54 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void SlowFirstChoice_LosesToAFastAlternative()
     {
-        // plexpal (8 Mbps link) holding a 93 Mbps remux vs a gigabit friend: ~74 s vs ~5 s.
-        Server("plexpal", 8);
+        // plex-source (8 Mbps link) holding a 93 Mbps remux vs a gigabit friend: ~74 s vs ~5 s.
+        Server("plex-source", 8);
         Server("gig", 900);
 
-        Assert.Equal("gig", Pick(Entry(("plexpal", 93), ("gig", 83))));
+        Assert.Equal("gig", Pick(Entry(("plex-source", 93), ("gig", 83))));
+    }
+
+    [Fact]
+    public void MissingAggregateBitrate_FallsBackToPositiveStreamBitrateTotal()
+    {
+        Server("plex-source", 8);
+        Server("gig", 900);
+        var entry = Entry(("plex-source", 93), ("gig", 83));
+        var sources = entry.GetSourcesSnapshot();
+        sources[0].Bitrate = 0;
+        sources[0].MediaStreams = new[]
+        {
+            new MediaStream { BitRate = 90_000_000 },
+            new MediaStream { BitRate = 3_000_000 },
+            new MediaStream { BitRate = -93_000_000 },
+        };
+        sources[1].Bitrate = null;
+        sources[1].MediaStreams = new[]
+        {
+            new MediaStream { BitRate = 80_000_000 },
+            new MediaStream { BitRate = 3_000_000 },
+        };
+
+        Assert.Equal("gig", Pick(entry));
     }
 
     [Fact]
     public void FirstChoiceThatStartsWithinTheBudget_StaysInPriorityOrder()
     {
         // 12.7 Mbps over 7.6 Mbps is ~14 s: fine, even though the other copy is faster.
-        Server("plexpal", 7.6);
+        Server("plex-source", 7.6);
         Server("gig", 900);
 
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 12.7), ("gig", 83))));
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 12.7), ("gig", 83))));
     }
 
     [Fact]
     public void UnmeasuredAlternative_IsNeverPreferredOnAGuess()
     {
-        Server("plexpal", 8);
+        Server("plex-source", 8);
         Server("unknown", null);
 
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("unknown", 20))));
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 93), ("unknown", 20))));
     }
 
     [Fact]
@@ -136,36 +161,36 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void OfflineSources_AreNeverChosen_EvenIfTheyWouldBeFastest()
     {
-        Server("plexpal", 8);
+        Server("plex-source", 8);
         Server("gig", 900);
 
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83)), "gig"));
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 93), ("gig", 83)), "gig"));
     }
 
     [Fact]
     public void DisabledSources_AreNeverChosen()
     {
-        Server("plexpal", 8);
+        Server("plex-source", 8);
         Server("gig", 900).Enabled = false;
 
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83))));
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 93), ("gig", 83))));
     }
 
     [Fact]
     public void WithoutAMonitor_PriorityOrderIsUntouched()
     {
-        Server("plexpal", 8);
+        Server("plex-source", 8);
         Server("gig", 900);
         FederationItemPersistenceService.BandwidthOverride = null;
 
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93), ("gig", 83))));
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 93), ("gig", 83))));
     }
 
     [Fact]
     public void SingleSource_IsReturnedAsIs()
     {
-        Server("plexpal", 1);
-        Assert.Equal("plexpal", Pick(Entry(("plexpal", 93))));
+        Server("plex-source", 1);
+        Assert.Equal("plex-source", Pick(Entry(("plex-source", 93))));
     }
 
     [Fact]
@@ -191,12 +216,12 @@ public class FasterSourceTests : IDisposable
     [Fact]
     public void ProjectedStart_ForADirectModePeerUsesTheCapNotTheFile()
     {
-        // Slowpoke: Direct mode, Auto cap, ~2 Mbps link. The peer sends a capped stream,
+        // slow-peer: Direct mode, Auto cap, ~2 Mbps link. The peer sends a capped stream,
         // so a 90 Mbps file must not be projected as if it were all crossing the link.
-        var server = Server("slowpoke", null, StreamingMode.Direct);
+        var server = Server("slow-peer", null, StreamingMode.Direct);
         server.WanCapMode = WanCapMode.Manual;
         server.WanMaxBitrateMbps = 10;
-        _monitor.SeedLinkForTests("slowpoke", 20);
+        _monitor.SeedLinkForTests("slow-peer", 20);
 
         Assert.Equal(10_000_000, _monitor.EffectiveSourceBitrate(server, 90_000_000));
         Assert.Equal(10_000_000, _monitor.EffectiveSourceBitrate(server, null));

@@ -10,7 +10,7 @@ show up in yours and play from their server, with no copying or syncing of files
 This is NOT true federation: it does not connect you to unknown public Jellyfin servers. You only
 connect with servers whose admins you send a friend request to (or accept one from).
 
-Current release: **0.0.193** for Jellyfin 12.
+Current release: **0.0.200** for Jellyfin 12.
 
 ## Features
 
@@ -53,7 +53,7 @@ Most features can be switched off under the plugin's Advanced tab.
 
 ## Requirements
 
-- Jellyfin 12.x for the current release (0.0.193, built for .NET 10).
+- Jellyfin 12.x for the current release (0.0.200, built for .NET 10).
 - Jellyfin 10.11.x: use 0.0.135 (the last 10.11 build). The 12.x plugin cannot load on 10.11.
 - Your server must be reachable by your friends (port forwarding to your own domain, or Tailscale
   with Funnel; the Friends tab helps set this up).
@@ -89,6 +89,7 @@ friends. Newer features need **both** servers on at least:
 | Watch parties across servers | 0.0.189 |
 | Friends' viewers on your dashboard, hardware sharing | 0.0.190 |
 | Smooth seeking and faster start when the friend converts, the friend's conversion logs in your Dashboard → Logs | 0.0.193 |
+| Encrypted direct links between homes (opt-in) | 0.0.196 |
 
 ## Troubleshooting
 

@@ -1019,7 +1019,7 @@ public class FederationPoolTests : IDisposable
                 PoolId = "pool-1",
                 Roster = new List<PoolMember>
                 {
-                    new PoolMember { Name = "lan", Url = "http://192.168.1.5:8096" },
+                    new PoolMember { Name = "lan", Url = "http://10.255.255.254:8096" },
                     new PoolMember { Name = "loop", Url = "http://127.0.0.1:8096" },
                     new PoolMember { Name = "meta", Url = "http://169.254.169.254" },
                     new PoolMember { Name = "zero", Url = "http://0.0.0.0:8096" },

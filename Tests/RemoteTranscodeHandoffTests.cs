@@ -302,6 +302,143 @@ public class RemoteTranscodeHandoffTests
         Assert.Equal(0, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[1]));
         Assert.Equal(1, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[2]));
     }
+
+    [Fact]
+    public async Task DirectLinkBodyFailure_FallsBackToTheFriendWithACompletePlaylist()
+    {
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            LinkClientOverride = _ => new System.Net.Http.HttpClient(new FailingLinkHandler()),
+            Send = (_, _) =>
+            {
+                var response = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8, "application/vnd.apple.mpegurl")
+                };
+                return Task.FromResult(response);
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        var file = Assert.IsType<Microsoft.AspNetCore.Mvc.FileContentResult>(result);
+        Assert.Equal("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8.GetString(file.FileContents));
+    }
+
+    private sealed class FailingLinkHandler : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new FailingBodyContent() });
+    }
+
+    private sealed class FailingBodyContent : System.Net.Http.HttpContent
+    {
+        protected override Task SerializeToStreamAsync(System.IO.Stream stream, System.Net.TransportContext? context)
+            => throw new NotSupportedException();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 100;
+            return true;
+        }
+
+        protected override Task<System.IO.Stream> CreateContentReadStreamAsync()
+            => Task.FromResult<System.IO.Stream>(new FailingBodyStream());
+    }
+
+    private sealed class FailingBodyStream : System.IO.MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromException<int>(new System.IO.IOException("link body dropped"));
+    }
+
+    [Fact]
+    public async Task SharedSegment_SlowCompletion_IsReusedImmediately_AndExpiresAfterDeliveryKeep()
+    {
+        var now = new DateTime(2026, 10, 24, 12, 0, 0, DateTimeKind.Utc);
+        FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => now;
+        try
+        {
+            var gateway = new FederationRemoteTranscodeGateway(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+            var delivered = new FederationRemoteTranscodeGateway.SharedSegment(200, "video/mp2t", new byte[] { 1, 2, 3 });
+            var slowFetch = new TaskCompletionSource<FederationRemoteTranscodeGateway.SharedSegment?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = 0;
+            Task<FederationRemoteTranscodeGateway.SharedSegment?> Fetch()
+            {
+                calls++;
+                return calls == 1
+                    ? slowFetch.Task
+                    : Task.FromResult<FederationRemoteTranscodeGateway.SharedSegment?>(null);
+            }
+
+            var url = "http://loopback.invalid/slow-" + Guid.NewGuid().ToString("N");
+            var first = gateway.GetSharedSegmentAsync(url, Fetch);
+
+            // Older than the one-minute delivery retention, but still converting:
+            // the in-flight entry must not be evicted or restarted.
+            now += TimeSpan.FromMinutes(2);
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+
+            slowFetch.SetResult(delivered);
+            Assert.Same(delivered, await first);
+
+            // Completion, not the two-minutes-earlier fetch start, begins the
+            // retry-retention window. The immediate retry joins the same result.
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+
+            now += TimeSpan.FromMinutes(1);
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            now += TimeSpan.FromTicks(1);
+            Assert.NotSame(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => DateTime.UtcNow;
+        }
+    }
+
+    [Fact]
+    public async Task SharedSegment_InProgressEntry_IsPreservedPastDeliveryKeep()
+    {
+        var now = new DateTime(2026, 10, 24, 13, 0, 0, DateTimeKind.Utc);
+        FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => now;
+        try
+        {
+            var gateway = new FederationRemoteTranscodeGateway(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+            var pending = new TaskCompletionSource<FederationRemoteTranscodeGateway.SharedSegment?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = 0;
+            Task<FederationRemoteTranscodeGateway.SharedSegment?> Fetch()
+            {
+                calls++;
+                return pending.Task;
+            }
+
+            var url = "http://loopback.invalid/pending-" + Guid.NewGuid().ToString("N");
+            var first = gateway.GetSharedSegmentAsync(url, Fetch);
+            now += TimeSpan.FromHours(1);
+
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+            pending.SetResult(null);
+            Assert.Null(await first);
+        }
+        finally
+        {
+            FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => DateTime.UtcNow;
+        }
+    }
 }
 
 public class RemoteTranscodeFilterOrderTests

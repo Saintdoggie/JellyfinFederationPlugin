@@ -43,6 +43,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>How long a delivered segment is kept for a player's retry of it.</summary>
         private static readonly TimeSpan SharedSegmentKeep = TimeSpan.FromMinutes(1);
 
+        // Test seam for deterministic retention checks; production uses the real UTC clock.
+        internal static Func<DateTime> SharedSegmentUtcNow { get; set; } = () => DateTime.UtcNow;
+
         /// <summary>How long a shared segment request may take (a slow 4K start included).</summary>
         private static readonly TimeSpan SharedSegmentTimeout = TimeSpan.FromMinutes(5);
 
@@ -286,11 +289,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Null when the segment is too large to hold in memory.
         /// </summary>
         private Task<SharedSegment?> GetSharedSegmentAsync(string url, string internalRelayKey)
+            => GetSharedSegmentAsync(url, () => FetchSegmentAsync(url, internalRelayKey));
+
+        internal Task<SharedSegment?> GetSharedSegmentAsync(string url, Func<Task<SharedSegment?>> fetch)
         {
-            var now = DateTime.UtcNow;
+            var now = SharedSegmentUtcNow();
             foreach (var kv in SharedSegments)
             {
-                if (kv.Value.Fetch.IsValueCreated && kv.Value.Fetch.Value.IsCompleted && now - kv.Value.StartedUtc > SharedSegmentKeep)
+                if (kv.Value.Fetch.IsValueCreated && kv.Value.Fetch.Value.IsCompleted
+                    && kv.Value.CompletedUtc is { } completedUtc
+                    && now - completedUtc > SharedSegmentKeep)
                 {
                     SharedSegments.TryRemove(kv);
                 }
@@ -298,7 +306,19 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // Lazy: GetOrAdd may build two entries in a race, but only the stored
             // one ever starts a request (a second request would restart ffmpeg).
-            var entry = SharedSegments.GetOrAdd(url, u => new SharedFetch(new Lazy<Task<SharedSegment?>>(() => FetchSegmentAsync(u, internalRelayKey)), now));
+            // Retention starts when that request finishes: a slow conversion must
+            // remain available for the player's immediate retry.
+            var entry = SharedSegments.GetOrAdd(url, _ => new SharedFetch(self => new Lazy<Task<SharedSegment?>>(async () =>
+            {
+                try
+                {
+                    return await fetch().ConfigureAwait(false);
+                }
+                finally
+                {
+                    self.CompletedUtc = SharedSegmentUtcNow();
+                }
+            })));
             return entry.Fetch.Value;
         }
 
@@ -381,8 +401,18 @@ namespace Jellyfin.Plugin.Federation.Services
             return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
         }
 
-        private sealed record SharedFetch(Lazy<Task<SharedSegment?>> Fetch, DateTime StartedUtc);
+        private sealed class SharedFetch
+        {
+            public SharedFetch(Func<SharedFetch, Lazy<Task<SharedSegment?>>> fetchFactory)
+            {
+                Fetch = fetchFactory(this);
+            }
 
-        private sealed record SharedSegment(int Status, string? ContentType, byte[] Body);
+            public Lazy<Task<SharedSegment?>> Fetch { get; }
+
+            public DateTime? CompletedUtc { get; set; }
+        }
+
+        internal sealed record SharedSegment(int Status, string? ContentType, byte[] Body);
     }
 }

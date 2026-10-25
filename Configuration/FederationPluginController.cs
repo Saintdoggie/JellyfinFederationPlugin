@@ -4123,8 +4123,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 query.Add($"tag={Uri.EscapeDataString(tag)}");
             }
 
-            // A friend asking for a smaller copy (episode images) gets one scaled
-            // here by Jellyfin's own image API instead of the full original.
+            // A friend asking for a display-sized copy gets one scaled here by
+            // Jellyfin's own image API instead of the full original.
             if (maxWidth is > 0)
             {
                 query.Add($"maxWidth={Math.Clamp(maxWidth.Value, 64, 4096)}");
@@ -6176,7 +6176,7 @@ namespace Jellyfin.Plugin.Federation.Api
                         tokens.TryGetValue(rawId, out var token);
                         remoteImages[rawId] = token == null
                             ? null
-                            : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{rawId}/Primary?token={Uri.EscapeDataString(token)}";
+                            : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{rawId}/Primary?token={Uri.EscapeDataString(token)}&maxWidth={BrowseImagePolicy.GridPosterMaxWidth}";
                     }
                 }
             }
@@ -6313,7 +6313,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 var (token, _) = await client.GetImageTokenAsync(itemId, cancellationToken).ConfigureAwait(false);
                 imageUrl = token == null
                     ? null
-                    : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{itemId}/Primary?token={Uri.EscapeDataString(token)}";
+                    : $"{server.Url.TrimEnd('/')}/Plugins/Federation/Peer/Images/{itemId}/Primary?token={Uri.EscapeDataString(token)}&maxWidth={BrowseImagePolicy.DetailPosterMaxWidth}";
             }
 
             if (imageUrl == null)

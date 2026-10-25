@@ -217,7 +217,7 @@ public class DirectLinkTests
     [InlineData("http://friend.example.com", false)]
     [InlineData("http://100.70.1.2:8096", true)]
     [InlineData("http://box.tail1234.ts.net:8096", true)]
-    [InlineData("http://192.168.1.5:8096", false)]
+    [InlineData("http://10.255.255.254:8096", false)]
     [InlineData("not a url", false)]
     public void Signaling_NeedsHttpsOrTailscale(string url, bool safe) => Assert.Equal(safe, DirectLinkProtocol.IsSignalingSafe(url));
 
@@ -335,7 +335,7 @@ public class DirectLinkTests
         var network = new Moq.Mock<MediaBrowser.Common.Net.INetworkManager>();
         network.Setup(n => n.IsInLocalNetwork(Moq.It.IsAny<IPAddress>())).Returns(true);
         var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
-        http.Connection.RemoteIpAddress = IPAddress.Parse("192.168.1.50");
+        http.Connection.RemoteIpAddress = IPAddress.Parse("10.255.255.253");
         if (header != null)
         {
             http.Request.Headers[header] = "1.2.3.4";
@@ -548,6 +548,13 @@ public class DirectLinkTests
     [InlineData(1400, null)]
     public void LinkCap_FollowsTheMeasuredLink_NotTheTunnel(double mbps, int? cap)
         => Assert.Equal(cap, Jellyfin.Plugin.Federation.Services.FederationRemoteTranscodeFilter.LinkCap(mbps));
+
+    [Theory]
+    [InlineData(0, 12, 12)]
+    [InlineData(25, 12, 20)]
+    [InlineData(1400, 12, null)]
+    public void LinkCap_UnmeasuredKeepsFallback_ButFastLinkCanRemoveIt(double mbps, int? fallback, int? expected)
+        => Assert.Equal(expected, Jellyfin.Plugin.Federation.Services.FederationRemoteTranscodeFilter.LinkCap(mbps, fallback));
 
     [Fact]
     public async Task Link_RefusesAPeerWithTheWrongCertificate()

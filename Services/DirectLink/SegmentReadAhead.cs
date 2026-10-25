@@ -13,7 +13,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
     /// <summary>
     /// Read-ahead for the direct-link relay. A player fetches one segment at a
     /// time, and one download from a friend can stop well short of the line's
-    /// speed (live, 2026-10-22: about 110 Mbps on one download to friendflix, 178
+    /// speed (live, 2026-10-22: about 110 Mbps on one download to friend-a, 178
     /// with four at once). While the player gets segment N, the next few are
     /// fetched over the link at the same time and held here; the player's request
     /// for one takes it (joining it while it is still arriving), so playback gets
@@ -27,8 +27,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
     /// distance Jellyfin waits for rather than restarting at.</item>
     /// <item>A request outside the window (a seek) cancels what was fetched for
     /// the old position. Unclaimed segments go after <see cref="Keep"/>.</item>
-    /// <item>Memory is capped: past <c>maxBytes</c>, a fetch nobody is waiting
-    /// for pauses until the player catches up.</item>
+    /// <item>Memory is capped globally and shared between live entries: producers
+    /// pause until the player makes room, whether or not their entry is claimed.</item>
     /// </list>
     /// </summary>
     public sealed class SegmentReadAhead : IDisposable
@@ -55,7 +55,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private readonly Dictionary<string, Playlist> _playlists = new(StringComparer.Ordinal);
         private readonly Dictionary<string, (Playlist List, int Index)> _positions = new(StringComparer.Ordinal);
         private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+        private readonly HashSet<Entry> _liveEntries = new();
         private readonly long _maxBytes;
+        private readonly long _entryMaxBytes;
         private readonly Func<DateTime> _now;
         private readonly Timer? _sweeper;
         private long _bytes;
@@ -63,11 +65,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private long _missed;
 
         /// <summary>Initializes a new instance of the <see cref="SegmentReadAhead"/> class.</summary>
-        /// <param name="maxBytes">Most bytes held for segments nobody is reading yet.</param>
+        /// <param name="maxBytes">Most bytes held across all claimed and unclaimed segments.</param>
         /// <param name="now">Clock (tests).</param>
         public SegmentReadAhead(long maxBytes = 384L * 1024 * 1024, Func<DateTime>? now = null)
         {
             _maxBytes = maxBytes;
+            _entryMaxBytes = Math.Max(1, maxBytes / MaxEntries);
             _now = now ?? (() => DateTime.UtcNow);
             if (now == null)
             {
@@ -221,13 +224,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     stale.Dispose();
                 }
 
-                for (var i = index + 1; i <= index + depth && i < list.Targets.Length && _entries.Count < MaxEntries; i++)
+                for (var i = index + 1; i <= index + depth && i < list.Targets.Length && _liveEntries.Count < MaxEntries; i++)
                 {
                     var key = Key(serverId, list.Targets[i]);
                     if (!_entries.ContainsKey(key))
                     {
                         var entry = new Entry(this, key, list, i, list.Targets[i], _now());
                         _entries[key] = entry;
+                        _liveEntries.Add(entry);
                         started.Add(entry);
                     }
                 }
@@ -270,14 +274,42 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
 
                 _entries.Clear();
+                _liveEntries.Clear();
                 _playlists.Clear();
                 _positions.Clear();
             }
         }
 
-        // Paths compare unescaped: the player's request and the playlist line may
-        // escape differently.
-        private static string Key(string serverId, string target) => serverId + "\n" + Uri.UnescapeDataString(target);
+        // Equivalent escaping still meets (for example, a comma and %2C), but an
+        // escaped delimiter inside a query value is not a real separator. Decode and
+        // re-encode each path segment and query name/value independently so those two
+        // cases cannot alias each other.
+        private static string Key(string serverId, string target) => serverId + "\n" + CanonicalTarget(target);
+
+        private static string CanonicalTarget(string target)
+        {
+            var queryAt = target.IndexOf('?');
+            var path = queryAt < 0 ? target : target.Substring(0, queryAt);
+            var canonicalPath = string.Join("/", path.Split('/').Select(CanonicalComponent));
+            if (queryAt < 0)
+            {
+                return canonicalPath;
+            }
+
+            var query = target.Substring(queryAt + 1);
+            return canonicalPath + "?" + string.Join("&", query.Split('&').Select(CanonicalQueryPart));
+        }
+
+        private static string CanonicalQueryPart(string part)
+        {
+            var equals = part.IndexOf('=');
+            return equals < 0
+                ? CanonicalComponent(part)
+                : CanonicalComponent(part.Substring(0, equals)) + "=" + CanonicalComponent(part.Substring(equals + 1));
+        }
+
+        private static string CanonicalComponent(string value)
+            => Uri.EscapeDataString(Uri.UnescapeDataString(value));
 
         private void Forget(Playlist list)
         {
@@ -322,7 +354,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     while (true)
                     {
                         var buffer = new byte[ChunkSize];
-                        var read = await body.ReadAsync(buffer, entry.Stopping).ConfigureAwait(false);
+                        var read = await body.ReadAsync(buffer.AsMemory(0, (int)Math.Min(ChunkSize, _entryMaxBytes)), entry.Stopping).ConfigureAwait(false);
                         if (read == 0)
                         {
                             break;
@@ -334,16 +366,19 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                             throw new IOException("segment too large to hold");
                         }
 
-                        // Nobody is reading it yet and memory is full: wait for the player.
-                        while (!entry.Claimed && Interlocked.Read(ref _bytes) + read > _maxBytes)
+                        // Every live entry has an equal share of the global budget,
+                        // so an unclaimed producer cannot fill the budget and starve
+                        // a claimed producer whose reader is draining its share.
+                        var chunk = read == buffer.Length ? buffer : buffer.AsSpan(0, read).ToArray();
+                        while (!TryAddWithBudget(entry, chunk))
                         {
                             await Task.Delay(50, entry.Stopping).ConfigureAwait(false);
                         }
+                    }
 
-                        if (!entry.Add(read == ChunkSize ? buffer : buffer.AsSpan(0, read).ToArray()))
-                        {
-                            return;
-                        }
+                    if (response.Content.Headers.ContentLength is { } declared && total != declared)
+                    {
+                        throw new IOException("segment length didn't match its Content-Length");
                     }
 
                     entry.Finish(null);
@@ -361,6 +396,27 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         entry.Dispose();
                     }
                 }
+            }
+        }
+
+        private bool TryAddWithBudget(Entry entry, byte[] chunk)
+        {
+            lock (_gate)
+            {
+                if (Interlocked.Read(ref _bytes) + chunk.Length > _maxBytes)
+                {
+                    return false;
+                }
+
+                return entry.Add(chunk, _entryMaxBytes);
+            }
+        }
+
+        private void RemoveLiveEntry(Entry entry)
+        {
+            lock (_gate)
+            {
+                _liveEntries.Remove(entry);
             }
         }
 
@@ -457,6 +513,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             /// <inheritdoc />
             public void Dispose()
             {
+                _owner.RemoveLiveEntry(this);
                 lock (_lock)
                 {
                     if (_disposed)
@@ -492,11 +549,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 _head.TrySetResult(true);
             }
 
-            internal bool Add(byte[] chunk)
+            internal bool Add(byte[] chunk, long budget)
             {
                 lock (_lock)
                 {
-                    if (_disposed)
+                    if (_disposed || _buffered + chunk.Length > budget)
                     {
                         return false;
                     }

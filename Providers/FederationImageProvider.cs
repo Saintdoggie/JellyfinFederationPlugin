@@ -283,7 +283,9 @@ namespace Jellyfin.Plugin.Federation.Providers
         /// <inheritdoc />
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return SharedHttpClient.GetAsync(url, cancellationToken);
+            // Do not buffer an unbounded friend-controlled image before Jellyfin
+            // sees the response. The caller consumes and disposes the stream.
+            return SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         }
     }
 }

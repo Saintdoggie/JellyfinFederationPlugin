@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.200",
+        "changelog": "Security, reliability and bandwidth release. Android raw-file playback no longer enters its HLS-only direct-play path, preventing source errors while preserving original-quality streaming. Direct links become usable as soon as they authenticate while their speed test finishes; a slow or failed test keeps the existing Auto WAN cap instead of removing it. Link setup and forwarding are bounded, permissions and capacity are rechecked before a friend connects, and unexpected sources are refused before TLS. Playback recovers interrupted relays, retains slow converted segments, falls back after direct-link body failures, avoids duplicate bandwidth samples, and uses per-stream bitrates when ranking copies. Catalogs can use Brotli; posters are fetched at sharp display sizes rather than as originals. Also includes reviewed admin, credential, SSRF, response, transcode-admission and Companion-update hardening. Pairing codes remain disabled while under review. Includes everything in 0.0.199.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-25T13:54:03Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.200/Jellyfin.Federation.zip",
+        "checksum": "4bf2248b3a7f813b088deae26a200d77"
+      },
+      {
         "version": "0.0.199",
         "changelog": "Privacy: a friend's home internet address no longer appears in this server's logs or on the status page. Public addresses are shown as a short tag (for example \"public #3f9a2c:51876\") that stays the same for one address while the server runs, so log lines can still be matched up; private, LAN and Tailscale addresses are shown as before for troubleshooting. Error messages that mention an address are cleaned the same way. Your own server's public address is still shown to you on the Beta tab. Pairing codes are disabled in this build while the feature is under review; direct links are unchanged. Includes everything in 0.0.198.",
         "targetAbi": "12.0.0.0",
@@ -169,7 +177,7 @@
       },
       {
         "version": "0.0.178",
-        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"plexpal (primary)\") instead of the movie title, in every client.",
+        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"plex-source (primary)\") instead of the movie title, in every client.",
         "targetAbi": "12.0.0.0",
         "timestamp": "2026-10-13T16:24:00Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.178/Jellyfin.Federation.zip",

@@ -168,13 +168,17 @@ namespace Jellyfin.Plugin.Federation.Services
                         }
                     }
 
-                    using var response = await Http.GetAsync(variantUrl).ConfigureAwait(false);
+                    // ResponseHeadersRead excludes the body from HttpClient.Timeout.
+                    // Keep a deadline across both phases so a stalled warm-up cannot
+                    // retain a response and connection forever in the background.
+                    using var playlistTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    using var response = await Http.GetAsync(variantUrl, HttpCompletionOption.ResponseHeadersRead, playlistTimeout.Token).ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                     {
                         return;
                     }
 
-                    var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var text = await HttpContentReader.ReadTextAsync(response.Content, 8 * 1024 * 1024, playlistTimeout.Token).ConfigureAwait(false);
                     Prefetched[variantUrl] = (DateTime.UtcNow, text, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
 
                     var firstSegment = startConversion ? FirstUri(text, peerBase) : null;

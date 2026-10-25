@@ -282,8 +282,8 @@ public class WatchPartyTests
     [Fact]
     public void Labels_NameTheFriendAndWhoIsWatchingThere()
     {
-        Assert.Equal("(friendflix)", FederatedPartyService.LinkLabel(null, "friendflix"));
-        Assert.Equal("bob, carol (friendflix)", FederatedPartyService.LinkLabel(new[] { "bob", "carol" }, "friendflix"));
+        Assert.Equal("(friend-a)", FederatedPartyService.LinkLabel(null, "friend-a"));
+        Assert.Equal("bob, carol (friend-a)", FederatedPartyService.LinkLabel(new[] { "bob", "carol" }, "friend-a"));
         Assert.Equal("a, b, c, d +2 (x)", FederatedPartyService.LinkLabel(new[] { "a", "b", "c", "d", "e", "f" }, "x"));
     }
 
@@ -299,7 +299,7 @@ public class WatchPartyTests
     public void GroupList_AddsFriendsPartiesOnce_AfterTheNativeGroups()
     {
         var native = new GroupInfoDto(Guid.NewGuid(), "Local", GroupStateType.Idle, new List<string>(), T0);
-        var party = new GroupInfoDto(Guid.NewGuid(), "Movie night · friendflix", GroupStateType.Playing, new List<string> { "alice (friendflix)" }, T0);
+        var party = new GroupInfoDto(Guid.NewGuid(), "Movie night · friend-a", GroupStateType.Playing, new List<string> { "alice (friend-a)" }, T0);
         var merged = FederatedPartyFilter.Merge(new[] { native }, new[] { party, party });
         Assert.Equal(new[] { native.GroupId, party.GroupId }, merged.Select(g => g.GroupId));
 

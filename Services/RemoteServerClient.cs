@@ -1127,7 +1127,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning(
@@ -1172,12 +1172,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 var cachedUntil = result.ExpiresUtc.HasValue
                     ? result.ExpiresUtc.Value - ItemTokenExpirySkew
                     : DateTime.UtcNow + ItemTokenDefaultTtl;
-                if (cachedUntil <= DateTime.UtcNow)
+                // An explicitly short-lived token is still usable for this request,
+                // but must not acquire a new 30-minute lifetime in our cache.
+                if (cachedUntil > DateTime.UtcNow)
                 {
-                    cachedUntil = DateTime.UtcNow + ItemTokenDefaultTtl;
+                    ItemPlaybackTokenCache[cacheKey] = (cachedUntil, result.Token);
                 }
-
-                ItemPlaybackTokenCache[cacheKey] = (cachedUntil, result.Token);
                 return (result.Token, result.ExpiresUtc);
             }
             catch (Exception ex)
@@ -1524,7 +1524,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     System.Text.Encoding.UTF8,
                     "application/json");
 
-                var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     if (response.StatusCode == System.Net.HttpStatusCode.NotFound)

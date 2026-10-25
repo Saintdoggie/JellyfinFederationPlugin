@@ -63,7 +63,7 @@ public class PlexMetadataSourceTests
             "connections": [
               { "uri": "https://relay.example", "local": false, "relay": true },
               { "uri": "https://wan.example", "local": false, "relay": false },
-              { "uri": "http://192.168.1.5:32400", "local": true, "relay": false } ] }
+              { "uri": "http://10.255.255.254:32400", "local": true, "relay": false } ] }
         ]
         """;
 
@@ -72,7 +72,7 @@ public class PlexMetadataSourceTests
 
         Assert.Equal(new[] { "Mine", "Friend's Plex" }, servers.Select(s => s.Name).ToArray());
         Assert.Equal(
-            new[] { "http://192.168.1.5:32400", "https://wan.example", "https://relay.example" },
+            new[] { "http://10.255.255.254:32400", "https://wan.example", "https://relay.example" },
             servers[0].Connections.Select(c => c.Uri).ToArray());
         Assert.Equal("my-token", servers[0].Token);
     }

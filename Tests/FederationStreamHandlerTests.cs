@@ -1071,6 +1071,77 @@ public class FederationStreamHandlerTests : IDisposable
         Assert.Equal(firstChunk, body.ToArray());
     }
 
+    [Fact]
+    public async Task RetryReceivesNonSuccessAfterBodyBytes_AbortsInsteadOfReturningTruncatedResponse()
+    {
+        var firstChunk = new byte[100];
+        new Random(21).NextBytes(firstChunk);
+        var callCount = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new PartialThenFailContent(firstChunk, 1000)
+                };
+            }
+
+            Assert.Equal("bytes=100-", req.Headers.Range?.ToString());
+            return new HttpResponseMessage(HttpStatusCode.Forbidden);
+        }));
+        var (request, response, body) = MakeContext(null);
+        var lifetime = new SpyRequestLifetimeFeature();
+        response.HttpContext.Features.Set<IHttpRequestLifetimeFeature>(lifetime);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, callCount);
+        Assert.True(lifetime.AbortCalled);
+        Assert.Equal(firstChunk, body.ToArray());
+    }
+
+    [Fact]
+    public async Task CleanUpstreamEofBeforeContentLength_ResumesAtNextByteAndCompletesExactBody()
+    {
+        var expected = new byte[300];
+        new Random(22).NextBytes(expected);
+        const int firstLength = 117;
+        var callCount = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                Assert.False(req.Headers.Contains("Range"));
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    // Clean EOF after 117 bytes despite declaring all 300.
+                    Content = new StallAfterOneChunkContent(expected[..firstLength], expected.Length, isFinal: true)
+                };
+            }
+
+            Assert.Equal($"bytes={firstLength}-", req.Headers.Range?.ToString());
+            var resumed = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(expected[firstLength..])
+            };
+            resumed.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(firstLength, expected.Length - 1, expected.Length);
+            return resumed;
+        }));
+        var (request, response, body) = MakeContext(null);
+        var lifetime = new SpyRequestLifetimeFeature();
+        response.HttpContext.Features.Set<IHttpRequestLifetimeFeature>(lifetime);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, callCount);
+        Assert.Equal(expected.Length, response.ContentLength);
+        Assert.Equal(expected, body.ToArray());
+        Assert.False(lifetime.AbortCalled);
+    }
+
     /// <summary>
     /// HttpContent whose body stream hands back a fixed chunk of bytes and then
     /// throws a plain (non-cancellation) IOException on the next read - standing

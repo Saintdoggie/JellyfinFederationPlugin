@@ -212,7 +212,21 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                         ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
                         ApplicationProtocols = Protocols,
                         ListenBacklog = 4,
-                        ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(serverOptions)
+                        ConnectionOptionsCallback = (candidate, _, _) =>
+                        {
+                            // Refuse strangers before spending TLS/QUIC handshake
+                            // work; retain the post-accept check as defence in depth.
+                            var from = candidate.RemoteEndPoint.Address;
+                            var expected = expectedRemote;
+                            from = from.IsIPv4MappedToIPv6 ? from.MapToIPv4() : from;
+                            expected = expected.IsIPv4MappedToIPv6 ? expected.MapToIPv4() : expected;
+                            if (!from.Equals(expected))
+                            {
+                                throw new AuthenticationException("not the friend's address");
+                            }
+
+                            return ValueTask.FromResult(serverOptions);
+                        }
                     },
                     cancellationToken).ConfigureAwait(false);
             }

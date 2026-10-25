@@ -9,11 +9,11 @@ public class FederationMediaSourceNameTests
 {
     [Fact]
     public void PrimarySourceName_SingleServer_IsJustTheServerName()
-        => Assert.Equal("plexpal", FederationMediaSourceProvider.PrimarySourceName("plexpal", 1));
+        => Assert.Equal("plex-source", FederationMediaSourceProvider.PrimarySourceName("plex-source", 1));
 
     [Fact]
     public void PrimarySourceName_SeveralServers_MarksThePrimary()
-        => Assert.Equal("plexpal (primary)", FederationMediaSourceProvider.PrimarySourceName("plexpal", 2));
+        => Assert.Equal("plex-source (primary)", FederationMediaSourceProvider.PrimarySourceName("plex-source", 2));
 
     [Fact]
     public void BuildAlternate_UsesThePlaybackSourceId_ServerName_AndCachedStreams()
@@ -56,20 +56,20 @@ public class FederationMediaSourceNameTests
 
     [Fact]
     public void AlternateName_OnlyServer_IsJustTheServerName()
-        => Assert.Equal("plexpal", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plexpal", offline: false, needsDetail: false));
+        => Assert.Equal("plex-source", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: false, needsDetail: false));
 
     [Fact]
     public void AlternateName_SeveralCopiesOnOneServer_AddsResolutionAndSize()
-        => Assert.Equal("plexpal (2160p · 54.3 GB)", FederationMediaSourceNameFilter.AlternateName(Copy(2160, 58_300_000_000), "plexpal", offline: false, needsDetail: true));
+        => Assert.Equal("plex-source (2160p · 54.3 GB)", FederationMediaSourceNameFilter.AlternateName(Copy(2160, 58_300_000_000), "plex-source", offline: false, needsDetail: true));
 
     [Fact]
     public void AlternateName_OfflineServer_IsMarked()
     {
-        Assert.Equal("plexpal (offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1), "plexpal", offline: true, needsDetail: false));
-        Assert.Equal("plexpal (1080p · 1 GB, offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plexpal", offline: true, needsDetail: true));
+        Assert.Equal("plex-source (offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1), "plex-source", offline: true, needsDetail: false));
+        Assert.Equal("plex-source (1080p · 1 GB, offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: true, needsDetail: true));
     }
 
     [Fact]
     public void AlternateName_MissingDetails_FallsBackToServerName()
-        => Assert.Equal("plexpal", FederationMediaSourceNameFilter.AlternateName(new FederatedSource(), "plexpal", offline: false, needsDetail: true));
+        => Assert.Equal("plex-source", FederationMediaSourceNameFilter.AlternateName(new FederatedSource(), "plex-source", offline: false, needsDetail: true));
 }

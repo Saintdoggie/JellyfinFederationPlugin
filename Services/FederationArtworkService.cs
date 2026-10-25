@@ -146,16 +146,24 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Width an image is fetched at, or null for the friend's original. Episode
-        /// images are only ever shown small; a 640 px copy is a fraction of the
-        /// original, and a large first sync fetches one per episode. Jellyfin
-        /// cannot load a library item's image lazily: saving the item converts
-        /// any remote image address into a local file at once.
+        /// Width an image is fetched at, or null when the item has no useful
+        /// artwork size. Jellyfin cannot load a library item's image lazily:
+        /// saving the item fetches it into the local image store at once. Keep
+        /// posters sharp on high-DPI/TV layouts without downloading multi-thousand
+        /// pixel originals for every movie, series and season during a first sync.
         /// </summary>
         internal static int? MaxWidthFor(string? itemType)
-            => string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase) ? EpisodeImageMaxWidth : null;
+        {
+            if (string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase))
+            {
+                return EpisodeImageMaxWidth;
+            }
+
+            return itemType is "Movie" or "Series" or "Season" ? PrimaryImageMaxWidth : null;
+        }
 
         internal const int EpisodeImageMaxWidth = 640;
+        internal const int PrimaryImageMaxWidth = 1000;
 
         /// <summary>Largest poster accepted from a friend's server.</summary>
         internal const int MaxPosterBytes = 20 * 1024 * 1024;

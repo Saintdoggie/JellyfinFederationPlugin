@@ -1874,8 +1874,8 @@ test("friends' favorites appear as one row per friend below the native favorites
     { Id: 'ccc', Name: 'Song', Type: 'Audio', AlbumArtist: 'Band', ImageTags: { Primary: 't3' } }
   ];
   const { dom, calls, itemQueries } = makeFavoritesWindow([
-    { serverId: 'f1', name: 'friendflix', itemIds: ['bbb', 'aaa'] },
-    { serverId: 'f2', name: 'Slowpoke', itemIds: ['ccc', 'gone'] },
+    { serverId: 'f1', name: 'friend-a', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f2', name: 'slow-peer', itemIds: ['ccc', 'gone'] },
     { serverId: 'f3', name: 'Empty', itemIds: ['gone'] }
   ], items);
   await settleMany();
@@ -1887,7 +1887,7 @@ test("friends' favorites appear as one row per friend below the native favorites
   const tab = doc.getElementById('favoritesTab');
   assert.equal(tab.querySelector('.sections').textContent, 'native');
   const sections = [...tab.querySelectorAll('.federation-favorites-section')];
-  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Favorites on friendflix', 'Favorites on Slowpoke']);
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Favorites on friend-a', 'Favorites on slow-peer']);
   const first = [...sections[0].querySelectorAll('.federation-fav-card')];
   assert.deepEqual(first.map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
   assert.equal(first[1].getAttribute('href'), '#/details?id=aaa&serverId=srv');
@@ -2008,9 +2008,9 @@ test('inside a group the menu offers "Invite friends", or says who it is shared 
   assert.deepEqual(invite.posts[0].body, { GroupId: 'g1' });
   invite.dom.window.close();
 
-  const shared = makeSyncPlayMenu(['leave-group'], { shared: true, hostedHere: true, friends: ['friendflix'], canHost: true }, groups);
+  const shared = makeSyncPlayMenu(['leave-group'], { shared: true, hostedHere: true, friends: ['friend-a'], canHost: true }, groups);
   await settleMany();
-  assert.equal(shared.dom.window.document.querySelector('.federation-party-item').textContent.trim(), 'Watching with friendflix');
+  assert.equal(shared.dom.window.document.querySelector('.federation-party-item').textContent.trim(), 'Watching with friend-a');
   shared.dom.window.close();
 });
 
@@ -2153,15 +2153,15 @@ function makePlayerStats(connection) {
 test('Playback Info gets a Federation block for friends\' titles, and keeps it across re-renders', async () => {
   const { dom, calls } = makePlayerStats({
     federated: true,
-    friend: 'friendflix',
+    friend: 'friend-a',
     route: 'friend-converts',
-    routeText: 'friendflix converts it and sends it straight to this player',
+    routeText: 'friend-a converts it and sends it straight to this player',
     placement: 'Friend converts (full hardware conversion)',
     latencyMs: 42,
     linkMbps: 87.4,
     capMbps: 20,
     friendHardware: 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC',
-    alsoOn: ['Slowpoke']
+    alsoOn: ['slow-peer']
   });
   await settleMany();
   const doc = dom.window.document;
@@ -2171,14 +2171,14 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
   const rows = [...block.querySelectorAll('.playerStats-stat')].map((r) => [r.querySelector('.playerStats-stat-label').textContent, r.querySelector('.playerStats-stat-value').textContent]);
   assert.deepEqual(rows, [
     ['Federation', ''],
-    ['Friend', 'friendflix'],
-    ['Route', 'friendflix converts it and sends it straight to this player'],
+    ['Friend', 'friend-a'],
+    ['Route', 'friend-a converts it and sends it straight to this player'],
     ['Who converts', 'Friend converts (full hardware conversion)'],
     ['Round trip', '42 ms'],
     ['Link speed', '87 Mbps'],
     ['Bitrate cap', '20 Mbps'],
-    ['friendflix converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
-    ['Also on', 'Slowpoke']
+    ['friend-a converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
+    ['Also on', 'slow-peer']
   ]);
   assert.ok(block.querySelector('.playerStats-stat-header'));
 
@@ -2297,7 +2297,7 @@ test("popular titles appear on the Home tab as one row per friend, most popular 
     { Id: 'bbb', Name: 'Show', Type: 'Series', ImageTags: {} }
   ];
   const { dom, calls } = makePopularWindow([
-    { serverId: 'f1', name: 'friendflix', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f1', name: 'friend-a', itemIds: ['bbb', 'aaa'] },
     { serverId: 'f2', name: 'Empty', itemIds: ['gone'] }
   ], items);
   await settleMany();
@@ -2306,7 +2306,7 @@ test("popular titles appear on the Home tab as one row per friend, most popular 
   const tab = dom.window.document.getElementById('homeTab');
   assert.equal(tab.querySelector('.sections').textContent, 'native');
   const sections = [...tab.querySelectorAll('.federation-popular-section')];
-  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Popular on friendflix']);
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Popular on friend-a']);
   assert.deepEqual([...sections[0].querySelectorAll('.federation-fav-card')].map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
   dom.window.close();
 });

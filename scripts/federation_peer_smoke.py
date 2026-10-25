@@ -210,11 +210,16 @@ def smoke():
             qa.check(got == payload, 'File from the friend differs')
             disposition = got_headers.get('Content-Disposition') or ''
             qa.check(disposition.startswith('attachment') and 'QA Peer (2026).mkv' in disposition, 'Friend does not name the downloaded file')
-            relayed_headers, relayed = qa.request(base, f'/Items/{item_id}/Download', {**viewer, 'X-Forwarded-Proto': 'https'}, raw=True)
-            qa.check(relayed == payload, 'Relayed download differs')
-            qa.check('QA Peer (2026).mkv' in (relayed_headers.get('Content-Disposition') or ''), 'Relayed download is not named')
-            _, ranged = qa.request(base, f'/Items/{item_id}/Download', {**viewer, 'X-Forwarded-Proto': 'https', 'Range': 'bytes=137-648'}, expected=206, raw=True)
-            qa.check(ranged == payload[137:649], 'Relayed download cannot resume')
+            forwarded = {**viewer, 'X-Forwarded-For': '198.51.100.24', 'X-Forwarded-Proto': 'https'}
+            status, located, _ = no_redirect(base, f'/Items/{item_id}/Download', forwarded)
+            qa.check(status == 302, 'An untrusted forwarded scheme changed the download route')
+            repeated_headers, repeated = qa.request(source_base, path_only(located['Location']), {}, raw=True)
+            qa.check(repeated == payload, 'Repeated direct download differs')
+            qa.check('QA Peer (2026).mkv' in (repeated_headers.get('Content-Disposition') or ''), 'Repeated direct download is not named')
+            status, located, _ = no_redirect(base, f'/Items/{item_id}/Download', {**forwarded, 'Range': 'bytes=137-648'})
+            qa.check(status == 302, 'Ranged direct download did not redirect to the friend')
+            _, ranged = qa.request(source_base, path_only(located['Location']), {'Range': 'bytes=137-648'}, expected=206, raw=True)
+            qa.check(ranged == payload[137:649], 'Direct download cannot resume')
             qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
                 {'RemoteUserId':viewer_id,'Mode':'AllLibraries','AllowDownload':False})['success'], 'Viewer download rule failed')
             qa.wait_for(lambda: can_download(viewer, viewer_id) is False or None, 'Download still offered after the friend turned it off for the viewer')
@@ -233,7 +238,7 @@ def smoke():
                 {'AllowDownloads':True,'AllowBulkDownloads':False})['success'], 'Friend download restore failed')
             qa.wait_for(lambda: (refreshed() and can_download(viewer, viewer_id)) or None, 'Download did not come back')
             qa.request(source_base, f'/Plugins/Federation/DirectStream/{native["Id"]}?token=forged&download=true', {}, expected=403, raw=True)
-            print('PEER PASS: any viewer downloads a friend title in their app: straight from the friend (named file, no credential), relayed when the scheme differs (resumable), refused with a reason when the friend turns it off per viewer or for everyone', flush=True)
+            print('PEER PASS: any viewer downloads a friend title in their app: straight from the friend (named file, no credential, resumable), untrusted scheme headers ignored, refused with a reason when the friend turns it off per viewer or for everyone', flush=True)
             stage = 'friends\' favorites'
             source_admin_id = qa.request(source_base, '/Users/Me', source_admin)['Id']
             qa.request(source_base, f'/UserFavoriteItems/{native["Id"]}?userId={source_admin_id}', source_admin, {})

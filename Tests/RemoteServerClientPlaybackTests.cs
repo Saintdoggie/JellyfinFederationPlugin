@@ -425,6 +425,23 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetPlaybackTokenAsync_ExpiryInsideSkew_IsNotCached()
+    {
+        var handler = new FakeHttpMessageHandler(
+            playbackTokenJson: "{\"token\":\"short-lived\",\"expiresUtc\":\"" + DateTime.UtcNow.AddMinutes(1).ToString("O") + "\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "short-token-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var first = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        var second = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Equal("short-lived", first.Token);
+        Assert.Equal("short-lived", second.Token);
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
     public async Task GetPlaybackTokenAsync_InvalidateItemPlaybackToken_ForcesRemint()
     {
         // A token the remote just rejected (remote restarted, friendship removed)

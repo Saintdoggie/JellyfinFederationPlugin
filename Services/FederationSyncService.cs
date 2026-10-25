@@ -486,11 +486,14 @@ namespace Jellyfin.Plugin.Federation.Services
             // a recheck this cycle. WanBandwidthMonitor's cache is a
             // ConcurrentDictionary keyed per server, so concurrent refreshes for
             // different servers cannot race each other.
-            var refreshes = servers.Where(s => s.Enabled)
-                .Select(server => _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken));
-            var linkSamples = servers.Where(s => s.Enabled)
-                .Select(server => _bandwidthMonitor.MeasureLinkIfDueAsync(server, cancellationToken));
-            await Task.WhenAll(refreshes.Concat(linkSamples)).ConfigureAwait(false);
+            await Task.WhenAll(servers.Where(s => s.Enabled).Select(async server =>
+            {
+                // Refresh records the same sample used by the link estimate. Let it
+                // finish first so the link check can reuse it instead of downloading
+                // a second 10 MB sample while the first is still in flight.
+                await _bandwidthMonitor.RefreshIfDueAsync(server, cancellationToken).ConfigureAwait(false);
+                await _bandwidthMonitor.MeasureLinkIfDueAsync(server, cancellationToken).ConfigureAwait(false);
+            })).ConfigureAwait(false);
         }
 
         /// <summary>

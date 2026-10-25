@@ -14,6 +14,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -1111,12 +1112,12 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public async Task GetMediaSources_DirectMode_UsesItemScopedPlaybackToken_NotSessionToken()
+    public async Task GetMediaSources_DirectMode_RawHttpUsesScopedTokenWithoutHlsDirectPlay()
     {
         // Direct-mode Path is client-visible. A session token authorizes any
         // currently visible item, so swapping itemId on that URL would fetch a
-        // different title. This pins that a known local user still gets an
-        // item-scoped playback token, not RegisterUserSession.
+        // different title. Raw HTTP must also stay out of Android's HLS-only
+        // direct-play path while retaining original-file streaming and conversion.
         var serverId = "direct-client-path-" + Guid.NewGuid().ToString("N");
         var remoteId = Guid.NewGuid();
         var localUserId = Guid.NewGuid();
@@ -1179,9 +1180,14 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal(0, handler.RegisterUserSessionCalls);
         Assert.True(handler.PlaybackTokenCalls >= 1);
         Assert.DoesNotContain("\"Purpose\":\"Image\"", handler.LastPlaybackTokenBody);
-        var path = Assert.Single(sources).Path;
-        Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", path);
-        Assert.DoesNotContain("session-tok-123", path);
+        var source = Assert.Single(sources);
+        Assert.Equal(MediaProtocol.Http, source.Protocol);
+        Assert.Equal("mkv", source.Container);
+        Assert.False(source.SupportsDirectPlay);
+        Assert.True(source.SupportsDirectStream);
+        Assert.True(source.SupportsTranscoding);
+        Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", source.Path);
+        Assert.DoesNotContain("session-tok-123", source.Path);
         Assert.Equal(localUserId.ToString("N"), handler.LastRemoteUserId);
     }
 
