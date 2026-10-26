@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.201",
-  "changelog": "Optional Plex add-in and browser playback resilience. Plex catalogs, Companion connections, metadata/import and .strm export now require the matching optional Plex add-in installed beside the core DLL. Ordinary Jellyfin federation works without it; an absent add-in preserves Plex settings and cached titles without using the wrong protocol. Adaptive web playback tolerates slow HLS segments with bounded buffers, timeouts and retries, while diagnostics omit playback URLs and tokens. Includes everything in 0.0.200.",
+  "version": "0.0.202",
+  "changelog": "App compatibility. Phone and tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone and iPad, Streamyfin) now get a friend-converted stream held to 1080p and about 12 Mbps. Before, these apps sent no resolution limit, so a 4K HDR title became a 4K, 30+ Mbps conversion that a friend's server could make slower than real time, and the Android player gave up with a Source error before the first segment. TV apps and the web client are unchanged, and an app's own resolution limit is respected. Includes everything in 0.0.201.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-26T14:02:30Z",
+  "timestamp": "2026-10-26T15:07:16Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

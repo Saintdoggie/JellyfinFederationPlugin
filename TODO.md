@@ -1,6 +1,6 @@
 # Jellyfin Federation — remaining work
 
-## 0.0.202 — app compatibility (branch `work/compat-0202`, unreleased)
+## 0.0.202 — app compatibility
 
 - [x] Phone/tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone/iPad, Streamyfin) get a handed-off conversion held to 1080p and ~12 Mbps (`HandheldClientLimits`). Cause: a 4K HDR title became a 4K, 33 Mbps conversion the friend made at 1.08x real time, and the Android player gave up with "Source error" about 2 s in (2026-10-26 14:23 UTC). TV apps and the web client are unchanged.
 - [ ] Confirm on the real device: the friend plays one 4K title from a friend server on Android; check the conversion log shows <=1080p and the app no longer errors.
