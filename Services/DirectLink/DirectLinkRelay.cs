@@ -24,7 +24,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         // X-Forwarded-For/Forwarded are left in place only by a proxy Jellyfin
         // doesn't trust (a trusted one's are consumed); the CDN headers mean the
         // viewer came in from the internet (Cloudflare tunnel and the like).
-        private static readonly string[] ProxyHeaders = { "X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "True-Client-IP" };
+        private static readonly string[] ProxyHeaders = { "X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Client-IP" };
 
         /// <summary>The base the player gets for a friend (playlists are rewritten onto it).</summary>
         public static string PlayerBase(string? pathBase, string serverId)

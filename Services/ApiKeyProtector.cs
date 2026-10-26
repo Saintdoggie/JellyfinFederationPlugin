@@ -9,9 +9,8 @@ namespace Jellyfin.Plugin.Federation.Services
     /// ASP.NET Core's DataProtection API with a key ring kept alongside this
     /// plugin's own config file (see <see cref="Plugin.GetDefaultCachePath"/> for
     /// the sibling convention of scoping plugin-owned files under its data
-    /// folder). These keys are never real Jellyfin API keys used anywhere except
-    /// <see cref="Configuration.PluginConfiguration.InternalRelayApiKey"/> - the
-    /// rest are the scoped federation tokens minted by
+    /// folder). Native Jellyfin relay keys are process-memory only and never use
+    /// this protector. These are scoped federation tokens minted by
     /// <see cref="FederationFriendService"/>'s handshake, which already carry no
     /// access beyond the <c>Peer/*</c> endpoints - but a friend's server address
     /// plus a valid token for it is still a real credential worth not leaving in

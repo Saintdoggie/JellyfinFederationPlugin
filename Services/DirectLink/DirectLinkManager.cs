@@ -422,7 +422,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             var allowPrivate = AllowPrivateFor(caller);
             var allowTailscale = AllowTailscaleFor(caller);
-            var candidates = DirectLinkProtocol.AcceptCandidates(offer.Candidates, allowPrivate, allowTailscale);
+            var candidates = await AcceptPeerCandidatesAsync(offer.Candidates, caller, allowPrivate, allowTailscale, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0)
             {
                 return (400, null, "The offer had no usable address.");
@@ -661,6 +661,64 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     || (IPAddress.TryParse(uri.Host, out var ip) && DirectLinkProtocol.IsTailscale(ip)));
         }
 
+        private static async Task<List<IPEndPoint>> AcceptPeerCandidatesAsync(
+            IEnumerable<DirectLinkCandidate>? offered,
+            RemoteServer server,
+            bool allowPrivate,
+            bool allowTailscale,
+            CancellationToken cancellationToken)
+        {
+            var candidates = DirectLinkProtocol.AcceptCandidates(offered, allowPrivate, allowTailscale);
+            if (DirectLinkProtocol.TestMode || candidates.Count == 0 || !Uri.TryCreate(server.Url, UriKind.Absolute, out var uri))
+            {
+                return candidates;
+            }
+
+            var resolved = new HashSet<IPAddress>();
+            try
+            {
+                foreach (var address in await Dns.GetHostAddressesAsync(uri.Host, cancellationToken).ConfigureAwait(false))
+                {
+                    resolved.Add(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address);
+                }
+            }
+            catch (SocketException)
+            {
+                return new List<IPEndPoint>();
+            }
+
+            var ownSubnets = new List<(IPAddress Address, int PrefixLength)>();
+            var hasTailscale = false;
+            try
+            {
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up))
+                {
+                    foreach (var unicast in nic.GetIPProperties().UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
+                    {
+                        ownSubnets.Add((unicast.Address, unicast.PrefixLength));
+                        hasTailscale |= DirectLinkProtocol.IsTailscale(unicast.Address);
+                    }
+                }
+            }
+            catch (NetworkInformationException)
+            {
+            }
+
+            return candidates.Where(endpoint =>
+            {
+                var address = endpoint.Address.IsIPv4MappedToIPv6 ? endpoint.Address.MapToIPv4() : endpoint.Address;
+                if (resolved.Contains(address))
+                {
+                    return true;
+                }
+
+                var bytes = address.GetAddressBytes();
+                var isPrivate = bytes[0] == 10 || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) || (bytes[0] == 192 && bytes[1] == 168);
+                return (allowPrivate && isPrivate && Pairing.PairingEndpoints.IsAcceptable(endpoint, ownSubnets))
+                    || (allowTailscale && hasTailscale && DirectLinkProtocol.IsTailscale(address));
+            }).ToList();
+        }
+
         private List<(IPEndPoint Endpoint, string Kind)> LocalCandidates(Socket socket, IPEndPoint? publicEndpoint, bool allowPrivate, bool allowTailscale)
         {
             var port = ((IPEndPoint)socket.LocalEndPoint!).Port;
@@ -696,6 +754,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         {
             var servers = await StunClient.ResolveAsync(Plugin.Instance?.Configuration?.DirectLinkStunServers ?? Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
             var (publicEndpoint, nat) = await StunClient.DiscoverAsync(socket, servers, cancellationToken).ConfigureAwait(false);
+            if (publicEndpoint != null)
+            {
+                var candidate = new DirectLinkCandidate { Kind = "srflx", Address = publicEndpoint.Address.ToString(), Port = publicEndpoint.Port };
+                publicEndpoint = DirectLinkProtocol.AcceptCandidate(candidate, DirectLinkProtocol.TestMode, DirectLinkProtocol.TestMode);
+            }
+
             if (publicEndpoint != null)
             {
                 // This server's own address, shown only to its admin.
@@ -938,7 +1002,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return ("The friend's answer was malformed.", false, null);
             }
 
-            var peerCandidates = DirectLinkProtocol.AcceptCandidates(answer.Candidates, allowPrivate, allowTailscale);
+            var peerCandidates = await AcceptPeerCandidatesAsync(answer.Candidates, server, allowPrivate, allowTailscale, cancellationToken).ConfigureAwait(false);
             state.NatRemote = DirectLinkProtocol.ParseNat(answer.NatType);
             if (peerCandidates.Count == 0)
             {
@@ -962,7 +1026,6 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             // The QUIC stack opens its own socket on the same port; the routers'
             // mappings are keyed on that port, so the punched path carries over.
             socket.Close();
-            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
             object quic;
             try
             {
@@ -1128,7 +1191,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 var quic = await DirectLinkHandshake.AcceptAsync(
                     localPort,
-                    punch.Path.Address,
+                    punch.Path,
                     identity.Certificate,
                     offer.Fingerprint,
                     sessionKey,

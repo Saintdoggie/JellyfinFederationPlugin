@@ -351,7 +351,7 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
-    public async Task ReceivePoolNotice_ForPoolWeAlreadyBelongTo_SyncsRosterAndFansOutToUnknownMembers()
+    public async Task ReceivePoolNotice_ForPoolWeAlreadyBelongTo_SyncsRosterWithoutContactingUnknownMembers()
     {
         // Reached via someone we're already friends with, for a pool we're
         // already a member of - no accept step, this is a roster sync. The
@@ -417,10 +417,52 @@ public class FederationPoolTests : IDisposable
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
         Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
 
-        // Fanned out to Owner (not already known) via a real friend request; never
-        // re-sent anything to Bob, who is how we learned about this in the first place.
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
-        Assert.DoesNotContain(introducedTo, u => u.StartsWith("http://bob.example", StringComparison.Ordinal));
+        Assert.Empty(introducedTo);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_FromFriendOutsidePool_DoesNotInjectRosterOrContactAnyone()
+    {
+        var mallory = new RemoteServer
+        {
+            Id = "friend-m",
+            Name = "Mallory",
+            Url = "https://mallory.example",
+            FederationId = "mallory-fed-id"
+        };
+        _plugin.Configuration.RemoteServers.Add(mallory);
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IconBase64 = "original-icon",
+            Members = new List<PoolMember>
+            {
+                new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "https://bob.example" }
+            }
+        });
+        var called = false;
+        UseFakeHttp(_ => { called = true; return new HttpResponseMessage(HttpStatusCode.OK); });
+
+        await _service.ReceivePoolNotice(
+            mallory,
+            new PoolNoticePayload
+            {
+                FromFederationId = "mallory-fed-id",
+                PoolId = "pool-1",
+                IconBase64 = "replacement-icon",
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { FederationId = "attacker", Name = "Attacker", Url = "https://attacker.example" }
+                }
+            },
+            CancellationToken.None);
+        await _service.PendingFanOut;
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("original-icon", pool.IconBase64);
+        Assert.DoesNotContain(pool.Members, m => m.Url == "https://attacker.example");
+        Assert.False(called);
     }
 
     [Fact]
@@ -837,7 +879,7 @@ public class FederationPoolTests : IDisposable
         Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
+        Assert.Empty(introducedTo);
     }
 
     [Fact]
@@ -965,10 +1007,7 @@ public class FederationPoolTests : IDisposable
         Assert.Equal(4, pool.Members.Count);
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
 
-        // Fanned out to Owner and C (not B, already connected; not ourselves).
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
-        Assert.Contains(introducedTo, u => u == "http://c.example/Plugins/Federation/Friends/Request");
-        Assert.DoesNotContain(introducedTo, u => u.StartsWith("http://b.example", StringComparison.Ordinal));
+        Assert.Empty(introducedTo);
     }
 
     [Fact]
@@ -1047,8 +1086,7 @@ public class FederationPoolTests : IDisposable
         Assert.Contains(pool.Members, m => m.Url.Contains("100.101"));
         Assert.Contains(pool.Members, m => m.Url.Contains("ts.net"));
         Assert.Contains(pool.Members, m => m.Url == "https://ok.example");
-        Assert.Equal(3, requested.Count);
-        Assert.Contains("https://ok.example/Plugins/Federation/Friends/Request", requested);
+        Assert.Empty(requested);
     }
 
     [Fact]

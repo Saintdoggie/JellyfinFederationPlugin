@@ -457,15 +457,9 @@ namespace Jellyfin.Plugin.Federation.Api
                     // Save form - same class of field as Pools above.
                     config.ConnectivityMode = existing.ConnectivityMode;
 
-                    // This server's own real Jellyfin API key, minted once (see
-                    // FederationFriendService.GetOrCreateInternalRelayApiKeyAsync) and
-                    // used only locally, over loopback, to relay Direct-mode playback
-                    // requests. Never sent by the config page - without this, every
-                    // unrelated save wipes it back to empty, so the next relay request
-                    // treats it as never-created and mints a brand new real API key,
-                    // abandoning the old one for good. Confirmed live: three of these
-                    // orphaned in a single day of ordinary config saves.
-                    config.InternalRelayApiKey = existing.InternalRelayApiKey;
+                    // The native relay key is process-memory only; always keep the
+                    // legacy persisted field empty on ordinary configuration saves.
+                    config.InternalRelayApiKey = string.Empty;
 
                     // Same class of field again: the hide list is managed exclusively
                     // through the HiddenItems/* endpoints (the item detail page's Hide
@@ -3342,7 +3336,13 @@ namespace Jellyfin.Plugin.Federation.Api
                 });
             }
 
-            var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId, purpose, remoteUserId);
+            if (!_playbackTokens.TryIssue(itemGuid.ToString("N"), caller.FederationId, purpose, remoteUserId, out var token, out var mintRetryAfter))
+            {
+                var retrySeconds = Math.Max(1, (int)Math.Ceiling(mintRetryAfter.TotalSeconds));
+                Response.Headers.RetryAfter = retrySeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { error = "Too many new playback tokens. Try again later.", retryAfterSeconds = retrySeconds });
+            }
+
             return Ok(new
             {
                 token,
@@ -3400,7 +3400,11 @@ namespace Jellyfin.Plugin.Federation.Api
                     continue;
                 }
 
-                var token = _playbackTokens.Issue(itemGuid.ToString("N"), caller.FederationId, FederationTokenPurpose.Image, remoteUserId);
+                if (!_playbackTokens.TryIssue(itemGuid.ToString("N"), caller.FederationId, FederationTokenPurpose.Image, remoteUserId, out var token, out _))
+                {
+                    return StatusCode(StatusCodes.Status429TooManyRequests, new { error = "Too many new image tokens. Try again later." });
+                }
+
                 tokens.Add(new { itemId = itemGuid.ToString("N"), token });
             }
 
@@ -3547,7 +3551,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private bool IsLinkFriendOrNotLinked(RemoteServer owner)
         {
             var linked = Services.Pairing.PairedLinkContext.FriendId(Request);
-            return linked == null || string.Equals(owner.Id, linked, StringComparison.Ordinal);
+            return owner.Enabled && (linked == null || string.Equals(owner.Id, linked, StringComparison.Ordinal));
         }
 
         /// <summary>

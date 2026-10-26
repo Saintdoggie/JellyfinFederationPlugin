@@ -153,7 +153,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         await using (upstream.ConfigureAwait(false))
                         {
                             var hostHeader = local.IsDefaultPort ? local.Host : local.Host + ":" + local.Port;
-                            await upstream.WriteAsync(head.BuildForward(hostHeader, local.AbsolutePath), cancel).ConfigureAwait(false);
+                            await upstream.WriteAsync(head.BuildForward(hostHeader, local.AbsolutePath, link?.ServerId, link?.RemoteEndPoint.Address.ToString()), cancel).ConfigureAwait(false);
                             await upstream.FlushAsync(cancel).ConfigureAwait(false);
 
                             var buffer = new byte[64 * 1024];

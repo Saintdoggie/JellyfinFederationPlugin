@@ -131,7 +131,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <returns>204, or 404 when the request didn't come over a paired link.</returns>
         [HttpPost("Pairing/Peer/Confirmed")]
         [AllowAnonymous]
-        public async Task<IActionResult> PeerConfirmed(CancellationToken cancellationToken)
+        public async Task<IActionResult> PeerConfirmed([FromBody] PairingConfirmationBody? body, CancellationToken cancellationToken)
         {
             var friendId = LinkFriend();
             if (friendId == null)
@@ -139,8 +139,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return NotFound();
             }
 
-            await _pairing.OnPeerConfirmedAsync(friendId, cancellationToken).ConfigureAwait(false);
-            return NoContent();
+            if (string.IsNullOrEmpty(body?.SafetyNumber) || body.SafetyNumber.Length > 256)
+            {
+                return BadRequest();
+            }
+
+            return await _pairing.OnPeerConfirmedAsync(friendId, body.SafetyNumber, cancellationToken).ConfigureAwait(false)
+                ? NoContent()
+                : Conflict();
         }
 
         /// <summary>Paired friend, over its link only: swaps federation ids and tokens once both admins confirmed.</summary>

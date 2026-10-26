@@ -92,7 +92,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly TimeSpan ItemTokenExpirySkew = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan ItemTokenDefaultTtl = TimeSpan.FromMinutes(30);
 
-        private readonly HttpClient _httpClient;
+        private readonly BoundedHttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
         private bool _ownsHttpClient;
@@ -119,7 +119,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            _httpClient = new BoundedHttpClient(httpClient ?? throw new ArgumentNullException(nameof(httpClient)));
         }
 
         /// <summary>
@@ -147,7 +147,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string? detail = null;
             try
             {
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(body);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
                 {
@@ -434,7 +434,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerUserRulesBody>(content, JsonOpts);
                 return body?.Rules == null ? null : new PeerUserRulesResult(true, body.Rules, body.AllowDownloads, body.ShareFavorites);
             }
@@ -474,7 +474,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (status, null);
                 }
 
-                var body = await response.Content.ReadFromJsonAsync<T>(PartyJson, cancellationToken).ConfigureAwait(false);
+                var json = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
+                var body = JsonSerializer.Deserialize<T>(json, PartyJson);
                 return (status, body);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -534,7 +535,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return ((int)response.StatusCode, null);
                 }
 
-                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var text = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 try
                 {
                     return ((int)response.StatusCode, JsonSerializer.Deserialize<T>(text, JsonOpts));
@@ -583,7 +584,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerFavoritesBody>(content, JsonOpts);
                 if (body == null)
                 {
@@ -632,7 +633,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerPopularBody>(content, JsonOpts);
                 if (body == null)
                 {
@@ -752,7 +753,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 return ParseItem(doc.RootElement);
             }
@@ -798,7 +799,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var playbackInfo = JsonSerializer.Deserialize<PlaybackInfoResponse>(content, JsonOpts);
                 _logger.LogDebug("[Federation] Playback metadata lookup completed in {ElapsedMs} ms", metadataTimer.Elapsed.TotalMilliseconds);
                 _logger.LogInformation(
@@ -875,7 +876,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (null, reason);
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 return (JsonSerializer.Deserialize<SystemInfo>(content, JsonOpts), null);
             }
             catch (Exception ex)
@@ -908,7 +909,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 return doc.RootElement.TryGetProperty("FederationPluginVersion", out var versionProp)
                     ? versionProp.GetString()
@@ -937,7 +938,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Users", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 return JsonSerializer.Deserialize<List<UserDto>>(content, JsonOpts);
             }
             catch (Exception ex)
@@ -961,7 +962,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Libraries", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
@@ -1039,7 +1040,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendsListResponse>(content, JsonOpts);
                 // Only an explicit "no" or a real list means "nothing here"; a reply
                 // missing both fields is garbled, not an answer.
@@ -1139,7 +1140,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (null, null);
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
                 if (string.IsNullOrEmpty(result?.Token))
                 {
@@ -1262,7 +1263,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return result;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var batch = JsonSerializer.Deserialize<PlaybackTokenBatchResponse>(body, JsonOpts);
                 if (batch?.Tokens == null)
                 {
@@ -1364,7 +1365,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 };
 
                 using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     string? error = null;
@@ -1430,7 +1431,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     string? error = null;
@@ -1540,7 +1541,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
                 if (string.IsNullOrEmpty(result?.Token))
                 {

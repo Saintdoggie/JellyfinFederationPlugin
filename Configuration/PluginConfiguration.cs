@@ -33,15 +33,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string InternalServerUrl { get; set; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets this server's own internal relay API key: a dedicated
-        /// Jellyfin ApiKey, auto-created on first use, that this server uses purely
-        /// server-side to fetch its own native <c>/Videos/{id}/stream</c> or
-        /// <c>/Audio/{id}/stream</c> endpoint over loopback when relaying a Direct-mode
-        /// federated stream on behalf of a friend server (see
-        /// <c>FederationController.DirectStream</c>). Never transmitted over the
-        /// network beyond localhost, never shown in any UI or API response - unlike
-        /// <see cref="ServerUrl"/>/<see cref="InternalServerUrl"/> above, this is a
-        /// secret and must be excluded from <c>FederationController.Sanitize</c>.
+        /// Legacy storage for the internal relay key. Current versions always clear
+        /// this value and keep the process-lifetime native key only in memory, so a
+        /// plugin-data backup never contains a Jellyfin admin-equivalent credential.
         /// </summary>
         public string InternalRelayApiKey { get; set; } = string.Empty;
 

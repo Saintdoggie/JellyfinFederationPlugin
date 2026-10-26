@@ -22,15 +22,13 @@ public class RemoteTranscodeHandoffTests
     private static readonly Guid Source = Guid.Parse("fedcba9876543210fedcba9876543210");
 
     [Fact]
-    public void GatewayBase_UsesTrustedProxyMiddlewareResult_NotRawHeaders()
+    public void GatewayBase_UsesConfiguredPublicUrl_NotRequestHost()
     {
         var context = new DefaultHttpContext();
         context.Request.Scheme = "https";
-        context.Request.Host = new HostString("media.example");
-        context.Request.PathBase = "/jellyfin";
-        context.Request.Headers["X-Forwarded-Proto"] = "http";
-        context.Request.Headers["X-Forwarded-Host"] = "attacker.example";
-        Assert.Equal("https://media.example/jellyfin/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.PublicGatewayBase(context.Request));
+        context.Request.Host = new HostString("attacker.example");
+        Assert.Equal("https://media.example/jellyfin/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.PublicGatewayBase("https://media.example/jellyfin"));
+        Assert.Equal(string.Empty, FederationRemoteTranscodeGateway.PublicGatewayBase((string?)null));
     }
 
     [Theory]
@@ -438,6 +436,21 @@ public class RemoteTranscodeHandoffTests
         {
             FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => DateTime.UtcNow;
         }
+    }
+
+    [Fact]
+    public async Task SharedSegments_UniqueUrls_AreCountBounded()
+    {
+        var gateway = new FederationRemoteTranscodeGateway(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+        for (var i = 0; i < 40; i++)
+        {
+            var segment = new FederationRemoteTranscodeGateway.SharedSegment(200, "video/mp2t", new byte[1024]);
+            await gateway.GetSharedSegmentAsync("http://loopback.invalid/bounded-" + Guid.NewGuid().ToString("N"), () => Task.FromResult<FederationRemoteTranscodeGateway.SharedSegment?>(segment));
+        }
+
+        var field = typeof(FederationRemoteTranscodeGateway).GetField("SharedSegments", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var cache = (System.Collections.IDictionary)field!.GetValue(null)!;
+        Assert.True(cache.Count <= 2, "Shared segment cache grew to " + cache.Count + " entries");
     }
 }
 

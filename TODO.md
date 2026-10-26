@@ -1,5 +1,13 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.204 — security hardening
+
+- [x] Require pool membership for notices, stop automatic contact with untrusted roster URLs, keep internal relay keys in process memory, and bound friend-facing HTTP responses without redirects or proxies.
+- [x] Deduplicate, cap and rate-limit playback tokens; revoke existing access immediately when a friend is disabled. Bind pairing/direct-link packets, QUIC acceptance and requests to the authenticated friend and exact endpoint; reject replays and revalidate read-ahead access. Pairing remains review-locked.
+- [x] Validate viewer reports against the friend roster, namespace device sessions, bound shared segment/playlist caches, and construct public playlist URLs from configured `ServerUrl` rather than request `Host`.
+- [x] Full gate passed: 1,708 plugin, 227 Companion and 149 web tests in each of two automated passes, Windows cross-build, and disposable Plex/Jellyfin integration. Peer, handoff and eight-stage watch-party smoke tests passed; the direct-link/NAT matrix passed all 32 checks, including attack reproductions, read-ahead, dial-back and symmetric fallback.
+- [x] Live two-node attack checks passed for pool injection, oversized responses, credential redirects, token floods, pairing acknowledgement replay, viewer spoofing and friend-disable revocation; anonymous access controls still held.
+
 ## 0.0.203 — measured adaptive playback
 
 - [x] Remove the blanket phone/tablet 1080p and 13 Mbps conversion ceiling. Original-quality direct streaming remains available; necessary conversions retain the app's own limits and use measured WAN/direct-link capacity or an explicit manual cap.

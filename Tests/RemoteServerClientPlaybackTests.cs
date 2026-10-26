@@ -697,6 +697,21 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetSystemInfoDetailedAsync_OversizeValidJson_IsRejected()
+    {
+        var oversized = "{\"ServerName\":\"Remote\",\"pad\":\"" + new string('x', 128 * 1024) + "\"}";
+        var handler = new FakeHttpMessageHandler(systemInfoJson: oversized);
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        using var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var (info, error) = await client.GetSystemInfoDetailedAsync(CancellationToken.None);
+
+        Assert.Null(info);
+        Assert.NotNull(error);
+    }
+
+    [Fact]
     public async Task GetSystemInfoDetailedAsync_Unauthorized_ReportsTokenProblem_NotJellyfinPermissions()
     {
         var handler = new FakeHttpMessageHandler(systemInfoStatusCode: HttpStatusCode.Unauthorized);
@@ -714,7 +729,7 @@ public class RemoteServerClientPlaybackTests
     private static string[] GetDefaultHeaderValues(RemoteServerClient client, string headerName)
     {
         var field = typeof(RemoteServerClient).GetField("_httpClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var httpClient = (HttpClient)field!.GetValue(client)!;
+        var httpClient = ((BoundedHttpClient)field!.GetValue(client)!).InnerClient;
         return httpClient.DefaultRequestHeaders.TryGetValues(headerName, out var values) ? System.Linq.Enumerable.ToArray(values) : Array.Empty<string>();
     }
 

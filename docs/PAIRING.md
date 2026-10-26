@@ -69,8 +69,8 @@ secretB | endpoints | name | tag = HMAC(secretA ‖ secretB, …)`
 
 - `offerHash = SHA-256(offer bytes)[0..16]`. A accepts an answer only for one of its own
   pending offers (at most 3, 15 minutes each **by A's clock**, forgotten on use, expiry
-  or cancel). B rejects offers more than 15 minutes old by its clock, allowing 10
-  minutes of clock difference.
+  or cancel). B rejects expired offers immediately; the 10-minute clock-skew
+  allowance applies only to timestamps from the future, never extends expiry.
 - **Endpoints in a code are checked:** public IPv4 only (no loopback, link-local,
   multicast, broadcast, CGNAT-shared, documentation or reserved ranges), or a private
   address in the same subnet as one of this server's own interfaces. Port ≥ 1024. A
@@ -106,12 +106,12 @@ keeps each router's mapping steady. The range is closed entirely while pairing i
   isn't ours, a time within 120 s and a nonce not seen in 5 minutes. An ack is the same
   size as the probe. Nothing else gets a reply.
 - **No QUIC listener stays open.** After a valid probe, the QUIC server side opens a
-  listener on that port for 10 s. It refuses any other address before TLS starts, and
-  accepts only the pinned certificate and a valid proof. Then it closes.
+  listener on that port for 10 s. It refuses any other IP-and-port endpoint before TLS
+  starts, and accepts only the pinned certificate and a valid proof. Then it closes.
 - ALPN `jf-fed-pair/1`, distinct from direct links. The link's gate profile is fixed
   when the link is made, never chosen per request.
-- Rate limits: a per-port budget of 50 packets/s, plus a global budget of 2,000
-  packets/s across all pairing ports.
+- Rate limits: 3,200 packets/s per port across all packets, then 50 authenticated
+  packets/s per source address and at most 64 unprobed sources.
 
 ## Pairing flow
 
@@ -179,7 +179,7 @@ is added on purpose.
 | POST | `/Plugins/Federation/Peer/CatalogChanged`, `/Peer/PlayControl`, `/Peer/PlayLog`, `/Plugins/Federation/PlaybackToken`, `/Plugins/Federation/RegisterUserSession` | header token, JSON body ≤ 64 KB |
 | GET/HEAD | `/Plugins/Federation/Peer/Play/{token}/{**path}`, `/Peer/Images/{id}/{type}`, `/Plugins/Federation/DirectStream/{**path}` | item token (as today) |
 | POST | `/Plugins/Federation/Friends/{RemoteUserRules,Unfriend}`, `/Plugins/Federation/Pools/{InviteNotice,AcceptNotice,RejectNotice,Notice}` | header token, body ≤ 64 KB |
-| POST | `/Plugins/Federation/Pairing/Peer/Hello`, `/Pairing/Peer/Confirmed` | link identity only (before and after the safety check) |
+| POST | `/Plugins/Federation/Pairing/Peer/Hello`, `/Pairing/Peer/Confirmed` | link identity; Confirmed also carries the current safety number and is accepted only after local confirmation |
 
 The exact list is fixed in code and in a test. Anything in it found to lack the auth it
 claims is a bug the test must catch. Not reachable: the anonymous friend-request routes,
@@ -221,12 +221,10 @@ Players can't reach a paired friend, so this server relays the friend's player-f
 traffic: handoff playlists and segments, direct streams, images and device downloads.
 
 - Home viewers: the existing `DirectLink/{serverId}/...` relay, as today.
-- **Viewers outside the home** get relay URLs carrying a **relay ticket**:
-  `HMAC(serverRelayKey, serverId ‖ path prefix ‖ expiry ‖ jellyfinUserId)`. It is minted
-  only while a signed-in local user starts that play, lasts 6 hours and only covers that
-  play's path prefix. Without a valid ticket the relay answers 404, the same as for an
-  unknown server. So a leaked URL dies with its ticket and can't be stretched to other
-  titles.
+- **Viewers outside the home are not relayed.** The proposed relay-ticket design is
+  `HMAC(serverRelayKey, serverId ‖ path prefix ‖ expiry ‖ jellyfinUserId)`, but it is
+  not implemented. Pairing stays review-locked and no non-home relay path may be
+  enabled until ticket expiry, user/path binding, and uniform 404 behavior exist.
 - Relayed paths go through the same route table (`Play`, `Images`, `DirectStream`
   only).
 - Caps: per paired friend and overall, simultaneous relayed plays and Mbps (default:

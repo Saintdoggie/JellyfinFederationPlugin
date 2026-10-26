@@ -122,7 +122,7 @@ public class ApiKeyProtectionTests : IDisposable
         var savedServer = Assert.Single(savedToDisk!.RemoteServers);
         Assert.NotEqual("friend-secret", savedServer.ApiKey);
         Assert.NotEqual("issued-secret", savedServer.IssuedApiKey);
-        Assert.NotEqual("relay-secret", savedToDisk.InternalRelayApiKey);
+        Assert.Equal(string.Empty, savedToDisk.InternalRelayApiKey);
         Assert.Equal("friend-secret", ApiKeyProtector.Unprotect(savedServer.ApiKey));
         Assert.Equal("issued-secret", ApiKeyProtector.Unprotect(savedServer.IssuedApiKey));
 

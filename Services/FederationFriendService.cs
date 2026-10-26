@@ -26,11 +26,14 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationFriendService
     {
-        private static readonly HttpClient DefaultHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromSeconds(20) };
+        private static readonly HttpClient DefaultHttpClient = new HttpClient(FederationHttp.Handler())
+        {
+            Timeout = TimeSpan.FromSeconds(20),
+            MaxResponseContentBufferSize = HttpContentReader.ControlJsonLimit
+        };
 
-        // Inbound origin-verify only: a 3xx from a public FromServerUrl must not be
-        // followed onto loopback/RFC1918/metadata. Admin-initiated Send/Accept/Reject
-        // keep DefaultHttpClient's normal redirect policy so LAN friends still work.
+        // Inbound origin-verify only: redirects are never followed, including to
+        // loopback/RFC1918/metadata or another host that could receive credentials.
         internal static readonly SocketsHttpHandler DefaultVerifyHandler = new()
         {
             AllowAutoRedirect = false,
@@ -127,59 +130,50 @@ namespace Jellyfin.Plugin.Federation.Services
         // has to be static to actually serialize across those instances. In practice
         // this happens at most once per server lifetime.
         private static readonly SemaphoreSlim InternalRelayKeyLock = new(1, 1);
-
-        // Once-per-process guard for the orphaned-key sweep below (0 = not run yet).
+        private static string _internalRelayApiKey = string.Empty;
         private static int _orphanKeySweepDone;
-
-        // When the stored internal relay key was last confirmed to exist in Jellyfin.
         private static DateTime _relayKeyCheckedUtc = DateTime.MinValue;
 
         internal static TimeSpan RelayKeyCheckInterval { get; set; } = TimeSpan.FromMinutes(10);
 
-        /// <summary>Test seam: forget when the relay key was last checked.</summary>
-        internal static void ResetRelayKeyCheckForTests() => _relayKeyCheckedUtc = DateTime.MinValue;
+        internal static void ResetRelayKeyCheckForTests()
+        {
+            _internalRelayApiKey = string.Empty;
+            _relayKeyCheckedUtc = DateTime.MinValue;
+            _orphanKeySweepDone = 0;
+        }
 
         /// <summary>
-        /// Gets this server's own internal relay API key (see
-        /// <see cref="PluginConfiguration.InternalRelayApiKey"/>), creating and
-        /// persisting one on first use. Purely server-side plumbing: this key is
-        /// never sent to a friend server or exposed to any client, only used
-        /// locally to fetch this server's own native stream endpoint over loopback
-        /// when relaying a Direct-mode playback-token request.
+        /// Gets this server's process-lifetime internal relay API key, creating one
+        /// on first use. The native admin-equivalent credential is deliberately never
+        /// written to plugin configuration.
         /// </summary>
         public async Task<string> GetOrCreateInternalRelayApiKeyAsync(bool forceCheck = false)
         {
-            var config = Plugin.Instance!.Configuration;
-            if (!string.IsNullOrEmpty(config.InternalRelayApiKey)
+            if (!string.IsNullOrEmpty(_internalRelayApiKey)
                 && !forceCheck
                 && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
             {
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                return config.InternalRelayApiKey;
+                return _internalRelayApiKey;
             }
 
             await InternalRelayKeyLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                config = Plugin.Instance!.Configuration;
-                var stored = config.InternalRelayApiKey;
-                if (!string.IsNullOrEmpty(stored))
+                var current = _internalRelayApiKey;
+                if (!string.IsNullOrEmpty(current))
                 {
                     if (!forceCheck && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
                     {
-                        return stored;
+                        return current;
                     }
 
-                    // The stored key is only useful while Jellyfin still knows it. It
-                    // disappears when an admin deletes it under Dashboard > API Keys,
-                    // or with a database reset or reinstall that kept the plugin's
-                    // settings - and then every read of this server's own library
-                    // failed ("Invalid token") and every friend got a 503, forever.
                     bool exists;
                     try
                     {
                         var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
-                        exists = keys.Any(k => string.Equals(k.AccessToken, stored, StringComparison.Ordinal));
+                        exists = keys.Any(k => string.Equals(k.AccessToken, current, StringComparison.Ordinal));
                     }
                     catch (Exception ex)
                     {
@@ -191,19 +185,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         _relayKeyCheckedUtc = DateTime.UtcNow;
                         await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                        return stored;
+                        return current;
                     }
-
-                    _logger.LogWarning(
-                        "[Federation] The internal API key this plugin uses to read this server's own library no longer exists in Jellyfin (deleted under Dashboard > API Keys, or lost with a database reset or reinstall). Creating a new one");
                 }
 
-                var apiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
-                config.InternalRelayApiKey = apiKey;
-                Plugin.Instance.SaveConfiguration();
+                _internalRelayApiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
                 _relayKeyCheckedUtc = DateTime.UtcNow;
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                return apiKey;
+                return _internalRelayApiKey;
             }
             finally
             {
@@ -220,7 +209,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var current = Plugin.Instance?.Configuration?.InternalRelayApiKey;
+                var current = _internalRelayApiKey;
                 var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
                 foreach (var key in keys.Where(k => string.Equals(k.AppName, InternalRelayKeyName, StringComparison.Ordinal)
                                                     && !string.Equals(k.AccessToken, current, StringComparison.Ordinal)).ToList())
@@ -371,7 +360,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (false, $"Friend request rejected by the remote server (HTTP {(int)response.StatusCode}). Check the address - is Federation installed there too, and running a compatible version?");
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendRequestResponse>(body, JsonOpts);
 
                 config.OutgoingFriendRequests.Add(new FriendRequest
@@ -381,7 +370,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerName = result?.ServerName ?? remoteUrl,
                     ApiKey = apiKey,
                     ReplacesServerId = replacesServerId,
-                    ShareAllLibraries = sharing?.ShareAll,
+                    ShareAllLibraries = sharing?.ShareAll ?? (pool != null ? false : null),
                     SharedLibraryFolderIds = sharing?.FolderIds?.ToList(),
                     CreatedUtc = DateTime.UtcNow,
                     PoolId = pool?.Id,
@@ -1553,7 +1542,9 @@ namespace Jellyfin.Plugin.Federation.Services
             var toIntroduce = pool.Members
                 .Where(m => !string.Equals(m.Url.TrimEnd('/'), selfUrlNormalized, StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(m.Url.TrimEnd('/'), reachedViaUrlNormalized, StringComparison.OrdinalIgnoreCase)
-                    && IsAutoIntroducibleUrl(m.Url))
+                    && IsAutoIntroducibleUrl(m.Url)
+                    && config.RemoteServers.Any(s => s.Enabled
+                        && string.Equals(s.Url.TrimEnd('/'), m.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)))
                 .Take(MaxPoolRosterEntries)
                 .ToList();
 
@@ -1639,6 +1630,15 @@ namespace Jellyfin.Plugin.Federation.Services
             if (existingPool == null)
             {
                 _logger.LogDebug("[Federation] Ignored a pool sync notice for pool {PoolId} we're not a member of - introductions go through Pools/InviteNotice", payload.PoolId);
+                return Task.CompletedTask;
+            }
+
+            var senderUrl = sender.Url.TrimEnd('/');
+            if (!existingPool.Members.Any(m =>
+                    (!string.IsNullOrEmpty(sender.FederationId) && string.Equals(m.FederationId, sender.FederationId, StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(m.Url.TrimEnd('/'), senderUrl, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogWarning("[Federation] Ignored a pool sync notice from {Friend}: they are not a member of pool {PoolId}", sender.Name, payload.PoolId);
                 return Task.CompletedTask;
             }
 
@@ -1785,7 +1785,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 StreamingMode = StreamingMode.Direct,
                 // Chosen in the friend request dialog before sending; the friend
                 // could not see anything before accepting.
-                ShareAllLibraries = entry.ShareAllLibraries ?? true,
+                ShareAllLibraries = entry.ShareAllLibraries ?? string.IsNullOrEmpty(entry.PoolId),
                 SharedLibraryFolderIds = entry.SharedLibraryFolderIds?.ToList() ?? new List<string>()
             });
 

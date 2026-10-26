@@ -8,6 +8,9 @@ namespace Jellyfin.Plugin.Federation.Services
 {
     internal static class HttpContentReader
     {
+        internal const int ControlJsonLimit = 64 * 1024;
+        internal const int CatalogJsonLimit = 64 * 1024 * 1024;
+
         public static async Task<string> ReadTextAsync(HttpContent content, int maximumBytes, CancellationToken cancellationToken)
             => System.Text.Encoding.UTF8.GetString(await ReadBytesAsync(content, maximumBytes, cancellationToken).ConfigureAwait(false));
 
@@ -37,6 +40,35 @@ namespace Jellyfin.Plugin.Federation.Services
                 await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    internal sealed class BoundedHttpClient : IDisposable
+    {
+        private readonly HttpClient _inner;
+
+        public BoundedHttpClient(HttpClient inner)
+        {
+            _inner = inner;
+        }
+
+        internal HttpClient InnerClient => _inner;
+
+        public Task<HttpResponseMessage> GetAsync(string? requestUri, CancellationToken cancellationToken)
+            => _inner.GetAsync(requestUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        public Task<HttpResponseMessage> GetAsync(string? requestUri, HttpCompletionOption completionOption, CancellationToken cancellationToken)
+            => _inner.GetAsync(requestUri, completionOption, cancellationToken);
+
+        public Task<HttpResponseMessage> PostAsync(string? requestUri, HttpContent content, CancellationToken cancellationToken)
+            => _inner.SendAsync(new HttpRequestMessage(HttpMethod.Post, requestUri) { Content = content }, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => _inner.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationToken cancellationToken)
+            => _inner.SendAsync(request, completionOption, cancellationToken);
+
+        public void Dispose() => _inner.Dispose();
     }
 
     internal static class BrowseImagePolicy

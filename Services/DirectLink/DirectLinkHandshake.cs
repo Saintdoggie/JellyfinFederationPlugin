@@ -44,7 +44,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <returns>The connection handle.</returns>
         public static Task<object> AcceptAsync(
             int localPort,
-            IPAddress expectedRemote,
+            IPEndPoint expectedRemote,
             X509Certificate2 ownCertificate,
             string expectedFingerprint,
             byte[] sessionKey,

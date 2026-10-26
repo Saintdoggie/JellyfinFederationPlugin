@@ -94,7 +94,8 @@ namespace Jellyfin.Plugin.Federation
                 server.PairKey = ApiKeyProtector.Unprotect(server.PairKey);
             }
 
-            config.InternalRelayApiKey = ApiKeyProtector.Unprotect(config.InternalRelayApiKey);
+            var hadPersistedRelayKey = !string.IsNullOrEmpty(config.InternalRelayApiKey);
+            config.InternalRelayApiKey = string.Empty;
             config.PlexMetadataSource ??= new PlexMetadataSourceSettings();
             config.PlexMetadataSource.Token = ApiKeyProtector.Unprotect(config.PlexMetadataSource.Token);
 
@@ -111,6 +112,11 @@ namespace Jellyfin.Plugin.Federation
             foreach (var offer in config.IncomingPlexOffers ?? new List<IncomingPlexOffer>())
             {
                 offer.Code = ApiKeyProtector.Unprotect(offer.Code);
+            }
+
+            if (hadPersistedRelayKey)
+            {
+                SaveConfiguration(config);
             }
         }
 
@@ -146,7 +152,7 @@ namespace Jellyfin.Plugin.Federation
                 server.PairKey = ApiKeyProtector.Protect(server.PairKey);
             }
 
-            clone.InternalRelayApiKey = ApiKeyProtector.Protect(clone.InternalRelayApiKey);
+            clone.InternalRelayApiKey = string.Empty;
             if (clone.PlexMetadataSource != null)
             {
                 clone.PlexMetadataSource.Token = ApiKeyProtector.Protect(clone.PlexMetadataSource.Token);

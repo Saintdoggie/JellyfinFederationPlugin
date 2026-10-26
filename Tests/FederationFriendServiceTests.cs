@@ -324,14 +324,13 @@ public class FederationFriendServiceTests : IDisposable
             var renewed = await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true);
             Assert.NotEqual(first, renewed);
             Assert.Equal(renewed, Assert.Single(_apiKeys).AccessToken);
-            Assert.Equal(renewed, _plugin.Configuration.InternalRelayApiKey);
+            Assert.Equal(string.Empty, _plugin.Configuration.InternalRelayApiKey);
 
-            // After the interval a regular call checks again by itself.
             _apiKeys.Clear();
-            FederationFriendService.ResetRelayKeyCheckForTests();
-            var again = await _service.GetOrCreateInternalRelayApiKeyAsync();
+            var again = await _service.GetOrCreateInternalRelayApiKeyAsync(forceCheck: true);
             Assert.NotEqual(renewed, again);
             Assert.Equal(again, Assert.Single(_apiKeys).AccessToken);
+            Assert.Equal(string.Empty, _plugin.Configuration.InternalRelayApiKey);
         }
         finally
         {

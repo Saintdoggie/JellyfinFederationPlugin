@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.203",
-  "changelog": "Measured adaptive playback. Android and other handheld apps no longer receive a blanket 1080p/13 Mbps conversion: compatible originals can stream at full quality, while necessary conversions use the client's limits and measured link capacity. Federation Auto now retains high-speed capacity, handles sub-10 Mbps links, and caps high-bitrate remuxes instead of disabling its limit above 50 Mbps. Peer speed tests combine three bounded steady-state media-route samples using the median, reject truncated bodies, and retain conservative behavior on failure. Includes everything in 0.0.202.",
+  "version": "0.0.204",
+  "changelog": "Security hardening. Pool notices require authenticated membership and untrusted roster URLs no longer trigger automatic friend requests or sharing. Internal relay keys are memory-only; friend HTTP responses are bounded and redirects/proxies are disabled. Playback tokens are bounded and rate-limited, and disabling a friend revokes existing access. Pairing and direct links enforce exact peer/endpoint binding and replay protection; viewer reports, segment caches and playlist URLs are hardened. Pairing remains review-locked. Includes everything in 0.0.203.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-26T16:51:41Z",
+  "timestamp": "2026-10-26T22:22:28Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

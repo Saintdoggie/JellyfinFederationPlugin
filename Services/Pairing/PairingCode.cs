@@ -205,7 +205,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     return (null, bytes, "This code's time is off. Check both servers' clocks.");
                 }
 
-                if (now > code.Expires + ClockSkew)
+                if (now > code.Expires)
                 {
                     return (null, bytes, "This code has expired. Ask for a new one (codes last 15 minutes).");
                 }

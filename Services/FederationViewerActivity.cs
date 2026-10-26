@@ -389,7 +389,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILibraryManager _libraryManager;
         private readonly FederationPeerAccessService _peerAccess;
         private readonly ILogger<FederationRemoteViewerService> _logger;
+        private readonly IRemoteServerClientFactory? _clientFactory;
         private readonly Dictionary<string, Viewer> _viewers = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, (DateTime ExpiresUtc, List<UserDto> Users)> _viewerRosters = new(StringComparer.Ordinal);
         private readonly SemaphoreSlim _gate = new(1, 1);
         private Timer? _sweep;
 
@@ -400,12 +402,14 @@ namespace Jellyfin.Plugin.Federation.Services
             ISessionManager sessions,
             ILibraryManager libraryManager,
             FederationPeerAccessService peerAccess,
-            ILogger<FederationRemoteViewerService> logger)
+            ILogger<FederationRemoteViewerService> logger,
+            IRemoteServerClientFactory? clientFactory = null)
         {
             _sessions = sessions;
             _libraryManager = libraryManager;
             _peerAccess = peerAccess;
             _logger = logger;
+            _clientFactory = clientFactory;
         }
 
         /// <summary>Clock, replaceable in tests.</summary>
@@ -465,6 +469,11 @@ namespace Jellyfin.Plugin.Federation.Services
             if (string.IsNullOrWhiteSpace(report.Key) || report.Key.Length > 64 || report.ItemId == Guid.Empty)
             {
                 return 400;
+            }
+
+            if (report.Event != ViewerEvents.Stop && !await IsVerifiedViewer(caller, report).ConfigureAwait(false))
+            {
+                return 403;
             }
 
             var key = caller.Id + "|" + report.Key;
@@ -567,6 +576,29 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        internal async Task<bool> IsVerifiedViewer(RemoteServer caller, PeerViewerReport report)
+        {
+            if (_clientFactory == null || !Guid.TryParse(report.ViewerId, out var viewerId) || string.IsNullOrWhiteSpace(report.ViewerName))
+            {
+                return false;
+            }
+
+            var now = UtcNow();
+            if (!_viewerRosters.TryGetValue(caller.Id, out var cached) || cached.ExpiresUtc <= now)
+            {
+                var users = await _clientFactory.GetClient(caller).GetUsersAsync().ConfigureAwait(false);
+                if (users == null)
+                {
+                    return false;
+                }
+
+                cached = (now + TimeSpan.FromMinutes(5), users);
+                _viewerRosters[caller.Id] = cached;
+            }
+
+            return cached.Users.Any(u => Guid.TryParse(u.Id, out var id) && id == viewerId && string.Equals(u.Name, report.ViewerName, StringComparison.Ordinal));
+        }
+
         /// <summary>How a friend's viewer is named on the dashboard: "bob (friend-a)".</summary>
         internal static string Label(string? viewerName, string friendName)
             => (Clean(viewerName, 64) ?? "Someone") + " (" + friendName + ")";
@@ -581,12 +613,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// The viewer's own device id, so a conversion this server runs for them
         /// (the handoff asks with that device id) shows its details on the same
-        /// session. Prefixed with nothing: Jellyfin keys sessions by client,
-        /// device and user, and these have no user, so they never merge with a
-        /// real session.
+        /// session. The caller namespace prevents one friend from attaching its
+        /// report to another friend's or a local device session.
         /// </summary>
         internal static string DeviceIdFor(RemoteServer caller, PeerViewerReport report)
-            => Clean(report.DeviceId, 128) ?? ("federation-viewer-" + caller.Id + "-" + report.Key);
+            => "federation-viewer-" + caller.Id + "-" + (Clean(report.DeviceId, 96) ?? report.Key);
 
         private async Task SweepAsync()
         {

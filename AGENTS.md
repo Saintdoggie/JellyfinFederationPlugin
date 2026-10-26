@@ -215,6 +215,16 @@ Tests and project history:
 - The core and Plex admin pages and `Web/client/federation-badge.js` are large
   single-file assets. Make narrow changes with regression tests before attempting
   structural cleanup.
+- Native Jellyfin relay keys are process-lifetime and memory-only. The legacy
+  `InternalRelayApiKey` configuration field stays empty; never persist that
+  admin-equivalent credential through `ApiKeyProtector` or plugin XML.
+- Pool notices require sender membership. Unknown roster URLs are informational
+  only: never auto-contact them or create share-all friends from pool automation.
+- Friend-facing HTTP disables redirects and proxies. Control responses use
+  `ResponseHeadersRead` and `HttpContentReader` limits rather than unbounded reads.
+- Direct-link requests carry the authenticated link-friend context, punching and
+  QUIC acceptance use exact endpoints, and read-ahead revalidates before serving.
+  Pairing remains review-locked; non-home relay tickets are not implemented.
 
 ## Validation and release policy
 

@@ -175,7 +175,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
         /// </summary>
         public static async Task<object> AcceptAsync(
             int localPort,
-            IPAddress expectedRemote,
+            IPEndPoint expectedRemote,
             X509Certificate2 ownCertificate,
             string expectedFingerprint,
             byte[] ownProof,
@@ -216,11 +216,8 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                         {
                             // Refuse strangers before spending TLS/QUIC handshake
                             // work; retain the post-accept check as defence in depth.
-                            var from = candidate.RemoteEndPoint.Address;
-                            var expected = expectedRemote;
-                            from = from.IsIPv4MappedToIPv6 ? from.MapToIPv4() : from;
-                            expected = expected.IsIPv4MappedToIPv6 ? expected.MapToIPv4() : expected;
-                            if (!from.Equals(expected))
+                            var from = candidate.RemoteEndPoint;
+                            if (!from.Address.Equals(expectedRemote.Address) || from.Port != expectedRemote.Port)
                             {
                                 throw new AuthenticationException("not the friend's address");
                             }
@@ -253,7 +250,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                         continue;
                     }
 
-                    if (!candidate.RemoteEndPoint.Address.Equals(expectedRemote))
+                    if (!candidate.RemoteEndPoint.Address.Equals(expectedRemote.Address) || candidate.RemoteEndPoint.Port != expectedRemote.Port)
                     {
                         await candidate.DisposeAsync().ConfigureAwait(false);
                         continue;

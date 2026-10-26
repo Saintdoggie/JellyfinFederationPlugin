@@ -255,8 +255,38 @@ public class DownloadsViewersHardwareTests
         Assert.Equal("Someone (friend-a)", FederationRemoteViewerService.Label("  ", "friend-a"));
         Assert.Equal("Chrome · via friend-a", FederationRemoteViewerService.DeviceLabel("Chrome", "friend-a"));
         Assert.Equal("Device · via friend-a", FederationRemoteViewerService.DeviceLabel(null, "friend-a"));
-        Assert.Equal("dev-1", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { DeviceId = "dev-1", Key = "k" }));
+        Assert.Equal("federation-viewer-f1-dev-1", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { DeviceId = "dev-1", Key = "k" }));
         Assert.StartsWith("federation-viewer-f1-", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { Key = "k" }), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task FriendsViewers_MustMatchTheAuthenticatedFriendsRoster()
+    {
+        var id = Guid.NewGuid();
+        var json = "[{\"Id\":\"" + id + "\",\"Name\":\"real-viewer\"}]";
+        using var http = new System.Net.Http.HttpClient(new StaticJsonHandler(json)) { BaseAddress = new Uri("http://friend.example") };
+        using var client = new RemoteServerClient(Friend(), Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, http);
+        var factory = new Moq.Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(client);
+        var service = new FederationRemoteViewerService(null!, null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteViewerService>.Instance, factory.Object);
+        var report = new PeerViewerReport { ViewerId = id.ToString(), ViewerName = "real-viewer" };
+
+        Assert.True(await service.IsVerifiedViewer(Friend(), report));
+        Assert.False(await service.IsVerifiedViewer(Friend(), new PeerViewerReport { ViewerId = id.ToString(), ViewerName = "spoofed-admin" }));
+        Assert.False(await service.IsVerifiedViewer(Friend(), new PeerViewerReport { ViewerId = Guid.NewGuid().ToString(), ViewerName = "real-viewer" }));
+    }
+
+    private sealed class StaticJsonHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly string _json;
+
+        public StaticJsonHandler(string json) => _json = json;
+
+        protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+            => System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent(_json, System.Text.Encoding.UTF8, "application/json")
+            });
     }
 
     // ---- Conversion hardware ------------------------------------------------

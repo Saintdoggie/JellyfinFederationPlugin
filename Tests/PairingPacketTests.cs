@@ -241,4 +241,34 @@ public class PairPortTests
         _ = probe;
         await punching;
     }
+
+    [Fact]
+    public async Task AckFromThirdEndpoint_DoesNotCompletePunch()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        using var victim = PairPort.Bind(0, 0);
+        victim.SetKey(key, 0);
+        using var expected = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);
+        expected.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        using var attacker = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);
+        attacker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var expectedEndpoint = (IPEndPoint)expected.LocalEndPoint!;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+        var punching = victim.PunchAsync(() => new[] { expectedEndpoint }, Fast, timeout.Token);
+
+        var buffer = new byte[256];
+        EndPoint sender = new IPEndPoint(IPAddress.Any, 0);
+        var received = await expected.ReceiveFromAsync(buffer, System.Net.Sockets.SocketFlags.None, sender);
+        var probe = buffer.AsSpan(0, received.ReceivedBytes).ToArray();
+        var ack = PairPunchPacket.Build(
+            PairPunchPacket.Ack,
+            1,
+            PairPunchPacket.PairTag(key),
+            PairingCrypto.SubKey(key, "punch"),
+            DateTimeOffset.UtcNow,
+            PairPort.AckNonce(PairPunchPacket.Nonce(probe)));
+        attacker.SendTo(ack, new IPEndPoint(IPAddress.Loopback, victim.Port));
+
+        Assert.Null(await punching);
+    }
 }
