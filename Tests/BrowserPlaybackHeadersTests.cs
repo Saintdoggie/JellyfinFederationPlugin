@@ -46,7 +46,9 @@ public class BrowserPlaybackHeadersTests : IDisposable
     {
         Assert.Contains("2 times", BrowserPlaybackHeaders.CorsProblem(new[] { "*", "*" }, Player, required: true));
         Assert.Contains("1 times", BrowserPlaybackHeaders.CorsProblem(new[] { "*, *" }, Player, required: true));
-        Assert.Contains("does not allow", BrowserPlaybackHeaders.CorsProblem(new[] { Peer }, Player, required: true));
+        Assert.Contains("different origin", BrowserPlaybackHeaders.CorsProblem(new[] { Peer }, Player, required: true));
+        Assert.DoesNotContain(Peer, BrowserPlaybackHeaders.CorsProblem(new[] { Peer }, Player, required: true), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Player, BrowserPlaybackHeaders.CorsProblem(new[] { Peer }, Player, required: true), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -110,6 +112,8 @@ public class BrowserPlaybackHeadersTests : IDisposable
         Assert.Contains("2 times", problem);
         Assert.Single(log.Warnings);
         Assert.Contains("flix", log.Warnings[0]);
+        Assert.DoesNotContain(Player, log.Warnings[0], StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Peer, log.Warnings[0], StringComparison.OrdinalIgnoreCase);
         var calls = friend.Calls;
         Assert.Equal(problem, await BrowserPlaybackHeaders.ConvertedProblemAsync(server, Peer, Player, log));
         Assert.Equal(calls, friend.Calls);

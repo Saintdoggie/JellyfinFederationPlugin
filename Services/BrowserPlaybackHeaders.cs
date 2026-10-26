@@ -133,7 +133,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (values.Count > 1 || values[0].Contains(',', StringComparison.Ordinal))
             {
-                return $"its web server sends Access-Control-Allow-Origin {values.Count} times ({string.Join(", ", values)}); browsers accept only one. "
+                return $"its web server sends Access-Control-Allow-Origin {values.Count} times; browsers accept only one. "
                     + "Usually the reverse proxy adds its own (nginx add_header) on top of Jellyfin's: remove the proxy's";
             }
 
@@ -143,7 +143,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            return $"its web server sends Access-Control-Allow-Origin \"{value}\", which does not allow {origin}. Remove that header from the reverse proxy (Jellyfin sends the right one)";
+            return "its web server sends an Access-Control-Allow-Origin for a different origin. Remove that header from the reverse proxy (Jellyfin sends the right one)";
         }
 
         /// <summary>
@@ -164,7 +164,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 };
                 if (blocked)
                 {
-                    return $"its web server sends Cross-Origin-Resource-Policy: {value}, so a browser on {playerOrigin} cannot load its video. Remove it, or use cross-origin";
+                    return $"its web server sends Cross-Origin-Resource-Policy: {value}, so a browser on this server cannot load its video. Remove it, or use cross-origin";
                 }
             }
 
@@ -215,9 +215,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private static async Task<Report> RunAsync(RemoteServer server, string peerBase, string playerOrigin, ILogger? logger)
         {
             Report report;
+            using var timeout = new CancellationTokenSource(ProbeTimeout + ProbeTimeout);
             try
             {
-                report = await ProbeAsync(peerBase.TrimEnd('/'), playerOrigin).ConfigureAwait(false);
+                report = await ProbeAsync(peerBase.TrimEnd('/'), playerOrigin, timeout.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -230,7 +231,7 @@ namespace Jellyfin.Plugin.Federation.Services
             return report;
         }
 
-        private static async Task<Report> ProbeAsync(string peerBase, string playerOrigin)
+        private static async Task<Report> ProbeAsync(string peerBase, string playerOrigin, CancellationToken cancellationToken)
         {
             var peerOrigin = Origin(peerBase) ?? peerBase;
             var gateway = $"{peerBase}{HandoffPlaylistLinks.GatewayPath}header-check/videos/{ProbeItem}/hls1/main/0.ts";
@@ -240,10 +241,10 @@ namespace Jellyfin.Plugin.Federation.Services
             // The gateway answers even a bad token with Jellyfin-plugin CORS headers,
             // so whatever else arrives was added on the way. A 200 page catches proxies
             // that only add headers to successful answers (nginx without "always").
-            var gatewayGet = await HeadersAsync(HttpMethod.Get, gateway, playerOrigin, preflight: false).ConfigureAwait(false);
-            var publicInfo = await HeadersAsync(HttpMethod.Get, peerBase + "/System/Info/Public", playerOrigin, preflight: false).ConfigureAwait(false);
-            var preflight = await HeadersAsync(HttpMethod.Options, gateway, playerOrigin, preflight: true).ConfigureAwait(false);
-            var directStream = await HeadersAsync(HttpMethod.Get, $"{peerBase}/Plugins/Federation/DirectStream/{ProbeItem}?token=header-check", playerOrigin, preflight: false).ConfigureAwait(false);
+            using var gatewayGet = await HeadersAsync(HttpMethod.Get, gateway, playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
+            using var publicInfo = await HeadersAsync(HttpMethod.Get, peerBase + "/System/Info/Public", playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
+            using var preflight = await HeadersAsync(HttpMethod.Options, gateway, playerOrigin, preflight: true, cancellationToken).ConfigureAwait(false);
+            using var directStream = await HeadersAsync(HttpMethod.Get, $"{peerBase}/Plugins/Federation/DirectStream/{ProbeItem}?token=header-check", playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
 
             // The plugin's own refusal always carries Allow-Methods with its Allow-Origin:
             // one without the other means something on the way removed it.
@@ -274,18 +275,18 @@ namespace Jellyfin.Plugin.Federation.Services
             // it may load. Only probed on the configured public address.
             if (string.Equals(playerOrigin, OwnOrigin(), StringComparison.OrdinalIgnoreCase))
             {
-                var page = await HeadersAsync(HttpMethod.Get, playerOrigin + "/web/index.html", null, preflight: false).ConfigureAwait(false);
+                using var page = await HeadersAsync(HttpMethod.Get, playerOrigin + "/web/index.html", null, preflight: false, cancellationToken).ConfigureAwait(false);
                 if (page != null)
                 {
                     var csp = Values(page, "Content-Security-Policy");
                     if (!CspAllows(csp, "connect-src", gateway, playerOrigin))
                     {
-                        converted.Add($"this server's own Content-Security-Policy (connect-src) does not allow it: add {peerOrigin}");
+                        converted.Add("this server's own Content-Security-Policy (connect-src) does not allow the friend's origin");
                     }
 
                     if (!CspAllows(csp, "media-src", gateway, playerOrigin))
                     {
-                        direct.Add($"this server's own Content-Security-Policy (media-src) does not allow it: add {peerOrigin}");
+                        direct.Add("this server's own Content-Security-Policy (media-src) does not allow the friend's origin");
                     }
 
                     if (Values(page, "Cross-Origin-Embedder-Policy").Any(v => v.Trim().StartsWith("require-corp", StringComparison.OrdinalIgnoreCase))
@@ -299,9 +300,10 @@ namespace Jellyfin.Plugin.Federation.Services
             return new Report(converted.Count > 0 ? string.Join("; ", converted) : null, direct.Count > 0 ? string.Join("; ", direct) : null);
         }
 
-        private static async Task<HttpResponseMessage?> HeadersAsync(HttpMethod method, string url, string? origin, bool preflight)
+        private static async Task<HttpResponseMessage?> HeadersAsync(HttpMethod method, string url, string? origin, bool preflight, CancellationToken cancellationToken)
         {
-            using var timeout = new CancellationTokenSource(ProbeTimeout);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ProbeTimeout);
             try
             {
                 using var request = new HttpRequestMessage(method, url);
@@ -317,7 +319,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var response = await Send(request, timeout.Token).ConfigureAwait(false);
-                // Headers only; the body (an error page, the public info) is not needed.
                 response.Content?.Dispose();
                 return response;
             }
