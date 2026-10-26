@@ -1,5 +1,14 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.203 — measured adaptive playback
+
+- [x] Remove the blanket phone/tablet 1080p and 13 Mbps conversion ceiling. Original-quality direct streaming remains available; necessary conversions retain the app's own limits and use measured WAN/direct-link capacity or an explicit manual cap.
+- [x] Remove Auto's 50 Mbps uncapped cutoff and 10–45 Mbps clamps. Every measured WAN speed now gets an 85% playback budget, including high-bitrate remuxes and links below 10 Mbps. Failed first measurements retain the conservative pending cap instead of becoming unlimited.
+- [x] Measure Jellyfin peers with three bounded steady-state samples over the real uncapped media route, reject truncated bodies, use the median, and retain the bitrate-test endpoint only as a fallback. The whole probe has a 30-second deadline and per-server concurrency remains bounded.
+- [x] Focused playback/negotiation/bandwidth/source-selection/direct-link suite: 298 tests passed.
+- [ ] Confirm highest sustainable original/converted quality and startup on the physical Android device and a real fluctuating WAN. Server-side measurements cannot guarantee zero buffering or measure a phone's separate path to a friend.
+- [x] Full gate passed: 1,679 plugin, 227 Companion and 149 web tests in each of two automated passes, Windows cross-build, and disposable Plex/Jellyfin integration. Two-server direct/proxy playback and the complete remote-transcode handoff matrix also passed; release DLLs matched the validated builds.
+
 ## 0.0.202 — app compatibility
 
 - [x] Phone/tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone/iPad, Streamyfin) get a handed-off conversion held to 1080p and ~12 Mbps (`HandheldClientLimits`). Cause: a 4K HDR title became a 4K, 33 Mbps conversion the friend made at 1.08x real time, and the Android player gave up with "Source error" about 2 s in (2026-10-26 14:23 UTC). TV apps and the web client are unchanged.

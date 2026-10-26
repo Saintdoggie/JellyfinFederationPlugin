@@ -1844,13 +1844,11 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Measures approximate download throughput from this remote server by timing
-        /// a fetch against its own <c>/Playback/BitrateTest</c> endpoint - the same
-        /// mechanism jellyfin-web itself uses client-side to auto-pick a streaming
-        /// quality before playback starts. Used by <see cref="WanBandwidthMonitor"/>
-        /// to size a WAN bitrate cap from a real measurement instead of a guessed
-        /// fixed number. Returns null on any failure; callers must keep using their
-        /// last known-good measurement rather than treat null as "no bandwidth".
+        /// Measures download throughput from this remote server with repeated
+        /// steady-state transfers and returns their median. Used by
+        /// <see cref="WanBandwidthMonitor"/> to size a WAN cap from real capacity.
+        /// Returns null when every sample fails; callers must keep their last
+        /// known-good measurement rather than treat null as "no bandwidth".
         /// </summary>
         /// <param name="cancellationToken">Cancellation.</param>
         /// <param name="sampleItemId">
@@ -1861,63 +1859,76 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </param>
         public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default, Guid? sampleItemId = null)
         {
-            // Only the steady part of the transfer is timed (see
-            // MeasureSteadyThroughputMbpsAsync), so the sample has to be big enough
-            // to have a steady part after the warm-up on a fast, high-latency link.
             const int sampleBytes = 10_000_000;
-            try
-            {
-                // The shared HttpClient's own timeout (5 minutes - reasonable for a
-                // real library sync, which can legitimately take a while) is far too
-                // long for what is supposed to be a quick background health check: an
-                // unreachable or badly congested remote would otherwise stall this
-                // probe for up to 5 minutes, and since WanBandwidthMoniton.
-                // RefreshIfDueAsync is awaited at the very start of every sync cycle,
-                // that stalls reconciliation for every other server and mapping too,
-                // not just the slow one. 20s is generous enough to still get an
-                // accurate reading down to roughly 2 Mbps (5MB / 2Mbps ≈ 20s) without
-                // risking that blast radius.
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            const int sampleCount = 3;
+            var samples = new List<double>(sampleCount);
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-                if (sampleItemId is { } itemId)
+            for (var attempt = 0; attempt < sampleCount && !linkedCts.IsCancellationRequested; attempt++)
+            {
+                try
                 {
-                    var onMedia = await MeasureOnMediaAsync(itemId, sampleBytes, linkedCts.Token).ConfigureAwait(false);
-                    if (onMedia != null)
+                    double? measured = null;
+                    if (sampleItemId is { } itemId)
                     {
-                        return onMedia;
+                        measured = await MeasureOnMediaAsync(itemId, sampleBytes, linkedCts.Token).ConfigureAwait(false);
+                    }
+
+                    measured ??= await MeasureBitrateTestAsync(sampleBytes, linkedCts.Token).ConfigureAwait(false);
+                    if (measured is > 0)
+                    {
+                        samples.Add(measured.Value);
                     }
                 }
-
-                // Prefer this plugin's own token-authenticated Peer/BitrateTest
-                // route. The native /Playback/BitrateTest endpoint requires real
-                // Jellyfin auth, which the scoped federation token this client
-                // sends cannot satisfy - so ever since the token rewrite the
-                // native call has 401'd, the probe always failed, and WAN bitrate
-                // caps silently stopped being applied (clients then tried to
-                // direct-play bitrates their link can't carry - buffering). The
-                // native endpoint stays as a fallback for remotes running plugin
-                // versions too old to have the peer route.
-                var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
-                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
                 {
-                    response.Dispose();
-                    response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
+                    break;
                 }
-
-                using (response)
+                catch (Exception ex)
                 {
-                    response.EnsureSuccessStatusCode();
-                    var body = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-                    var clock = System.Diagnostics.Stopwatch.StartNew();
-                    return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, linkedCts.Token).ConfigureAwait(false);
+                    _logger.LogDebug(ex, "Bandwidth sample {Attempt} failed for remote server {ServerName}", attempt + 1, _server.Name);
                 }
             }
-            catch (Exception ex)
+
+            if (samples.Count == 0)
             {
-                _logger.LogWarning(ex, "Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning("Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                }
+
                 return null;
             }
+
+            return Median(samples);
+        }
+
+        private async Task<double?> MeasureBitrateTestAsync(int sampleBytes, CancellationToken cancellationToken)
+        {
+            var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                response.Dispose();
+                response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            }
+
+            using (response)
+            {
+                response.EnsureSuccessStatusCode();
+                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                var clock = Stopwatch.StartNew();
+                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken, sampleBytes).ConfigureAwait(false);
+            }
+        }
+
+        internal static double Median(IEnumerable<double> values)
+        {
+            var ordered = values.OrderBy(value => value).ToArray();
+            var middle = ordered.Length / 2;
+            return ordered.Length % 2 == 0
+                ? (ordered[middle - 1] + ordered[middle]) / 2.0
+                : ordered[middle];
         }
 
         // Times a byte range of a real shared file through DirectStream (uncapped,
@@ -1938,14 +1949,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     $"{RemoteServerClientFactory.EffectiveUrl(_server)}/Plugins/Federation/DirectStream/{itemId:N}?token={Uri.EscapeDataString(token)}");
                 request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, sampleBytes - 1);
                 using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
+                if (response.StatusCode != System.Net.HttpStatusCode.PartialContent
+                    || response.Content.Headers.ContentLength != sampleBytes)
                 {
                     return null;
                 }
 
                 var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 var clock = Stopwatch.StartNew();
-                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken).ConfigureAwait(false);
+                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken, sampleBytes).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -1968,8 +1980,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="body">The response body.</param>
         /// <param name="nowSeconds">Monotonic clock in seconds; a seam for tests.</param>
         /// <param name="cancellationToken">Cancellation.</param>
+        /// <param name="expectedBytes">Expected complete body size; an early EOF below this is rejected.</param>
         /// <returns>Megabits per second, or null.</returns>
-        internal static async Task<double?> MeasureSteadyThroughputMbpsAsync(Stream body, Func<double> nowSeconds, CancellationToken cancellationToken)
+        internal static async Task<double?> MeasureSteadyThroughputMbpsAsync(Stream body, Func<double> nowSeconds, CancellationToken cancellationToken, long? expectedBytes = null)
         {
             const int warmupBytes = 1_000_000;
             const int minMeasuredBytes = 256_000;
@@ -1991,6 +2004,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var start = nowSeconds();
             long measured = 0;
             double elapsed = 0;
+            var bodyEnded = false;
             while (elapsed < maxMeasureSeconds)
             {
                 int read;
@@ -2008,6 +2022,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (read == 0)
                 {
+                    bodyEnded = true;
                     break;
                 }
 
@@ -2015,7 +2030,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 elapsed = nowSeconds() - start;
             }
 
-            if (measured < minMeasuredBytes || elapsed <= 0)
+            if (measured < minMeasuredBytes || elapsed <= 0
+                || (bodyEnded && warmedUp + measured < expectedBytes))
             {
                 return null;
             }

@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.202",
-  "changelog": "App compatibility. Phone and tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone and iPad, Streamyfin) now get a friend-converted stream held to 1080p and about 12 Mbps. Before, these apps sent no resolution limit, so a 4K HDR title became a 4K, 30+ Mbps conversion that a friend's server could make slower than real time, and the Android player gave up with a Source error before the first segment. TV apps and the web client are unchanged, and an app's own resolution limit is respected. Includes everything in 0.0.201.",
+  "version": "0.0.203",
+  "changelog": "Measured adaptive playback. Android and other handheld apps no longer receive a blanket 1080p/13 Mbps conversion: compatible originals can stream at full quality, while necessary conversions use the client's limits and measured link capacity. Federation Auto now retains high-speed capacity, handles sub-10 Mbps links, and caps high-bitrate remuxes instead of disabling its limit above 50 Mbps. Peer speed tests combine three bounded steady-state media-route samples using the median, reject truncated bodies, and retain conservative behavior on failure. Includes everything in 0.0.202.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-26T15:07:16Z",
+  "timestamp": "2026-10-26T16:51:41Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

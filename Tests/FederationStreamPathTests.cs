@@ -742,18 +742,16 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanCapMode_Auto_ConfirmedWan_MeasuredFast_StaysUncapped()
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredFast_UsesMeasuredCapacityWithoutCutoff()
     {
-        // Measured comfortably above what any real source needs - forcing a second
-        // transcode pass would cost CPU on both ends for no benefit, so direct play
-        // wins even on a confirmed WAN link.
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 80.0);
 
         var entry = AddEntry("Movie", Guid.NewGuid());
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("Static=true", liveUrl);
+        Assert.Contains("VideoBitrate=64344000", liveUrl);
+        Assert.DoesNotContain("Static=true", liveUrl);
     }
 
     [Fact]

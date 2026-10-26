@@ -53,7 +53,7 @@ public partial class FederationSyncServiceTests
 
         foreach (var server in servers)
         {
-            Assert.Equal(1, handler.RequestCount(server));
+            Assert.Equal(3, handler.RequestCount(server));
         }
     }
 
