@@ -9,6 +9,7 @@ const { JSDOM } = require('jsdom');
 const root = path.resolve(__dirname, '../..');
 const badgeScript = fs.readFileSync(path.join(root, 'Web/client/federation-badge.js'), 'utf8');
 const configPage = fs.readFileSync(path.join(root, 'Web/admin/configPage.html'), 'utf8');
+const plexPage = fs.readFileSync(path.join(root, 'Plex/Web/admin/plexPage.html'), 'utf8');
 const itemId = '11111111111111111111111111111111';
 
 function settle() {
@@ -383,6 +384,74 @@ test('all rendered tabs are routable and the inline configuration script parses'
   dom.window.close();
 });
 
+test('Plex add-in script parses, has unique ids, and wires every rendered action', () => {
+  const scriptMatch = plexPage.match(/<script type="text\/javascript">([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch);
+  assert.doesNotThrow(() => new Function(scriptMatch[1]));
+
+  const dom = new JSDOM(plexPage);
+  const ids = [...dom.window.document.querySelectorAll('[id]')].map((element) => element.id);
+  assert.equal(new Set(ids).size, ids.length, 'Plex add-in contains duplicate element ids');
+  dom.window.close();
+
+  const actions = new Set([...plexPage.matchAll(/data-plex-action="([a-z0-9-]+)"/g)].map((match) => match[1]));
+  const cases = new Set([...scriptMatch[1].matchAll(/case '([^']+)'/g)].map((match) => match[1]));
+  assert.ok(actions.size > 0);
+  assert.deepEqual([...actions].filter((action) => !cases.has(action)), []);
+  assert.match(configPage, /data-fed-action="open-plex-addin"/);
+  assert.doesNotMatch(configPage, /PlexSetup|PlexOffers|data-fed-action="connect-plex-source"/);
+});
+
+test('add-in loader authenticates the named page and initializes its injected scripts', async () => {
+  const addinPage = fs.readFileSync(path.join(root, 'Web/admin/addinPage.html'), 'utf8');
+  const loaderScript = addinPage.match(/<script type="text\/javascript">([\s\S]*?)<\/script>/);
+  assert.ok(loaderScript);
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'dangerously',
+    url: 'http://localhost/web/index.html#!/configurationpage?name=FederationPlex'
+  });
+  const requests = [];
+  const errors = [];
+  dom.window.addEventListener('error', (event) => errors.push(event.error || event.message));
+  dom.window.ApiClient = { accessToken: () => 'synthetic-browser-token' };
+  dom.window.fetch = (url, options) => {
+    const address = String(url);
+    requests.push({ url: address, options });
+    if (address.includes('/AddInPages/FederationPlex')) {
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(plexPage) });
+    }
+    let data = {};
+    if (address.endsWith('/Configuration')) data = { RemoteServers: [], LibraryMappings: [] };
+    if (address.endsWith('/PlexOffers') || address.endsWith('/LocalLibraries')) data = [];
+    return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(data)) });
+  };
+  dom.window.document.body.innerHTML = addinPage;
+  dom.window.eval(loaderScript[1]);
+  for (let i = 0; i < 20; i++) { await settle(); }
+
+  const resource = requests.find((entry) => entry.url.includes('/AddInPages/FederationPlex'));
+  assert.ok(resource);
+  assert.equal(resource.options.headers.Authorization, 'MediaBrowser Token="synthetic-browser-token"');
+  assert.equal(resource.options.headers['X-Emby-Token'], undefined);
+  assert.ok(dom.window.document.getElementById('federationPlexPage'));
+  assert.equal(typeof dom.window.__federationPlexDisposePage, 'function');
+  assert.ok(requests.some((entry) => entry.url.endsWith('/PlexSetup/Status')));
+  assert.deepEqual(errors, []);
+  dom.window.__federationPlexDisposePage();
+  dom.window.close();
+});
+
+test('Plex add-in keeps credentials in authenticated request bodies and headers, not URLs', () => {
+  assert.match(plexPage, /headers\.Authorization = 'MediaBrowser Token="' \+ encodeURIComponent\(token\) \+ '"'/);
+  assert.match(plexPage, /response\.status === 401 \|\| response\.status === 403/);
+  assert.match(plexPage, /plexMetaCall\('POST', 'Manual', \{ Url: url, Token: token \}\)/);
+  assert.match(plexPage, /id="fedPlexManualToken" class="emby-input" type="password"|type="password" id="fedPlexManualToken"/);
+  assert.match(plexPage, /id="fedPlexMetaToken" class="emby-input" type="password"|type="password" id="fedPlexMetaToken"/);
+  assert.doesNotMatch(plexPage, /[?&](?:api_key|access_token|token)=/i);
+  assert.doesNotMatch(plexPage, /X-Plex-Token=/i);
+  assert.doesNotMatch(plexPage, /JSON\.parse\(atob/);
+});
+
 function configResponseParser() {
   const match = configPage.match(/function readJson\(response\) \{([\s\S]*?)\n {20}\}\n\n {20}function q/);
   assert.ok(match, 'readJson response parser not found');
@@ -536,22 +605,22 @@ test('library picker merges friend sections into existing Movies and Shows', () 
   assert.equal(configPage.includes("lib.libraryName.trim().toLowerCase() + '|' + lib.mediaType"), false);
 });
 
-test('Plex share requests can be accepted from the Companion tab without pasting a code', () => {
-  assert.match(configPage, /fedPlexOffersIncoming/);
-  assert.match(configPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
-  assert.match(configPage, /accept-plex-offer/);
-  assert.match(configPage, /this<\/em> server's public address/);
-  assert.match(configPage, /Funnel opens Plex/);
-  assert.match(configPage, /explicitly choose Plex Remote Access/);
+test('Plex share requests can be accepted from the add-in without pasting a code', () => {
+  assert.match(plexPage, /fedPlexOffersIncoming/);
+  assert.match(plexPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
+  assert.match(plexPage, /accept-plex-offer/);
+  assert.match(plexPage, /this<\/em> server's public address/);
+  assert.match(plexPage, /Funnel opens Plex/);
+  assert.match(plexPage, /explicitly choose Plex Remote Access/);
 });
 
 test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {
-  // Regression: the settings page used to base64-decode the Companion code in
-  // the browser and POST {url, token} to ExternalServers as if they were Plex
-  // credentials. That saved Companion's Funnel URL + a one-time claim token,
-  // which only worked when both machines shared a Tailscale tailnet. The
-  // plugin must claim the code server-to-server instead.
-  const fn = configPage.match(/function connectPlexSource\(\) \{[\s\S]*?\n {20}\}/);
+  // Regression: the add-in must not base64-decode the Companion code in the
+  // browser and POST {url, token} to ExternalServers as if they were Plex
+  // credentials. That saves Companion's Funnel URL + a one-time claim token,
+  // which only works when both machines share a Tailscale tailnet. The plugin
+  // must claim the code server-to-server instead.
+  const fn = plexPage.match(/function connectPlexSource\(\) \{[\s\S]*?\n {20}\}/);
   assert.ok(fn, 'connectPlexSource not found');
   assert.equal(fn[0].includes('JSON.parse(atob'), false);
   assert.match(fn[0], /ExternalServers\/ConnectCode/);
@@ -1663,9 +1732,9 @@ test('admin tab row is one scrollable row and switchTab keeps the active tab in 
 });
 
 function plexGuidedImport() {
-  const block = configPage.match(/(var plexImportPlanData = null;[\s\S]*?)\n {20}function collectServer/);
+  const block = plexPage.match(/(var plexStateText = \{[\s\S]*?)\n {20}function loadConfiguration/);
   assert.ok(block, 'guided Plex import script not found');
-  const dom = new JSDOM(configPage);
+  const dom = new JSDOM(plexPage);
   const doc = dom.window.document;
   const posts = [];
   const helpers = {
@@ -1677,7 +1746,8 @@ function plexGuidedImport() {
     loadPlexSetup: () => {},
     plexMetaCall: (method, apiPath, body) => { posts.push({ method, apiPath, body }); return Promise.resolve({ Results: [] }); }
   };
-  const api = new Function(...Object.keys(helpers), block[1] + '\nreturn { renderPlexPlan, plexImport, renderPlexMapRows, setRows: (r) => { plexMapRows = r; }, updatePlexImportButton };');
+  const state = 'var plexImportPlanData = null; var plexMapRows = [];';
+  const api = new Function(...Object.keys(helpers), state + block[1] + '\nreturn { renderPlexPlan, plexImport, renderPlexMapRows, setRows: (r) => { plexMapRows = r; }, updatePlexImportButton };');
   return { doc, posts, ...api(...Object.values(helpers)) };
 }
 

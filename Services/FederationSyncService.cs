@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
@@ -1894,6 +1894,13 @@ namespace Jellyfin.Plugin.Federation.Services
                     s.Mode = "external";
                     s.State = FederationSyncStatus.Ready;
                 });
+                return plan;
+            }
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                plan.Failed = true;
+                Status.Fail(key, $"{server.Name} needs the optional {server.Kind} add-in. Existing titles and settings were kept; install the add-in to refresh or play them.");
                 return plan;
             }
 

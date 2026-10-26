@@ -349,6 +349,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
                     if (oldServer != null)
                     {
+                        FederationServerPresentation.PreserveConnectionMetadata(oldServer, server);
                         server.FederationId = oldServer.FederationId;
                         server.ShareAllLibraries = oldServer.ShareAllLibraries;
                         server.SharedLibraryFolderIds = oldServer.SharedLibraryFolderIds;
@@ -883,7 +884,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     return Ok(new { success = false, message = $"Could not reach {server.Name}, or its token was rejected. Check the address is reachable from this server and the token is still valid." });
                 }
 
-                var companionVersion = await PlexCompanionEndpoint.TryGetVersionAsync(configured, cancellationToken).ConfigureAwait(false);
+                var companionVersion = await _friends.TryGetPlexCompanionVersionAsync(configured, cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(companionVersion))
                 {
                     configured.FederationPluginVersion = companionVersion;
@@ -2876,6 +2877,17 @@ namespace Jellyfin.Plugin.Federation.Api
                         };
                     }
 
+                    if (server.Kind != ServerKind.Jellyfin)
+                    {
+                        return (object)new
+                        {
+                            serverId = server.Id,
+                            serverName = server.Name,
+                            error = "Install the optional Plex add-in to refresh this server's libraries.",
+                            libraries = Array.Empty<object>()
+                        };
+                    }
+
                     var client = _clientFactory.GetClient(server);
                     var libraries = await client.GetLibrariesAsync(token).ConfigureAwait(false);
                     return (object)new
@@ -2918,155 +2930,6 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Admin-triggered: sets the exact list of a non-Jellyfin (Plex) server's
-        /// own library/section ids allowed to be synced from - see
-        /// <see cref="RemoteServer.AllowedExternalLibraryIds"/> for why this has to
-        /// be recorded and enforced here rather than trusted to the remote, and
-        /// <see cref="Services.PlexCatalogProvider"/> for the enforcement itself.
-        /// An empty (not null) list means "allow nothing", matching how leaving
-        /// every checkbox unchecked in the picker UI should behave; omit the field
-        /// entirely (or pass a Jellyfin server's id) to make no change.
-        /// </summary>
-        /// <summary>
-        /// Adds a non-Jellyfin (Plex) media server. Kept deliberately separate
-        /// from the friend handshake: a Plex server has no admin on the other
-        /// end clicking Accept, so the ordinary <c>Friends/Send</c> flow can
-        /// never complete against one - the token is the whole credential and
-        /// is pasted by hand, exactly once, here.
-        /// </summary>
-        [HttpPost("ExternalServers")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult AddExternalServer([FromBody] AddExternalServerBody body)
-        {
-            if (body == null || string.IsNullOrWhiteSpace(body.Url) || string.IsNullOrWhiteSpace(body.Token))
-            {
-                return BadRequest(new { error = "Server URL and token are required" });
-            }
-
-            if (!ConfigValidator.IsValidServerUrl(body.Url))
-            {
-                return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
-            }
-
-            var config = Plugin.Instance?.Configuration;
-            if (config == null)
-            {
-                return BadRequest(new { error = "Plugin not initialized" });
-            }
-
-            // Same duplicate-guard the friend flow gets for free from the
-            // handshake: re-adding a server that's already configured (a
-            // double-clicked Add, a forgotten paste from last week) used to
-            // silently create a second entry with a fresh id, and the two then
-            // fought over the same federated library.
-            var normalized = body.Url.TrimEnd('/');
-            if (config.RemoteServers.Any(s => string.Equals(s.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
-            {
-                return BadRequest(new { error = "A server with this address is already configured - edit it in the list instead of adding it again." });
-            }
-
-            var server = new RemoteServer
-            {
-                Id = Guid.NewGuid().ToString(),
-                Kind = ServerKind.Plex,
-                Name = string.IsNullOrWhiteSpace(body.Name) ? body.Url : body.Name,
-                Url = body.Url,
-                ApiKey = body.Token,
-                // Always proxied - see ServerKind.Plex's doc comment: the Plex
-                // token is a real credential for that whole server and must
-                // never reach a client, and Plex has no equivalent of this
-                // plugin's scoped per-item playback tokens to use instead.
-                StreamingMode = StreamingMode.Proxy,
-                Enabled = true
-            };
-            config.RemoteServers.Add(server);
-            Plugin.Instance?.SaveConfiguration();
-            _clientFactory.InvalidateAll();
-            return Ok(new { success = true, server = SanitizeServerWithUsage(server, _limits) });
-        }
-
-        /// <summary>
-        /// Anonymous: a Plex Companion install typed this server's address
-        /// and pushed a share offer. Stored until an admin accepts. The
-        /// connect code never needs to be copied by hand.
-        /// </summary>
-        [HttpPost("PlexOffers")]
-        [AllowAnonymous]
-        public IActionResult ReceivePlexOffer([FromBody] ConnectPlexCompanionBody? body)
-        {
-            var (success, message) = _friends.ReceivePlexOffer(body?.Code);
-            return success ? Ok(new { success, message }) : BadRequest(new { success, error = message, message });
-        }
-
-        [HttpGet("PlexOffers")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult ListPlexOffers()
-        {
-            var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-            var offers = (config.IncomingPlexOffers ?? new List<IncomingPlexOffer>())
-                .Where(o => o.CreatedUtc >= DateTime.UtcNow.AddHours(-24))
-                .Select(o => new { o.Id, o.ServerName, o.CompanionUrl, o.CreatedUtc });
-            return Ok(new { incoming = offers });
-        }
-
-        [HttpPost("PlexOffers/{id}/Accept")]
-        [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> AcceptPlexOffer(string id, CancellationToken cancellationToken)
-        {
-            var (success, message, server) = await _friends.AcceptPlexOfferAsync(id, cancellationToken).ConfigureAwait(false);
-            if (!success || server == null)
-            {
-                return BadRequest(new { success = false, error = message, message });
-            }
-
-            try
-            {
-                await _syncService.SyncServerAsync(server.Id, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Accepted Plex offer {Name} but the first sync failed", server.Name);
-            }
-
-            return Ok(new { success = true, message, server = SanitizeServerWithUsage(server, _limits) });
-        }
-
-        [HttpDelete("PlexOffers/{id}")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult RejectPlexOffer(string id)
-        {
-            var (success, message) = _friends.RejectPlexOffer(id);
-            return success ? Ok(new { success, message }) : BadRequest(new { success, error = message, message });
-        }
-
-        /// <summary>
-        /// Claims a Companion-generated Plex share code. Optional: the usual
-        /// path is the Plex owner typing this server's address so the offer
-        /// arrives under PlexOffers instead.
-        /// </summary>
-        [HttpPost("ExternalServers/ConnectCode")]
-        [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> ConnectPlexCompanion([FromBody] ConnectPlexCompanionBody? body, CancellationToken cancellationToken)
-        {
-            var (success, message, server) = await _friends.ConnectPlexCompanionAsync(body?.Code, cancellationToken).ConfigureAwait(false);
-            if (!success || server == null)
-            {
-                return BadRequest(new { success = false, error = message, message });
-            }
-
-            try
-            {
-                await _syncService.SyncServerAsync(server.Id, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Federation] Connected to Plex source {Name} but the first sync failed", server.Name);
-            }
-
-            return Ok(new { success = true, message, server = SanitizeServerWithUsage(server, _limits) });
-        }
-
-        /// <summary>
         /// Replaces a non-Jellyfin (Plex) server's pasted token in place. Kind,
         /// name and every other field survive untouched - this is the "the token
         // expired, here's the new one" path, not a re-add.
@@ -3096,56 +2959,6 @@ namespace Jellyfin.Plugin.Federation.Api
             Plugin.Instance?.SaveConfiguration();
             _clientFactory.Invalidate(server.Id);
             return Ok(new { success = true });
-        }
-
-        /// <summary>
-        /// Admin-triggered: registers a non-Jellyfin consumer of our own
-        /// catalog (<see cref="ServerKind.Companion"/>) - a Federation
-        /// Companion instance a Plex-owning friend runs to import our content
-        /// as <c>.strm</c> files. Returns a one-time connect code the admin
-        /// copies to their friend; see <see cref="FederationFriendService.CreateCompanionFriend"/>.
-        /// </summary>
-        [HttpPost("Servers/Companion")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult AddCompanionFriend([FromBody] AddCompanionFriendBody? body)
-        {
-            var (success, message, connectCode) = _friends.CreateCompanionFriend(
-                body?.Name ?? string.Empty,
-                body?.ShareAllLibraries ?? true,
-                body?.SharedLibraryFolderIds);
-
-            if (!success)
-            {
-                return BadRequest(new { success, message });
-            }
-
-            _clientFactory.InvalidateAll();
-            var created = Plugin.Instance?.Configuration?.RemoteServers?.LastOrDefault(s => s.Kind == ServerKind.Companion);
-            return Ok(new { success, message, connectCode, server = created == null ? null : SanitizeServerWithUsage(created, _limits) });
-        }
-
-        /// <summary>
-        /// Re-derives the same connect code <see cref="AddCompanionFriend"/>
-        /// returned, from the token already on file - so an admin who lost the
-        /// copied text can pull it up again without rotating the token.
-        /// </summary>
-        [HttpGet("Servers/{id}/CompanionConnectCode")]
-        [Authorize(Policy = "RequiresElevation")]
-        public IActionResult GetCompanionConnectCode(string id)
-        {
-            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
-            if (server == null || server.Kind != ServerKind.Companion)
-            {
-                return NotFound(new { error = "Companion friend not found" });
-            }
-
-            var (success, message, connectCode) = _friends.GetCompanionConnectCode(server);
-            if (!success)
-            {
-                return BadRequest(new { success, message });
-            }
-
-            return Ok(new { success, connectCode });
         }
 
         /// <summary>
@@ -6103,7 +5916,7 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 Guid remoteGuid;
                 var hasRemoteGuid = server.Kind == ServerKind.Plex
-                    ? (remoteGuid = PlexApiClient.RatingKeyToGuid(rawId)) != Guid.Empty
+                    ? (remoteGuid = ExternalItemIds.PlexRatingKeyToGuid(rawId)) != Guid.Empty
                     : Guid.TryParse(rawId, out remoteGuid);
                 if (hasRemoteGuid)
                 {
@@ -6273,7 +6086,7 @@ namespace Jellyfin.Plugin.Federation.Api
             // GetEntryForRemoteItem helper, so this file stands alone.
             Guid remoteGuid;
             var hasRemoteGuid = server.Kind == ServerKind.Plex
-                ? (remoteGuid = PlexApiClient.RatingKeyToGuid(itemId)) != Guid.Empty
+                ? (remoteGuid = ExternalItemIds.PlexRatingKeyToGuid(itemId)) != Guid.Empty
                 : Guid.TryParse(itemId, out remoteGuid);
             if (hasRemoteGuid)
             {
@@ -6939,60 +6752,7 @@ namespace Jellyfin.Plugin.Federation.Api
         private static object SanitizeServer(RemoteServer s) => SanitizeServerWithUsage(s, null);
 
         private static object SanitizeServerWithUsage(RemoteServer s, FriendDataLimits? limits)
-        {
-            return new
-            {
-                s.Id,
-                s.Name,
-                s.Url,
-                s.Enabled,
-                s.UserId,
-                Kind = (int)s.Kind,
-                s.AllowedExternalLibraryIds,
-                StreamingMode = (int)s.StreamingMode,
-                s.Priority,
-                s.RequireApiKeyForImages,
-                WanCapMode = (int)s.WanCapMode,
-                s.WanMaxBitrateMbps,
-                s.WanMaxHeight,
-                HasApiKey = !string.IsNullOrEmpty(s.ApiKey),
-                s.Paired,
-                HasIssuedApiKey = !string.IsNullOrEmpty(s.IssuedApiKey),
-                s.ShareAllLibraries,
-                s.SharedLibraryFolderIds,
-                s.ExcludedItemIds,
-                s.AllowDownloads,
-                s.AllowBulkDownloads,
-                s.AllowRemoteTranscode,
-                s.MonthlyDataCapGb,
-                s.MaxConcurrentStreams,
-                s.DirectLinkMode,
-                DataUsedThisMonthBytes = limits?.UsedThisMonth(s.FederationId ?? string.Empty) ?? 0,
-                ActiveStreams = limits?.ActiveStreams(s.FederationId ?? string.Empty) ?? 0,
-                RemoteUserAccessRules = (s.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
-                {
-                    r.RemoteUserId,
-                    r.RemoteUserName,
-                    Mode = (int)r.Mode,
-                    r.LibraryFolderIds,
-                    r.ItemIds,
-                    r.MaxAllowedRating,
-                    r.AllowDownload,
-                    r.BlockedItemIds
-                }).ToList(),
-                FriendUserAccessRules = (s.FriendUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(r => new
-                {
-                    r.RemoteUserId,
-                    r.RemoteUserName,
-                    Mode = (int)r.Mode,
-                    r.LibraryFolderIds,
-                    r.ItemIds,
-                    r.MaxAllowedRating,
-                    r.AllowDownload,
-                    r.BlockedItemIds
-                }).ToList()
-            };
-        }
+            => FederationServerPresentation.Sanitize(s, limits);
     }
 
     public class RefreshServerRequest
@@ -7013,32 +6773,9 @@ namespace Jellyfin.Plugin.Federation.Api
         public List<string>? LibraryIds { get; set; }
     }
 
-    public class AddExternalServerBody
-    {
-        public string? Name { get; set; }
-
-        public string? Url { get; set; }
-
-        public string? Token { get; set; }
-    }
-
-    public class ConnectPlexCompanionBody
-    {
-        public string? Code { get; set; }
-    }
-
     public class SetExternalServerTokenBody
     {
         public string? Token { get; set; }
-    }
-
-    public class AddCompanionFriendBody
-    {
-        public string? Name { get; set; }
-
-        public bool ShareAllLibraries { get; set; } = true;
-
-        public List<string>? SharedLibraryFolderIds { get; set; }
     }
 
     public class SendFriendRequestBody

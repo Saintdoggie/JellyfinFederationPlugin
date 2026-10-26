@@ -1,0 +1,937 @@
+<div id="federationPlexPage" data-role="page" class="page type-interior pluginConfigurationPage">
+    <div data-role="content">
+        <div class="content-primary">
+            <style>
+                :where(#federationPlexPage) { color: var(--theme-body-text-color, var(--primary-text-color, #eee)); }
+                #federationPlexPage {
+                    --fed-accent: var(--theme-primary-color, var(--primary-accent-color, #00a4dc));
+                    --fed-border: rgba(128,128,128,.30);
+                    --fed-border-soft: rgba(128,128,128,.16);
+                    --fed-ok-text: #4fbf4a;
+                    --fed-err-text: #e06c6c;
+                    --fed-warn-text: #e0a04a;
+                    --fed-surface: rgba(128,128,128,.055);
+                    max-width: 76rem;
+                    margin-inline: auto;
+                }
+                #federationPlexPage .verticalSection { margin-bottom:1.9em; padding:clamp(1em,2.4vw,1.6em); border:1px solid var(--fed-border-soft); border-radius:.85em; background:var(--fed-surface); }
+                #federationPlexPage .fed-hero { margin:.4em 0 1.3em; padding:1.2em 1.35em; border:1px solid var(--fed-border-soft); border-radius:.9em; background:var(--fed-surface); }
+                #federationPlexPage .fed-hero .sectionTitleContainer, #federationPlexPage .fed-hero .sectionTitle { margin:0; }
+                #federationPlexPage .fed-hint { font-size:.87em; opacity:.7; line-height:1.5; margin:.35em 0 0; }
+                #federationPlexPage .fed-muted { opacity:.6; }
+                #federationPlexPage .fed-inline { display:flex; flex-wrap:wrap; gap:0 1.4em; align-items:flex-end; }
+                #federationPlexPage .fed-inline .fed-input-container, #federationPlexPage .fed-inline .inputContainer { flex:1 1 16em; margin-bottom:.9em; }
+                #federationPlexPage .fed-inline .emby-button { margin-bottom:.9em; }
+                #federationPlexPage .fed-grow { flex:1 1 16em; min-width:0; }
+                #federationPlexPage .fed-input-container { margin-bottom:1.4em; min-width:0; }
+                #federationPlexPage .fed-label { display:block; margin-bottom:.3em; opacity:.8; }
+                #federationPlexPage .fed-check-label { display:flex; align-items:flex-start; gap:.5em; margin:.55em 0; cursor:pointer; line-height:1.4; }
+                #federationPlexPage input.fed-check { appearance:auto; -webkit-appearance:auto; position:static; opacity:1; accent-color:var(--fed-accent); width:1.1em; height:1.1em; min-width:1.1em; margin:.2em 0 0; flex:0 0 auto; cursor:pointer; }
+                #federationPlexPage .fed-srvstatus { margin:.4em 0; font-size:.92em; line-height:1.45; white-space:pre-wrap; }
+                #federationPlexPage .fed-srvstatus-ok { color:var(--fed-ok-text); }
+                #federationPlexPage .fed-srvstatus-err, #federationPlexPage .fed-error { color:var(--fed-err-text); }
+                #federationPlexPage .fed-error { margin:.9em 0; white-space:pre-wrap; }
+                #federationPlexPage .fed-server { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:.85em; margin:.65em 0; background:var(--fed-surface); }
+                #federationPlexPage .fed-server-head { display:flex; align-items:center; flex-wrap:wrap; gap:.6em; }
+                #federationPlexPage .fed-server-url { opacity:.55; font-size:.88em; overflow-wrap:anywhere; min-width:0; }
+                #federationPlexPage .fed-spacer { flex:1; }
+                #federationPlexPage .fed-friendpanel { margin-top:.9em; padding:.1em 0 .1em 1em; border-left:2px solid var(--fed-border-soft); display:flex; flex-direction:column; gap:.9em; }
+                #federationPlexPage .fed-subcard { padding-left:1em; border-left:2px solid var(--fed-border-soft); }
+                #federationPlexPage h4.fed-subhead { margin:0 0 .4em; font-size:.95em; font-weight:600; }
+                #federationPlexPage h3.fed-substep { margin:1.2em 0 .4em; font-size:1.02em; font-weight:600; }
+                #federationPlexPage .fed-userrule-results { margin-top:.45em; max-height:12em; overflow-y:auto; }
+                #federationPlexPage .fed-userrule-result { display:flex; align-items:center; justify-content:space-between; gap:.6em; padding:.22em 0; }
+                #federationPlexPage .fed-danger { color:var(--fed-err-text) !important; }
+                #federationPlexPage .fed-savebar { display:flex; align-items:center; flex-wrap:wrap; gap:1em; }
+                #federationPlexPage .fed-savebar .emby-button { margin:0; }
+                #federationPlexPage details.fed-details { margin:1em 0; }
+                #federationPlexPage details.fed-details > summary { cursor:pointer; font-weight:600; padding:.35em 0; user-select:none; }
+                #federationPlexPage .fed-details-body { padding-top:.7em; }
+                #federationPlexPage .fed-plex-step { border:1px solid var(--fed-border-soft); border-radius:.7em; padding:1em 1.1em; margin:0 0 1em; }
+                #federationPlexPage .fed-plex-step[data-locked] { opacity:.5; }
+                #federationPlexPage .fed-plex-step > h4 { display:flex; align-items:center; gap:.6em; margin:0 0 .6em; font-size:1.05em; }
+                #federationPlexPage .fed-plex-num { display:inline-flex; align-items:center; justify-content:center; width:1.7em; height:1.7em; border-radius:50%; background:rgba(128,128,128,.22); font-size:.85em; font-weight:700; flex:none; }
+                #federationPlexPage .fed-plex-step[data-done] .fed-plex-num { background:var(--fed-accent); color:#fff; }
+                #federationPlexPage .fed-plex-lib { border-top:1px solid var(--fed-border-soft); padding:.7em 0; }
+                #federationPlexPage .fed-plex-lib:first-child { border-top:0; }
+                #federationPlexPage .fed-plex-lib-head { display:flex; flex-wrap:wrap; align-items:center; gap:.5em; }
+                #federationPlexPage .fed-plex-chip { font-size:.8em; padding:.15em .6em; border-radius:1em; border:1px solid currentColor; white-space:nowrap; }
+                #federationPlexPage .fed-plex-chip-ok { color:var(--fed-ok-text); }
+                #federationPlexPage .fed-plex-chip-warn { color:var(--fed-warn-text); }
+                #federationPlexPage .fed-plex-chip-err { color:var(--fed-err-text); }
+                #federationPlexPage .fed-plex-folder { font-family:monospace; font-size:.85em; margin:.25em 0 0 2.1em; overflow-wrap:anywhere; }
+                #federationPlexPage .fed-plex-folder-missing { color:var(--fed-err-text); }
+                #federationPlexPage .fed-plex-map { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto; gap:.5em; align-items:center; margin:.4em 0; }
+                #federationPlexPage .fed-plex-map input { width:100%; box-sizing:border-box; }
+                #federationPlexPage .fed-plex-meter { height:.45em; border-radius:.3em; background:rgba(128,128,128,.22); overflow:hidden; margin:.35em 0 .2em; }
+                #federationPlexPage .fed-plex-meter > span { display:block; height:100%; background:var(--fed-ok-text); }
+                #federationPlexPage button:focus-visible, #federationPlexPage input:focus-visible, #federationPlexPage select:focus-visible, #federationPlexPage summary:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
+                #federationPlexPage code { background:rgba(128,128,128,.14); padding:.12em .4em; border-radius:.25em; font-size:.9em; }
+                @media (max-width:600px) {
+                    #federationPlexPage .fed-plex-map { grid-template-columns:minmax(0,1fr) auto; }
+                    #federationPlexPage .fed-plex-map .fed-plex-arrow { display:none; }
+                    #federationPlexPage .fed-plex-folder { margin-left:0; }
+                    #federationPlexPage .fed-inline { flex-direction:column; align-items:stretch; gap:.6em; }
+                    #federationPlexPage .fed-inline .fed-input-container, #federationPlexPage .fed-inline .inputContainer, #federationPlexPage .fed-inline > .fed-grow { flex:none; width:100%; margin-bottom:0; }
+                    #federationPlexPage .fed-inline > .emby-button { width:100%; }
+                }
+            </style>
+
+            <div class="fed-hero">
+                <div class="sectionTitleContainer"><h2 class="sectionTitle">Federation Plex &amp; Companion</h2></div>
+                <p class="fieldDescription">Optional Plex sources, Companion sharing, Plex metadata, guided library import, and .strm export. Your ordinary Jellyfin friends and libraries remain in Federation settings.</p>
+                <button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="open-core">Back to Federation settings</button>
+            </div>
+            <div id="fedPlexPageError" class="fed-error" role="alert" style="display:none;"></div>
+
+            <div class="verticalSection" id="fedPanelCompanion">
+                <h3 class="sectionTitle">Share your Plex library with a Jellyfin friend</h3>
+                <p class="fieldDescription">Usual path: they type <em>this</em> server's public address in Companion and send a share request. It shows up below — Accept it. If Accept fails because their Funnel opens Plex, they should point Funnel at Companion or explicitly choose Plex Remote Access. A connect code is optional. They do not need to be on your Tailscale.</p>
+                <div id="fedPlexOffersIncoming"></div>
+                <div class="fed-inline">
+                    <div class="inputContainer fed-grow">
+                        <label class="inputLabel" for="fedPlexConnectCode">Connect code</label>
+                        <textarea id="fedPlexConnectCode" class="emby-textarea fed-input" rows="2" placeholder="Paste the code your friend copied from their Companion app"></textarea>
+                    </div>
+                    <button is="emby-button" type="button" class="raised emby-button" data-plex-action="connect-plex-source">Connect</button>
+                </div>
+                <div id="fedPlexConnectStatus" class="fed-srvstatus" style="display:none;"></div>
+                <p class="fieldDescription" style="margin-top:1.2em;">No Companion app on their end - just a Plex server address and a token? Add it directly instead.</p>
+                <div class="fed-inline">
+                    <div class="inputContainer fed-grow"><label class="inputLabel" for="fedPlexManualName">Name</label><input type="text" id="fedPlexManualName" class="emby-input" placeholder="e.g. Sam's Plex" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                    <div class="inputContainer fed-grow"><label class="inputLabel" for="fedPlexManualUrl">Server address</label><input type="text" id="fedPlexManualUrl" class="emby-input" placeholder="https://plex.example.com:32400" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                    <div class="inputContainer fed-grow"><label class="inputLabel" for="fedPlexManualToken">Plex token (X-Plex-Token)</label><input type="password" id="fedPlexManualToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                    <button is="emby-button" type="button" class="raised emby-button" data-plex-action="connect-plex-source-manual">Connect</button>
+                </div>
+                <div id="fedPlexManualStatus" class="fed-srvstatus" style="display:none;"></div>
+            </div>
+
+            <div class="verticalSection">
+                <h3 class="sectionTitle">Let a Plex friend import from you</h3>
+                <p class="fieldDescription">Generate a connect code for a Plex-owning friend to paste into their own Federation Companion app. Their Companion instance pulls whatever you share below and keeps it in sync automatically - Plex never talks to this server directly, and no Plex credential of theirs ever reaches you.</p>
+                <div class="fed-inline">
+                    <div class="inputContainer fed-grow"><label class="inputLabel" for="fedNewCompanionName">Friend's name</label><input type="text" id="fedNewCompanionName" class="emby-input" placeholder="e.g. Alex's Plex" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                    <button is="emby-button" type="button" class="raised emby-button" data-plex-action="create-companion">Generate connect code</button>
+                </div>
+                <div id="fedCompanionStatus" class="fed-srvstatus" style="display:none;"></div>
+                <div id="fedCompanionNewCode"></div>
+                <div id="fedCompanionList"></div>
+            </div>
+
+            <div class="verticalSection" id="fedPanelPlex">
+                <h3 class="sectionTitle">Coming from Plex?</h3>
+                <p class="fieldDescription">Bring your Plex libraries into Jellyfin in three steps. Jellyfin gets the same movies and shows, with Plex's cover art, backdrops and descriptions, and they stay ordinary Jellyfin libraries: share them with friends, download them, and keep using Plex alongside. Your Plex sign-in token stays on this server.</p>
+                <div id="fedPlexMetaStatus" class="fed-srvstatus" style="display:none;"></div>
+                <div class="fed-plex-step" id="fedPlexStep1">
+                    <h4><span class="fed-plex-num">1</span> Connect your Plex server</h4>
+                    <div id="fedPlexMetaConnect">
+                        <button is="emby-button" type="button" class="raised emby-button button-submit" data-plex-action="plex-meta-signin">Sign in with Plex</button>
+                        <div id="fedPlexMetaServers"></div>
+                        <details class="fed-details"><summary>Use an address and token instead</summary>
+                            <div class="inputContainer"><label class="inputLabel" for="fedPlexMetaUrl">Plex address</label><input type="text" id="fedPlexMetaUrl" class="emby-input" placeholder="http://localhost:32400" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                            <div class="inputContainer"><label class="inputLabel" for="fedPlexMetaToken">Plex token (X-Plex-Token)</label><input type="password" id="fedPlexMetaToken" class="emby-input" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                            <button is="emby-button" type="button" class="raised emby-button" data-plex-action="plex-meta-manual">Connect</button>
+                        </details>
+                    </div>
+                    <div id="fedPlexMetaConnected" style="display:none;"><p>Connected to <strong id="fedPlexMetaServerName"></strong> <span class="fed-muted" id="fedPlexMetaServerUrl"></span></p><button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="plex-meta-disconnect">Disconnect</button></div>
+                </div>
+                <div class="fed-plex-step" id="fedPlexStep2" data-locked>
+                    <h4><span class="fed-plex-num">2</span> Pick the libraries to bring over</h4>
+                    <p class="fed-muted" id="fedPlexImportIntro">Connect Plex first.</p>
+                    <div id="fedPlexImportList"></div>
+                    <details class="fed-details" id="fedPlexMapBox"><summary>Plex is on another computer, drive or container</summary>
+                        <p class="fieldDescription" id="fedPlexMapHelp">Jellyfin needs to see the same files Plex plays. If Plex shows a folder Jellyfin can't find, tell Jellyfin where that folder is from here: on the left, the start of the path as Plex shows it; on the right, the same folder on this Jellyfin server (a network share, mounted drive or container volume).</p>
+                        <div id="fedPlexMapRows"></div>
+                        <button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="plex-map-add">+ Add a folder rewrite</button>
+                        <button is="emby-button" type="button" class="raised emby-button" data-plex-action="plex-import-check">Check again</button>
+                    </details>
+                    <button is="emby-button" type="button" class="raised emby-button button-submit" id="fedPlexImportBtn" data-plex-action="plex-import" disabled>Bring these into Jellyfin</button>
+                    <div id="fedPlexImportResults"></div>
+                </div>
+                <div class="fed-plex-step" id="fedPlexStep3" data-locked>
+                    <h4><span class="fed-plex-num">3</span> Check the artwork matched</h4>
+                    <p class="fed-muted">Jellyfin scans new libraries in the background. Big libraries can take a while; check back here as it goes.</p>
+                    <div id="fedPlexReport"></div>
+                    <button is="emby-button" type="button" class="raised emby-button" data-plex-action="plex-report">Check matches</button>
+                    <button is="emby-button" type="button" class="raised emby-button" data-plex-action="plex-meta-pull">Re-pull all Plex artwork</button>
+                </div>
+                <details class="fed-details" id="fedPlexMetaSettings" style="display:none;"><summary>Fine-tune which libraries use Plex</summary>
+                    <h4>Plex libraries to match against</h4><p class="fed-muted">Leave all unticked to use every Plex movie and show library.</p><div id="fedPlexMetaSections"></div>
+                    <h4>Jellyfin libraries to update</h4><p class="fed-muted">Leave all unticked to use every movie and show library.</p><div id="fedPlexMetaLibraries"></div>
+                    <div class="checkboxContainer"><label class="fed-check-label"><input type="checkbox" id="fedPlexMetaArtwork" class="emby-checkbox fed-check" checked /> Cover art and backdrops from Plex</label></div>
+                    <div class="checkboxContainer"><label class="fed-check-label"><input type="checkbox" id="fedPlexMetaText" class="emby-checkbox fed-check" checked /> Titles, summaries, genres, ratings and studios from Plex</label></div>
+                    <div class="checkboxContainer"><label class="fed-check-label"><input type="checkbox" id="fedPlexMetaEnabled" class="emby-checkbox fed-check" /> Use Plex as the metadata source</label></div>
+                    <button is="emby-button" type="button" class="raised emby-button button-submit" data-plex-action="plex-meta-save">Save</button>
+                    <p class="fed-muted">Anything you have locked in Jellyfin is left alone. Matching uses TMDb/IMDb/TVDB ids, then title and year.</p>
+                </details>
+            </div>
+
+            <div class="verticalSection" id="fedPlexStrmCard">
+                <h3 class="sectionTitle">Export federated content to Plex</h3>
+                <label class="fed-check-label"><input type="checkbox" id="fedChkPlexStrmExport" class="emby-checkbox fed-check" /> Export federated content as .strm files for Plex (or any other file-scanning media server)</label>
+                <p class="fieldDescription">This writes each federated movie/episode as a tiny <code>.strm</code> text file containing its stream URL on every refresh. Nothing is downloaded — Plex scans the file like any other video, but streams through the same authorized relay used for every other federated play. Point a Plex library at <code>&lt;path&gt;/Movies</code> and/or <code>&lt;path&gt;/Shows</code>. The folder must also be reachable (read-only is enough) from wherever Plex runs.</p>
+                <div class="inputContainer"><label class="inputLabel" for="fedTxtPlexStrmPath">.strm export path</label><input type="text" id="fedTxtPlexStrmPath" class="emby-input" placeholder="/media/federated" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
+                <div class="fed-savebar"><button is="emby-button" type="button" class="raised button-submit emby-button" data-plex-action="save-strm">Save .strm export settings</button><span id="fedPlexStrmStatus" class="fed-srvstatus" role="status"></span></div>
+            </div>
+
+            <script type="text/javascript">
+                (function () {
+                    'use strict';
+
+                    var apiBase = window.location.origin;
+                    try {
+                        if (window.ApiClient && typeof window.ApiClient.serverAddress === 'function') {
+                            apiBase = window.ApiClient.serverAddress().replace(/\/+$/, '');
+                        } else {
+                            var webAt = window.location.pathname.toLowerCase().indexOf('/web');
+                            if (webAt >= 0) { apiBase += window.location.pathname.substring(0, webAt); }
+                        }
+                    } catch (e) { /* use the current server */ }
+                    if (window.__federationPlexDisposePage) { window.__federationPlexDisposePage(); }
+
+                    var pageEl = null;
+                    var activePage = null;
+                    var currentConfig = { RemoteServers: [] };
+                    var localLibrariesCache = null;
+                    var expandedFriends = {};
+                    var pendingSharing = {};
+                    var excludedItemSearchResults = {};
+                    var lastDirectLinkStatus = null;
+                    var plexMetaPinId = 0;
+                    var plexMetaPollTimer = null;
+                    var plexImportPlanData = null;
+                    var plexMapRows = [];
+
+                    function getToken() {
+                        try {
+                            if (window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
+                                var token = window.ApiClient.accessToken();
+                                if (token) { return token; }
+                            }
+                        } catch (e) { /* fall through to credentials store */ }
+                        try {
+                            var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+                            var servers = creds.Servers || [];
+                            for (var i = 0; i < servers.length; i++) {
+                                var server = servers[i];
+                                if (server && server.AccessToken && server.Url && String(server.Url).replace(/\/+$/, '') === apiBase) {
+                                    return server.AccessToken;
+                                }
+                            }
+                        } catch (e) { /* no token available */ }
+                        return null;
+                    }
+
+                    function fedFetch(path, options) {
+                        options = options || {};
+                        var headers = {};
+                        if (options.headers) {
+                            for (var key in options.headers) {
+                                if (Object.prototype.hasOwnProperty.call(options.headers, key)) { headers[key] = options.headers[key]; }
+                            }
+                        }
+                        var token = getToken();
+                        if (token) { headers.Authorization = 'MediaBrowser Token="' + encodeURIComponent(token) + '"'; }
+                        if (options.body && !headers['Content-Type']) { headers['Content-Type'] = 'application/json'; }
+                        options.headers = headers;
+                        return fetch(apiBase + path, options).then(function (response) {
+                            if (response.status === 401 || response.status === 403) {
+                                throw new Error('Not authorized. Open this page from the Jellyfin dashboard while logged in as an administrator.');
+                            }
+                            return response;
+                        });
+                    }
+
+                    function readJson(response) {
+                        return response.text().then(function (raw) {
+                            var body = null;
+                            if (raw) {
+                                try { body = JSON.parse(raw); }
+                                catch (e) {
+                                    if (response.ok) { throw new Error('Jellyfin returned an unreadable response. Reload the page and try again.'); }
+                                }
+                            }
+                            if (!response.ok) {
+                                var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
+                                var message = details.length ? details.join(' ') : (body && (body.error || body.message));
+                                if (!message && raw && raw.indexOf('Error processing request') !== 0) { message = raw; }
+                                if (!message) { message = response.status >= 500 ? 'Jellyfin could not complete this request. Check the server log for details.' : 'Request failed (HTTP ' + response.status + ').'; }
+                                throw new Error(String(message));
+                            }
+                            return body === null ? {} : body;
+                        });
+                    }
+
+                    function q(selector) {
+                        if (selector.charAt(0) === '#') { return document.getElementById(selector.substring(1)); }
+                        return pageEl ? pageEl.querySelector(selector) : document.querySelector(selector);
+                    }
+                    function qa(selector) { return (pageEl || document).querySelectorAll(selector); }
+                    function cssEscape(value) {
+                        if (window.CSS && typeof window.CSS.escape === 'function') { return window.CSS.escape(String(value)); }
+                        return String(value).replace(/[^a-zA-Z0-9_-]/g, function (c) { return '\\' + c.charCodeAt(0).toString(16) + ' '; });
+                    }
+                    function escapeHtml(value) {
+                        if (value === null || value === undefined) { return ''; }
+                        var div = document.createElement('div');
+                        div.textContent = String(value);
+                        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                    }
+                    function setFedStatus(id, message, kind) {
+                        var el = q('#' + id);
+                        if (!el) { return; }
+                        el.style.display = message ? 'block' : 'none';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + (kind || 'info');
+                        el.textContent = message || '';
+                    }
+                    function showError(message) {
+                        var el = q('#fedPlexPageError');
+                        if (!el) { return; }
+                        el.style.display = message ? 'block' : 'none';
+                        el.textContent = message || '';
+                    }
+                    function clearError() { showError(''); }
+                    function showRemoteTranscodeStatus(id, message, kind) {
+                        var el = q(id);
+                        if (!el) { return; }
+                        el.style.display = 'block';
+                        el.className = 'fed-srvstatus fed-srvstatus-' + kind;
+                        el.textContent = message;
+                    }
+                    function copyText(text, button) {
+                        function done() {
+                            if (!button) { return; }
+                            var old = button.textContent;
+                            button.textContent = 'Copied';
+                            setTimeout(function () { button.textContent = old; }, 1500);
+                        }
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text).then(done, function () { window.prompt('Copy this connect code:', text); });
+                        } else {
+                            window.prompt('Copy this connect code:', text);
+                        }
+                    }
+                    function openCore() { window.location.href = apiBase + '/web/index.html#!/configurationpage?name=Jellyfin%20Federation'; }
+
+                    function friendSharingSummary(server) {
+                        var shareAll = server.ShareAllLibraries !== false;
+                        var folderCount = (server.SharedLibraryFolderIds || []).length;
+                        var excludedCount = (server.ExcludedItemIds || []).length;
+                        var parts = [shareAll ? 'Sharing everything with them' : (folderCount === 0 ? 'Sharing nothing with them (blocked)' : 'Sharing ' + folderCount + ' librar' + (folderCount === 1 ? 'y' : 'ies') + ' with them')];
+                        if (excludedCount) { parts.push(excludedCount + ' item' + (excludedCount === 1 ? '' : 's') + ' excluded'); }
+                        return parts.join(' · ');
+                    }
+
+                    function renderSharingBlock(server) {
+                        var pending = pendingSharing[server.Id] || {
+                            ShareAll: server.ShareAllLibraries !== false,
+                            FolderIds: (server.SharedLibraryFolderIds || []).slice(),
+                            ExcludedItems: (server.ExcludedItemIds || []).map(function (id) { return { id: id, name: id }; })
+                        };
+                        pendingSharing[server.Id] = pending;
+                        var html = '<div class="fed-subcard">';
+                        html += '<h4 class="fed-subhead">What ' + escapeHtml(server.Name || server.Url) + ' can see of my library</h4>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingAll" data-id="' + escapeHtml(server.Id) + '" ' + (pending.ShareAll ? 'checked' : '') + ' /> Share everything</label>';
+                        html += '<div class="fedSharingLibs" data-id="' + escapeHtml(server.Id) + '" style="display:' + (pending.ShareAll ? 'none' : 'block') + ';margin-top:.5em;">';
+                        html += '<label class="fed-label">Libraries visible to them</label>';
+                        if (!localLibrariesCache) { html += '<p class="fed-muted">Loading your libraries…</p>'; }
+                        else if (!localLibrariesCache.length) { html += '<p class="fed-muted">No libraries found.</p>'; }
+                        else {
+                            localLibrariesCache.forEach(function (lib) {
+                                var checked = pending.FolderIds.indexOf(lib.id) !== -1;
+                                html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedSharingLib" data-id="' + escapeHtml(server.Id) + '" data-lib="' + escapeHtml(lib.id) + '" ' + (checked ? 'checked' : '') + ' /> ' + escapeHtml(lib.name) + '</label>';
+                            });
+                        }
+                        html += '<p class="fed-hint" style="margin-top:.5em;">Unchecked libraries are invisible to this friend.</p></div>';
+                        html += '<div style="margin:.8em 0;padding:.75em 0;border-top:1px solid var(--fed-border-soft);border-bottom:1px solid var(--fed-border-soft);">';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowDownloads !== false ? 'checked' : '') + ' /> Allow this friend and their viewers to download my titles</label>';
+                        html += '<p class="fed-hint">Covers their viewers saving a title to their own phone or computer and their admin copying a title to their server.</p>';
+                        html += '<label class="fed-check-label"><input type="checkbox" class="fed-check fedAllowBulkDownloads" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowBulkDownloads === true ? 'checked' : '') + ' /> Allow this friend to request bulk downloads</label>';
+                        html += '<p class="fed-hint">Bulk access is off by default. Without it, their server can copy three titles an hour and each viewer can save 30 titles an hour.</p>';
+                        html += '<label class="fed-check-label" style="margin-top:.6em;"><input type="checkbox" class="fed-check fedAllowRemoteTranscode" data-id="' + escapeHtml(server.Id) + '" ' + (server.AllowRemoteTranscode !== false ? 'checked' : '') + ' /> Convert my titles here for their viewers (uses my GPU; video goes straight to their player)</label>';
+                        html += '<div class="fed-srvstatus" id="fedRemoteTranscodeFriendStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="save-download-access" data-id="' + escapeHtml(server.Id) + '">Save download permissions</button>';
+                        html += '<div class="fed-srvstatus" id="fedDownloadAccessStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div></div>';
+                        var usedGb = (server.DataUsedThisMonthBytes || 0) / 1e9;
+                        var capGb = server.MonthlyDataCapGb || 0;
+                        html += '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);"><label class="fed-label">Limits for this friend</label><div class="fed-inline">';
+                        html += '<div class="fed-input-container"><label class="fed-hint">Monthly data (GB, 0 = no limit)</label><input type="number" class="emby-input fed-input fedLimitDataGb" data-id="' + escapeHtml(server.Id) + '" min="0" max="1000000" step="1" value="' + capGb + '" /></div>';
+                        html += '<div class="fed-input-container"><label class="fed-hint">Streams at once (0 = no limit)</label><input type="number" class="emby-input fed-input fedLimitStreams" data-id="' + escapeHtml(server.Id) + '" min="0" max="100" step="1" value="' + (server.MaxConcurrentStreams || 0) + '" /></div></div>';
+                        html += '<p class="fed-hint">Used ' + usedGb.toFixed(1) + ' GB' + (capGb > 0 ? ' of ' + capGb + ' GB' : '') + ' this month (UTC) · ' + (server.ActiveStreams || 0) + ' stream' + ((server.ActiveStreams || 0) === 1 ? '' : 's') + ' right now.</p>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="save-friend-limits" data-id="' + escapeHtml(server.Id) + '">Save limits</button><div class="fed-srvstatus" id="fedFriendLimitsStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div></div>';
+                        html += '<div style="margin:.8em 0;padding:.75em 0;border-bottom:1px solid var(--fed-border-soft);"><label class="fed-label">Direct link</label><p class="fed-hint fedDirectLinkLine" data-id="' + escapeHtml(server.Id) + '">Checking…</p><div class="fed-inline">';
+                        html += '<select is="emby-select" class="emby-select fed-input fedDirectLinkMode" data-id="' + escapeHtml(server.Id) + '"><option value="Auto"' + (server.DirectLinkMode !== 'Off' ? ' selected' : '') + '>Use a direct link when possible</option><option value="Off"' + (server.DirectLinkMode === 'Off' ? ' selected' : '') + '>Off for this friend</option></select>';
+                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="direct-link-retry" data-id="' + escapeHtml(server.Id) + '">Try again now</button></div><div class="fed-srvstatus" id="fedDirectLinkStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div></div>';
+                        html += '<label class="fed-label" style="margin-top:.6em;">Exclude specific items (never shared, regardless of the above)</label><div class="fed-inline"><div class="fed-input-container"><input type="text" class="emby-input fed-input fedExcludeItemSearch" data-id="' + escapeHtml(server.Id) + '" placeholder="Search your library by name…" /></div><button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="search-exclude-items" data-id="' + escapeHtml(server.Id) + '">Search</button></div>';
+                        var results = excludedItemSearchResults[server.Id] || [];
+                        if (results.length) {
+                            html += '<div class="fed-userrule-results">';
+                            results.forEach(function (item) {
+                                var already = pending.ExcludedItems.some(function (x) { return x.id === item.id; });
+                                html += '<div class="fed-userrule-result"><span>' + escapeHtml(item.name) + (item.year ? ' (' + item.year + ')' : '') + '</span><button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="add-exclude-item" data-id="' + escapeHtml(server.Id) + '" data-item-id="' + escapeHtml(item.id) + '" data-item-name="' + escapeHtml(item.name) + '"' + (already ? ' disabled' : '') + '>' + (already ? 'Excluded' : 'Exclude') + '</button></div>';
+                            });
+                            html += '</div>';
+                        }
+                        html += '<label class="fed-label" style="margin-top:.6em;">Excluded (' + pending.ExcludedItems.length + ')</label>';
+                        if (!pending.ExcludedItems.length) { html += '<p class="fed-muted">Nothing excluded.</p>'; }
+                        else {
+                            pending.ExcludedItems.forEach(function (item) {
+                                html += '<div class="fed-userrule-result"><span>' + escapeHtml(item.name) + '</span><button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-plex-action="remove-exclude-item" data-id="' + escapeHtml(server.Id) + '" data-item-id="' + escapeHtml(item.id) + '">Remove</button></div>';
+                            });
+                        }
+                        html += '<div class="fed-inline" style="margin-top:.5em;"><button is="emby-button" type="button" class="raised emby-button" data-plex-action="save-sharing" data-id="' + escapeHtml(server.Id) + '">Save sharing</button><button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-plex-action="block-friend" data-id="' + escapeHtml(server.Id) + '">Block (share nothing)</button></div><div class="fed-srvstatus" id="fedSharingStatus-' + escapeHtml(server.Id) + '" style="display:none;"></div></div>';
+                        return html;
+                    }
+
+                    function renderCompanion() {
+                        var listEl = q('#fedCompanionList');
+                        if (!listEl) { return; }
+                        var entries = (currentConfig.RemoteServers || []).map(function (server, i) { return { server: server, i: i }; }).filter(function (entry) { return entry.server.Kind === 2; });
+                        if (!entries.length) {
+                            listEl.innerHTML = '<p class="fed-muted">No Plex friends connected yet - generate a code above.</p>';
+                            return;
+                        }
+                        var html = '';
+                        entries.forEach(function (entry) {
+                            var server = entry.server;
+                            var isOpen = expandedFriends[server.Id] === true;
+                            html += '<div class="fed-server"><div class="fed-server-head"><strong>' + escapeHtml(server.Name || 'Plex friend') + '</strong><span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="copy-companion-code" data-id="' + escapeHtml(server.Id) + '">Copy connect code</button>';
+                            html += '<button is="emby-button" type="button" class="raised emby-button" data-plex-action="manage-companion" data-i="' + entry.i + '">' + (isOpen ? 'Close' : 'Manage') + '</button></div>';
+                            if (isOpen) {
+                                html += '<div class="fed-friendpanel"><p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>' + renderSharingBlock(server);
+                                html += '<div style="margin-top:.9em;"><button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-plex-action="remove-companion" data-i="' + entry.i + '">Remove</button></div></div>';
+                            }
+                            html += '</div>';
+                        });
+                        listEl.innerHTML = html;
+                        applyDirectLinkStatus();
+                    }
+
+                    function loadLocalLibraries() {
+                        if (localLibrariesCache) { return Promise.resolve(localLibrariesCache); }
+                        return fedFetch('/Plugins/Federation/LocalLibraries').then(readJson).then(function (libraries) {
+                            localLibrariesCache = libraries || [];
+                            renderCompanion();
+                            return localLibrariesCache;
+                        }).catch(function () { return []; });
+                    }
+                    function setSharingStatus(serverId, message, kind) { setFedStatus('fedSharingStatus-' + serverId, message, kind); }
+                    function saveSharing(serverId) {
+                        var pending = pendingSharing[serverId] || { ShareAll: true, FolderIds: [], ExcludedItems: [] };
+                        setSharingStatus(serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Sharing', {
+                            method: 'POST',
+                            body: JSON.stringify({ ShareAll: pending.ShareAll, FolderIds: pending.FolderIds, ExcludedItemIds: pending.ExcludedItems.map(function (item) { return item.id; }) })
+                        }).then(readJson).then(function (res) {
+                            setSharingStatus(serverId, res.message, res.success ? 'ok' : 'err');
+                            if (res.success) { return loadConfiguration(true); }
+                        }).catch(function (e) { setSharingStatus(serverId, 'Failed: ' + e.message, 'err'); });
+                    }
+                    function blockFriend(serverId) {
+                        var existing = pendingSharing[serverId] || {};
+                        pendingSharing[serverId] = { ShareAll: false, FolderIds: [], ExcludedItems: existing.ExcludedItems || [] };
+                        saveSharing(serverId);
+                    }
+                    function searchExcludeItems(serverId) {
+                        var input = q('.fedExcludeItemSearch[data-id="' + cssEscape(serverId) + '"]');
+                        var query = input ? input.value.trim() : '';
+                        if (!query) { return; }
+                        fedFetch('/Plugins/Federation/SearchLocalItems?query=' + encodeURIComponent(query)).then(readJson).then(function (items) {
+                            excludedItemSearchResults[serverId] = items || [];
+                            renderCompanion();
+                        }).catch(function () { excludedItemSearchResults[serverId] = []; renderCompanion(); });
+                    }
+                    function addExcludeItem(serverId, itemId, itemName) {
+                        var pending = pendingSharing[serverId];
+                        if (!pending || pending.ExcludedItems.some(function (item) { return item.id === itemId; })) { return; }
+                        pending.ExcludedItems.push({ id: itemId, name: itemName });
+                        renderCompanion();
+                    }
+                    function removeExcludeItem(serverId, itemId) {
+                        var pending = pendingSharing[serverId];
+                        if (!pending) { return; }
+                        pending.ExcludedItems = pending.ExcludedItems.filter(function (item) { return item.id !== itemId; });
+                        renderCompanion();
+                    }
+                    function saveDownloadAccess(serverId) {
+                        var allow = q('.fedAllowDownloads[data-id="' + cssEscape(serverId) + '"]');
+                        var bulk = q('.fedAllowBulkDownloads[data-id="' + cssEscape(serverId) + '"]');
+                        setFedStatus('fedDownloadAccessStatus-' + serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/DownloadAccess', {
+                            method: 'POST', body: JSON.stringify({ AllowDownloads: !!(allow && allow.checked), AllowBulkDownloads: !!(bulk && bulk.checked && allow && allow.checked) })
+                        }).then(readJson).then(function (res) {
+                            setFedStatus('fedDownloadAccessStatus-' + serverId, res.message || 'Download permissions saved.', res.success ? 'ok' : 'err');
+                            if (res.success) { return loadConfiguration(true); }
+                        }).catch(function (e) { setFedStatus('fedDownloadAccessStatus-' + serverId, 'Could not save: ' + e.message, 'err'); });
+                    }
+                    function saveFriendLimits(serverId) {
+                        var gb = q('.fedLimitDataGb[data-id="' + cssEscape(serverId) + '"]');
+                        var streams = q('.fedLimitStreams[data-id="' + cssEscape(serverId) + '"]');
+                        showRemoteTranscodeStatus('#fedFriendLimitsStatus-' + serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/Limits', {
+                            method: 'POST', body: JSON.stringify({ MonthlyDataCapGb: Math.max(0, parseInt(gb && gb.value, 10) || 0), MaxConcurrentStreams: Math.max(0, parseInt(streams && streams.value, 10) || 0) })
+                        }).then(readJson).then(function (res) {
+                            showRemoteTranscodeStatus('#fedFriendLimitsStatus-' + serverId, (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            if (res && res.success) { return loadConfiguration(true); }
+                        }).catch(function (e) { showRemoteTranscodeStatus('#fedFriendLimitsStatus-' + serverId, 'Could not save: ' + e.message, 'err'); });
+                    }
+                    function saveFriendRemoteTranscode(serverId, allow) {
+                        showRemoteTranscodeStatus('#fedRemoteTranscodeFriendStatus-' + serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/RemoteTranscode', { method: 'POST', body: JSON.stringify({ Allow: allow }) }).then(readJson).then(function (res) {
+                            showRemoteTranscodeStatus('#fedRemoteTranscodeFriendStatus-' + serverId, (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            var server = (currentConfig.RemoteServers || []).filter(function (item) { return item.Id === serverId; })[0];
+                            if (server && res && res.success) { server.AllowRemoteTranscode = allow; }
+                        }).catch(function (e) { showRemoteTranscodeStatus('#fedRemoteTranscodeFriendStatus-' + serverId, 'Could not save: ' + e.message, 'err'); });
+                    }
+
+                    function directLinkText(friend) {
+                        var mb = function (bytes) { return (bytes / 1e9).toFixed(1) + ' GB'; };
+                        switch (friend.State) {
+                            case 'connected': return 'Connected' + (friend.Mbps > 0 ? ' · ' + Math.round(friend.Mbps) + ' Mbps measured' : '') + ' · ' + mb(friend.BytesIn || 0) + ' received';
+                            case 'connecting': return 'Connecting…';
+                            case 'failed': return 'Not connected: ' + (friend.LastError || friend.Detail || 'unknown') + (friend.NextRetryUtc ? ' Next try ' + new Date(friend.NextRetryUtc).toLocaleTimeString() + '.' : '');
+                            case 'unsupported': return friend.Detail || 'Not available.';
+                            default: return friend.Detail || 'Off.';
+                        }
+                    }
+                    function applyDirectLinkStatus() {
+                        if (!lastDirectLinkStatus) { return; }
+                        (lastDirectLinkStatus.Friends || []).forEach(function (friend) {
+                            var line = q('.fedDirectLinkLine[data-id="' + cssEscape(friend.ServerId) + '"]');
+                            if (line) { line.textContent = directLinkText(friend) + (friend.InboundConnected ? ' · They also have a link to you.' : ''); }
+                        });
+                    }
+                    function loadDirectLinkStatus() {
+                        fedFetch('/Plugins/Federation/DirectLink/Status').then(readJson).then(function (res) {
+                            lastDirectLinkStatus = res;
+                            applyDirectLinkStatus();
+                        }).catch(function () { /* retain the last status */ });
+                    }
+                    function saveFriendDirectLink(serverId, mode) {
+                        showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Friends/' + encodeURIComponent(serverId) + '/DirectLink', { method: 'POST', body: JSON.stringify({ Mode: mode }) }).then(readJson).then(function (res) {
+                            showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, (res && res.message) || 'Saved.', res && res.success ? 'ok' : 'err');
+                            if (res && res.success) {
+                                (currentConfig.RemoteServers || []).forEach(function (server) { if (server.Id === serverId) { server.DirectLinkMode = mode; } });
+                            }
+                            setTimeout(loadDirectLinkStatus, 1500);
+                        }).catch(function (e) { showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, 'Could not save: ' + e.message, 'err'); });
+                    }
+                    function retryDirectLink(serverId) {
+                        showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, 'Trying…', 'info');
+                        fedFetch('/Plugins/Federation/DirectLink/Retry/' + encodeURIComponent(serverId), { method: 'POST' }).then(function () {
+                            setTimeout(function () { loadDirectLinkStatus(); showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, 'Tried; see the line above.', 'ok'); }, 12000);
+                        }).catch(function (e) { showRemoteTranscodeStatus('#fedDirectLinkStatus-' + serverId, 'Could not retry: ' + e.message, 'err'); });
+                    }
+
+                    function createCompanionFriend() {
+                        var input = q('#fedNewCompanionName');
+                        var name = input ? input.value.trim() : '';
+                        setFedStatus('fedCompanionStatus', 'Generating…', 'info');
+                        fedFetch('/Plugins/Federation/Servers/Companion', { method: 'POST', body: JSON.stringify({ Name: name, ShareAllLibraries: true, SharedLibraryFolderIds: [] }) }).then(readJson).then(function (res) {
+                            if (!res.success) { setFedStatus('fedCompanionStatus', res.message || 'Could not generate a connect code.', 'err'); return; }
+                            setFedStatus('fedCompanionStatus', '', null);
+                            if (input) { input.value = ''; }
+                            currentConfig.RemoteServers.push(res.server);
+                            showCompanionCode(res.connectCode, res.server.Name);
+                            renderCompanion();
+                        }).catch(function (e) { setFedStatus('fedCompanionStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function showCompanionCode(code, name) {
+                        q('#fedCompanionNewCode').innerHTML = '<div class="fed-subcard"><h4 class="fed-subhead">Connect code for ' + escapeHtml(name || 'this friend') + '</h4><p class="fed-hint">Copy this to your friend - they paste it into their Federation Companion app\'s "Import from Jellyfin" step.</p><div class="fed-inline"><textarea class="emby-textarea fed-input" rows="2" readonly>' + escapeHtml(code) + '</textarea><button is="emby-button" type="button" class="emby-button button-flat" data-plex-action="copy-companion-code-text" data-code="' + escapeHtml(code) + '">Copy</button></div></div>';
+                    }
+                    function copyCompanionCode(id, button) {
+                        fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(id) + '/CompanionConnectCode').then(readJson).then(function (res) {
+                            if (!res.success) { showError(res.message || 'Could not fetch connect code.'); return; }
+                            copyText(res.connectCode, button);
+                        }).catch(function (e) { showError('Error: ' + e.message); });
+                    }
+                    function removeCompanion(index) {
+                        var server = currentConfig.RemoteServers[index];
+                        if (!server || !window.confirm('Remove "' + (server.Name || server.Url) + '"? Its libraries will stop being shared.')) { return; }
+                        clearError();
+                        fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(server.Id), { method: 'DELETE' }).then(readJson).then(function () { return loadConfiguration(true); }).catch(function (e) { showError('Remove failed: ' + e.message); });
+                    }
+                    function renderPlexOffers(data) {
+                        var el = q('#fedPlexOffersIncoming');
+                        var list = (data && data.incoming) || [];
+                        if (!list.length) { el.innerHTML = ''; return; }
+                        var html = '<h3 class="fed-substep">Plex share requests waiting on you</h3>';
+                        list.forEach(function (offer) {
+                            html += '<div class="fed-server"><div class="fed-server-head"><strong>' + escapeHtml(offer.ServerName || 'Plex') + '</strong><span class="fed-server-url">' + escapeHtml(offer.CompanionUrl || '') + '</span><span class="fed-spacer"></span>';
+                            html += '<button is="emby-button" type="button" class="raised emby-button" data-plex-action="accept-plex-offer" data-id="' + escapeHtml(offer.Id) + '">Accept</button><button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-plex-action="reject-plex-offer" data-id="' + escapeHtml(offer.Id) + '">Reject</button></div></div>';
+                        });
+                        el.innerHTML = html;
+                    }
+                    function loadPlexOffers() {
+                        return fedFetch('/Plugins/Federation/PlexOffers').then(readJson).then(renderPlexOffers).catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Could not load share requests: ' + e.message, 'err'); });
+                    }
+                    function acceptPlexOffer(id) {
+                        setFedStatus('fedPlexConnectStatus', 'Accepting Plex share…', 'info');
+                        fedFetch('/Plugins/Federation/PlexOffers/' + encodeURIComponent(id) + '/Accept', { method: 'POST' }).then(readJson).then(function (res) {
+                            if (!res.success) { setFedStatus('fedPlexConnectStatus', res.error || res.message || 'Could not accept.', 'err'); return; }
+                            setFedStatus('fedPlexConnectStatus', res.message || 'Connected.', 'ok');
+                            loadPlexOffers();
+                            return loadConfiguration(true);
+                        }).catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function rejectPlexOffer(id) {
+                        fedFetch('/Plugins/Federation/PlexOffers/' + encodeURIComponent(id), { method: 'DELETE' }).then(readJson).then(loadPlexOffers).catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Could not reject: ' + e.message, 'err'); });
+                    }
+                    function connectPlexSource() {
+                        var input = q('#fedPlexConnectCode');
+                        var raw = input ? input.value.trim() : '';
+                        if (!raw) { setFedStatus('fedPlexConnectStatus', 'Paste a connect code first.', 'err'); return; }
+                        setFedStatus('fedPlexConnectStatus', 'Connecting…', 'info');
+                        fedFetch('/Plugins/Federation/ExternalServers/ConnectCode', { method: 'POST', body: JSON.stringify({ Code: raw }) }).then(readJson).then(function (res) {
+                            if (!res.success) { setFedStatus('fedPlexConnectStatus', res.error || res.message || 'Could not connect.', 'err'); return; }
+                            setFedStatus('fedPlexConnectStatus', res.message || 'Connected. Manage this source under Friends in Federation settings.', 'ok');
+                            if (input) { input.value = ''; }
+                            return loadConfiguration(true);
+                        }).catch(function (e) { setFedStatus('fedPlexConnectStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function connectPlexSourceManual() {
+                        var nameInput = q('#fedPlexManualName'), urlInput = q('#fedPlexManualUrl'), tokenInput = q('#fedPlexManualToken');
+                        var name = nameInput.value.trim(), url = urlInput.value.trim(), token = tokenInput.value.trim();
+                        if (!url || !token) { setFedStatus('fedPlexManualStatus', 'Server address and token are both required.', 'err'); return; }
+                        setFedStatus('fedPlexManualStatus', 'Connecting…', 'info');
+                        fedFetch('/Plugins/Federation/ExternalServers', { method: 'POST', body: JSON.stringify({ Name: name, Url: url, Token: token }) }).then(readJson).then(function (res) {
+                            if (!res.success) { setFedStatus('fedPlexManualStatus', res.error || res.message || 'Could not connect.', 'err'); return; }
+                            setFedStatus('fedPlexManualStatus', 'Connected to ' + (name || url) + '. Manage this source under Friends in Federation settings.', 'ok');
+                            urlInput.value = tokenInput.value = nameInput.value = '';
+                            return loadConfiguration(true);
+                        }).catch(function (e) { setFedStatus('fedPlexManualStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function plexMetaCall(method, path, body) {
+                        var options = { method: method };
+                        if (body) { options.body = JSON.stringify(body); }
+                        return fedFetch('/Plugins/Federation/PlexSetup/' + path, options).then(readJson);
+                    }
+                    function plexMetaChecks(id, items, selected, valueKey, labelKey) {
+                        var el = q('#' + id);
+                        if (!el) { return; }
+                        if (!items || !items.length) { el.innerHTML = '<p class="fed-muted">None found.</p>'; return; }
+                        el.innerHTML = items.map(function (item) {
+                            var value = item[valueKey];
+                            var checked = (selected || []).indexOf(value) !== -1 ? ' checked' : '';
+                            return '<div class="checkboxContainer"><label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check" data-value="' + escapeHtml(String(value)) + '"' + checked + ' /> ' + escapeHtml(item[labelKey]) + '</label></div>';
+                        }).join('');
+                    }
+                    function plexMetaChecked(id) {
+                        var el = document.getElementById(id);
+                        return el ? Array.prototype.filter.call(el.querySelectorAll('input[type=checkbox]'), function (box) { return box.checked; }).map(function (box) { return box.getAttribute('data-value'); }) : [];
+                    }
+                    function setPlexStep(id, state) {
+                        var el = q('#' + id);
+                        if (!el) { return; }
+                        if (state === 'locked') { el.setAttribute('data-locked', ''); } else { el.removeAttribute('data-locked'); }
+                        if (state === 'done') { el.setAttribute('data-done', ''); } else { el.removeAttribute('data-done'); }
+                    }
+                    function renderPlexMeta(status) {
+                        var connected = !!status.Connected;
+                        q('#fedPlexMetaConnect').style.display = connected ? 'none' : '';
+                        q('#fedPlexMetaConnected').style.display = connected ? '' : 'none';
+                        q('#fedPlexMetaSettings').style.display = connected ? '' : 'none';
+                        setPlexStep('fedPlexStep1', connected ? 'done' : 'open');
+                        setPlexStep('fedPlexStep2', connected ? 'open' : 'locked');
+                        setPlexStep('fedPlexStep3', connected && status.Enabled ? 'open' : 'locked');
+                        if (!connected) {
+                            plexImportPlanData = null;
+                            q('#fedPlexImportIntro').textContent = 'Connect Plex first.';
+                            q('#fedPlexImportList').innerHTML = q('#fedPlexImportResults').innerHTML = q('#fedPlexReport').innerHTML = '';
+                            q('#fedPlexImportBtn').disabled = true;
+                            return;
+                        }
+                        if (!plexImportPlanData) {
+                            plexMapRows = (status.PathMappings || []).map(function (mapping) { return { From: mapping.From, To: mapping.To }; });
+                            renderPlexMapRows();
+                            plexImportCheck();
+                        }
+                        if (status.Enabled && !q('#fedPlexReport').innerHTML) { plexReport(); }
+                        q('#fedPlexMetaServerName').textContent = status.ServerName || 'Plex Media Server';
+                        q('#fedPlexMetaServerUrl').textContent = status.ServerUrl || '';
+                        plexMetaChecks('fedPlexMetaSections', status.Sections, status.SectionKeys, 'Key', 'Title');
+                        plexMetaChecks('fedPlexMetaLibraries', status.Libraries, status.JellyfinLibraryIds, 'Id', 'Name');
+                        q('#fedPlexMetaArtwork').checked = status.PullArtwork !== false;
+                        q('#fedPlexMetaText').checked = status.PullText !== false;
+                        q('#fedPlexMetaEnabled').checked = !!status.Enabled;
+                        if (status.Error) { setFedStatus('fedPlexMetaStatus', status.Error, 'err'); }
+                    }
+                    function loadPlexSetup() {
+                        return plexMetaCall('GET', 'Status').then(renderPlexMeta).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaSignIn() {
+                        if (plexMetaPollTimer) { clearInterval(plexMetaPollTimer); plexMetaPollTimer = null; }
+                        setFedStatus('fedPlexMetaStatus', 'Opening Plex sign-in…', 'info');
+                        plexMetaCall('POST', 'SignIn').then(function (res) {
+                            plexMetaPinId = res.pinId;
+                            window.open(res.authUrl, '_blank', 'noopener');
+                            setFedStatus('fedPlexMetaStatus', 'Approve this server in the Plex tab that just opened. Waiting…', 'info');
+                            var tries = 0;
+                            plexMetaPollTimer = setInterval(function () {
+                                tries++;
+                                if (tries > 150) {
+                                    clearInterval(plexMetaPollTimer); plexMetaPollTimer = null;
+                                    setFedStatus('fedPlexMetaStatus', 'Sign-in timed out. Try again.', 'err');
+                                    return;
+                                }
+                                plexMetaCall('GET', 'SignIn/' + plexMetaPinId).then(function (poll) {
+                                    if (!poll.signedIn) { return; }
+                                    clearInterval(plexMetaPollTimer); plexMetaPollTimer = null;
+                                    var servers = poll.servers || [];
+                                    setFedStatus('fedPlexMetaStatus', servers.length ? 'Signed in. Pick your server:' : 'Signed in, but no Plex servers were found on that account.', servers.length ? 'ok' : 'err');
+                                    q('#fedPlexMetaServers').innerHTML = servers.map(function (server) {
+                                        return '<button is="emby-button" type="button" class="raised emby-button" data-plex-action="plex-meta-connect" data-machine="' + escapeHtml(server.machineId) + '">' + escapeHtml(server.name) + (server.owned ? '' : ' (shared with you)') + '</button>';
+                                    }).join(' ');
+                                }).catch(function () { /* keep polling */ });
+                            }, 2000);
+                        }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaConnect(machineId) {
+                        setFedStatus('fedPlexMetaStatus', 'Connecting…', 'info');
+                        plexMetaCall('POST', 'Connect', { PinId: plexMetaPinId, MachineId: machineId }).then(function (status) { setFedStatus('fedPlexMetaStatus', 'Connected.', 'ok'); renderPlexMeta(status); }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaManual() {
+                        var url = q('#fedPlexMetaUrl').value.trim(), token = q('#fedPlexMetaToken').value.trim();
+                        if (!url || !token) { setFedStatus('fedPlexMetaStatus', 'Address and token are both required.', 'err'); return; }
+                        setFedStatus('fedPlexMetaStatus', 'Connecting…', 'info');
+                        plexMetaCall('POST', 'Manual', { Url: url, Token: token }).then(function (status) {
+                            q('#fedPlexMetaToken').value = '';
+                            setFedStatus('fedPlexMetaStatus', 'Connected.', 'ok');
+                            renderPlexMeta(status);
+                        }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaSave() {
+                        setFedStatus('fedPlexMetaStatus', 'Saving…', 'info');
+                        plexMetaCall('POST', 'Options', {
+                            Enabled: q('#fedPlexMetaEnabled').checked,
+                            SectionKeys: plexMetaChecked('fedPlexMetaSections'),
+                            JellyfinLibraryIds: plexMetaChecked('fedPlexMetaLibraries'),
+                            PullArtwork: q('#fedPlexMetaArtwork').checked,
+                            PullText: q('#fedPlexMetaText').checked
+                        }).then(function (status) { setFedStatus('fedPlexMetaStatus', 'Saved. Use "Re-pull all Plex artwork" to apply it to existing items.', 'ok'); renderPlexMeta(status); }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaPull() {
+                        setFedStatus('fedPlexMetaStatus', 'Queuing…', 'info');
+                        plexMetaCall('POST', 'PullNow').then(function (res) { setFedStatus('fedPlexMetaStatus', 'Queued ' + res.queued + ' items. Jellyfin will refresh them in the background.', 'ok'); }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexMetaDisconnect() {
+                        plexMetaCall('POST', 'Disconnect').then(function (status) { q('#fedPlexMetaServers').innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Disconnected.', 'ok'); renderPlexMeta(status); }).catch(function (e) { setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    var plexStateText = {
+                        Ready: ['New Jellyfin library', 'ok'], Linked: ['Already in Jellyfin', 'ok'], WrongType: ['In a non-movie/show library', 'warn'], Missing: ['Folders not found', 'err']
+                    };
+                    function renderPlexMapRows() {
+                        q('#fedPlexMapRows').innerHTML = plexMapRows.map(function (mapping, i) {
+                            return '<div class="fed-plex-map"><input type="text" class="emby-input fedPlexMapFrom" data-i="' + i + '" aria-label="Folder as Plex shows it" placeholder="As Plex shows it, e.g. D:\\Media" value="' + escapeHtml(mapping.From || '') + '" autocapitalize="off" autocorrect="off" spellcheck="false" /><span class="fed-plex-arrow" aria-hidden="true">&rarr;</span><input type="text" class="emby-input fedPlexMapTo" data-i="' + i + '" aria-label="Same folder on this Jellyfin server" placeholder="On this server, e.g. /mnt/media" value="' + escapeHtml(mapping.To || '') + '" autocapitalize="off" autocorrect="off" spellcheck="false" /><button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-plex-action="plex-map-remove" data-i="' + i + '" aria-label="Remove this rewrite">Remove</button></div>';
+                        }).join('');
+                    }
+                    function collectPlexMapRows() {
+                        qa('#fedPlexMapRows .fedPlexMapFrom').forEach(function (input) {
+                            var i = parseInt(input.getAttribute('data-i'), 10);
+                            if (plexMapRows[i]) { plexMapRows[i].From = input.value.trim(); }
+                        });
+                        qa('#fedPlexMapRows .fedPlexMapTo').forEach(function (input) {
+                            var i = parseInt(input.getAttribute('data-i'), 10);
+                            if (plexMapRows[i]) { plexMapRows[i].To = input.value.trim(); }
+                        });
+                        return plexMapRows.filter(function (mapping) { return mapping.From && mapping.To; });
+                    }
+                    function plexImportSelected() {
+                        return qa('#fedPlexImportList input[type=checkbox]').filter(function (box) { return box.checked && !box.disabled; }).map(function (box) { return box.getAttribute('data-value'); });
+                    }
+                    function updatePlexImportButton() {
+                        var count = plexImportSelected().length;
+                        var button = q('#fedPlexImportBtn');
+                        button.disabled = count === 0;
+                        button.textContent = count === 0 ? 'Bring these into Jellyfin' : 'Bring ' + count + (count === 1 ? ' library' : ' libraries') + ' into Jellyfin';
+                    }
+                    function renderPlexPlan(plan) {
+                        plexImportPlanData = plan;
+                        var sections = plan.Sections || [];
+                        var missing = sections.filter(function (section) { return section.State === 'Missing'; }).length;
+                        q('#fedPlexImportIntro').textContent = !sections.length ? 'This Plex server has no movie or TV libraries.' : missing ? (missing === 1 ? '1 of your Plex libraries is' : missing + ' of your Plex libraries are') + ' in folders this Jellyfin server cannot see yet. Use the section below to point Jellyfin at them.' : 'Jellyfin can see every Plex folder. Untick anything you want to leave out.';
+                        if (missing) { q('#fedPlexMapBox').open = true; }
+                        q('#fedPlexImportList').innerHTML = sections.map(function (section) {
+                            var label = plexStateText[section.State] || [section.State, 'warn'];
+                            var usable = section.State === 'Ready' || section.State === 'Linked';
+                            var kind = section.Type === 'show' ? 'TV shows' : 'Movies';
+                            var note = section.State === 'Linked' ? ' &middot; uses &ldquo;' + escapeHtml(section.LibraryName || '') + '&rdquo;' : section.State === 'WrongType' ? ' &middot; &ldquo;' + escapeHtml(section.LibraryName || '') + '&rdquo; must be a ' + kind + ' library' : '';
+                            var folders = (section.Folders || []).map(function (folder) {
+                                var mapped = folder.LocalPath !== folder.PlexPath ? ' &rarr; ' + escapeHtml(folder.LocalPath) : '';
+                                return '<div class="fed-plex-folder' + (folder.Found ? '' : ' fed-plex-folder-missing') + '">' + (folder.Found ? '&#10003; ' : '&#10007; ') + escapeHtml(folder.PlexPath) + mapped + (folder.Found ? '' : ' <span class="fed-muted">(not found here)</span>') + '</div>';
+                            }).join('');
+                            return '<div class="fed-plex-lib"><div class="fed-plex-lib-head"><label class="fed-check-label"><input type="checkbox" class="emby-checkbox fed-check fedPlexImportPick" data-value="' + escapeHtml(section.Key) + '"' + (usable ? ' checked' : ' disabled') + ' /> <strong>' + escapeHtml(section.Title) + '</strong></label><span class="fed-muted">' + kind + note + '</span><span class="fed-plex-chip fed-plex-chip-' + label[1] + '">' + label[0] + '</span></div>' + folders + '</div>';
+                        }).join('');
+                        updatePlexImportButton();
+                    }
+                    function plexImportCheck() {
+                        q('#fedPlexImportIntro').textContent = 'Reading your Plex libraries…';
+                        plexMetaCall('POST', 'ImportPlan', { PathMappings: collectPlexMapRows() }).then(renderPlexPlan).catch(function (e) { q('#fedPlexImportIntro').textContent = ''; setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+                    function plexImport() {
+                        var keys = plexImportSelected();
+                        if (!keys.length) { return; }
+                        q('#fedPlexImportBtn').disabled = true;
+                        q('#fedPlexImportResults').innerHTML = '<p class="fed-srvstatus fed-srvstatus-info">Setting up your libraries…</p>';
+                        plexMetaCall('POST', 'Import', { SectionKeys: keys, PathMappings: collectPlexMapRows() }).then(function (res) {
+                            q('#fedPlexImportResults').innerHTML = (res.Results || []).map(function (result) { return '<p class="fed-srvstatus ' + (result.Ok ? 'fed-srvstatus-ok' : 'fed-srvstatus-err') + '"><strong>' + escapeHtml(result.Title) + ':</strong> ' + escapeHtml(result.Message) + '</p>'; }).join('');
+                            plexImportPlanData = null;
+                            q('#fedPlexReport').innerHTML = '';
+                            loadPlexSetup();
+                        }).catch(function (e) { q('#fedPlexImportResults').innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); updatePlexImportButton(); });
+                    }
+                    function plexReport() {
+                        var el = q('#fedPlexReport');
+                        el.innerHTML = '<p class="fed-srvstatus fed-srvstatus-info">Counting matches…</p>';
+                        plexMetaCall('GET', 'Report').then(function (res) {
+                            var libraries = res.Libraries || [];
+                            if (!libraries.length) { el.innerHTML = '<p class="fed-muted">No libraries are using Plex yet.</p>'; return; }
+                            setPlexStep('fedPlexStep2', 'done');
+                            el.innerHTML = libraries.map(function (library) {
+                                if (!library.Total) { return '<div class="fed-plex-lib"><strong>' + escapeHtml(library.Name) + '</strong> <span class="fed-muted">&middot; nothing scanned yet, check again in a few minutes</span></div>'; }
+                                var pct = Math.round(library.Matched * 100 / library.Total);
+                                var misses = (library.Unmatched || []).length ? '<details class="fed-details"><summary>' + (library.Total - library.Matched) + ' without a Plex match</summary><p class="fed-muted">These keep Jellyfin&rsquo;s own artwork. Usually the title or year differs from Plex, or the item is not in the Plex libraries above.</p><ul>' + library.Unmatched.map(function (name) { return '<li>' + escapeHtml(name) + '</li>'; }).join('') + (library.Total - library.Matched > library.Unmatched.length ? '<li class="fed-muted">and ' + (library.Total - library.Matched - library.Unmatched.length) + ' more</li>' : '') + '</ul></details>' : '';
+                                return '<div class="fed-plex-lib"><strong>' + escapeHtml(library.Name) + '</strong> <span class="fed-muted">&middot; ' + library.Matched + ' of ' + library.Total + ' matched Plex (' + pct + '%)</span><div class="fed-plex-meter" role="img" aria-label="' + pct + '% matched"><span style="width:' + pct + '%"></span></div>' + misses + '</div>';
+                            }).join('');
+                        }).catch(function (e) { el.innerHTML = ''; setFedStatus('fedPlexMetaStatus', 'Error: ' + e.message, 'err'); });
+                    }
+
+                    function loadConfiguration(silent) {
+                        if (!silent) { clearError(); }
+                        return fedFetch('/Plugins/Federation/Configuration').then(readJson).then(function (config) {
+                            currentConfig = config || { RemoteServers: [] };
+                            if (!currentConfig.RemoteServers) { currentConfig.RemoteServers = []; }
+                            q('#fedChkPlexStrmExport').checked = currentConfig.EnablePlexStrmExport === true;
+                            q('#fedTxtPlexStrmPath').value = currentConfig.PlexStrmExportPath || '/media/federated';
+                            renderCompanion();
+                            loadLocalLibraries();
+                            loadDirectLinkStatus();
+                        }).catch(function (e) { showError('Load failed: ' + e.message); });
+                    }
+                    function saveStrmSettings() {
+                        setFedStatus('fedPlexStrmStatus', 'Saving…', 'info');
+                        fedFetch('/Plugins/Federation/Configuration').then(readJson).then(function (config) {
+                            config.EnablePlexStrmExport = q('#fedChkPlexStrmExport').checked;
+                            config.PlexStrmExportPath = q('#fedTxtPlexStrmPath').value.trim();
+                            return fedFetch('/Plugins/Federation/Configuration', { method: 'POST', body: JSON.stringify(config) }).then(readJson);
+                        }).then(function () {
+                            setFedStatus('fedPlexStrmStatus', 'Saved.', 'ok');
+                            return loadConfiguration(true);
+                        }).catch(function (e) { setFedStatus('fedPlexStrmStatus', 'Save failed: ' + e.message, 'err'); });
+                    }
+
+                    function attachHandlers(page) {
+                        if (page.dataset.handlersAttached) { return; }
+                        page.dataset.handlersAttached = '1';
+                        page.addEventListener('click', function (event) {
+                            var target = event.target && event.target.closest ? event.target.closest('[data-plex-action]') : null;
+                            if (!target || !page.contains(target)) { return; }
+                            if (target.matches && target.matches('input[type="checkbox"]')) { event.stopPropagation(); return; }
+                            event.preventDefault();
+                            var id = target.getAttribute('data-id');
+                            var index = parseInt(target.getAttribute('data-i') || '0', 10);
+                            switch (target.getAttribute('data-plex-action')) {
+                                case 'open-core': openCore(); break;
+                                case 'create-companion': createCompanionFriend(); break;
+                                case 'copy-companion-code': copyCompanionCode(id, target); break;
+                                case 'copy-companion-code-text': copyText(target.getAttribute('data-code'), target); break;
+                                case 'manage-companion':
+                                    var companion = currentConfig.RemoteServers[index];
+                                    if (companion) { expandedFriends[companion.Id] = !expandedFriends[companion.Id]; renderCompanion(); }
+                                    break;
+                                case 'remove-companion': removeCompanion(index); break;
+                                case 'connect-plex-source': connectPlexSource(); break;
+                                case 'connect-plex-source-manual': connectPlexSourceManual(); break;
+                                case 'accept-plex-offer': acceptPlexOffer(id); break;
+                                case 'reject-plex-offer': rejectPlexOffer(id); break;
+                                case 'save-sharing': saveSharing(id); break;
+                                case 'block-friend': blockFriend(id); break;
+                                case 'save-download-access': saveDownloadAccess(id); break;
+                                case 'save-friend-limits': saveFriendLimits(id); break;
+                                case 'direct-link-retry': retryDirectLink(id); break;
+                                case 'search-exclude-items': searchExcludeItems(id); break;
+                                case 'add-exclude-item': addExcludeItem(id, target.getAttribute('data-item-id'), target.getAttribute('data-item-name') || target.getAttribute('data-item-id')); break;
+                                case 'remove-exclude-item': removeExcludeItem(id, target.getAttribute('data-item-id')); break;
+                                case 'plex-meta-signin': plexMetaSignIn(); break;
+                                case 'plex-meta-connect': plexMetaConnect(target.getAttribute('data-machine')); break;
+                                case 'plex-meta-manual': plexMetaManual(); break;
+                                case 'plex-meta-save': plexMetaSave(); break;
+                                case 'plex-meta-pull': plexMetaPull(); break;
+                                case 'plex-meta-disconnect': plexMetaDisconnect(); break;
+                                case 'plex-import-check': plexImportCheck(); break;
+                                case 'plex-import': plexImport(); break;
+                                case 'plex-map-add': collectPlexMapRows(); plexMapRows.push({ From: '', To: '' }); renderPlexMapRows(); break;
+                                case 'plex-map-remove': collectPlexMapRows(); plexMapRows.splice(index, 1); renderPlexMapRows(); plexImportCheck(); break;
+                                case 'plex-report': plexReport(); break;
+                                case 'save-strm': saveStrmSettings(); break;
+                            }
+                        });
+                        page.addEventListener('change', function (event) {
+                            var target = event.target;
+                            if (!target || !target.classList) { return; }
+                            if (target.classList.contains('fedPlexImportPick')) { updatePlexImportButton(); return; }
+                            if (target.classList.contains('fedAllowRemoteTranscode')) { saveFriendRemoteTranscode(target.getAttribute('data-id'), target.checked); return; }
+                            if (target.classList.contains('fedDirectLinkMode')) { saveFriendDirectLink(target.getAttribute('data-id'), target.value); return; }
+                            if (target.classList.contains('fedAllowDownloads')) {
+                                var bulk = q('.fedAllowBulkDownloads[data-id="' + cssEscape(target.getAttribute('data-id')) + '"]');
+                                if (bulk && !target.checked) { bulk.checked = false; }
+                                return;
+                            }
+                            if (target.classList.contains('fedSharingAll')) {
+                                var id = target.getAttribute('data-id');
+                                var pending = pendingSharing[id] || { ShareAll: true, FolderIds: [], ExcludedItems: [] };
+                                pending.ShareAll = target.checked;
+                                pendingSharing[id] = pending;
+                                var libraries = q('.fedSharingLibs[data-id="' + cssEscape(id) + '"]');
+                                if (libraries) { libraries.style.display = target.checked ? 'none' : 'block'; }
+                                return;
+                            }
+                            if (target.classList.contains('fedSharingLib')) {
+                                var serverId = target.getAttribute('data-id'), libraryId = target.getAttribute('data-lib');
+                                var sharing = pendingSharing[serverId] || { ShareAll: false, FolderIds: [], ExcludedItems: [] };
+                                var position = sharing.FolderIds.indexOf(libraryId);
+                                if (target.checked && position === -1) { sharing.FolderIds.push(libraryId); }
+                                else if (!target.checked && position !== -1) { sharing.FolderIds.splice(position, 1); }
+                                pendingSharing[serverId] = sharing;
+                            }
+                        });
+                    }
+
+                    function stopPage() {
+                        activePage = null;
+                        if (plexMetaPollTimer) { clearInterval(plexMetaPollTimer); plexMetaPollTimer = null; }
+                    }
+                    function initPage(page) {
+                        if (activePage === page) { return; }
+                        stopPage();
+                        activePage = page;
+                        pageEl = page;
+                        attachHandlers(page);
+                        loadPlexOffers();
+                        loadConfiguration(false);
+                        loadPlexSetup();
+                    }
+                    function onPageShow(event) {
+                        if (event.target && event.target.id === 'federationPlexPage') { initPage(event.target); }
+                    }
+                    function onPageHide(event) {
+                        if (event.target === pageEl) { stopPage(); }
+                    }
+                    document.addEventListener('pageshow', onPageShow);
+                    document.addEventListener('pagehide', onPageHide);
+                    window.__federationPlexDisposePage = function () {
+                        stopPage();
+                        document.removeEventListener('pageshow', onPageShow);
+                        document.removeEventListener('pagehide', onPageHide);
+                    };
+                    var initial = document.getElementById('federationPlexPage');
+                    if (initial) { initPage(initial); }
+                })();
+            </script>
+        </div>
+    </div>
+</div>

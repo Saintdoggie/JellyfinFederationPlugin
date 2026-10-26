@@ -1,5 +1,14 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.201 — optional Plex add-in and browser playback resilience
+
+- [x] Separate Plex/Companion into the optional `Plex/` add-in; retain existing identifiers, configuration and cached titles, and fail closed without provider or Jellyfin-protocol fallthrough when it is absent.
+- [x] Move Plex administration and Companion setup into the add-in page; keep core federation settings and provide missing-add-in guidance.
+- [x] Add `scripts/package-plex-addin.sh` and `Plex/INSTALL.md`; the archive contains only the add-in DLL and installation instructions.
+- [x] Complete the full automated gate and isolated Jellyfin host checks for core-only and core-plus-add-in discovery, DI, pages, routes and authorization before any commit or release. The add-in-first/core-first DI regression and elevated page-resource loader are covered. Chromium exposed and verified the fix for the loader's unsupported Jellyfin 12 token header; desktop/mobile-width initialization, real add-in configuration rendering and anonymous denial pass.
+- [x] Increase adaptive HLS jitter tolerance with bounded 45/60-second and 128 MiB buffers, 20-second manifest/segment timeouts and bounded retries. Record only sanitized error details and buffered seconds, never playback URLs or tokens.
+- [ ] Compare the same title's play method, codecs, route and automatic-switch notices in Chrome and Firefox on the affected client. Source inspection found no browser-specific federation branch or three-minute timer; confirm whether the HLS tolerance change fixes the observed stalls and investigate direct-link Range/read-ahead behavior if it does not.
+
 ## 0.0.200 — transport hardening and bandwidth pass
 
 - [x] Close the reviewed admin-injection, credential-recovery, rating-filter, SSRF, response-MIME and transcode-admission issues; verify Companion update integrity and callback DNS pinning.

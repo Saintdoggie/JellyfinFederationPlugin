@@ -64,6 +64,12 @@ public class FederationFriendServiceTests : IDisposable
         var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, _clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
+        var plexCompanion = new PlexCompanionService(
+            NullLogger<PlexCompanionService>.Instance,
+            appHost.Object,
+            federationManager,
+            httpContextAccessor.Object,
+            _clientFactory.Object);
 
         _service = new FederationFriendService(
             NullLogger<FederationFriendService>.Instance,
@@ -71,12 +77,14 @@ public class FederationFriendServiceTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            _clientFactory.Object);
+            _clientFactory.Object,
+            plexCompanion);
     }
 
     public void Dispose()
     {
         FederationFriendService.HttpClientOverride = null;
+        PlexCompanionService.HttpClientOverride = null;
         _plugin.Dispose();
     }
 
@@ -92,6 +100,7 @@ public class FederationFriendServiceTests : IDisposable
     private void UseFakeHttp(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
         _clientFactory
             .Setup(f => f.GetClient(It.IsAny<RemoteServer>()))
             .Returns<RemoteServer>(s => new RemoteServerClient(
@@ -1107,7 +1116,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public async Task ConnectPlexCompanionAsync_ClaimsCompanionCode_AndMapsSharedLibraries()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
         {
             Assert.Equal("https://friend.ts.net/api/link/complete", req.RequestUri!.ToString());
             return Json(HttpStatusCode.OK, new
@@ -1171,7 +1180,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public async Task ConnectPlexCompanionAsync_CompanionClaimError_SurfacesRemoteMessage()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
             Json(HttpStatusCode.BadRequest, new { error = "This connect code is invalid or has expired. Generate a new one." })));
 
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(
@@ -1202,7 +1211,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public async Task AcceptPlexOfferAsync_ConnectsStoredCode()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(req =>
         {
             Assert.Equal("https://friend.ts.net/api/link/complete", req.RequestUri!.ToString());
             return Json(HttpStatusCode.OK, new
@@ -1230,7 +1239,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public async Task ConnectPlexCompanionAsync_ClaimTlsFailure_UsesFallbackPlexRelay()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
             throw new HttpRequestException(
                 "The SSL connection could not be established, see inner exception.",
                 new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
@@ -1248,7 +1257,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public async Task ConnectPlexCompanionAsync_FunnelTlsFailure_TellsFriendToUsePlexRelay()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
             throw new HttpRequestException(
                 "The SSL connection could not be established, see inner exception.",
                 new System.IO.IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
@@ -1263,14 +1272,14 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Contains("example-peer.tail123456.ts.net", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("TLS", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Plex Remote Access", message, StringComparison.OrdinalIgnoreCase);
-        Assert.True(FederationFriendService.IsTlsHandshakeFailure(
+        Assert.True(PlexCompanionService.IsTlsHandshakeFailure(
             new HttpRequestException("SSL", new System.IO.IOException("unexpected EOF"))));
     }
 
     [Fact]
     public async Task ConnectPlexCompanionAsync_FunnelIsPlex_TellsFriendToResendDirectShare()
     {
-        FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(_ =>
             new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("<MediaContainer size=\"0\"></MediaContainer>", Encoding.UTF8, "application/xml")

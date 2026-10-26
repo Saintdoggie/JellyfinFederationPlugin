@@ -990,7 +990,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var legacy = Metadata.RemoteNativeId;
             return legacy != null
-                && (GetSourcesSnapshot().Length == 1 || PlexApiClient.RatingKeyToGuid(legacy) == source.RemoteItemId)
+                && (GetSourcesSnapshot().Length == 1 || ExternalItemIds.PlexRatingKeyToGuid(legacy) == source.RemoteItemId)
                 ? legacy
                 : null;
         }

@@ -18,7 +18,7 @@ namespace Jellyfin.Plugin.Federation.Tasks
         private readonly ILogger<FederationRefreshTask> _logger;
         private readonly FederationSyncService _syncService;
         private readonly LibraryProvisioningService _provisioning;
-        private readonly PlexStrmExportService _strmExport;
+        private readonly IFederationPostSyncExport _strmExport;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationRefreshTask"/> class.
@@ -27,7 +27,7 @@ namespace Jellyfin.Plugin.Federation.Tasks
             ILogger<FederationRefreshTask> logger,
             FederationSyncService syncService,
             LibraryProvisioningService provisioning,
-            PlexStrmExportService strmExport)
+            IFederationPostSyncExport strmExport)
         {
             _logger = logger;
             _syncService = syncService;

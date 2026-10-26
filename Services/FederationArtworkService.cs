@@ -3,6 +3,7 @@ using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
@@ -63,7 +64,9 @@ namespace Jellyfin.Plugin.Federation.Services
             var server = _federationManager.GetServer(source.ServerId);
             var provider = server == null ? null : _externalCatalogs.For(server);
             var nativeId = entry.GetNativeId(source);
-            if (server == null || !server.Enabled || provider != null && string.IsNullOrWhiteSpace(nativeId))
+            if (server == null || !server.Enabled
+                || provider == null && server.Kind != ServerKind.Jellyfin
+                || provider != null && string.IsNullOrWhiteSpace(nativeId))
             {
                 return false;
             }

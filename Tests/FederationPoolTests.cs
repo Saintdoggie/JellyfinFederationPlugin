@@ -67,6 +67,12 @@ public class FederationPoolTests : IDisposable
         var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, _clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
+        var plexCompanion = new PlexCompanionService(
+            NullLogger<PlexCompanionService>.Instance,
+            appHost.Object,
+            federationManager,
+            httpContextAccessor.Object,
+            _clientFactory.Object);
 
         _service = new FederationFriendService(
             NullLogger<FederationFriendService>.Instance,
@@ -74,18 +80,21 @@ public class FederationPoolTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            _clientFactory.Object);
+            _clientFactory.Object,
+            plexCompanion);
     }
 
     public void Dispose()
     {
         FederationFriendService.HttpClientOverride = null;
+        PlexCompanionService.HttpClientOverride = null;
         _plugin.Dispose();
     }
 
     private void UseFakeHttp(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
         _clientFactory
             .Setup(f => f.GetClient(It.IsAny<RemoteServer>()))
             .Returns<RemoteServer>(s => new RemoteServerClient(

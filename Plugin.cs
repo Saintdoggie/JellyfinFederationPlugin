@@ -200,6 +200,24 @@ namespace Jellyfin.Plugin.Federation
                 DisplayName = "Federation",
                 MenuIcon = "public"
             };
+
+            var providers = _serviceProvider.GetServices<IFederationWebPageProvider>().ToList();
+            if (providers.Count == 0)
+            {
+                providers.AddRange(FederationWebPageDiscovery.CreateProviders(_logger));
+            }
+
+            foreach (var page in providers.SelectMany(provider => provider.GetPages()))
+            {
+                yield return new PluginPageInfo
+                {
+                    Name = page.Name,
+                    EmbeddedResourcePath = GetType().Namespace + ".Web.admin.addinPage.html",
+                    EnableInMainMenu = page.EnableInMainMenu,
+                    DisplayName = page.DisplayName,
+                    MenuIcon = page.MenuIcon
+                };
+            }
         }
 
         /// <summary>

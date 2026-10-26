@@ -554,6 +554,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 };
             }
 
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                return null;
+            }
+
             var client = _federationManager.GetClient(src.ServerId);
             if (client == null)
             {

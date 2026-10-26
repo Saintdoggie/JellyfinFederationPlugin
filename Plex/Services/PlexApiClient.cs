@@ -77,10 +77,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// an integrity or authentication check.
         /// </summary>
         public static Guid RatingKeyToGuid(string ratingKey)
-        {
-            var bytes = MD5.HashData(Encoding.UTF8.GetBytes("plex-item:" + ratingKey));
-            return new Guid(bytes);
-        }
+            => ExternalItemIds.PlexRatingKeyToGuid(ratingKey);
 
         /// <summary>
         /// Stable Guid for a synthesized season, which Plex does return as a real

@@ -52,7 +52,16 @@
     }
     return 0;
   }
-  var core = { compatible: compatible, choose: choose, bufferedAhead: bufferedAhead };
+  function hlsOptions(startPosition) {
+    return {
+      maxBufferLength: 45, maxMaxBufferLength: 60, maxBufferSize: 128 * 1024 * 1024,
+      backBufferLength: 30, startPosition: Math.max(0, startPosition), enableWorker: false,
+      manifestLoadingTimeOut: 20000, manifestLoadingMaxRetry: 3,
+      fragLoadingTimeOut: 20000, fragLoadingMaxRetry: 3,
+      fragLoadingRetryDelay: 1000, fragLoadingMaxRetryDelay: 8000
+    };
+  }
+  var core = { compatible: compatible, choose: choose, bufferedAhead: bufferedAhead, hlsOptions: hlsOptions };
   window.__federationAdaptiveCore = core;
   var hlsLoading;
   function loadHls(api) {
@@ -263,11 +272,17 @@
             {
               var Hls = await loadHls(this.api);
               if (!Hls || !Hls.isSupported()) throw new Error('HLS is not supported');
-              entry.hls = new Hls({ maxBufferLength: 12, maxMaxBufferLength: 20, maxBufferSize: 16 * 1024 * 1024,
-                backBufferLength: 2, startPosition: Math.max(0, at - offset), enableWorker: false,
-                manifestLoadingTimeOut: 10000, fragLoadingTimeOut: 10000, fragLoadingMaxRetry: 1 });
+              entry.hls = new Hls(hlsOptions(at - offset));
               entry.hls.attachMedia(video); entry.hls.loadSource(parsed.href);
-              entry.hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) entry.error = true; });
+              entry.hls.on(Hls.Events.ERROR, (_, data) => {
+                if (!data.fatal) return;
+                entry.error = true;
+                console.warn('[Federation] HLS playback failed', {
+                  type: data.type, details: data.details,
+                  status: data.response && data.response.code,
+                  fragment: data.frag && data.frag.sn
+                });
+              });
             }
           } else video.src = parsed.href;
           var until = Date.now() + 18000;
@@ -284,7 +299,10 @@
         ['timeupdate', 'pause', 'volumechange', 'waiting'].forEach((name) => video.addEventListener(name, () => {
           if (this.active !== entry) return;
           if (name === 'timeupdate') { this.waitingAt = 0; this.lastTime = this.currentTime(); }
-          if (name === 'waiting' && !this.waitingAt) this.waitingAt = Date.now();
+          if (name === 'waiting' && !this.waitingAt) {
+            this.waitingAt = Date.now();
+            console.debug('[Federation] Playback waiting', { bufferedSeconds: Math.round(bufferedAhead(video, video.currentTime) * 10) / 10 });
+          }
           this.emit(name);
         }));
         video.addEventListener('playing', () => { if (this.active === entry) { this.waitingAt = 0; this.emit('unpause'); } });

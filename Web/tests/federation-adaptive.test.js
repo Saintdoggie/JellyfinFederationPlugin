@@ -57,6 +57,22 @@ test('buffer readiness is measured at the target time rather than at a different
   const { dom, core } = fixture(); const video = { buffered: { length: 2, start: i => [0, 30][i], end: i => [5, 40][i] } };
   assert.equal(core.bufferedAhead(video, 20), 0); assert.equal(core.bufferedAhead(video, 32), 8); dom.window.close();
 });
+test('HLS buffering tolerates slow segments without unbounded memory use', () => {
+  const { dom, core } = fixture();
+  const options = core.hlsOptions(-4);
+  assert.equal(options.startPosition, 0);
+  assert.equal(options.maxBufferLength, 45);
+  assert.equal(options.maxMaxBufferLength, 60);
+  assert.equal(options.backBufferLength, 30);
+  assert.equal(options.maxBufferSize, 128 * 1024 * 1024);
+  assert.ok(options.maxBufferSize * 8 / 80000000 >= 6 * 2, 'byte cap must hold several maximum-bitrate segments');
+  assert.ok(options.fragLoadingTimeOut >= 20000);
+  assert.ok(options.fragLoadingMaxRetry >= 3);
+  assert.ok(options.manifestLoadingTimeOut >= 20000);
+  assert.ok(options.manifestLoadingMaxRetry >= 3);
+  assert.equal(core.hlsOptions(12).startPosition, 12);
+  dom.window.close();
+});
 test('plugin factory is idempotent and restricts automatic selection to federated movies', async () => {
   const { dom } = fixture(); const original = dom.window.FederationAdaptivePlayer; dom.window.eval(script);
   assert.equal(dom.window.FederationAdaptivePlayer, original);

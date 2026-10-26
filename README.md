@@ -10,7 +10,7 @@ show up in yours and play from their server, with no copying or syncing of files
 This is NOT true federation: it does not connect you to unknown public Jellyfin servers. You only
 connect with servers whose admins you send a friend request to (or accept one from).
 
-Current release: **0.0.200** for Jellyfin 12.
+Current release: **0.0.201** for Jellyfin 12.
 
 ## Features
 
@@ -47,13 +47,14 @@ Current release: **0.0.200** for Jellyfin 12.
 - Hardware sharing: servers can share their conversion hardware and let it decide who converts
   a friend's title. Off by default (Advanced tab).
 - Pools: groups of servers that all federate with each other.
-- Plex: bring Plex libraries into Jellyfin from the Plex tab, or use the separate Companion app (see below).
+- Plex: install the optional Plex add-in to bring Plex libraries into Jellyfin or use the separate
+  Companion app (see below). Ordinary Jellyfin friends do not need the add-in.
 
 Most features can be switched off under the plugin's Advanced tab.
 
 ## Requirements
 
-- Jellyfin 12.x for the current release (0.0.200, built for .NET 10).
+- Jellyfin 12.x for the current release (0.0.201, built for .NET 10).
 - Jellyfin 10.11.x: use 0.0.135 (the last 10.11 build). The 12.x plugin cannot load on 10.11.
 - Your server must be reachable by your friends (port forwarding to your own domain, or Tailscale
   with Funnel; the Friends tab helps set this up).
@@ -64,8 +65,12 @@ Most features can be switched off under the plugin's Advanced tab.
    `https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/manifest.json`
 2. Install the **Jellyfin Federation** plugin from the catalog.
 3. Restart Jellyfin, then open Dashboard → Plugins → Federation.
+4. For Plex or Companion features, also download `Jellyfin.Plugin.Federation.Plex-0.0.201.zip`
+   from the same release and follow [the add-in installation guide](Plex/INSTALL.md). Existing
+   Plex users must install the matching add-in when upgrading; ordinary Jellyfin-only users do not.
 
-Existing friend connections and settings are kept when you update.
+Existing friend connections and settings are kept when you update. Plex settings and cached titles
+are also retained while the add-in is absent, but those sources cannot refresh or play until it is installed.
 
 ## Adding a friend
 

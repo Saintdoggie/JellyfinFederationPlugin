@@ -198,6 +198,11 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return externalResult;
                 }
 
+                if (server.Kind != Configuration.ServerKind.Jellyfin)
+                {
+                    return Enumerable.Empty<RemoteImageInfo>();
+                }
+
                 var client = _federationManager.GetClient(source.ServerId);
                 if (client == null)
                 {

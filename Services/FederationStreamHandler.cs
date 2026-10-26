@@ -161,6 +161,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     $"{server.Name} did not return a playable file for item {nativeId}.");
             }
 
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                throw new InvalidOperationException($"{server.Name} needs the optional {server.Kind} add-in to stream this item. Existing titles and settings were kept.");
+            }
+
             var client = _clientFactory.GetClient(server);
 
             // Same preference as FederationMediaSourceProvider's Direct-mode
@@ -348,7 +353,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // their internal URL in BuildDirectStreamUrlAsync. Jellyfin
                     // peers need an explicit live PlaybackInfo preflight: token
                     // minting alone can succeed for a stale/deleted cache entry.
-                    if (_externalCatalogs.For(server) == null)
+                    if (server.Kind == ServerKind.Jellyfin)
                     {
                         var client = _clientFactory.GetClient(server);
                         var playback = await client.GetPlaybackInfoAsync(

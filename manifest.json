@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.201",
+        "changelog": "Optional Plex add-in and browser playback resilience. Plex catalogs, Companion connections, metadata/import and .strm export now require the matching optional Plex add-in installed beside the core DLL. Ordinary Jellyfin federation works without it; an absent add-in preserves Plex settings and cached titles without using the wrong protocol. Adaptive web playback tolerates slow HLS segments with bounded buffers, timeouts and retries, while diagnostics omit playback URLs and tokens. Includes everything in 0.0.200.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T14:02:30Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.201/Jellyfin.Federation.zip",
+        "checksum": "45d3683544d2e6060a704047228ddb4c"
+      },
+      {
         "version": "0.0.200",
         "changelog": "Security, reliability and bandwidth release. Android raw-file playback no longer enters its HLS-only direct-play path, preventing source errors while preserving original-quality streaming. Direct links become usable as soon as they authenticate while their speed test finishes; a slow or failed test keeps the existing Auto WAN cap instead of removing it. Link setup and forwarding are bounded, permissions and capacity are rechecked before a friend connects, and unexpected sources are refused before TLS. Playback recovers interrupted relays, retains slow converted segments, falls back after direct-link body failures, avoids duplicate bandwidth samples, and uses per-stream bitrates when ranking copies. Catalogs can use Brotli; posters are fetched at sharp display sizes rather than as originals. Also includes reviewed admin, credential, SSRF, response, transcode-admission and Companion-update hardening. Pairing codes remain disabled while under review. Includes everything in 0.0.199.",
         "targetAbi": "12.0.0.0",
