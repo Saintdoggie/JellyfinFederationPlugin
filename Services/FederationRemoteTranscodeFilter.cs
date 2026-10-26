@@ -374,7 +374,16 @@ namespace Jellyfin.Plugin.Federation.Services
             var cap = viaLink && server.WanCapMode == WanCapMode.Auto
                 ? LinkCap(_directLinks!.LinkMbps(server.Id), fallbackCap)
                 : fallbackCap;
+
+            // Phone and tablet apps ask for no resolution limit; hold their conversion to 1080p and ~12 Mbps.
+            var handheld = HandheldClientLimits.IsHandheld(info.Client, info.Device);
+            cap = HandheldClientLimits.Cap(cap, handheld);
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
+            if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
+            {
+                query = HandheldClientLimits.WithResolution(query, request.Query, handheld);
+            }
+
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
             return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink);

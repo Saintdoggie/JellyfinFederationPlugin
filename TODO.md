@@ -1,5 +1,13 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.202 — app compatibility (branch `work/compat-0202`, unreleased)
+
+- [x] Phone/tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone/iPad, Streamyfin) get a handed-off conversion held to 1080p and ~12 Mbps (`HandheldClientLimits`). Cause: a 4K HDR title became a 4K, 33 Mbps conversion the friend made at 1.08x real time, and the Android player gave up with "Source error" about 2 s in (2026-10-26 14:23 UTC). TV apps and the web client are unchanged.
+- [ ] Confirm on the real device: the friend plays one 4K title from a friend server on Android; check the conversion log shows <=1080p and the app no longer errors.
+- [ ] If "Source error" persists: capture the app's error detail, and check MP3-in-MPEG-TS audio and burned-in PGS subtitles (the app asked for an image subtitle; consider a text track or none by default on handhelds).
+- [ ] Swiftfin/tvOS and iPhone have no test of their own yet: replay their PlaybackInfo and stream requests against the plugin.
+- [ ] Android's client name is read from the sign-in headers or, with an api_key, the device record; confirm `info.Client` is filled for a token-only master request.
+
 ## 0.0.201 — optional Plex add-in and browser playback resilience
 
 - [x] Separate Plex/Companion into the optional `Plex/` add-in; retain existing identifiers, configuration and cached titles, and fail closed without provider or Jellyfin-protocol fallthrough when it is absent.
