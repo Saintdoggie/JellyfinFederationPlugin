@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.204",
-  "changelog": "Security hardening. Pool notices require authenticated membership and untrusted roster URLs no longer trigger automatic friend requests or sharing. Internal relay keys are memory-only; friend HTTP responses are bounded and redirects/proxies are disabled. Playback tokens are bounded and rate-limited, and disabling a friend revokes existing access. Pairing and direct links enforce exact peer/endpoint binding and replay protection; viewer reports, segment caches and playlist URLs are hardened. Pairing remains review-locked. Includes everything in 0.0.203.",
+  "version": "0.0.205",
+  "changelog": "Security and reliability. Discovery requires an explicit admin request and sharing choice; friend and pool callbacks are authenticated, and pending requests, pools, user rules, party snapshots, availability blobs and urgent sync notices are bounded. Session registration and streaming work again, zero-share friends cannot enumerate users, and administrator reporting is corrected. Upgrade both servers for authenticated friend accept/reject callbacks. Includes everything in 0.0.204.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-26T22:22:28Z",
+  "timestamp": "2026-10-26T23:57:55Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

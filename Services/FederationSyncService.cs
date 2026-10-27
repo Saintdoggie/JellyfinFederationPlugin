@@ -70,6 +70,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
         internal TimeSpan NotifiedSyncSpacing { get; set; } = TimeSpan.FromMinutes(5);
 
+        internal TimeSpan UrgentNotifiedSyncSpacing { get; set; } = TimeSpan.FromSeconds(5);
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastUrgentNotifiedSync = new(StringComparer.Ordinal);
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pendingUrgentNotifiedSync = new(StringComparer.Ordinal);
+
         // How long to wait before retrying when another sync is running.
         internal TimeSpan BusyRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -247,24 +253,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// A friend reported that its catalog changed (see
         /// <see cref="FederationChangeNotifier"/>): sync just that friend in the
         /// background, so its new titles appear within minutes instead of at the
-        /// next scheduled sync. At most one such sync per friend per
-        /// <see cref="NotifiedSyncSpacing"/>; notices arriving meanwhile are
-        /// covered by the one already scheduled. Returns false when one is
-        /// already scheduled.
+        /// next scheduled sync. At most one ordinary sync per friend per
+        /// <see cref="NotifiedSyncSpacing"/>, and one urgent sync per
+        /// <see cref="UrgentNotifiedSyncSpacing"/>. A notice arriving during a
+        /// sync leaves one trailing urgent sync when needed, so the latest
+        /// sharing state is observed. Returns false when a worker is scheduled.
         /// </summary>
         public bool OnFriendCatalogChanged(string serverId, CancellationToken stoppingToken, bool urgent = false)
         {
             if (urgent)
             {
-                // What the friend shares with us changed: titles we may no longer
-                // see must go now, so this skips the spacing below (a catalog
-                // notice minutes earlier would otherwise delay it). Still one at a
-                // time per friend; a queued urgent sync covers later notices.
-                _lastNotifiedSync.TryRemove(serverId, out _);
-                _sharingChangedUtc[serverId] = DateTime.UtcNow;
+                var now = DateTime.UtcNow;
+                _pendingUrgentNotifiedSync[serverId] = 0;
+                if (!_sharingChangedUtc.TryGetValue(serverId, out var noticed) || now - noticed >= SharingNoticeWindow)
+                {
+                    _sharingChangedUtc[serverId] = now;
+                }
+
                 if (_spacingWaits.TryGetValue(serverId, out var waiting))
                 {
-                    // A notice already queued is waiting out the spacing: end the wait.
                     try
                     {
                         waiting.Cancel();
@@ -281,9 +288,26 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
-            _ = Task.Run(async () =>
+            _ = Task.Run(() => RunNotifiedSyncAsync(serverId, stoppingToken));
+            return true;
+        }
+
+        private async Task RunNotifiedSyncAsync(string serverId, CancellationToken stoppingToken)
+        {
+            try
             {
-                try
+                if (_pendingUrgentNotifiedSync.TryRemove(serverId, out _))
+                {
+                    var since = DateTime.UtcNow - _lastUrgentNotifiedSync.GetValueOrDefault(serverId, DateTime.MinValue);
+                    if (since < UrgentNotifiedSyncSpacing)
+                    {
+                        await Task.Delay(UrgentNotifiedSyncSpacing - since, stoppingToken).ConfigureAwait(false);
+                    }
+
+                    _lastUrgentNotifiedSync[serverId] = DateTime.UtcNow;
+                    _lastNotifiedSync.TryRemove(serverId, out _);
+                }
+                else
                 {
                     var since = DateTime.UtcNow - _lastNotifiedSync.GetValueOrDefault(serverId, DateTime.MinValue);
                     if (since < NotifiedSyncSpacing)
@@ -303,38 +327,41 @@ namespace Jellyfin.Plugin.Federation.Services
                             _spacingWaits.TryRemove(serverId, out _);
                         }
                     }
+                }
 
-                    // Waits out a running sync instead of dropping the notice.
-                    for (var attempt = 0; attempt < 60; attempt++)
+                // Waits out a running sync instead of dropping the notice.
+                for (var attempt = 0; attempt < 60; attempt++)
+                {
+                    var result = NotifiedSyncOverride != null
+                        ? await NotifiedSyncOverride(serverId, stoppingToken).ConfigureAwait(false)
+                        : await SyncServerAsync(serverId, stoppingToken).ConfigureAwait(false);
+                    if (!string.Equals(result.Message, "A sync is already in progress; skipped", StringComparison.Ordinal))
                     {
-                        var result = NotifiedSyncOverride != null
-                            ? await NotifiedSyncOverride(serverId, stoppingToken).ConfigureAwait(false)
-                            : await SyncServerAsync(serverId, stoppingToken).ConfigureAwait(false);
-                        if (!string.Equals(result.Message, "A sync is already in progress; skipped", StringComparison.Ordinal))
-                        {
-                            _logger.LogInformation("[Federation] Synced a friend after its change notice: {Message}", result.Message);
-                            break;
-                        }
-
-                        await Task.Delay(BusyRetryDelay, stoppingToken).ConfigureAwait(false);
+                        _logger.LogInformation("[Federation] Synced a friend after its change notice: {Message}", result.Message);
+                        break;
                     }
 
-                    _lastNotifiedSync[serverId] = DateTime.UtcNow;
+                    await Task.Delay(BusyRetryDelay, stoppingToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+
+                _lastNotifiedSync[serverId] = DateTime.UtcNow;
+            }
+            catch (OperationCanceledException)
+            {
+                // Jellyfin is shutting down.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Federation] Sync after a friend's change notice failed");
+            }
+            finally
+            {
+                _pendingNotifiedSync.TryRemove(serverId, out _);
+                if (_pendingUrgentNotifiedSync.ContainsKey(serverId))
                 {
-                    // Jellyfin is shutting down.
+                    OnFriendCatalogChanged(serverId, stoppingToken, urgent: true);
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[Federation] Sync after a friend's change notice failed");
-                }
-                finally
-                {
-                    _pendingNotifiedSync.TryRemove(serverId, out _);
-                }
-            });
-            return true;
+            }
         }
 
         private void BeginStatusRun(IEnumerable<LibraryMapping> mappings, PluginConfiguration config, string? onlyServerId)

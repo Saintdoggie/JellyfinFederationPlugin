@@ -670,7 +670,12 @@ public class FederationPoolTests : IDisposable
             FederationId = "bob-fed-id"
         };
         _plugin.Configuration.RemoteServers.Add(bob);
-        _plugin.Configuration.Pools.Add(new FederationPool { Id = "pool-1", Name = "Movie Night" });
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+        });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
 
@@ -689,6 +694,40 @@ public class FederationPoolTests : IDisposable
         Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
         var pool = Assert.Single(_plugin.Configuration.Pools);
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
+    }
+
+    [Fact]
+    public async Task ReceivePoolInviteNotice_NonMember_CannotInjectExistingPoolRoster()
+    {
+        var attacker = new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Mallory",
+            Url = "http://mallory.example",
+            FederationId = "mallory-fed-id"
+        };
+        var pool = new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "self", Url = "http://local.test:8096" } }
+        };
+        _plugin.Configuration.Pools.Add(pool);
+
+        await _service.ReceivePoolInviteNotice(
+            attacker,
+            new PoolInviteNoticePayload
+            {
+                InviteId = "invite-1",
+                FromFederationId = "mallory-fed-id",
+                PoolId = pool.Id,
+                Roster = new List<PoolMember> { new PoolMember { FederationId = "injected", Url = "http://injected.example" } }
+            },
+            CancellationToken.None);
+
+        Assert.Single(pool.Members);
+        Assert.DoesNotContain(pool.Members, m => m.FederationId is "mallory-fed-id" or "injected");
+        Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
     }
 
     [Fact]
@@ -798,7 +837,8 @@ public class FederationPoolTests : IDisposable
         {
             Id = "pool-1",
             Name = "Movie Night",
-            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
         });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
@@ -930,7 +970,9 @@ public class FederationPoolTests : IDisposable
             RemoteServerId = "bob-fed-id"
         });
 
-        var result = _service.HandlePoolAcceptNotice(new PoolInviteResponsePayload { InviteId = "invite-1", FromFederationId = "bob-fed-id" });
+        var result = _service.HandlePoolAcceptNotice(
+            new RemoteServer { FederationId = "bob-fed-id", Url = "http://bob.example" },
+            new PoolInviteResponsePayload { InviteId = "invite-1", FromFederationId = "bob-fed-id" });
 
         Assert.True(result);
         Assert.Empty(_plugin.Configuration.OutgoingPoolInvites);
@@ -943,9 +985,29 @@ public class FederationPoolTests : IDisposable
         var pool = _service.CreatePool("Movie Night");
         _plugin.Configuration.OutgoingPoolInvites.Add(new PoolInvite { Id = "invite-1", PoolId = pool.Id, RemoteServerUrl = "http://bob.example" });
 
-        _service.HandlePoolRejectNotice("invite-1");
+        Assert.True(_service.HandlePoolRejectNotice(new RemoteServer { Url = "http://bob.example" }, "invite-1"));
 
         Assert.Empty(_plugin.Configuration.OutgoingPoolInvites);
+        Assert.DoesNotContain(pool.Members, m => m.Url == "http://bob.example");
+    }
+
+    [Fact]
+    public void PoolCallbacks_FromDifferentFriend_DoNotChangeInviteOrRoster()
+    {
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.OutgoingPoolInvites.Add(new PoolInvite
+        {
+            Id = "invite-1",
+            PoolId = pool.Id,
+            RemoteServerUrl = "http://bob.example",
+            RemoteServerId = "bob-fed-id"
+        });
+        var attacker = new RemoteServer { FederationId = "mallory-fed-id", Url = "http://mallory.example" };
+        var response = new PoolInviteResponsePayload { InviteId = "invite-1" };
+
+        Assert.False(_service.HandlePoolAcceptNotice(attacker, response));
+        Assert.False(_service.HandlePoolRejectNotice(attacker, "invite-1"));
+        Assert.Single(_plugin.Configuration.OutgoingPoolInvites);
         Assert.DoesNotContain(pool.Members, m => m.Url == "http://bob.example");
     }
 
@@ -1124,5 +1186,31 @@ public class FederationPoolTests : IDisposable
         gate.Set();
         await _service.PendingFanOut;
         Assert.True(posts <= FederationFriendService.MaxPoolRosterEntries);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_RepeatedRosters_CannotGrowPastCumulativeCap()
+    {
+        var bob = new RemoteServer { Id = "friend-1", Name = "Bob", Url = "http://bob.example", FederationId = "bob-fed-id" };
+        var pool = new FederationPool
+        {
+            Id = "pool-1",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Url = "http://bob.example" } }
+        };
+        _plugin.Configuration.Pools.Add(pool);
+
+        for (var batch = 0; batch < 10; batch++)
+        {
+            var roster = Enumerable.Range(batch * 50, 50)
+                .Select(i => new PoolMember { FederationId = $"f{i}", Url = $"https://m{i}.example" })
+                .ToList();
+            await _service.ReceivePoolNotice(
+                bob,
+                new PoolNoticePayload { FromFederationId = "bob-fed-id", PoolId = pool.Id, Roster = roster },
+                CancellationToken.None);
+        }
+
+        await _service.PendingFanOut;
+        Assert.Equal(FederationFriendService.MaxPoolMembers, pool.Members.Count);
     }
 }

@@ -95,6 +95,10 @@ friends. Newer features need **both** servers on at least:
 | Friends' viewers on your dashboard, hardware sharing | 0.0.190 |
 | Smooth seeking and faster start when the friend converts, the friend's conversion logs in your Dashboard → Logs | 0.0.193 |
 | Encrypted direct links between homes (opt-in) | 0.0.196 |
+| Authenticated friend accept/reject callbacks | 0.0.205 (upgrade both before changing friend requests) |
+
+Discovery only fills the Discovery tab. It never sends a friend request automatically;
+choose **Add friend** and a sharing scope yourself.
 
 ## Troubleshooting
 

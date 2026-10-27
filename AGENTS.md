@@ -218,9 +218,12 @@ Tests and project history:
 - Native Jellyfin relay keys are process-lifetime and memory-only. The legacy
   `InternalRelayApiKey` configuration field stays empty; never persist that
   admin-equivalent credential through `ApiKeyProtector` or plugin XML.
-- Pool notices require sender membership. Unknown roster URLs are informational
-  only: never auto-contact them or create share-all friends from pool automation.
-- Friend-facing HTTP disables redirects and proxies. Control responses use
+- Pool notices and existing-pool invitations require sender membership; accept/reject
+  callbacks must match the invited friend. Pool membership and pending requests are capped.
+- Discovery is review-only and never contacts candidates automatically. Friend accept/reject
+  callbacks require the pending handshake credential; only explicit admin requests choose sharing.
+- Friend-facing HTTP disables redirects and outbound .NET proxy use. Reverse-proxy
+  deployments remain supported, including browser playback-header checks. Control responses use
   `ResponseHeadersRead` and `HttpContentReader` limits rather than unbounded reads.
 - Direct-link requests carry the authenticated link-friend context, punching and
   QUIC acceptance use exact endpoints, and read-ahead revalidates before serving.

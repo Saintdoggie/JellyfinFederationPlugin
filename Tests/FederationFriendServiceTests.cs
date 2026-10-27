@@ -109,6 +109,11 @@ public class FederationFriendServiceTests : IDisposable
                 new HttpClient(new FakeHandler(responder)) { BaseAddress = new Uri(s.Url) }));
     }
 
+    private bool AcceptCallback(FriendRequestPayload payload)
+        => _service.HandleAcceptCallback(
+            payload,
+            _plugin.Configuration.OutgoingFriendRequests.SingleOrDefault(r => r.Id == payload.RequestId)?.ApiKey);
+
     private static HttpResponseMessage Json(HttpStatusCode status, object body)
         => new HttpResponseMessage(status) { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
 
@@ -136,7 +141,7 @@ public class FederationFriendServiceTests : IDisposable
         Assert.True(sent, message);
         var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
 
-        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        Assert.True(AcceptCallback(new FriendRequestPayload
         {
             RequestId = outgoing.Id,
             FromServerUrl = "http://anna.example",
@@ -157,7 +162,7 @@ public class FederationFriendServiceTests : IDisposable
         UseFakeHttp(_ => Json(HttpStatusCode.OK, new { success = true, serverName = "Ben" }));
         await _service.SendFriendRequestAsync("http://ben.example", CancellationToken.None, sharing: new FriendSharing(false, Array.Empty<string>()));
         var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
-        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload { RequestId = outgoing.Id, FromServerUrl = "http://ben.example", ApiKeyForYou = "k", SupportsFederationToken = true }));
+        Assert.True(AcceptCallback(new FriendRequestPayload { RequestId = outgoing.Id, FromServerUrl = "http://ben.example", ApiKeyForYou = "k", SupportsFederationToken = true }));
         var ben = Assert.Single(_plugin.Configuration.RemoteServers);
         Assert.False(ben.ShareAllLibraries);
         Assert.Empty(ben.SharedLibraryFolderIds);
@@ -272,7 +277,7 @@ public class FederationFriendServiceTests : IDisposable
         Assert.Equal("friend-entry", outgoing.ReplacesServerId);
 
         // The accept callback names a different address; only the keys may change.
-        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        Assert.True(AcceptCallback(new FriendRequestPayload
         {
             RequestId = outgoing.Id,
             FromServerUrl = "http://attacker.example",
@@ -386,7 +391,7 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DiscoverFriendsOfFriendsAsync_DiscoversNewFriend_AndSendsRequest()
+    public async Task DiscoverFriendsOfFriendsAsync_CachesCandidate_WithoutSendingRequest()
     {
         _plugin.Configuration.AllowFriendsOfFriends = true;
         _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
@@ -399,18 +404,14 @@ public class FederationFriendServiceTests : IDisposable
                 return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
             }
 
-            if (url == "http://friend-c.example/Plugins/Federation/Friends/Request")
-            {
-                return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
-            }
-
             throw new InvalidOperationException("Unexpected request to " + url);
         });
 
-        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+        var found = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
 
-        Assert.Equal(1, sent);
-        Assert.Contains(_plugin.Configuration.OutgoingFriendRequests, r => r.RemoteServerUrl == "http://friend-c.example");
+        Assert.Equal(1, found);
+        Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.Equal("http://friend-c.example", Assert.Single(_service.SearchDiscoveredServers("C")).Url);
     }
 
     [Fact]
@@ -738,6 +739,34 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceiveFriendRequestAsync_FloodLeavesReconnectCapacity_AndLimitsSourceIp()
+    {
+        FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests - 5);
+        UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        FriendRequestPayload Payload(string id, string url) => new()
+        {
+            RequestId = id,
+            FromServerUrl = url,
+            FromServerName = "Sender",
+            ApiKeyForYou = "key",
+            SupportsFederationToken = true
+        };
+
+        Assert.False((await _service.ReceiveFriendRequestAsync(Payload("unknown", "http://unknown.example"), CancellationToken.None)).Success);
+        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "known", Url = "http://known.example", Kind = ServerKind.Jellyfin });
+        Assert.True((await _service.ReceiveFriendRequestAsync(Payload("known-request", "http://known.example"), CancellationToken.None)).Success);
+
+        _plugin.Configuration.IncomingFriendRequests.Clear();
+        var sourceAddress = "test-" + Guid.NewGuid().ToString("N");
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True((await _service.ReceiveFriendRequestAsync(Payload($"flood-{i}", $"http://flood-{i}.example"), CancellationToken.None, sourceAddress)).Success);
+        }
+
+        Assert.False((await _service.ReceiveFriendRequestAsync(Payload("flood-last", "http://flood-last.example"), CancellationToken.None, sourceAddress)).Success);
+    }
+
+    [Fact]
     public async Task ReceiveFriendRequestAsync_DuplicateRequestIdAtCap_DoesNotConsumeSlot()
     {
         FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests);
@@ -764,7 +793,7 @@ public class FederationFriendServiceTests : IDisposable
     public async Task ReceiveFriendRequestAsync_StaleIncoming_SweptToMakeRoomForNewRequest()
     {
         FillIncomingFriendRequests(FederationFriendService.MaxPendingIncomingFriendRequests);
-        _plugin.Configuration.IncomingFriendRequests[0].CreatedUtc = DateTime.UtcNow.AddDays(-15);
+        _plugin.Configuration.IncomingFriendRequests.ForEach(r => r.CreatedUtc = DateTime.UtcNow.AddDays(-2));
         var staleId = _plugin.Configuration.IncomingFriendRequests[0].Id;
         UseFakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK));
 
@@ -780,7 +809,7 @@ public class FederationFriendServiceTests : IDisposable
             CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(FederationFriendService.MaxPendingIncomingFriendRequests, _plugin.Configuration.IncomingFriendRequests.Count);
+        Assert.Single(_plugin.Configuration.IncomingFriendRequests);
         Assert.DoesNotContain(_plugin.Configuration.IncomingFriendRequests, r => r.Id == staleId);
         Assert.Contains(_plugin.Configuration.IncomingFriendRequests, r => r.Id == "req-new");
     }
@@ -860,9 +889,9 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public void HandleAcceptCallback_AddsFriend_UsingGivenKey_AndClearsOutgoingRequest()
     {
-        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend" });
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend", ApiKey = "pending" });
 
-        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload
+        var accepted = AcceptCallback(new FriendRequestPayload
         {
             RequestId = "req-1",
             FromServerUrl = "http://friend.example",
@@ -881,7 +910,7 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public void HandleAcceptCallback_UnknownRequestId_DoesNothing()
     {
-        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload { RequestId = "does-not-exist", ApiKeyForYou = "key", SupportsFederationToken = true });
+        var accepted = AcceptCallback(new FriendRequestPayload { RequestId = "does-not-exist", ApiKeyForYou = "key", SupportsFederationToken = true });
 
         Assert.False(accepted);
         Assert.Empty(_plugin.Configuration.RemoteServers);
@@ -890,9 +919,9 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public void HandleAcceptCallback_MissingFederationTokenSupport_Rejected()
     {
-        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend" });
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", RemoteServerUrl = "http://friend.example", RemoteServerName = "Friend", ApiKey = "pending" });
 
-        var accepted = _service.HandleAcceptCallback(new FriendRequestPayload
+        var accepted = AcceptCallback(new FriendRequestPayload
         {
             RequestId = "req-1",
             FromServerUrl = "http://friend.example",
@@ -909,7 +938,7 @@ public class FederationFriendServiceTests : IDisposable
     {
         _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-1", ApiKey = "key-1" });
 
-        _service.HandleRejectCallbackAsync("req-1");
+        Assert.True(_service.HandleRejectCallbackAsync("req-1", "key-1"));
 
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
     }
@@ -929,7 +958,7 @@ public class FederationFriendServiceTests : IDisposable
             ApiKey = "key-we-minted-for-them"
         });
 
-        _service.HandleAcceptCallback(new FriendRequestPayload
+        AcceptCallback(new FriendRequestPayload
         {
             RequestId = "req-1",
             FromServerUrl = "http://friend.example",
@@ -1332,7 +1361,7 @@ public class FederationFriendServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DiscoverFriendsOfFriendsAsync_CapsRequestsPerPass()
+    public async Task DiscoverFriendsOfFriendsAsync_CachesCandidatesWithoutContactingThem()
     {
         _plugin.Configuration.AllowFriendsOfFriends = true;
         _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
@@ -1344,45 +1373,33 @@ public class FederationFriendServiceTests : IDisposable
                 return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = Enumerable.Range(0, 30).Select(i => new { name = "n" + i, url = $"http://cand{i}.example" }).ToArray() });
             }
 
-            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+            throw new InvalidOperationException("A discovered candidate was contacted: " + url);
         });
 
-        var sent = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
+        var found = await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None);
 
-        Assert.Equal(FederationFriendService.MaxAutoRequestsPerPass, sent);
+        Assert.Equal(30, found);
+        Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
     }
 
     [Fact]
-    public async Task DiscoverFriendsOfFriendsAsync_RejectedCandidate_IsNotAskedAgainUntilExpiry()
+    public void HandleRejectCallbackAsync_RequiresPendingCredential()
     {
-        _plugin.Configuration.AllowFriendsOfFriends = true;
-        _plugin.Configuration.RemoteServers.Add(new RemoteServer { Id = "b", Url = "http://friend-b.example", Name = "B", Enabled = true });
-        var requests = 0;
-        UseFakeHttp(req =>
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest
         {
-            var url = req.RequestUri!.ToString();
-            if (url.EndsWith("/Friends/List", StringComparison.Ordinal))
-            {
-                return Json(HttpStatusCode.OK, new { allowsIntroductions = true, friends = new[] { new { name = "C", url = "http://friend-c.example" } } });
-            }
-
-            requests++;
-            return Json(HttpStatusCode.OK, new { success = true, serverName = "C" });
+            Id = "req-1",
+            RemoteServerUrl = "http://friend.example",
+            ApiKey = "pending-secret"
         });
 
-        Assert.Equal(1, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
-        var outgoing = Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.False(_service.HandleRejectCallbackAsync("req-1"));
+        Assert.False(_service.HandleRejectCallbackAsync("req-1", "wrong"));
+        Assert.Single(_plugin.Configuration.OutgoingFriendRequests);
+        Assert.Empty(_plugin.Configuration.DeclinedDiscoveryCandidates);
 
-        // They decline: the pending entry goes, but the next pass must not re-ask.
-        _service.HandleRejectCallbackAsync(outgoing.Id);
+        Assert.True(_service.HandleRejectCallbackAsync("req-1", "pending-secret"));
         Assert.Empty(_plugin.Configuration.OutgoingFriendRequests);
-        Assert.Equal(0, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
-        Assert.Equal(1, requests);
-
-        // Once the remembered no has expired they are asked again.
-        _plugin.Configuration.DeclinedDiscoveryCandidates.Single().UntilUtc = DateTime.UtcNow.AddMinutes(-1);
-        Assert.Equal(1, await _service.DiscoverFriendsOfFriendsAsync(CancellationToken.None));
-        Assert.Equal(2, requests);
+        Assert.Single(_plugin.Configuration.DeclinedDiscoveryCandidates);
     }
 
     [Fact]
@@ -1472,9 +1489,9 @@ public class FederationFriendServiceTests : IDisposable
     [Fact]
     public void HandleAcceptCallback_UsesTheAddressWeSentTheRequestTo_NotThePayloads()
     {
-        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-9", RemoteServerUrl = "http://friend.example/", RemoteServerName = "Friend" });
+        _plugin.Configuration.OutgoingFriendRequests.Add(new FriendRequest { Id = "req-9", RemoteServerUrl = "http://friend.example/", RemoteServerName = "Friend", ApiKey = "pending" });
 
-        Assert.True(_service.HandleAcceptCallback(new FriendRequestPayload
+        Assert.True(AcceptCallback(new FriendRequestPayload
         {
             RequestId = "req-9",
             FromServerUrl = "http://evil.example",

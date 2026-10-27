@@ -52,6 +52,33 @@ public class WatchPartyTests
     private static string Kinds(IEnumerable<PartyAction> actions) => string.Join(",", actions.Select(a => a.Kind));
 
     [Fact]
+    public void PartyWire_RejectsOversizedSnapshotsAndNestedData()
+    {
+        PartyItemRef Item() => new()
+        {
+            Owners = new List<PartyOwnerRef> { new PartyOwnerRef { Fid = "friend", Id = Guid.NewGuid().ToString("N") } }
+        };
+        var snapshot = new PartySnapshot { Items = Enumerable.Range(0, 500).Select(_ => Item()).ToList() };
+        Assert.True(PartyWireValidation.ValidSnapshot(snapshot));
+
+        snapshot.Items.Add(Item());
+        Assert.False(PartyWireValidation.ValidSnapshot(snapshot));
+        Assert.False(PartyWireValidation.ValidAnnouncement(new PartyAnnouncement
+        {
+            Participants = Enumerable.Range(0, 21).Select(i => $"user-{i}").ToList()
+        }));
+    }
+
+    [Fact]
+    public void PartyLabels_RemoveMarkupAndControlCharacters()
+    {
+        var cleaned = FederatedPartyService.Clean("<script>alert(1)</script>\n", 80);
+        Assert.Equal("scriptalert(1)/script", cleaned);
+        Assert.DoesNotContain('<', cleaned!);
+        Assert.DoesNotContain('>', cleaned!);
+    }
+
+    [Fact]
     public void UserPause_IsSentOnce_AndItsEchoIsDropped()
     {
         var link = Playing(PartyLinkRole.HostSide);

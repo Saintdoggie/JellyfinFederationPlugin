@@ -61,6 +61,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private static readonly TimeSpan StableOrderLifetime = TimeSpan.FromMinutes(10);
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, StableOrder Order)> StableOrders = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> RemoteUserPolicyVersions = new(StringComparer.Ordinal);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> RemoteUserPolicyWorkers = new(StringComparer.Ordinal);
 
         // Title-list hashes remembered per item with the Etag (a fingerprint of the
         // item's last-saved time) they were computed for, so an unchanged sync
@@ -1391,7 +1393,7 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public async Task<IActionResult> ReceiveFriendRequest([FromBody] FriendRequestPayload payload, CancellationToken cancellationToken)
         {
-            var result = await _friends.ReceiveFriendRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+            var result = await _friends.ReceiveFriendRequestAsync(payload, cancellationToken, HttpContext.Connection.RemoteIpAddress?.ToString()).ConfigureAwait(false);
             return result.Success ? Ok(result) : BadRequest(result);
         }
 
@@ -1436,11 +1438,11 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
-        /// Server-to-server, anonymous: the other server has accepted our earlier
-        /// friend request and is handing us a token to use pulling from them.
-        /// Returns 400 when <see cref="FederationFriendService.HandleAcceptCallback"/>
-        /// rejects it (unknown request, or the other side didn't confirm scoped
-        /// federation-token support) - the accepting side's own
+        /// Server-to-server: the other server has accepted our earlier friend
+        /// request and is handing us a token to use pulling from them. The pending
+        /// request credential authenticates the callback. Returns 400 when
+        /// <see cref="FederationFriendService.HandleAcceptCallback"/> rejects it;
+        /// the accepting side's own
         /// <see cref="FederationFriendService.AcceptFriendRequestAsync"/> already
         /// surfaces a clear error to its admin on anything but a 2xx response.
         /// </summary>
@@ -1460,18 +1462,20 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public IActionResult ReceiveFriendAccept([FromBody] FriendRequestPayload payload)
         {
-            return _friends.HandleAcceptCallback(payload) ? Ok() : BadRequest();
+            return _friends.HandleAcceptCallback(payload, Request.Headers[FederationTokenAuth.Header].ToString()) ? Ok() : BadRequest();
         }
 
         /// <summary>
-        /// Server-to-server, anonymous: the other server declined our earlier friend request.
+        /// Server-to-server: the requested server declined using the credential
+        /// issued specifically for this pending handshake.
         /// </summary>
         [HttpPost("Friends/Reject")]
         [AllowAnonymous]
         public IActionResult ReceiveFriendReject([FromBody] FriendRejectPayload payload)
         {
-            _friends.HandleRejectCallbackAsync(payload?.RequestId ?? string.Empty);
-            return Ok();
+            return _friends.HandleRejectCallbackAsync(payload?.RequestId ?? string.Empty, Request.Headers[FederationTokenAuth.Header].ToString())
+                ? Ok()
+                : BadRequest();
         }
 
         /// <summary>
@@ -2240,16 +2244,24 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            if (_friends.ReceiveRemoteUserAccessRules(caller, payload))
+            var update = _friends.ReceiveRemoteUserAccessRules(caller, payload);
+            if (update == RemoteUserRulesUpdateResult.Invalid)
             {
-                // Hide (or unhide) titles now, not at the next scheduled sync: the
-                // policy flips immediately and the friend's own sync restamps its
-                // items with the new rules.
+                return BadRequest(new { error = "Invalid remote-user rules or caller identity." });
+            }
+
+            if (update == RemoteUserRulesUpdateResult.TooLarge)
+            {
+                return StatusCode(StatusCodes.Status413RequestEntityTooLarge, new { error = "The remote-user rule set exceeds the count or field-size limits." });
+            }
+
+            if (update == RemoteUserRulesUpdateResult.Changed)
+            {
                 var lifetime = HttpContext.RequestServices.GetService(typeof(Microsoft.Extensions.Hosting.IHostApplicationLifetime)) as Microsoft.Extensions.Hosting.IHostApplicationLifetime;
                 var stopping = lifetime?.ApplicationStopping ?? CancellationToken.None;
                 if (HttpContext.RequestServices.GetService(typeof(FederationVisibilityService)) is FederationVisibilityService visibility)
                 {
-                    _ = visibility.ApplyUserPoliciesAsync(Plugin.Instance?.Configuration, stopping);
+                    QueueRemoteUserPolicyRefresh(caller.Id, visibility, stopping);
                 }
 
                 if (!string.IsNullOrEmpty(caller.Id))
@@ -2258,7 +2270,49 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
             }
 
-            return Ok();
+            return Ok(new { changed = update == RemoteUserRulesUpdateResult.Changed });
+        }
+
+        private void QueueRemoteUserPolicyRefresh(string friendId, FederationVisibilityService visibility, CancellationToken stopping)
+        {
+            RemoteUserPolicyVersions.AddOrUpdate(friendId, 1, (_, version) => version + 1);
+            if (!RemoteUserPolicyWorkers.TryAdd(friendId, 0))
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                var completedVersion = 0;
+                try
+                {
+                    while (true)
+                    {
+                        completedVersion = RemoteUserPolicyVersions[friendId];
+                        await visibility.ApplyUserPoliciesAsync(Plugin.Instance?.Configuration, stopping).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromSeconds(1), stopping).ConfigureAwait(false);
+                        if (RemoteUserPolicyVersions[friendId] == completedVersion)
+                        {
+                            break;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+                {
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not apply a friend's latest per-user rules");
+                }
+                finally
+                {
+                    RemoteUserPolicyWorkers.TryRemove(friendId, out _);
+                    if (RemoteUserPolicyVersions[friendId] != completedVersion)
+                    {
+                        QueueRemoteUserPolicyRefresh(friendId, visibility, stopping);
+                    }
+                }
+            }, CancellationToken.None);
         }
 
         /// <summary>
@@ -2614,6 +2668,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { error = "Only a public-facing server can create a pool - set this under Connectivity on the Pools tab first." });
             }
 
+            if (config.Pools.Count >= FederationFriendService.MaxPools)
+            {
+                return BadRequest(new { error = $"This server already has the maximum of {FederationFriendService.MaxPools} pools." });
+            }
+
             var pool = _friends.CreatePool(body.Name);
             return Ok(new { success = true, poolId = pool.Id });
         }
@@ -2746,12 +2805,13 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public IActionResult ReceivePoolAcceptNotice([FromBody] PoolInviteResponsePayload payload)
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
 
-            return _friends.HandlePoolAcceptNotice(payload) ? Ok() : BadRequest();
+            return _friends.HandlePoolAcceptNotice(caller, payload) ? Ok() : BadRequest();
         }
 
         /// <summary>
@@ -2761,13 +2821,13 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public IActionResult ReceivePoolRejectNotice([FromBody] PoolInviteResponsePayload payload)
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
 
-            _friends.HandlePoolRejectNotice(payload?.InviteId ?? string.Empty);
-            return Ok();
+            return _friends.HandlePoolRejectNotice(caller, payload?.InviteId ?? string.Empty) ? Ok() : BadRequest();
         }
 
         /// <summary>
@@ -3440,9 +3500,9 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            if (string.IsNullOrWhiteSpace(request?.RemoteUserId))
+            if (string.IsNullOrWhiteSpace(request?.RemoteUserId) || request.RemoteUserId.Length > 128)
             {
-                return BadRequest(new { error = "Remote user id is required" });
+                return BadRequest(new { error = "A valid remote user id is required" });
             }
 
             // Same missing-FederationId heal as IssuePlaybackToken: a session
@@ -3450,16 +3510,9 @@ namespace Jellyfin.Plugin.Federation.Api
             // time, leaving every user of such a friend unable to play anything.
             _friends.EnsureFederationId(caller);
 
-            // A Blocked rule denies everything regardless of item, so checking it
-            // against a synthetic empty item id here (rather than duplicating the
-            // rule lookup) rejects a fully-blocked user up front - anything less
-            // restrictive than Blocked still needs a real item to evaluate, so it
-            // is left to the per-stream IsItemVisible check instead of guessed at
-            // here.
-            if (!_peerAccess.IsItemVisible(caller, request.RemoteUserId, Guid.Empty)
-                && (caller.RemoteUserAccessRules?.Any(r =>
-                    string.Equals(r.RemoteUserId, request.RemoteUserId, StringComparison.OrdinalIgnoreCase)
-                    && r.Mode == RemoteUserAccessMode.Blocked) ?? false))
+            // Registration has no real item to evaluate. Only the item-independent
+            // Blocked rule belongs here; narrower rules are checked at stream time.
+            if (IsRemoteUserBlocked(caller, request.RemoteUserId))
             {
                 return StatusCode(StatusCodes.Status403Forbidden, new { error = "This user is blocked by the server admin" });
             }
@@ -3467,6 +3520,11 @@ namespace Jellyfin.Plugin.Federation.Api
             var token = _userSessionTokens.Issue(caller.FederationId, request.RemoteUserId);
             return Ok(new { token, expiresUtc = DateTime.UtcNow.AddHours(6) });
         }
+
+        internal static bool IsRemoteUserBlocked(RemoteServer caller, string remoteUserId)
+            => caller.RemoteUserAccessRules?.Any(r =>
+                string.Equals(r.RemoteUserId, remoteUserId, StringComparison.OrdinalIgnoreCase)
+                && r.Mode == RemoteUserAccessMode.Blocked) == true;
 
         /// <summary>
         /// Whether <paramref name="token"/> authorizes streaming <paramref name="itemGuid"/>
@@ -4010,16 +4068,34 @@ namespace Jellyfin.Plugin.Federation.Api
             return chosen?.GetType().GetProperty("Id")?.GetValue(chosen) as Guid?;
         }
 
-        private static bool IsAdministratorUser(object user)
+        internal static bool IsAdministratorUser(object user)
         {
             var type = user.GetType();
-            if (type.GetProperty("IsAdministrator")?.GetValue(user) is bool direct)
+            if (type.GetProperty("IsAdministrator")?.GetValue(user) is true)
             {
-                return direct;
+                return true;
             }
 
             var policy = type.GetProperty("Policy")?.GetValue(user);
-            return policy?.GetType().GetProperty("IsAdministrator")?.GetValue(policy) is bool policyIsAdmin && policyIsAdmin;
+            if (policy?.GetType().GetProperty("IsAdministrator")?.GetValue(policy) is true)
+            {
+                return true;
+            }
+
+            if (type.GetProperty("Permissions")?.GetValue(user) is System.Collections.IEnumerable permissions)
+            {
+                foreach (var permission in permissions)
+                {
+                    var permissionType = permission.GetType();
+                    if (string.Equals(permissionType.GetProperty("Kind")?.GetValue(permission)?.ToString(), "IsAdministrator", StringComparison.Ordinal)
+                        && permissionType.GetProperty("Value")?.GetValue(permission) is true)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -4768,9 +4844,15 @@ namespace Jellyfin.Plugin.Federation.Api
         [AllowAnonymous]
         public IActionResult GetPeerUsers()
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
+            }
+
+            if (!caller.ShareAllLibraries && (caller.SharedLibraryFolderIds == null || caller.SharedLibraryFolderIds.Count == 0))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "User enumeration requires an active sharing scope." });
             }
 
             var users = new List<object>();
@@ -4852,16 +4934,22 @@ namespace Jellyfin.Plugin.Federation.Api
         public IActionResult ExchangeAvailabilitySchedule([FromBody] AvailabilityScheduleBlob? body)
         {
             var caller = FederationTokenAuth.ResolveCaller(Request);
-            if (caller == null)
+            if (caller == null || string.IsNullOrEmpty(caller.Id))
             {
                 return Unauthorized();
             }
 
-            if (body != null && body.Version == AvailabilitySchedule.Version && !string.IsNullOrEmpty(caller.Id))
+            if (body != null && ((body.Probabilities?.Length ?? 0) > 224 || (body.Id?.Length ?? 0) > 128))
             {
-                _availability.Schedule.AcceptReceivedSelf(caller.Id, caller.FederationId, body);
+                return StatusCode(StatusCodes.Status413RequestEntityTooLarge);
             }
 
+            if (!AvailabilitySchedule.IsValidSelfBlob(body))
+            {
+                return BadRequest(new { error = "A valid version-1, 168-bucket availability schedule is required." });
+            }
+
+            _availability.Schedule.AcceptReceivedSelf(caller.Id, caller.FederationId, body!);
             var selfId = Plugin.Instance?.Configuration?.LocalFederationId ?? string.Empty;
             return Ok(_availability.Schedule.EncodeSelf(selfId, DateTime.UtcNow));
         }

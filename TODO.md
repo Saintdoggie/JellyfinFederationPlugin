@@ -1,5 +1,13 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.205 — federation consent and input hardening
+
+- [x] Make discovery review-only, authenticate friend/pool callbacks, bind pool invitations to members and targets, and cap pending requests, pool growth, user rules, party snapshots and availability blobs.
+- [x] Repair per-user session registration, keep blocked-user and stream-time checks, restrict user enumeration to sharing friends, fix administrator reporting, and coalesce urgent catalog notices without repeatedly extending the removal window.
+- [x] Focused federation suite passed 176 tests; 32 PR #11 reverse-proxy/HTTP tests also passed. Live two-node checks passed all 24 cases, including session mint/206 streaming, callback rejection, discovery non-contact, pool caps and payload limits; unchanged full configuration POSTs returned 200 on both nodes.
+- [x] Peer playback/recovery, nine-stage handoff and eight-stage watch-party matrices passed. The direct-link/NAT matrix passed all 32 checks with the documented isolated test-hook build; the normal Release build was restored.
+- [x] Full gate passed: 1,721 plugin, 227 Companion and 149 web tests in each of two automated passes, Windows cross-build, and disposable Plex/Jellyfin integration on the frozen release files.
+
 ## 0.0.204 — security hardening
 
 - [x] Require pool membership for notices, stop automatic contact with untrusted roster URLs, keep internal relay keys in process memory, and bound friend-facing HTTP responses without redirects or proxies.
