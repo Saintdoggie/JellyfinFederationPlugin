@@ -69,6 +69,21 @@ public class ConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsWhitespaceVariantDuplicateMappingNames()
+    {
+        var config = new PluginConfiguration
+        {
+            LibraryMappings = new List<LibraryMapping>
+            {
+                new() { LocalLibraryName = "Movies" },
+                new() { LocalLibraryName = " movies " }
+            }
+        };
+
+        Assert.Contains(ConfigValidator.Validate(config), e => e.Contains("Duplicate", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validate_RejectsRefreshIntervalBelowOne()
     {
         var config = new PluginConfiguration { RefreshIntervalHours = 0 };

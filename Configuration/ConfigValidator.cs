@@ -237,7 +237,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             var duplicateNames = mappings
                 .Where(m => !string.IsNullOrWhiteSpace(m.LocalLibraryName))
-                .GroupBy(m => m.LocalLibraryName, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(m => m.LocalLibraryName.Trim(), StringComparer.OrdinalIgnoreCase)
                 .Where(g => g.Count() > 1)
                 .Select(g => g.Key);
             foreach (var name in duplicateNames)

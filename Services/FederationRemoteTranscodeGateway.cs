@@ -123,6 +123,16 @@ namespace Jellyfin.Plugin.Federation.Services
             headers["Access-Control-Max-Age"] = "600";
         }
 
+        internal static string NativeUrl(string loopbackBase, RemoteMediaPath path, string filteredQuery, Guid? internalUserId)
+        {
+            if (path.Kind == RemoteMediaKind.UniversalAudio && internalUserId.HasValue)
+            {
+                filteredQuery += (filteredQuery.Length == 0 ? "?" : "&") + $"UserId={internalUserId.Value:N}";
+            }
+
+            return $"{loopbackBase.TrimEnd('/')}/{path.ToNativePath(path.ItemId, path.MediaSourceId)}{filteredQuery}";
+        }
+
         /// <summary>
         /// Relays one allowed native request to this server's Jellyfin and writes
         /// the (rewritten, for playlists) response.
@@ -139,12 +149,12 @@ namespace Jellyfin.Plugin.Federation.Services
             string token,
             string internalRelayKey,
             string loopbackBase,
+            Guid? internalUserId,
             CancellationToken cancellationToken)
         {
             var request = context.Request;
             var response = context.Response;
-            var nativePath = path.ToNativePath(path.ItemId, path.MediaSourceId);
-            var url = $"{loopbackBase.TrimEnd('/')}/{nativePath}{RemoteMediaPath.FilterQuery(request.Query)}";
+            var url = NativeUrl(loopbackBase, path, RemoteMediaPath.FilterQuery(request.Query), internalUserId);
             var isHead = HttpMethods.IsHead(request.Method);
 
             if (path.Kind == RemoteMediaKind.HlsSegment && !isHead && !request.Headers.ContainsKey("Range"))
@@ -253,7 +263,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var gatewayBase = publicBase + Uri.EscapeDataString(token) + "/";
-                    var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + nativePath, (target, query) =>
+                    var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + path.ToNativePath(path.ItemId, path.MediaSourceId), (target, query) =>
                         target.ItemId == path.ItemId
                             ? gatewayBase + target.ToNativePath(target.ItemId, target.MediaSourceId) + RemoteMediaPath.FilterQuery(RemoteMediaPath.ParseQuery(query))
                             : null);

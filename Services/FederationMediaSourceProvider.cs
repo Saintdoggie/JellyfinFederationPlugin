@@ -730,8 +730,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var audioBitrate = 256_000;
             var videoBitrate = (int)Math.Min(int.MaxValue, Math.Max(1, (long)capMbps.Value * 950_000L - audioBitrate));
             var originalVideo = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
-            var originalAudio = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio && s.IsDefault == true)
-                ?? remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
+            var originalAudio = remote.MediaStreams?.Where(s => s.Type == MediaStreamType.Audio).ToList() ?? new List<MediaStream>();
             var streams = new List<MediaStream>();
             if (originalVideo != null)
             {
@@ -753,19 +752,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 });
             }
 
-            streams.Add(originalAudio == null
-                ? new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, BitRate = audioBitrate, IsDefault = true }
-                : new MediaStream
+            if (originalAudio.Count == 0)
+            {
+                streams.Add(new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, BitRate = audioBitrate, IsDefault = true });
+            }
+            else
+            {
+                streams.AddRange(originalAudio.Select(audio => new MediaStream
                 {
-                    Type = originalAudio.Type,
-                    Index = originalAudio.Index,
+                    Type = audio.Type,
+                    Index = audio.Index,
                     Codec = "aac",
-                    Language = originalAudio.Language,
-                    IsDefault = originalAudio.IsDefault,
+                    Language = audio.Language,
+                    IsDefault = audio.IsDefault,
                     BitRate = audioBitrate,
-                    Channels = Math.Max(1, Math.Min(originalAudio.Channels.GetValueOrDefault(2), 2)),
-                    SampleRate = originalAudio.SampleRate
-                });
+                    Channels = Math.Max(1, Math.Min(audio.Channels.GetValueOrDefault(2), 2)),
+                    SampleRate = audio.SampleRate
+                }));
+            }
+
+            streams.AddRange((remote.MediaStreams ?? new List<MediaStream>())
+                .Where(stream => stream.Type == MediaStreamType.Subtitle && stream.IsTextSubtitleStream == true));
 
             return new MediaSourceInfo
             {

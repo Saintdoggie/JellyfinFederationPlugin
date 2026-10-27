@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.205",
-  "changelog": "Security and reliability. Discovery requires an explicit admin request and sharing choice; friend and pool callbacks are authenticated, and pending requests, pools, user rules, party snapshots, availability blobs and urgent sync notices are bounded. Session registration and streaming work again, zero-share friends cannot enumerate users, and administrator reporting is corrected. Upgrade both servers for authenticated friend accept/reject callbacks. Includes everything in 0.0.204.",
+  "version": "0.0.206",
+  "changelog": "Reliability and playback fixes. Sparse configuration saves no longer erase friends, mappings or sharing/privacy settings; friend limits and consent updates preserve omitted values. Rating ceilings now apply through series and seasons to unrated episodes. Capped playback retains audio and text-subtitle choices, universal audio works through the owner gateway, and read-ahead link failures fall back safely. Includes everything in 0.0.205.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-26T23:57:55Z",
+  "timestamp": "2026-10-27T04:42:06Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

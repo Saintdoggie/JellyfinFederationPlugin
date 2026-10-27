@@ -105,6 +105,65 @@ def smoke():
             qa.request(base, '/Plugins/Federation/Refresh', admin, {})
             return movies(base, admin)
         imported = qa.wait_for(refreshed, 'Friend catalog did not import')[0]; item_id = imported['Id']
+        stage = 'sparse configuration and consent updates'
+        before = qa.request(base, '/Plugins/Federation/Configuration', admin)
+        qa.request(base, '/Plugins/Federation/Configuration', admin, {})
+        after = qa.request(base, '/Plugins/Federation/Configuration', admin)
+        qa.check(after['RemoteServers'][0]['Id'] == friend and after['RemoteServers'][0]['HasApiKey'], 'Empty configuration erased the friend or token')
+        qa.check(after['LibraryMappings'] == before['LibraryMappings'], 'Empty configuration erased mappings')
+        qa.request(base, f'/Plugins/Federation/Friends/{friend}/Sharing', admin, {}, expected=400)
+        qa.check(qa.request(base, f'/Plugins/Federation/Friends/{friend}/Limits', admin,
+            {'MonthlyDataCapGb':25,'MaxConcurrentStreams':7})['success'], 'Setting friend limits failed')
+        qa.request(base, f'/Plugins/Federation/Friends/{friend}/Limits', admin, {'MaxConcurrentStreams':3})
+        limited = next(s for s in qa.request(base, '/Plugins/Federation/Servers', admin) if s['Id'] == friend)
+        qa.check(limited['MonthlyDataCapGb'] == 25 and limited['MaxConcurrentStreams'] == 3, 'Partial limits reset an omitted value')
+        qa.request(base, f'/Plugins/Federation/Friends/{friend}/Limits', admin, {'MonthlyDataCapGb':0,'MaxConcurrentStreams':0})
+        qa.request(base, '/Plugins/Federation/Settings/WatchParties', admin,
+            {'HostWatchPartiesWithFriends':False,'JoinFriendsWatchParties':True})
+        qa.request(base, '/Plugins/Federation/Settings/WatchParties', admin, {'JoinFriendsWatchParties':False})
+        parties = qa.request(base, '/Plugins/Federation/Settings/WatchParties', admin)
+        qa.check(not parties['HostWatchPartiesWithFriends'] and not parties['JoinFriendsWatchParties'], 'Partial party settings reset an omitted flag')
+        qa.request(base, '/Plugins/Federation/Settings/WatchParties', admin,
+            {'HostWatchPartiesWithFriends':True,'JoinFriendsWatchParties':True})
+        qa.request(base, '/Plugins/Federation/Settings/Viewers', admin, {'ShareViewersWithFriends':False,'ShowFriendsViewers':False})
+        qa.request(base, '/Plugins/Federation/Settings/Viewers', admin, {'ShowFriendsViewers':True})
+        viewers = qa.request(base, '/Plugins/Federation/Settings/Viewers', admin)
+        qa.check(not viewers['ShareViewersWithFriends'] and viewers['ShowFriendsViewers'], 'Partial viewer settings re-enabled sharing')
+        qa.request(base, '/Plugins/Federation/Settings/Viewers', admin, {'ShareViewersWithFriends':True,'ShowFriendsViewers':True})
+        qa.request(base, '/Plugins/Federation/Settings/Favorites', admin,
+            {'ShareFavoritesWithFriends':False,'ShowFriendsFavorites':False,'SharePopularWithFriends':False,'ShowFriendsPopular':False})
+        qa.request(base, '/Plugins/Federation/Settings/Favorites', admin, {'ShowFriendsFavorites':True})
+        favorites = qa.request(base, '/Plugins/Federation/Settings/Favorites', admin)
+        qa.check(not favorites['ShareFavoritesWithFriends'] and not favorites['SharePopularWithFriends'] and favorites['ShowFriendsFavorites'],
+            'Partial favorites settings re-enabled sharing')
+        qa.request(base, '/Plugins/Federation/Settings/Favorites', admin,
+            {'ShareFavoritesWithFriends':True,'ShowFriendsFavorites':True,'SharePopularWithFriends':True,'ShowFriendsPopular':True})
+        qa.request(base, '/Plugins/Federation/Settings/RemoteTranscode', admin,
+            {'EnableRemoteTranscodeForFriends':True,'MaxRemoteTranscodesPerFriend':5,'UseFriendsTranscoders':True})
+        qa.request(base, '/Plugins/Federation/Settings/RemoteTranscode', admin, {'ShareConversionLogsWithFriends':False})
+        remote = qa.request(base, '/Plugins/Federation/Settings/RemoteTranscode', admin)
+        qa.check(remote['MaxRemoteTranscodesPerFriend'] == 5 and remote['EnableRemoteTranscodeForFriends'] and remote['UseFriendsTranscoders'],
+            'Partial remote-transcode settings reset omitted values')
+        hardware_before = qa.request(base, '/Plugins/Federation/Settings/Hardware', admin)
+        qa.request(base, '/Plugins/Federation/Settings/Hardware', admin,
+            {'ShareTranscodeHardware':False,'SmartTranscodePlacement':True,'ManualTranscodeCpuThreads':12})
+        qa.request(base, '/Plugins/Federation/Settings/Hardware', admin, {'PlacementMinimumHd':'any'})
+        hardware = qa.request(base, '/Plugins/Federation/Settings/Hardware', admin)
+        qa.check(not hardware['ShareTranscodeHardware'] and hardware['ManualTranscodeCpuThreads'] == 12 and hardware['PlacementMinimumHd'] == 'any',
+            'Partial hardware settings reset omitted values')
+        qa.request(base, '/Plugins/Federation/Settings/Hardware', admin, hardware_before)
+        qa.request(base, '/Plugins/Federation/Settings/DirectLink', admin, {'EnableDirectLink':True})
+        qa.request(base, '/Plugins/Federation/Settings/DirectLink', admin, {'DirectLinkStunServers':['stun.example:3478']})
+        links = qa.request(base, '/Plugins/Federation/Settings/DirectLink', admin)
+        qa.check(links['EnableDirectLink'], 'STUN-only update disabled direct links')
+        qa.request(base, '/Plugins/Federation/Settings/DirectLink', admin, {'EnableDirectLink':False})
+        server = next(s for s in qa.request(base, '/Plugins/Federation/Servers', admin) if s['Id'] == friend)
+        old_cap = server['WanCapMode']
+        server['WanCapMode'] = 99
+        qa.request(base, f'/Plugins/Federation/Servers/{friend}', admin, server, expected=400, method='PUT')
+        server = next(s for s in qa.request(base, '/Plugins/Federation/Servers', admin) if s['Id'] == friend)
+        qa.check(server['WanCapMode'] == old_cap, 'Invalid WAN enum mutated stored state')
+        print('PEER PASS: sparse updates preserve configuration, consent and limits; invalid WAN enum is atomic', flush=True)
         stage = 'Direct/Proxy admin/viewer streams'
         def path_only(url):
             p = urllib.parse.urlsplit(url)
@@ -353,7 +412,10 @@ def smoke():
             qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
             return qa.request(base, f'/Items/{item_id}/PlaybackInfo', viewer).get('MediaSources') or None
         sources = qa.wait_for(playable_again, 'Recovered source never became playable')
-        qa.check(qa.request(*target(sources[0]['Path']), viewer, raw=True)[1]==payload, 'Recovery playback failed')
+        def recovered_playback():
+            _, body = qa.request(*target(sources[0]['Path']), viewer, raw=True)
+            return body == payload or None
+        qa.wait_for(recovered_playback, 'Recovery playback failed or Jellyfin did not finish stream initialization')
         print('PEER PASS: viewer-only revocation, old URL denial, disabled/offline hiding, catalog retention and stable-ID recovery', flush=True)
         if not OLD_SOURCE:
             # Last: a server download replaces the friend's title with the local file.

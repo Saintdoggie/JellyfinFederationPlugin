@@ -84,9 +84,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
             {
                 using (held)
                 {
-                    if (!await RevalidateReadAheadAsync(link, target, cancellationToken).ConfigureAwait(false))
+                    var revalidated = await RevalidateReadAheadAsync(link, target, cancellationToken).ConfigureAwait(false);
+                    if (revalidated != true)
                     {
-                        Response.StatusCode = StatusCodes.Status403Forbidden;
+                        if (revalidated == null)
+                        {
+                            RedirectToFriend(server, target);
+                        }
+                        else
+                        {
+                            Response.StatusCode = StatusCodes.Status403Forbidden;
+                        }
+
                         return;
                     }
 
@@ -229,7 +238,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             }
         }
 
-        private static async Task<bool> RevalidateReadAheadAsync(HttpClient link, string target, CancellationToken cancellationToken)
+        private static async Task<bool?> RevalidateReadAheadAsync(HttpClient link, string target, CancellationToken cancellationToken)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -242,7 +251,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             }
             catch (Exception ex) when (ex is HttpRequestException or System.IO.IOException or ObjectDisposedException or OperationCanceledException)
             {
-                return false;
+                return null;
             }
         }
 
@@ -400,7 +409,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 config.DirectLinkStunServers = servers.Length > 0 ? servers : new PluginConfiguration().DirectLinkStunServers;
             }
 
-            config.DirectLinkOptIn = body.EnableDirectLink;
+            if (body.EnableDirectLink.HasValue)
+            {
+                config.DirectLinkOptIn = body.EnableDirectLink.Value;
+            }
             Plugin.Instance.SaveConfiguration();
             foreach (var server in config.RemoteServers)
             {
@@ -464,7 +476,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
     public class DirectLinkSettingsBody
     {
         /// <summary>Gets or sets a value indicating whether direct links are on.</summary>
-        public bool EnableDirectLink { get; set; }
+        public bool? EnableDirectLink { get; set; }
 
         /// <summary>Gets or sets the STUN servers (null keeps the current ones).</summary>
         public string[]? DirectLinkStunServers { get; set; }

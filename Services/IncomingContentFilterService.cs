@@ -63,7 +63,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Whether <paramref name="remoteItem"/> passes the global <paramref name="filter"/>.
         /// </summary>
-        public static bool IsAllowedByIncomingFilter(IncomingContentFilter? filter, BaseItemDto remoteItem)
+        public static bool IsAllowedByIncomingFilter(IncomingContentFilter? filter, BaseItemDto remoteItem, string? inheritedRating = null)
         {
             if (filter == null)
             {
@@ -83,7 +83,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // Rating ceiling
             if (!string.IsNullOrWhiteSpace(filter.MaxAllowedRating))
             {
-                var itemRating = remoteItem.OfficialRating;
+                var itemRating = string.IsNullOrWhiteSpace(remoteItem.OfficialRating) ? inheritedRating : remoteItem.OfficialRating;
                 if (!string.IsNullOrWhiteSpace(itemRating) && !IsWithinRatingCeiling(itemRating!, filter.MaxAllowedRating))
                 {
                     return false;

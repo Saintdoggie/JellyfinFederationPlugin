@@ -301,9 +301,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
         [HttpPost("Configuration")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> UpdateConfiguration([FromBody] PluginConfiguration config, CancellationToken cancellationToken)
+        public async Task<IActionResult> UpdateConfiguration([FromBody] System.Text.Json.Nodes.JsonObject? body, CancellationToken cancellationToken)
         {
-            if (config == null)
+            if (body == null)
             {
                 return BadRequest(new { error = "Configuration is required" });
             }
@@ -312,9 +312,10 @@ namespace Jellyfin.Plugin.Federation.Api
 
             try
             {
+                var existing = Plugin.Instance?.Configuration;
+                var config = ConfigurationUpdate.Merge(body, existing);
                 // Preserve existing API keys: the GET endpoint never serializes them,
                 // so an empty key in the POST body means "unchanged".
-                var existing = Plugin.Instance?.Configuration;
                 foreach (var server in config.RemoteServers ?? new List<RemoteServer>())
                 {
                     if (string.IsNullOrEmpty(server.ApiKey))
@@ -854,6 +855,11 @@ namespace Jellyfin.Plugin.Federation.Api
             var configured = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
             if (string.IsNullOrEmpty(server.ApiKey) && configured != null)
             {
+                if (!string.Equals(server.Url, configured.Url, StringComparison.Ordinal))
+                {
+                    return BadRequest(new { success = false, message = "Use the saved address when testing with the saved token." });
+                }
+
                 server.ApiKey = configured.ApiKey;
             }
 
@@ -876,7 +882,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 });
             }
 
-            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            if (!(configured?.Paired == true && string.Equals(server.Url, configured.Url, StringComparison.Ordinal) && Services.FederationHttp.IsPairUrl(server.Url))
+                && !ConfigValidator.IsValidServerUrl(server.Url))
             {
                 return BadRequest(new { success = false, message = "Server URL must be an absolute http(s) URL" });
             }
@@ -1127,7 +1134,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 return NotFound(new { error = "Server not found" });
             }
 
-            if (!ConfigValidator.IsValidServerUrl(server.Url))
+            if (!Enum.IsDefined(server.StreamingMode) || !Enum.IsDefined(server.WanCapMode)
+                || server.WanMaxBitrateMbps < 0 || server.WanMaxHeight < 0)
+            {
+                return BadRequest(new { error = "Invalid streaming mode or WAN cap settings" });
+            }
+
+            if (!(existing.Paired && string.Equals(server.Url, existing.Url, StringComparison.Ordinal) && Services.FederationHttp.IsPairUrl(server.Url))
+                && !ConfigValidator.IsValidServerUrl(server.Url))
             {
                 return BadRequest(new { error = "Server URL must be an absolute http(s) URL" });
             }
@@ -1487,13 +1501,24 @@ namespace Jellyfin.Plugin.Federation.Api
         /// </summary>
         [HttpPost("Friends/{id}/Sharing")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> UpdateFriendSharing(string id, [FromBody] UpdateSharingBody body)
+        public async Task<IActionResult> UpdateFriendSharing(string id, [FromBody] UpdateSharingBody? body)
         {
+            if (body?.ShareAll == null)
+            {
+                return BadRequest(new { success = false, message = "ShareAll is required." });
+            }
+
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
             var (success, message) = await _friends.UpdateFriendSharingAsync(
                 id,
-                body?.ShareAll ?? true,
-                body?.FolderIds ?? new List<string>(),
-                body?.ExcludedItemIds ?? new List<string>()).ConfigureAwait(false);
+                body.ShareAll.Value,
+                body.FolderIds ?? server.SharedLibraryFolderIds ?? new List<string>(),
+                body.ExcludedItemIds ?? server.ExcludedItemIds ?? new List<string>()).ConfigureAwait(false);
             if (success)
             {
                 NotifyFriendOfSharingChange(id);
@@ -1540,8 +1565,15 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { success = false, message = "Use 0 (no limit) to 100 streams and 0 (no limit) to 1,000,000 GB." });
             }
 
-            server.MaxConcurrentStreams = body.MaxConcurrentStreams;
-            server.MonthlyDataCapGb = body.MonthlyDataCapGb;
+            if (body.MaxConcurrentStreams.HasValue)
+            {
+                server.MaxConcurrentStreams = body.MaxConcurrentStreams.Value;
+            }
+
+            if (body.MonthlyDataCapGb.HasValue)
+            {
+                server.MonthlyDataCapGb = body.MonthlyDataCapGb.Value;
+            }
             Plugin.Instance!.SaveConfiguration();
             return Ok(new { success = true, message = "Limits saved." });
         }
@@ -1582,9 +1614,21 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance!.Configuration;
-            config.EnableRemoteTranscodeForFriends = body.EnableRemoteTranscodeForFriends;
-            config.MaxRemoteTranscodesPerFriend = Math.Clamp(body.MaxRemoteTranscodesPerFriend, 0, 100);
-            config.UseFriendsTranscoders = body.UseFriendsTranscoders;
+            if (body.EnableRemoteTranscodeForFriends.HasValue)
+            {
+                config.EnableRemoteTranscodeForFriends = body.EnableRemoteTranscodeForFriends.Value;
+            }
+
+            if (body.MaxRemoteTranscodesPerFriend.HasValue)
+            {
+                config.MaxRemoteTranscodesPerFriend = Math.Clamp(body.MaxRemoteTranscodesPerFriend.Value, 0, 100);
+            }
+
+            if (body.UseFriendsTranscoders.HasValue)
+            {
+                config.UseFriendsTranscoders = body.UseFriendsTranscoders.Value;
+            }
+
             if (body.ShareConversionLogsWithFriends.HasValue)
             {
                 config.ShareConversionLogsWithFriends = body.ShareConversionLogsWithFriends.Value;
@@ -1707,8 +1751,16 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance!.Configuration;
-            config.HostWatchPartiesWithFriends = body.HostWatchPartiesWithFriends;
-            config.JoinFriendsWatchParties = body.JoinFriendsWatchParties;
+            if (body.HostWatchPartiesWithFriends.HasValue)
+            {
+                config.HostWatchPartiesWithFriends = body.HostWatchPartiesWithFriends.Value;
+            }
+
+            if (body.JoinFriendsWatchParties.HasValue)
+            {
+                config.JoinFriendsWatchParties = body.JoinFriendsWatchParties.Value;
+            }
+
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
         }
@@ -1940,8 +1992,16 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance!.Configuration;
-            config.ShareViewersWithFriends = body.ShareViewersWithFriends;
-            config.ShowFriendsViewers = body.ShowFriendsViewers;
+            if (body.ShareViewersWithFriends.HasValue)
+            {
+                config.ShareViewersWithFriends = body.ShareViewersWithFriends.Value;
+            }
+
+            if (body.ShowFriendsViewers.HasValue)
+            {
+                config.ShowFriendsViewers = body.ShowFriendsViewers.Value;
+            }
+
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
         }
@@ -2005,21 +2065,68 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             static string Level(string? value, string fallback)
-                => value is "full" or "encode" or "any" ? value : fallback;
+                => value?.Trim().ToLowerInvariant() is "full" or "encode" or "any" ? value.Trim().ToLowerInvariant() : fallback;
 
             var config = Plugin.Instance!.Configuration;
-            config.ShareTranscodeHardware = body.ShareTranscodeHardware;
-            config.SmartTranscodePlacement = body.SmartTranscodePlacement;
-            config.TranscodeHardwareMode = string.Equals(body.TranscodeHardwareMode, "manual", StringComparison.OrdinalIgnoreCase) ? "manual" : "auto";
-            config.TranscodeHardwareOffloaded = body.TranscodeHardwareOffloaded;
-            config.ManualTranscodeGpu = string.IsNullOrWhiteSpace(body.ManualTranscodeGpu) ? null : body.ManualTranscodeGpu.Trim();
-            config.ManualTranscodeCpu = string.IsNullOrWhiteSpace(body.ManualTranscodeCpu) ? null : body.ManualTranscodeCpu.Trim();
-            config.ManualTranscodeCpuThreads = Math.Clamp(body.ManualTranscodeCpuThreads, 0, 1024);
-            config.ManualHardwareDecodeCodecs = (body.ManualHardwareDecodeCodecs ?? new List<string>()).Where(c => TranscodeHardware.Codecs.Contains(c)).Distinct().ToList();
-            config.ManualHardwareEncodeCodecs = (body.ManualHardwareEncodeCodecs ?? new List<string>()).Where(c => c is "h264" or "hevc" or "av1").Distinct().ToList();
-            config.PlacementMinimum4k = Level(body.PlacementMinimum4k, "full");
-            config.PlacementMinimumHd = Level(body.PlacementMinimumHd, "encode");
-            config.PlacementCpuThreadsCountAsEncode = Math.Clamp(body.PlacementCpuThreadsCountAsEncode, 0, 1024);
+            if (body.ShareTranscodeHardware.HasValue)
+            {
+                config.ShareTranscodeHardware = body.ShareTranscodeHardware.Value;
+            }
+
+            if (body.SmartTranscodePlacement.HasValue)
+            {
+                config.SmartTranscodePlacement = body.SmartTranscodePlacement.Value;
+            }
+
+            if (body.TranscodeHardwareMode != null)
+            {
+                config.TranscodeHardwareMode = string.Equals(body.TranscodeHardwareMode, "manual", StringComparison.OrdinalIgnoreCase) ? "manual" : "auto";
+            }
+
+            if (body.TranscodeHardwareOffloaded.HasValue)
+            {
+                config.TranscodeHardwareOffloaded = body.TranscodeHardwareOffloaded.Value;
+            }
+
+            if (body.ManualTranscodeGpu != null)
+            {
+                config.ManualTranscodeGpu = string.IsNullOrWhiteSpace(body.ManualTranscodeGpu) ? null : body.ManualTranscodeGpu.Trim();
+            }
+
+            if (body.ManualTranscodeCpu != null)
+            {
+                config.ManualTranscodeCpu = string.IsNullOrWhiteSpace(body.ManualTranscodeCpu) ? null : body.ManualTranscodeCpu.Trim();
+            }
+
+            if (body.ManualTranscodeCpuThreads.HasValue)
+            {
+                config.ManualTranscodeCpuThreads = Math.Clamp(body.ManualTranscodeCpuThreads.Value, 0, 1024);
+            }
+
+            if (body.ManualHardwareDecodeCodecs != null)
+            {
+                config.ManualHardwareDecodeCodecs = body.ManualHardwareDecodeCodecs.Select(c => c?.Trim().ToLowerInvariant() ?? string.Empty).Where(c => TranscodeHardware.Codecs.Contains(c)).Distinct().ToList();
+            }
+
+            if (body.ManualHardwareEncodeCodecs != null)
+            {
+                config.ManualHardwareEncodeCodecs = body.ManualHardwareEncodeCodecs.Select(c => c?.Trim().ToLowerInvariant() ?? string.Empty).Where(c => c is "h264" or "hevc" or "av1").Distinct().ToList();
+            }
+
+            if (body.PlacementMinimum4k != null)
+            {
+                config.PlacementMinimum4k = Level(body.PlacementMinimum4k, "full");
+            }
+
+            if (body.PlacementMinimumHd != null)
+            {
+                config.PlacementMinimumHd = Level(body.PlacementMinimumHd, "encode");
+            }
+
+            if (body.PlacementCpuThreadsCountAsEncode.HasValue)
+            {
+                config.PlacementCpuThreadsCountAsEncode = Math.Clamp(body.PlacementCpuThreadsCountAsEncode.Value, 0, 1024);
+            }
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved.", local = _placement?.Local().Describe() });
         }
@@ -2167,11 +2274,27 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance!.Configuration;
-            var sharingChanged = config.ShareFavoritesWithFriends != body.ShareFavoritesWithFriends;
-            config.ShareFavoritesWithFriends = body.ShareFavoritesWithFriends;
-            config.ShowFriendsFavorites = body.ShowFriendsFavorites;
-            config.SharePopularWithFriends = body.SharePopularWithFriends;
-            config.ShowFriendsPopular = body.ShowFriendsPopular;
+            var sharingChanged = body.ShareFavoritesWithFriends.HasValue
+                && config.ShareFavoritesWithFriends != body.ShareFavoritesWithFriends.Value;
+            if (body.ShareFavoritesWithFriends.HasValue)
+            {
+                config.ShareFavoritesWithFriends = body.ShareFavoritesWithFriends.Value;
+            }
+
+            if (body.ShowFriendsFavorites.HasValue)
+            {
+                config.ShowFriendsFavorites = body.ShowFriendsFavorites.Value;
+            }
+
+            if (body.SharePopularWithFriends.HasValue)
+            {
+                config.SharePopularWithFriends = body.SharePopularWithFriends.Value;
+            }
+
+            if (body.ShowFriendsPopular.HasValue)
+            {
+                config.ShowFriendsPopular = body.ShowFriendsPopular.Value;
+            }
             Plugin.Instance.SaveConfiguration();
             return Ok(new
             {
@@ -3845,7 +3968,13 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var internalRelayKey = await _friends.GetOrCreateInternalRelayApiKeyAsync().ConfigureAwait(false);
-            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), ct)).ConfigureAwait(false);
+            var internalUserId = path.Kind == RemoteMediaKind.UniversalAudio ? ResolveInternalQueryUserId() : null;
+            if (path.Kind == RemoteMediaKind.UniversalAudio && internalUserId == null)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
+            }
+
+            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct)).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -6876,9 +7005,9 @@ namespace Jellyfin.Plugin.Federation.Api
     /// <summary>Body of <c>Friends/{id}/Limits</c>.</summary>
     public class FriendLimitsBody
     {
-        public int MonthlyDataCapGb { get; set; }
+        public int? MonthlyDataCapGb { get; set; }
 
-        public int MaxConcurrentStreams { get; set; }
+        public int? MaxConcurrentStreams { get; set; }
     }
 
     public class SetAllowedLibrariesBody
@@ -7022,13 +7151,13 @@ namespace Jellyfin.Plugin.Federation.Api
     public class RemoteTranscodeSettingsBody
     {
         /// <summary>Gets or sets whether friends may convert our titles here.</summary>
-        public bool EnableRemoteTranscodeForFriends { get; set; } = true;
+        public bool? EnableRemoteTranscodeForFriends { get; set; }
 
         /// <summary>Gets or sets the per-friend concurrent session limit (0 = none).</summary>
-        public int MaxRemoteTranscodesPerFriend { get; set; }
+        public int? MaxRemoteTranscodesPerFriend { get; set; }
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
-        public bool UseFriendsTranscoders { get; set; } = true;
+        public bool? UseFriendsTranscoders { get; set; }
 
         /// <summary>Gets or sets whether friends may fetch the conversion logs of plays converted here for them (null = unchanged).</summary>
         public bool? ShareConversionLogsWithFriends { get; set; }
@@ -7052,27 +7181,27 @@ namespace Jellyfin.Plugin.Federation.Api
     public class ViewerSettingsBody
     {
         /// <summary>Gets or sets whether friends are told what this server's viewers watch of theirs.</summary>
-        public bool ShareViewersWithFriends { get; set; } = true;
+        public bool? ShareViewersWithFriends { get; set; }
 
         /// <summary>Gets or sets whether friends' viewers show on this dashboard.</summary>
-        public bool ShowFriendsViewers { get; set; } = true;
+        public bool? ShowFriendsViewers { get; set; }
     }
 
     public class HardwareSettingsBody
     {
-        public bool ShareTranscodeHardware { get; set; } = true;
+        public bool? ShareTranscodeHardware { get; set; }
 
-        public bool SmartTranscodePlacement { get; set; }
+        public bool? SmartTranscodePlacement { get; set; }
 
         public string? TranscodeHardwareMode { get; set; }
 
-        public bool TranscodeHardwareOffloaded { get; set; }
+        public bool? TranscodeHardwareOffloaded { get; set; }
 
         public string? ManualTranscodeGpu { get; set; }
 
         public string? ManualTranscodeCpu { get; set; }
 
-        public int ManualTranscodeCpuThreads { get; set; }
+        public int? ManualTranscodeCpuThreads { get; set; }
 
         public List<string>? ManualHardwareDecodeCodecs { get; set; }
 
@@ -7082,32 +7211,32 @@ namespace Jellyfin.Plugin.Federation.Api
 
         public string? PlacementMinimumHd { get; set; }
 
-        public int PlacementCpuThreadsCountAsEncode { get; set; } = 16;
+        public int? PlacementCpuThreadsCountAsEncode { get; set; }
     }
 
     public class WatchPartySettingsBody
     {
         /// <summary>Gets or sets whether viewers here can start parties with friends.</summary>
-        public bool HostWatchPartiesWithFriends { get; set; } = true;
+        public bool? HostWatchPartiesWithFriends { get; set; }
 
         /// <summary>Gets or sets whether friends' parties appear in the group list here.</summary>
-        public bool JoinFriendsWatchParties { get; set; } = true;
+        public bool? JoinFriendsWatchParties { get; set; }
     }
 
     /// <summary>Body of <c>Settings/Favorites</c>.</summary>
     public class FavoritesSettingsBody
     {
         /// <summary>Gets or sets whether friends may see which of our titles our users favorited.</summary>
-        public bool ShareFavoritesWithFriends { get; set; } = true;
+        public bool? ShareFavoritesWithFriends { get; set; }
 
         /// <summary>Gets or sets whether our Favorites tab shows friends' favorites.</summary>
-        public bool ShowFriendsFavorites { get; set; } = true;
+        public bool? ShowFriendsFavorites { get; set; }
 
         /// <summary>Gets or sets whether friends may see what is most played on our server.</summary>
-        public bool SharePopularWithFriends { get; set; } = true;
+        public bool? SharePopularWithFriends { get; set; }
 
         /// <summary>Gets or sets whether our Home tab shows what is popular on friends' servers.</summary>
-        public bool ShowFriendsPopular { get; set; } = true;
+        public bool? ShowFriendsPopular { get; set; }
     }
 
     /// <summary>Body of <c>Peer/PlayControl</c>.</summary>
@@ -7169,9 +7298,9 @@ namespace Jellyfin.Plugin.Federation.Api
         public string? LocalLibraryName { get; set; }
     }
 
-        public class UpdateSharingBody
+    public class UpdateSharingBody
     {
-        public bool ShareAll { get; set; } = true;
+        public bool? ShareAll { get; set; }
 
         public List<string>? FolderIds { get; set; }
 

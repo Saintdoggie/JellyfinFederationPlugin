@@ -1586,7 +1586,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 try
                 {
-                    if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, item.Dto))
+                    if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, item.Dto, FederationRating.Resolve(_cache, server.Id, item.Dto.Id, item.Dto.OfficialRating)))
                     {
                         continue;
                     }
@@ -1690,7 +1690,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         // Receiving-side incoming filter (types, rating ceiling, blocked
                         // tags/genres). Blocks before upsert so the item never lands
                         // in the cache at all — cheaper than materializing then hiding.
-                        if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem))
+                        if (!IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem, FederationRating.Resolve(_cache, server.Id, remoteItem.Id, remoteItem.OfficialRating)))
                         {
                             continue;
                         }
@@ -2228,7 +2228,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     try
                     {
                         if (!PeerCatalogPage.IsOwned(remoteItem)
-                            || !IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem))
+                            || !IncomingContentFilterService.IsAllowedByIncomingFilter(config.IncomingFilter, remoteItem, FederationRating.Resolve(_cache, server.Id, remoteItem.Id, remoteItem.OfficialRating)))
                         {
                             plan.Next.Items[remoteItem.Id] = new SyncIndexItem { H = hash, Skip = true };
                             continue;

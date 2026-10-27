@@ -1,5 +1,14 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.206 — sparse updates, inherited ratings and playback repairs
+
+- [x] Preserve omitted configuration/settings fields instead of erasing friends or re-enabling sharing; require an explicit friend sharing scope and keep omitted friend limits. Validate server streaming/WAN values before mutation, permit fixed-address paired-friend tests/edits, and reject whitespace-duplicate mapping names (B91/B92, B106, B682/B55, B720, B766 and the partial-settings group).
+- [x] Enforce per-user and global rating ceilings through series/season/episode parent chains during sync, visibility, stream-time authorization and shared-path checks (B640).
+- [x] Restore read-ahead transport fallback without redirecting access denials, retain audio/text-subtitle choices for capped Direct sources, and supply the authorized internal playback user for universal audio (B51, B615/B622/B661, B620/B200).
+- [x] Focused affected suites passed 366 tests; the standalone full plugin suite passed 1,734 tests. Real sparse-update/consent/limits checks, peer playback/recovery, the nine-stage handoff (including universal-audio GET/HEAD), eight-stage party matrix, and 32/32 direct-link/NAT checks passed. The normal Release build was restored.
+- [x] Full gate passed: 1,734 plugin, 227 Companion and 149 web tests in each of two automated passes, Windows cross-build, and disposable Plex/Jellyfin integration on the frozen files.
+- Deferred by impact: cosmetic error/status/response-shape differences, routine log/message polish, low-severity stale-state cleanup, in-flight party toggle semantics (B767/B769), and nuanced lifecycle changes. These are not claimed fixed by this release; the unreviewed report backlog is not a commitment to change every reported behavior.
+
 ## 0.0.205 — federation consent and input hardening
 
 - [x] Make discovery review-only, authenticate friend/pool callbacks, bind pool invitations to members and targets, and cap pending requests, pool growth, user rules, party snapshots and availability blobs.
