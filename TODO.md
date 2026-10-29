@@ -1,6 +1,6 @@
 # Jellyfin Federation — remaining work
 
-## Unreleased — playback compatibility, capacity and truthful diagnostics
+## 0.0.207 — playback compatibility, capacity and truthful diagnostics
 
 - [x] Report play method, observed transport, conversion location, original/delivered formats and conversion reasons independently. Unknown play methods/routes are no longer presented as Direct Play, and alternate sources use the same capability flags as provider sources.
 - [x] Add bounded, rate-limited, URL-free per-device route telemetry and use recent real measurements with headroom, fast stall reduction and conservative recovery. Native clients without telemetry retain declared/server-route limits rather than fabricated measurements.
@@ -12,7 +12,7 @@
 - [x] Automated gate passed twice: 1,788 plugin, 227 Companion and 153 web tests per pass, plus clean builds and private-sharing sandbox checks. Focused playback suites and Release builds also passed. The disposable two-server handoff smoke passed negotiation, owner conversion, direct segments, seek/subtitle/audio, stop/log cleanup, revocation, opt-out fallback, off→on recovery, concurrent-session refusal and owner restart.
 - [x] The full push gate passed on the review branch, including the Windows Companion cross-build and disposable Plex/Jellyfin integration with real media mounts, Range handling, media decoding and sharing revocation.
 - [ ] Validate the same title on the physical F213/Firefox setup and affected handheld/TV devices, including original vs converted codecs, startup/seek, subtitles, stalls, dropped frames and actual route measurements.
-- [ ] Complete concurrent-viewer and fluctuating-WAN playback checks. The automated Plex/Jellyfin gate is not a physical-device or live-WAN substitute; no stable release has been published.
+- [ ] Complete concurrent-viewer and fluctuating-WAN playback checks. The automated Plex/Jellyfin gate is not a physical-device or live-WAN substitute.
 
 ## 0.0.206 — sparse updates, inherited ratings and playback repairs
 
