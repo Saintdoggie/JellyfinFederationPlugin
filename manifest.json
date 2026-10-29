@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.207",
+        "changelog": "Playback compatibility and truthful diagnostics. Offers every compatible remote encoding, improves native Jellyfin app support including Android, shares measured capacity between sessions, and recovers web playback through fresh authorized sessions. Playback Info now reports the observed route, play method, conversion location and original/delivered formats instead of guessing Direct Play. Includes everything in 0.0.206.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-29T16:49:20Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.207/Jellyfin.Federation.zip",
+        "checksum": "31506f76873ce9578824c2f68d5826fa"
+      },
+      {
         "version": "0.0.206",
         "changelog": "Reliability and playback fixes. Sparse configuration saves no longer erase friends, mappings or sharing/privacy settings; friend limits and consent updates preserve omitted values. Rating ceilings now apply through series and seasons to unrated episodes. Capped playback retains audio and text-subtitle choices, universal audio works through the owner gateway, and read-ahead link failures fall back safely. Includes everything in 0.0.205.",
         "targetAbi": "12.0.0.0",
