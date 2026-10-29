@@ -73,12 +73,48 @@ test('HLS buffering tolerates slow segments without unbounded memory use', () =>
   assert.equal(core.hlsOptions(12).startPosition, 12);
   dom.window.close();
 });
-test('plugin factory is idempotent and restricts automatic selection to federated movies', async () => {
+test('quality steps down quickly on failure and up only after sustained health', () => {
+  const { dom, core } = fixture();
+  assert.equal(core.nextQualityCap(null, 80000000, true, 0), 48000000);
+  assert.equal(core.nextQualityCap(48000000, 80000000, false, 59999), null);
+  assert.equal(core.nextQualityCap(48000000, 80000000, false, 60000), 60000000);
+  assert.equal(core.nextQualityCap(2000000, 80000000, true, 0), null);
+  assert.equal(core.nextQualityCap(null, 80000000, false, 120000), null);
+  dom.window.close();
+});
+test('plugin factory is idempotent and restricts automatic selection to federated movies and episodes', async () => {
   const { dom } = fixture(); const original = dom.window.FederationAdaptivePlayer; dom.window.eval(script);
   assert.equal(dom.window.FederationAdaptivePlayer, original);
   const Player = await original(); const player = new Player({});
   assert.equal(Boolean(player.canPlayItem({ Type: 'Movie', MediaSources: [{ Path: 'http://localhost/Plugins/Federation/Stream?itemId=x' }] })), true);
-  assert.equal(Boolean(player.canPlayItem({ Type: 'Episode', ProviderIds: { FederationKey: 'x' } })), false);
+  assert.equal(Boolean(player.canPlayItem({ Type: 'Episode', ProviderIds: { FederationKey: 'x' } })), true);
   assert.equal(Boolean(player.canPlayItem({ Type: 'Movie', MediaSources: [{ Path: '/owned/file.mkv' }] })), false);
+  dom.window.close();
+});
+test('startup recovery opens a fresh authorized source before stopping the failed original', async () => {
+  const { dom } = fixture();
+  const Player = await dom.window.FederationAdaptivePlayer(); const player = new Player({});
+  player.api = { getUrl: path => 'http://localhost' + path, serverAddress: () => 'http://localhost' };
+  player.policy = state();
+  player.playbackInfo = async id => ({ PlaySessionId: 'new-' + id, MediaSources: [{ Id: id, TranscodingUrl: '/videos/' + id + '/main.m3u8' }] });
+  player.openSource = async (source, url, session, offset, at) => ({ source, url, session, offset, at, video: {} });
+  const stopped = []; player.stopEncoding = id => stopped.push(id);
+  const entry = await player.recoverStartup([source('a'), source('b')], { playerStartPositionTicks: 120000000, playSessionId: 'old-session' });
+  assert.equal(entry.source.Id, 'b');
+  assert.equal(entry.session, 'new-b');
+  assert.equal(entry.at, 12);
+  assert.equal(player.policy.currentId, 'b');
+  assert.deepEqual(stopped, ['old-session']);
+  dom.window.close();
+});
+test('startup recovery rejects cleanly when no compatible source remains', async () => {
+  const { dom } = fixture();
+  const Player = await dom.window.FederationAdaptivePlayer(); const player = new Player({});
+  player.api = { getUrl: path => 'http://localhost' + path, serverAddress: () => 'http://localhost' };
+  player.policy = state();
+  player.playbackInfo = async () => { throw new Error('capacity refused'); };
+  player.stopEncoding = () => {};
+  await assert.rejects(player.recoverStartup([source('a'), source('b')], { playerStartPositionTicks: 0, playSessionId: 'old' }), /No replacement source/);
+  assert.ok(player.policy.rejected.b > 0);
   dom.window.close();
 });

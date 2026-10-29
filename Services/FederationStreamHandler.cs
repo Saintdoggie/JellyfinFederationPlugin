@@ -537,18 +537,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", activeItemId, server.Name);
+                FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), FederatedRoute.Relay);
 
-                // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
-                // a Direct-mode Jellyfin peer: real-world audio bitrates are already
-                // far below anything worth throttling.
-                // Throttling the unchanged original file below its encoded
-                // bitrate only starves local ffmpeg. Direct-mode static paths
-                // serve raw bytes so their persisted media description stays
-                // accurate; Proxy/external relays retain their configured cap.
-                var capMbps = isAudio || server.StreamingMode == StreamingMode.Direct && server.Kind == ServerKind.Jellyfin
-                    ? null
-                    : _bandwidthMonitor.GetEffectiveCapMbps(server);
-                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
+                // Source selection and the native transcode request enforce the
+                // bitrate ceiling. Pacing the original bytes here only starves
+                // ffmpeg when the source needs conversion.
+                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps: null, observationServerId: activeServerId).ConfigureAwait(false);
 
                 // A rejected token is almost always the remote having restarted:
                 // both of its in-memory token stores were wiped, while this side
@@ -589,7 +583,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
                         remoteItemId,
                         server.Name);
-                    await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
+                    await RelayAsync(url, request, response, cancellationToken, capMbps: null, observationServerId: activeServerId).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -642,13 +636,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </para>
         /// </summary>
         /// <param name="capMbps">
-        /// When set, paces writes to <paramref name="response"/> so this relay
-        /// never sustains more than this many megabits per second - the only place
-        /// a WAN bandwidth cap can be enforced for a proxied source (Plex, or any
-        /// Jellyfin peer explicitly set to Proxy mode), since unlike a Direct-mode
-        /// Jellyfin peer there is no remote transcode endpoint to ask for a lower
-        /// bitrate instead. Null (the common case) relays at whatever rate the
-        /// remote and this connection can sustain, exactly as before this existed.
+        /// When set, paces writes to <paramref name="response"/>. Null (the normal
+        /// playback case) relays at the available rate; WAN limits are applied to
+        /// converted output, not by starving an original file being decoded.
         /// </param>
         // How long the friend's server took to answer, and to send the first byte, is the
         // first thing to check when a title is slow to start. Quiet unless it was slow:

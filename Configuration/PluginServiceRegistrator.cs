@@ -32,6 +32,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 new RemoteServerClientFactory(sp.GetRequiredService<FederationCapturingLoggerFactory>()));
             serviceCollection.AddSingleton<FederationItemCache>();
             serviceCollection.AddSingleton<WanBandwidthMonitor>();
+            serviceCollection.AddSingleton<PlaybackRouteMetrics>();
+            serviceCollection.AddSingleton<FederationBandwidthAllocator>();
             serviceCollection.AddSingleton<AdaptiveSourceRanking>();
             serviceCollection.AddSingleton<AdaptivePreparationGate>();
             serviceCollection.AddSingleton<FederationLibraryManager>();

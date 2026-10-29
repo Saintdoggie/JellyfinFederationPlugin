@@ -28,10 +28,9 @@ namespace Jellyfin.Plugin.Federation.Services
     ///    <see cref="RemoteServerClient.MeasureBandwidthMbpsAsync"/>). A compatibility
     ///    bitrate-test endpoint is used only when media sampling is unavailable.
     ///
-    /// A Manual cap also applies to proxied/non-Jellyfin (Plex) peers, enforced as an
-    /// actual byte-rate throttle in <see cref="FederationStreamHandler"/>'s relay loop
-    /// rather than the transcode-bitrate querystring <see cref="FederationLibraryManager.BuildPlaybackUrl"/>
-    /// uses for a Direct-mode Jellyfin peer - Auto has no meaning there (see
+    /// A Manual cap also applies to proxied/non-Jellyfin (Plex) peers. Over-cap
+    /// sources require real conversion and the cap is applied to the converted output,
+    /// never by starving the original input. Auto has no meaning there (see
     /// <see cref="GetEffectiveCapMbps"/>), since there's no bandwidth probe to run.
     /// </summary>
     public class WanBandwidthMonitor

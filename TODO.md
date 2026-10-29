@@ -1,5 +1,19 @@
 # Jellyfin Federation — remaining work
 
+## Unreleased — playback compatibility, capacity and truthful diagnostics
+
+- [x] Report play method, observed transport, conversion location, original/delivered formats and conversion reasons independently. Unknown play methods/routes are no longer presented as Direct Play, and alternate sources use the same capability flags as provider sources.
+- [x] Add bounded, rate-limited, URL-free per-device route telemetry and use recent real measurements with headroom, fast stall reduction and conservative recovery. Native clients without telemetry retain declared/server-route limits rather than fabricated measurements.
+- [x] Preserve every Jellyfin remote media source and its exact `mediaSourceId` through provider IDs, DirectStream, playback grants, native loopback, HLS/progressive/subtitle requests and transcode handoff. Clients can negotiate between remote encodings instead of always receiving the first file.
+- [x] Share measured friend capacity between playback sessions, coalesce requests by PlaySessionId, expire/release reservations, and return a clear capacity refusal when no usable allocation remains.
+- [x] Extend the opt-in prepared web player to episodes, bounded quality step-down/up, and startup recovery through a freshly authorized replacement session. Do not splice different files or transcoders into an active response.
+- [x] Mark over-cap Proxy/Plex sources for real conversion, cap converted output, and stop throttling the original input that ffmpeg must decode.
+- [x] Improve native-app compatibility: identify clients from authenticated session data or standard Jellyfin headers on token-only requests, enable original direct play only for suitable native transports, preserve Android/browser fallbacks, and refresh cached negative transcode capabilities when a friend re-enables handoff.
+- [x] Automated gate passed twice: 1,788 plugin, 227 Companion and 153 web tests per pass, plus clean builds and private-sharing sandbox checks. Focused playback suites and Release builds also passed. The disposable two-server handoff smoke passed negotiation, owner conversion, direct segments, seek/subtitle/audio, stop/log cleanup, revocation, opt-out fallback, off→on recovery, concurrent-session refusal and owner restart.
+- [x] The full push gate passed on the review branch, including the Windows Companion cross-build and disposable Plex/Jellyfin integration with real media mounts, Range handling, media decoding and sharing revocation.
+- [ ] Validate the same title on the physical F213/Firefox setup and affected handheld/TV devices, including original vs converted codecs, startup/seek, subtitles, stalls, dropped frames and actual route measurements.
+- [ ] Complete concurrent-viewer and fluctuating-WAN playback checks. The automated Plex/Jellyfin gate is not a physical-device or live-WAN substitute; no stable release has been published.
+
 ## 0.0.206 — sparse updates, inherited ratings and playback repairs
 
 - [x] Preserve omitted configuration/settings fields instead of erasing friends or re-enabling sharing; require an explicit friend sharing scope and keep omitted friend limits. Validate server streaming/WAN values before mutation, permit fixed-address paired-friend tests/edits, and reject whitespace-duplicate mapping names (B91/B92, B106, B682/B55, B720, B766 and the partial-settings group).

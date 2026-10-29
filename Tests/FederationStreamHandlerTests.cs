@@ -783,11 +783,10 @@ public class FederationStreamHandlerTests : IDisposable
     }
 
     [Fact]
-    public async Task ManualWanCap_ThrottlesRelayToTheConfiguredRate()
+    public async Task ManualWanCap_DoesNotStarveTheTranscodersSourceInput()
     {
-        // A Manual WAN cap must be enforced as an actual byte-rate throttle for
-        // a Proxy-mode source. The static Direct-mode relay serves raw bytes
-        // without a cap so its persisted format remains accurate.
+        // The cap belongs on the converted output, not on the original input
+        // that ffmpeg must decode at real-time speed.
         var server = _plugin.Configuration.RemoteServers.Single(s => s.Id == "serverA");
         server.StreamingMode = StreamingMode.Proxy;
         server.WanCapMode = WanCapMode.Manual;
@@ -807,12 +806,7 @@ public class FederationStreamHandlerTests : IDisposable
 
         Assert.Equal(remoteBytes.Length, body.Length);
 
-        // At 125,000 bytes/sec, 400,000 bytes should take ~3.2s - a 2s floor
-        // leaves generous headroom for scheduling jitter on a loaded CI box
-        // while still being far above the near-instant relay an unthrottled
-        // in-memory run would otherwise produce (proving the cap actually did
-        // something, not just that it didn't crash).
-        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2), $"expected the capped relay to take at least 2s, took {stopwatch.Elapsed}");
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"expected an unthrottled source relay, took {stopwatch.Elapsed}");
     }
 
     [Fact]

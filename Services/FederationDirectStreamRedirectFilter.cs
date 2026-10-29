@@ -67,6 +67,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     var target = await ResolveRedirectAsync(context).ConfigureAwait(false);
                     if (target != null)
                     {
+                        FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId"), FederatedRoute.Direct);
                         // The URL carries an item-scoped token; never log it.
                         _logger.LogInformation("[Federation] Direct-play request for federated item {ItemId} sent straight to the friend's server", context.ActionArguments["itemId"]);
                         context.HttpContext.Response.Headers.CacheControl = "private, no-store";

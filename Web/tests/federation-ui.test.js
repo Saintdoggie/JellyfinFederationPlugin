@@ -2226,6 +2226,17 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
     friend: 'friend-a',
     route: 'friend-converts',
     routeText: 'friend-a converts it and sends it straight to this player',
+    playMethod: 'Transcode',
+    conversion: 'friend-a',
+    originalContainer: 'mkv',
+    originalVideoCodec: 'hevc',
+    originalAudioCodec: 'eac3',
+    originalBitrate: 59000000,
+    deliveredContainer: 'ts',
+    deliveredVideoCodec: 'h264',
+    deliveredAudioCodec: 'aac',
+    deliveredBitrate: 12000000,
+    transcodeReasons: 'VideoCodecNotSupported',
     placement: 'Friend converts (full hardware conversion)',
     latencyMs: 42,
     linkMbps: 87.4,
@@ -2242,10 +2253,15 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
   assert.deepEqual(rows, [
     ['Federation', ''],
     ['Friend', 'friend-a'],
+    ['Playback', 'Transcode'],
     ['Route', 'friend-a converts it and sends it straight to this player'],
-    ['Who converts', 'Friend converts (full hardware conversion)'],
+    ['Conversion', 'friend-a'],
+    ['Original', 'mkv / hevc / eac3 · 59 Mbps'],
+    ['Delivered', 'ts / h264 / aac · 12 Mbps'],
+    ['Conversion reason', 'VideoCodecNotSupported'],
+    ['Placement reason', 'Friend converts (full hardware conversion)'],
     ['Round trip', '42 ms'],
-    ['Link speed', '87 Mbps'],
+    ['Server route speed', '87 Mbps'],
     ['Bitrate cap', '20 Mbps'],
     ['friend-a converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
     ['Also on', 'slow-peer']
@@ -2257,6 +2273,38 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
   await settleMany();
   assert.equal(doc.querySelectorAll('.federation-stats').length, 1);
   assert.equal(calls.filter((u) => u.includes('/Playback/Connection')).length, 1);
+  dom.window.close();
+});
+
+test('route telemetry sends bounded numeric observations without media URLs or tokens', async () => {
+  const { dom } = makePlayerStats({
+    federated: true,
+    itemId: '11111111111111111111111111111111',
+    serverId: 'friend-a',
+    remoteItemId: '22222222222222222222222222222222',
+    route: 'friend-converts',
+    routeText: 'friend-a converts it'
+  });
+  await settleMany();
+  const originalFetch = dom.window.fetch;
+  const bodies = [];
+  dom.window.fetch = (url, options) => {
+    if (String(url).includes('/Playback/Metrics')) bodies.push(options.body);
+    return originalFetch(url, options);
+  };
+  dom.window.__federationRouteTelemetry.observe([
+    { name: 'https://owner.example/Plugins/Federation/Peer/Play/secret-token/videos/22222222222222222222222222222222/main.m3u8?api_key=secret', encodedBodySize: 1000000, duration: 500 },
+    { name: 'https://owner.example/Plugins/Federation/Peer/Play/other-secret/videos/33333333333333333333333333333333/main.m3u8', encodedBodySize: 9000000, duration: 500 }
+  ]);
+  await dom.window.__federationRouteTelemetry.flush();
+  assert.equal(bodies.length, 1);
+  const body = JSON.parse(bodies[0]);
+  assert.equal(body.bytes, 1000000);
+  assert.equal(body.durationMs, 500);
+  assert.equal(body.itemId, '11111111111111111111111111111111');
+  assert.equal(body.serverId, 'friend-a');
+  assert.doesNotMatch(bodies[0], /owner\.example|secret|m3u8|api_key/);
+  assert.equal(dom.window.__federationRouteTelemetry.matches('https://owner.example/Plugins/Federation/DirectStream/33333333333333333333333333333333?token=secret', { serverId: 'friend-a', remoteItemId: '22222222222222222222222222222222', route: 'direct' }), false);
   dom.window.close();
 });
 
