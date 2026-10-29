@@ -405,7 +405,7 @@ public class RemoteServerClientPlaybackTests
         // ItemPlaybackTokenCache's doc comment. Without caching, each of those
         // paid a full WAN round trip and starved the transcoder's input until
         // ffmpeg died with exit code 183.
-        var handler = new FakeHttpMessageHandler();
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"tok-123\",\"remoteTranscode\":true}");
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
         var server = new RemoteServer { Id = "server-tokcache-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
@@ -422,6 +422,32 @@ public class RemoteServerClientPlaybackTests
         // the remote, so a user-scoped mint must not be reused for no-user and
         // vice versa).
         Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
+    public async Task GetPlaybackTokenAsync_NegativeTranscodeCapabilityForcesFreshCapabilityCheck()
+    {
+        PeerTranscodeCapability.Reset();
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "capability-refresh-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        try
+        {
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            Assert.Equal(2, handler.PlaybackTokenCallCount);
+
+            handler.PlaybackTokenJson = "{\"token\":\"tok-123\",\"remoteTranscode\":true}";
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            Assert.Equal(3, handler.PlaybackTokenCallCount);
+            Assert.True(PeerTranscodeCapability.IsAvailable(server.Id));
+        }
+        finally
+        {
+            PeerTranscodeCapability.Reset();
+        }
     }
 
     [Fact]
@@ -447,7 +473,7 @@ public class RemoteServerClientPlaybackTests
         // A token the remote just rejected (remote restarted, friendship removed)
         // must be dropped on demand so the relay's 401/403 recovery path can get
         // a fresh one instead of pulling the dead token back out of the cache.
-        var handler = new FakeHttpMessageHandler();
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"tok-123\",\"remoteTranscode\":true}");
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
         var server = new RemoteServer { Id = "server-tokinv-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
@@ -743,7 +769,7 @@ public class RemoteServerClientPlaybackTests
         private readonly string _systemInfoJson;
         private readonly HttpStatusCode _systemInfoStatusCode;
 
-        private readonly string _playbackTokenJson;
+        private string _playbackTokenJson;
         private readonly HttpStatusCode _playbackTokenStatusCode;
         private readonly string _registerUserSessionJson;
         private readonly HttpStatusCode _registerUserSessionStatusCode;
@@ -754,6 +780,7 @@ public class RemoteServerClientPlaybackTests
         public string? LastRemoteUserIdHeader { get; private set; }
         public int RegisterUserSessionCallCount { get; private set; }
         public int PlaybackTokenCallCount { get; private set; }
+        public string PlaybackTokenJson { set => _playbackTokenJson = value; }
         public string LastRequestBody { get; private set; } = string.Empty;
 
         public FakeHttpMessageHandler(

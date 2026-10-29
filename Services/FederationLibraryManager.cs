@@ -907,18 +907,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <c>Static=true</c>; a positive WAN cap requests h264/aac at that bitrate.
         /// Audio is never capped.
         /// </summary>
-        public static string BuildDirectGatewayLoopbackUrl(string localBaseUrl, Guid itemId, bool audio, int? capMbps, int maxHeight = 0)
+        public static string BuildDirectGatewayLoopbackUrl(string localBaseUrl, Guid itemId, bool audio, int? capMbps, int maxHeight = 0, string? mediaSourceId = null)
         {
             var endpoint = audio ? "Audio" : "Videos";
             var baseUrl = $"{localBaseUrl.TrimEnd('/')}/{endpoint}/{itemId:N}/stream";
+            var sourceParam = string.IsNullOrWhiteSpace(mediaSourceId) || mediaSourceId.Length > 128
+                ? string.Empty
+                : $"&MediaSourceId={Uri.EscapeDataString(mediaSourceId)}";
             if (audio || capMbps is null or <= 0)
             {
-                return $"{baseUrl}?Static=true";
+                return $"{baseUrl}?Static=true{sourceParam}";
             }
 
             var videoBitrateBps = capMbps.Value * 950_000L - 256_000L;
             var heightParam = maxHeight > 0 ? $"&MaxHeight={maxHeight}" : string.Empty;
-            return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
+            return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}{sourceParam}";
         }
 
         /// <summary>

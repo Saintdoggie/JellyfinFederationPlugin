@@ -120,6 +120,22 @@ Playback, authorization, and downloads:
   `FederationMediaSourceProvider` before a grant is recorded); `Playback/Connection`
   feeds the "Federation" block in the player's Playback Info (`federation-badge.js`).
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
+- `Services/PlaybackRouteMetrics.cs` — bounded per-user/device/route browser
+  telemetry (numeric only, never media URLs); native clients without telemetry keep
+  declared/server-route limits. `Services/FederationBandwidthAllocator.cs` shares
+  measured capacity between PlaySessionIds and releases on stop/idle expiry.
+- Provider playback enumerates every Jellyfin remote media source. Exact remote
+  `mediaSourceId` values must stay bound through local source IDs, DirectStream,
+  `PeerPlaybackGrants`, HLS/progressive/subtitle paths, and native loopback URLs.
+- `Services/NativeClientCapabilities.cs` resolves native app identity from the
+  authenticated session and standard Jellyfin headers, including token-only requests.
+  Raw HTTP Direct Play is enabled only for suitable native transports; known Android
+  raw-HTTP and browser paths retain Direct Stream/transcode behavior. This is transport
+  detection, not a codec blacklist.
+- Playback Info reports play method, observed transport, conversion location, and
+  original/delivered formats independently. Unknown is not Direct Play.
+- Proxy/Plex over-cap sources require conversion. Never throttle the original input
+  to ffmpeg; cap the converted output instead.
 - Remote-transcode handoff (0.0.187): `Services/RemoteMediaPath.cs` (allow-list
   shared by both sides), `HlsPlaylistRewriter.cs`, `FederationRemoteTranscodeGateway.cs`
   + controller `Peer/Play/{token}/{**path}` and `Peer/PlayControl` (owner);

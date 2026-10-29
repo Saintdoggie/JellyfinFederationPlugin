@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
@@ -72,6 +73,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILogger<FederationRemoteTranscodeFilter> _logger;
         private readonly DirectLink.DirectLinkManager? _directLinks;
         private readonly MediaBrowser.Common.Net.INetworkManager? _network;
+        private readonly PlaybackRouteMetrics? _routeMetrics;
+        private readonly FederationBandwidthAllocator? _bandwidth;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationRemoteTranscodeFilter"/> class.
@@ -86,8 +89,12 @@ namespace Jellyfin.Plugin.Federation.Services
             RemoteTranscodeHandoffs handoffs,
             ILogger<FederationRemoteTranscodeFilter> logger,
             DirectLink.DirectLinkManager? directLinks = null,
-            MediaBrowser.Common.Net.INetworkManager? network = null)
+            MediaBrowser.Common.Net.INetworkManager? network = null,
+            PlaybackRouteMetrics? routeMetrics = null,
+            FederationBandwidthAllocator? bandwidth = null)
         {
+            _bandwidth = bandwidth;
+            _routeMetrics = routeMetrics;
             _directLinks = directLinks;
             _network = network;
             _authorization = authorization;
@@ -140,6 +147,15 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 handoff = await ResolveAsync(context, path!).ConfigureAwait(false);
             }
+            catch (FederationBandwidthExceededException)
+            {
+                context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                context.Result = new ObjectResult(new { error = "bandwidth-capacity", message = "The friend has no unallocated bandwidth for this playback." })
+                {
+                    StatusCode = StatusCodes.Status429TooManyRequests
+                };
+                return;
+            }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[Federation] Remote transcode handoff check failed; converting here");
@@ -151,6 +167,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            FederationPlaybackRoutes.Record(playSessionId, FederatedRoute.FriendConverts);
             if (!path.FetchedByReceiver)
             {
                 if (path.StartsWork)
@@ -323,10 +340,15 @@ namespace Jellyfin.Plugin.Federation.Services
             if (source == null
                 || server == null
                 || !server.Enabled
-                || !FederationMediaSourceProvider.UsesRemoteTranscode(server)
                 || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(server.Id) == true
                 || !_access.IsAllowed(server, user.Id, entry.MappingName, source.RemoteItemId))
             {
+                return null;
+            }
+
+            if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
+            {
+                ApplyLocalConversionCap(context, path, server, source, user.Id, info);
                 return null;
             }
 
@@ -385,12 +407,77 @@ namespace Jellyfin.Plugin.Federation.Services
             var cap = viaLink && server.WanCapMode == WanCapMode.Auto
                 ? LinkCap(_directLinks!.LinkMbps(server.Id), fallbackCap)
                 : fallbackCap;
+            var sharedCapacity = cap;
 
-            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
+            var identity = NativeClientCapabilities.Identify(request, info);
+            var handheld = HandheldClientLimits.IsHandheld(identity.Client, identity.Device);
+            cap = HandheldClientLimits.Cap(cap, handheld);
+            cap = _routeMetrics?.GetCapMbps(user.Id, info.DeviceId, server.Id, viaLink ? "direct-link" : FederatedRoute.FriendConverts, cap) ?? cap;
+            if (path.StartsWork && _bandwidth != null)
+            {
+                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity);
+                if (!allocation.Accepted)
+                {
+                    throw new FederationBandwidthExceededException();
+                }
 
-            var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? source.RemoteItemId : null);
+                cap = allocation.CapMbps;
+            }
+
+            var remoteMediaSourceId = Guid.TryParse(grant.RemoteMediaSourceId, out var grantedSourceId) ? grantedSourceId : source.RemoteItemId;
+            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, remoteMediaSourceId, cap, request.Query));
+            if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
+            {
+                query = HandheldClientLimits.WithResolution(query, request.Query, handheld);
+            }
+
+            var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? remoteMediaSourceId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
             return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink);
+        }
+
+        private void ApplyLocalConversionCap(ActionExecutingContext context, RemoteMediaPath path, RemoteServer server, FederatedSource source, Guid userId, AuthorizationInfo info)
+        {
+            var request = context.HttpContext.Request;
+            var sharedCapacity = _federationManager.GetEffectiveWanCapMbps(server);
+            var identity = NativeClientCapabilities.Identify(request, info);
+            var handheld = HandheldClientLimits.IsHandheld(identity.Client, identity.Device);
+            var cap = HandheldClientLimits.Cap(sharedCapacity, handheld);
+            cap = _routeMetrics?.GetCapMbps(userId, info.DeviceId, server.Id, FederatedRoute.Relay, cap) ?? cap;
+            if (path.StartsWork && _bandwidth != null)
+            {
+                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity);
+                if (!allocation.Accepted)
+                {
+                    throw new FederationBandwidthExceededException();
+                }
+
+                cap = allocation.CapMbps;
+            }
+
+            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => string.Equals(name, "MediaSourceId", StringComparison.OrdinalIgnoreCase)
+                ? value
+                : RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
+            if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
+            {
+                query = HandheldClientLimits.WithResolution(query, request.Query, handheld);
+            }
+
+            request.QueryString = new QueryString(query);
+            var capped = RemoteMediaPath.ParseQuery(query);
+            UpdateBoundArgument(context, "maxStreamingBitrate", capped, "MaxStreamingBitrate");
+            UpdateBoundArgument(context, "videoBitrate", capped, "VideoBitrate");
+            UpdateBoundArgument(context, "maxWidth", capped, "MaxWidth");
+            UpdateBoundArgument(context, "maxHeight", capped, "MaxHeight");
+        }
+
+        private static void UpdateBoundArgument(ActionExecutingContext context, string argument, IEnumerable<KeyValuePair<string, StringValues>> query, string name)
+        {
+            if (context.ActionArguments.ContainsKey(argument)
+                && RemoteMediaPath.QueryLong(query, name) is >= 0 and <= int.MaxValue and var value)
+            {
+                context.ActionArguments[argument] = (int)value;
+            }
         }
 
         /// <summary>
@@ -510,31 +597,46 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 using var peerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 peerTimeout.CancelAfter(TimeSpan.FromSeconds(30));
-                using var request = Make(false);
-                using var response = viaLinkResponse ?? await Send(request, peerTimeout.Token).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
+                for (var attempt = 0; ; attempt++)
                 {
-                    return (null, (int)response.StatusCode);
-                }
-
-                var bodyToken = viaLinkBytes == null ? peerTimeout.Token : cancellationToken;
-                var bytes = viaLinkBytes ?? (playlist
-                    ? await HttpContentReader.ReadBytesAsync(response.Content, MaxPlaylistBytes, bodyToken).ConfigureAwait(false)
-                    : await response.Content.ReadAsByteArrayAsync(bodyToken).ConfigureAwait(false));
-                var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
-                if (playlist)
-                {
-                    // The friend's addresses can be http behind its proxy; put
-                    // them on the address this server uses for it.
-                    var text = HandoffPlaylistLinks.Decode(bytes);
-                    bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PlayerBase, handoff.ViaLink ? null : relayPrefix));
-                    if (handoff.Kind == RemoteMediaKind.HlsMaster && !handoff.ViaLink)
+                    using var request = Make(false);
+                    if (attempt > 0)
                     {
-                        HandoffPlaylistLinks.WarmUp(text, handoff.PeerBase, PeerTranscodeCapability.HasSharedSegments(handoff.ServerId), _logger);
+                        request.Headers.ConnectionClose = true;
+                    }
+
+                    try
+                    {
+                        using var response = viaLinkResponse ?? await Send(request, peerTimeout.Token).ConfigureAwait(false);
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            return (null, (int)response.StatusCode);
+                        }
+
+                        var bodyToken = viaLinkBytes == null ? peerTimeout.Token : cancellationToken;
+                        var bytes = viaLinkBytes ?? (playlist
+                            ? await HttpContentReader.ReadBytesAsync(response.Content, MaxPlaylistBytes, bodyToken).ConfigureAwait(false)
+                            : await response.Content.ReadAsByteArrayAsync(bodyToken).ConfigureAwait(false));
+                        var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
+                        if (playlist)
+                        {
+                            // The friend's addresses can be http behind its proxy; put
+                            // them on the address this server uses for it.
+                            var text = HandoffPlaylistLinks.Decode(bytes);
+                            bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PlayerBase, handoff.ViaLink ? null : relayPrefix));
+                            if (handoff.Kind == RemoteMediaKind.HlsMaster && !handoff.ViaLink)
+                            {
+                                HandoffPlaylistLinks.WarmUp(text, handoff.PeerBase, PeerTranscodeCapability.HasSharedSegments(handoff.ServerId), _logger);
+                            }
+                        }
+
+                        return (new FileContentResult(bytes, contentType), StatusCodes.Status200OK);
+                    }
+                    catch (Exception ex) when (attempt == 0 && viaLinkResponse == null && ex is HttpRequestException or System.IO.IOException)
+                    {
+                        _logger.LogInformation("[Federation] {Server} handoff connection failed ({Error}); retrying on a fresh connection", handoff.ServerName, ex.GetType().Name);
                     }
                 }
-
-                return (new FileContentResult(bytes, contentType), StatusCodes.Status200OK);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -542,7 +644,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[Federation] Could not reach {Server} for a handoff", handoff.ServerName);
+                _logger.LogWarning("[Federation] Could not reach {Server} for a handoff ({Error})", handoff.ServerName, ex.GetType().Name);
                 return (null, StatusCodes.Status502BadGateway);
             }
         }

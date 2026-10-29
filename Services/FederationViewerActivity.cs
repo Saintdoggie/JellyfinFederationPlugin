@@ -84,22 +84,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>This server reads the friend's file and converts it.</summary>
         public const string ConvertedHere = "converted-here";
 
+        /// <summary>The transport route has not been observed yet.</summary>
+        public const string Unknown = "unknown";
+
         /// <summary>Classifies a playback. <paramref name="handedOff"/>: the friend runs this session's conversion.</summary>
-        public static string Classify(RemoteServer server, PlayMethod? playMethod, bool handedOff)
+        public static string Classify(RemoteServer server, PlayMethod? playMethod, bool handedOff, string? observedRoute = null)
         {
             if (playMethod == MediaBrowser.Model.Session.PlayMethod.Transcode)
             {
                 return handedOff ? FriendConverts : ConvertedHere;
             }
 
-            return server.StreamingMode == StreamingMode.Direct ? Direct : Relay;
+            return observedRoute is Direct or Relay ? observedRoute : Unknown;
         }
 
         /// <summary>The play method the friend (owner) sees: when this server converts, the friend only serves the original.</summary>
         public static string OwnerPlayMethod(string route, PlayMethod? viewerMethod)
             => route == ConvertedHere
                 ? nameof(MediaBrowser.Model.Session.PlayMethod.DirectStream)
-                : (viewerMethod ?? MediaBrowser.Model.Session.PlayMethod.DirectPlay).ToString();
+                : viewerMethod?.ToString() ?? "Unknown";
     }
 
     /// <summary>
@@ -232,7 +235,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var route = FederatedRoute.Classify(server, session.PlayState?.PlayMethod, _handoffs.HandedOffTo(playSessionId) != null);
+                var route = FederatedRoute.Classify(server, session.PlayState?.PlayMethod, _handoffs.HandedOffTo(playSessionId) != null, FederationPlaybackRoutes.Get(playSessionId));
                 var now = UtcNow();
                 _sent.TryGetValue(key, out var previous);
                 if (kind == ViewerEvents.Progress && previous != null && previous.ItemId == source.RemoteItemId && !IsDue(previous, now, positionTicks, isPaused, route))
@@ -532,35 +535,37 @@ namespace Jellyfin.Plugin.Federation.Services
                 viewer.Route = report.Route;
                 viewer.PlaySessionId = Clean(report.PlaySessionId, 64);
                 viewer.LastReportUtc = UtcNow();
-                var method = Enum.TryParse<PlayMethod>(report.PlayMethod, true, out var parsed) ? parsed : PlayMethod.DirectPlay;
-                if (!viewer.Started)
+                if (Enum.TryParse<PlayMethod>(report.PlayMethod, true, out var method))
                 {
-                    await _sessions.OnPlaybackStart(new PlaybackStartInfo
+                    if (!viewer.Started)
                     {
-                        ItemId = item.Id,
-                        SessionId = viewer.Session.Id,
-                        MediaSourceId = item.Id.ToString("N"),
-                        PositionTicks = report.PositionTicks,
-                        IsPaused = report.IsPaused,
-                        PlayMethod = method,
-                        PlaySessionId = viewer.PlaySessionId,
-                        CanSeek = true
-                    }).ConfigureAwait(false);
-                    viewer.Started = true;
-                }
-                else
-                {
-                    await _sessions.OnPlaybackProgress(new PlaybackProgressInfo
+                        await _sessions.OnPlaybackStart(new PlaybackStartInfo
+                        {
+                            ItemId = item.Id,
+                            SessionId = viewer.Session.Id,
+                            MediaSourceId = item.Id.ToString("N"),
+                            PositionTicks = report.PositionTicks,
+                            IsPaused = report.IsPaused,
+                            PlayMethod = method,
+                            PlaySessionId = viewer.PlaySessionId,
+                            CanSeek = true
+                        }).ConfigureAwait(false);
+                        viewer.Started = true;
+                    }
+                    else
                     {
-                        ItemId = item.Id,
-                        SessionId = viewer.Session.Id,
-                        MediaSourceId = item.Id.ToString("N"),
-                        PositionTicks = report.PositionTicks,
-                        IsPaused = report.IsPaused,
-                        PlayMethod = method,
-                        PlaySessionId = viewer.PlaySessionId,
-                        CanSeek = true
-                    }).ConfigureAwait(false);
+                        await _sessions.OnPlaybackProgress(new PlaybackProgressInfo
+                        {
+                            ItemId = item.Id,
+                            SessionId = viewer.Session.Id,
+                            MediaSourceId = item.Id.ToString("N"),
+                            PositionTicks = report.PositionTicks,
+                            IsPaused = report.IsPaused,
+                            PlayMethod = method,
+                            PlaySessionId = viewer.PlaySessionId,
+                            CanSeek = true
+                        }).ConfigureAwait(false);
+                    }
                 }
 
                 return 204;

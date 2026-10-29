@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly ILogger<RemoteTranscodeSessionBridge> _logger;
         private readonly IApplicationPaths? _paths;
+        private readonly FederationBandwidthAllocator? _bandwidth;
         private readonly ConcurrentDictionary<string, string> _logFiles = new(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _stopping;
 
@@ -37,8 +38,10 @@ namespace Jellyfin.Plugin.Federation.Services
             RemoteTranscodeHandoffs handoffs,
             FederationLibraryManager federationManager,
             ILogger<RemoteTranscodeSessionBridge> logger,
-            IApplicationPaths? paths = null)
+            IApplicationPaths? paths = null,
+            FederationBandwidthAllocator? bandwidth = null)
         {
+            _bandwidth = bandwidth;
             _paths = paths;
             _sessions = sessions;
             _handoffs = handoffs;
@@ -78,6 +81,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private void OnStopped(object? sender, PlaybackStopEventArgs e)
         {
+            _bandwidth?.ReleaseEverywhere(e.PlaySessionId);
             var serverId = _handoffs.TakeStop(e.PlaySessionId);
             if (serverId != null)
             {

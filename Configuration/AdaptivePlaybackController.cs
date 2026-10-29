@@ -58,7 +58,7 @@ public sealed class AdaptivePlaybackController : ControllerBase
             || !_library.GetItemList(new InternalItemsQuery(user) { ItemIds = new[] { itemId }, Recursive = true, Limit = 1 }).Any()) return NotFound();
         var key = FederationLibraryManager.GetFederationKey(item);
         var entry = key == null ? null : _manager.Cache.GetEntryByKey(key);
-        if (entry == null || entry.ItemType != "Movie") return NotFound();
+        if (entry == null || entry.ItemType is not ("Movie" or "Episode")) return NotFound();
         var sources = entry.GetSourcesSnapshot()
             .Select(source => (Source: source, Server: _manager.GetServer(source.ServerId)))
             .Where(p => p.Server is { Enabled: true }

@@ -78,6 +78,25 @@ public class RemoteTranscodeHandoffTests
     }
 
     [Fact]
+    public void PlaybackGrant_RetainsExactRemoteMediaSource()
+    {
+        PeerPlaybackGrants.Reset();
+        try
+        {
+            var user = Guid.NewGuid();
+            var remoteMediaSource = Guid.NewGuid().ToString("N");
+            PeerPlaybackGrants.Record(user, Item, Source.ToString("N"), "owner", Item, "token", remoteMediaSource);
+            var grant = PeerPlaybackGrants.Find(user, Item, Source.ToString("N"));
+            Assert.NotNull(grant);
+            Assert.Equal(remoteMediaSource, grant!.RemoteMediaSourceId);
+        }
+        finally
+        {
+            PeerPlaybackGrants.Reset();
+        }
+    }
+
+    [Fact]
     public void FilterQuery_DropsCredentialsAndIdentity_KeepsPlaybackParameters()
     {
         var query = RemoteMediaPath.ParseQuery("?DeviceId=d&MediaSourceId=abc&VideoCodec=h264&ApiKey=SECRET&api_key=SECRET&X-Emby-Token=SECRET&userId=u&LiveStreamId=l&PlaySessionId=p&DeviceProfileId=x");
@@ -328,6 +347,93 @@ public class RemoteTranscodeHandoffTests
         Assert.Equal(StatusCodes.Status200OK, status);
         var file = Assert.IsType<Microsoft.AspNetCore.Mvc.FileContentResult>(result);
         Assert.Equal("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8.GetString(file.FileContents));
+    }
+
+    [Fact]
+    public async Task PeerConnectionFailure_RetriesOnAFreshConnection()
+    {
+        var connectionClose = new List<bool>();
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (request, _) =>
+            {
+                connectionClose.Add(request.Headers.ConnectionClose == true);
+                if (connectionClose.Count == 1)
+                {
+                    throw new System.Net.Http.HttpRequestException("connection reset");
+                }
+
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8, "application/vnd.apple.mpegurl")
+                });
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(new[] { false, true }, connectionClose);
+        var file = Assert.IsType<Microsoft.AspNetCore.Mvc.FileContentResult>(result);
+        Assert.Equal("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8.GetString(file.FileContents));
+    }
+
+    [Fact]
+    public async Task PeerPersistentConnectionFailure_Returns502AfterOneRetry()
+    {
+        var attempts = 0;
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (_, _) =>
+            {
+                attempts++;
+                throw new System.Net.Http.HttpRequestException("connection reset");
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+        Assert.Null(result);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PeerHttpError_IsNotRetried()
+    {
+        var attempts = 0;
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (_, _) =>
+            {
+                attempts++;
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.BadGateway));
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+        Assert.Null(result);
+        Assert.Equal(1, attempts);
     }
 
     private sealed class FailingLinkHandler : System.Net.Http.HttpMessageHandler

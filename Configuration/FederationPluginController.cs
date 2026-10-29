@@ -116,6 +116,8 @@ namespace Jellyfin.Plugin.Federation.Api
         private readonly AdaptiveSourceRanking? _ranking;
         private readonly FederationViewerReporter? _viewerReporter;
         private readonly MediaBrowser.Controller.Session.ISessionManager? _sessionManager;
+        private readonly PlaybackRouteMetrics? _routeMetrics;
+        private readonly RemoteAccessControlService? _playbackAccess;
 
         public FederationController(
             ILogger<FederationController> logger,
@@ -155,8 +157,12 @@ namespace Jellyfin.Plugin.Federation.Api
             AdaptiveSourceRanking? ranking = null,
             FederationViewerReporter? viewerReporter = null,
             MediaBrowser.Controller.Session.ISessionManager? sessionManager = null,
-            FriendDataLimits? limits = null)
+            FriendDataLimits? limits = null,
+            PlaybackRouteMetrics? routeMetrics = null,
+            RemoteAccessControlService? playbackAccess = null)
         {
+            _playbackAccess = playbackAccess;
+            _routeMetrics = routeMetrics;
             _limits = limits;
             _viewerReporter = viewerReporter;
             _sessionManager = sessionManager;
@@ -1873,22 +1879,23 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
+            MediaBrowser.Controller.Session.SessionInfo? activeSession = null;
             if (itemId == Guid.Empty && _sessionManager != null)
             {
                 var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
-                var session = _sessionManager.Sessions.FirstOrDefault(s =>
+                activeSession = _sessionManager.Sessions.FirstOrDefault(s =>
                     s.UserId == user.Id
                     && s.NowPlayingItem != null
                     && string.Equals(s.DeviceId, info?.DeviceId, StringComparison.Ordinal));
-                if (session == null)
+                if (activeSession == null)
                 {
                     return Ok(new { federated = false });
                 }
 
-                itemId = session.NowPlayingItem!.Id;
-                mediaSourceId ??= session.PlayState?.MediaSourceId;
-                playMethod ??= session.PlayState?.PlayMethod?.ToString();
-                playSessionId ??= _viewerReporter?.PlaySessionFor(session.Id);
+                itemId = activeSession.NowPlayingItem!.Id;
+                mediaSourceId ??= activeSession.PlayState?.MediaSourceId;
+                playMethod ??= activeSession.PlayState?.PlayMethod?.ToString();
+                playSessionId ??= _viewerReporter?.PlaySessionFor(activeSession.Id);
             }
 
             var item = itemId == Guid.Empty ? null : _libraryManager.GetItemById(itemId);
@@ -1910,13 +1917,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 ? parsedMethod
                 : (MediaBrowser.Model.Session.PlayMethod?)null;
             var handedOff = _handoffs?.HandedOffTo(playSessionId) != null;
-            var route = FederatedRoute.Classify(server, method, handedOff);
+            var route = FederatedRoute.Classify(server, method, handedOff, FederationPlaybackRoutes.Get(playSessionId));
             var routeText = route switch
             {
                 FederatedRoute.Direct => "Straight from " + server.Name + " to this player",
                 FederatedRoute.Relay => "From " + server.Name + ", passed through this server unchanged",
                 FederatedRoute.FriendConverts => server.Name + " converts it and sends it straight to this player",
-                _ => "This server reads the original from " + server.Name + " and converts it"
+                FederatedRoute.ConvertedHere => "This server reads the original from " + server.Name + " and converts it",
+                _ => "Transport route not confirmed yet"
             };
 
             TranscodeHardwareInfo? friendHardware = null;
@@ -1939,18 +1947,54 @@ namespace Jellyfin.Plugin.Federation.Api
                 .Where(n => !string.IsNullOrEmpty(n))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            var originalVideo = source.MediaStreams?.FirstOrDefault(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
+            var originalAudio = source.MediaStreams?.FirstOrDefault(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio && s.IsDefault == true)
+                ?? source.MediaStreams?.FirstOrDefault(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio);
+            var transcoding = activeSession?.TranscodingInfo;
+            var measurementDeviceId = activeSession?.DeviceId ?? (await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false))?.DeviceId;
+            var metricRoute = route == FederatedRoute.ConvertedHere ? FederatedRoute.Relay : route;
+            var routeMeasurement = _routeMetrics?.Snapshot(user.Id, measurementDeviceId, server.Id, metricRoute);
+            var conversion = route switch
+            {
+                FederatedRoute.FriendConverts => server.Name,
+                FederatedRoute.ConvertedHere => "This server",
+                _ when method == MediaBrowser.Model.Session.PlayMethod.DirectPlay => "None",
+                _ => "Unknown"
+            };
             return Ok(new
             {
                 federated = true,
+                itemId = item.Id.ToString("N"),
+                serverId = server.Id,
+                remoteItemId = source.RemoteItemId.ToString("N"),
+                playSessionId,
                 friend = server.Name,
                 route,
                 routeText,
+                playMethod = method?.ToString() ?? "Unknown",
+                conversion,
+                originalContainer = source.Container,
+                originalBitrate = source.Bitrate,
+                originalVideoCodec = originalVideo?.Codec,
+                originalAudioCodec = originalAudio?.Codec,
+                deliveredContainer = transcoding?.Container,
+                deliveredBitrate = transcoding?.Bitrate,
+                deliveredVideoCodec = transcoding?.VideoCodec,
+                deliveredAudioCodec = transcoding?.AudioCodec,
+                videoCopied = transcoding?.IsVideoDirect,
+                audioCopied = transcoding?.IsAudioDirect,
+                transcodeReasons = transcoding == null ? null : transcoding.TranscodeReasons.ToString(),
                 streaming = server.StreamingMode.ToString(),
                 placement = route is FederatedRoute.FriendConverts or FederatedRoute.ConvertedHere
                     ? _placement?.Last(server.Id, item.Id)?.Reason
                     : null,
                 latencyMs = _ranking?.LatencyMs(server.Id) is double ms ? Math.Round(ms) : (double?)null,
                 linkMbps = _bandwidthMonitor.GetMeasuredLinkMbps(server.Id),
+                routeMbps = routeMeasurement?.MeasuredMbps,
+                routeMeasurementAgeSeconds = routeMeasurement?.MeasurementAgeSeconds,
+                routeBufferedSeconds = routeMeasurement?.BufferedSeconds,
+                routeDroppedFrames = routeMeasurement?.DroppedFrames,
+                routeTotalFrames = routeMeasurement?.TotalFrames,
                 capMbps = _federationManager.GetEffectiveWanCapMbps(server),
                 speedNote = _bandwidthMonitor.GetWanNote(server),
                 directLink = DirectLinkNote(server.Id),
@@ -1958,6 +2002,56 @@ namespace Jellyfin.Plugin.Federation.Api
                 thisServerHardware = route == FederatedRoute.ConvertedHere ? _placement?.Local().Describe() : null,
                 alsoOn = others
             });
+        }
+
+        /// <summary>Receives numeric, URL-free measurements of the route this device is actually using.</summary>
+        [HttpPost("Playback/Metrics")]
+        [Authorize]
+        [RequestSizeLimit(4096)]
+        public async Task<IActionResult> RecordPlaybackMetrics([FromBody] PlaybackMetricsBody? body)
+        {
+            if (body == null || _routeMetrics == null || body.ItemId == Guid.Empty || string.IsNullOrWhiteSpace(body.ServerId))
+            {
+                return BadRequest();
+            }
+
+            var route = body.Route?.Trim().ToLowerInvariant();
+            if (route is not (FederatedRoute.Direct or FederatedRoute.Relay or FederatedRoute.FriendConverts or "direct-link"))
+            {
+                return BadRequest();
+            }
+
+            var user = await ResolveActingUserAsync().ConfigureAwait(false);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            var server = _federationManager.GetServer(body.ServerId);
+            var item = _libraryManager.GetItemById(body.ItemId);
+            var key = FederationLibraryManager.GetFederationKey(item);
+            var entry = key == null ? null : _cache.GetEntryByKey(key);
+            var source = entry?.GetSourcesSnapshot().FirstOrDefault(s => string.Equals(s.ServerId, body.ServerId, StringComparison.OrdinalIgnoreCase));
+            if (server is not { Enabled: true } || item == null || entry == null || source == null || !item.IsVisibleStandalone(user)
+                || _playbackAccess?.IsAllowed(server, user.Id, entry.MappingName, source.RemoteItemId) == false)
+            {
+                return NotFound();
+            }
+
+            var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+            var deviceId = info?.DeviceId ?? string.Empty;
+            if (!_routeMetrics.AcceptTelemetry(user.Id, deviceId, server.Id, route))
+            {
+                return StatusCode(StatusCodes.Status429TooManyRequests);
+            }
+
+            if (body.Bytes.HasValue && body.DurationMs.HasValue)
+            {
+                _routeMetrics.ObserveTransfer(user.Id, deviceId, server.Id, route, body.Bytes.Value, body.DurationMs.Value);
+            }
+
+            _routeMetrics.ObserveHealth(user.Id, deviceId, server.Id, route, body.Stalled, body.BufferedSeconds, body.DroppedFrames, body.TotalFrames);
+            return NoContent();
         }
 
         // For Playback Info: whether this friend's video can come over the direct link.
@@ -3757,7 +3851,8 @@ namespace Jellyfin.Plugin.Federation.Api
             [FromQuery] bool audio = false,
             [FromQuery] bool download = false,
             [FromQuery] int? capMbps = null,
-            [FromQuery] int maxHeight = 0)
+            [FromQuery] int maxHeight = 0,
+            [FromQuery] string? mediaSourceId = null)
         {
             Response.Headers.CacheControl = "private, no-store";
             Response.Headers["Referrer-Policy"] = "no-referrer";
@@ -3806,7 +3901,7 @@ namespace Jellyfin.Plugin.Federation.Api
             // and a classified WAN link gets a lower-bitrate transcode instead of
             // Static=true.
             var appliedCap = audio || download ? null : capMbps;
-            var loopbackUrl = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(localUrl, itemGuid, audio, appliedCap, maxHeight);
+            var loopbackUrl = FederationLibraryManager.BuildDirectGatewayLoopbackUrl(localUrl, itemGuid, audio, appliedCap, maxHeight, mediaSourceId);
 
             await RelayWithDataLimitAsync(limited, cancellationToken, ct => _streamHandler.HandleDirectGatewayAsync(loopbackUrl, Request, Response, ct, internalRelayKey)).ConfigureAwait(false);
             return new EmptyResult();
@@ -7250,6 +7345,19 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether the viewer paused (lets the owner throttle the encode).</summary>
         public bool? IsPaused { get; set; }
+    }
+
+    public class PlaybackMetricsBody
+    {
+        public Guid ItemId { get; set; }
+        public string? ServerId { get; set; }
+        public string? Route { get; set; }
+        public long? Bytes { get; set; }
+        public double? DurationMs { get; set; }
+        public bool Stalled { get; set; }
+        public double? BufferedSeconds { get; set; }
+        public long? DroppedFrames { get; set; }
+        public long? TotalFrames { get; set; }
     }
 
     public class IssuePlaybackTokenRequest

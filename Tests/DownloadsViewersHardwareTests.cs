@@ -208,20 +208,47 @@ public class DownloadsViewersHardwareTests
         => new() { Id = "f1", Name = "friend-a", Kind = ServerKind.Jellyfin, StreamingMode = mode, Enabled = true };
 
     [Fact]
-    public void Route_FollowsPlayMethodModeAndHandoff()
+    public void Route_UsesObservedTransportAndNeverGuessesFromConfiguration()
     {
-        Assert.Equal(FederatedRoute.Direct, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false));
-        Assert.Equal(FederatedRoute.Relay, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false));
+        Assert.Equal(FederatedRoute.Unknown, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false));
+        Assert.Equal(FederatedRoute.Direct, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false, FederatedRoute.Direct));
+        Assert.Equal(FederatedRoute.Relay, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false, FederatedRoute.Relay));
+        Assert.Equal(FederatedRoute.Unknown, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false));
         Assert.Equal(FederatedRoute.FriendConverts, FederatedRoute.Classify(Friend(), PlayMethod.Transcode, true));
         Assert.Equal(FederatedRoute.ConvertedHere, FederatedRoute.Classify(Friend(), PlayMethod.Transcode, false));
     }
 
     [Fact]
-    public void Owner_SeesConversionHereAsServingTheOriginal()
+    public void Owner_SeesConversionHereAsServingTheOriginal_AndUnknownStaysUnknown()
     {
         Assert.Equal("DirectStream", FederatedRoute.OwnerPlayMethod(FederatedRoute.ConvertedHere, PlayMethod.Transcode));
         Assert.Equal("Transcode", FederatedRoute.OwnerPlayMethod(FederatedRoute.FriendConverts, PlayMethod.Transcode));
-        Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, null));
+        Assert.Equal("Unknown", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, null));
+        Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, PlayMethod.DirectPlay));
+    }
+
+    [Fact]
+    public void ObservedRoutes_ExpireAndForgetWithoutFallingBackToConfiguration()
+    {
+        FederationPlaybackRoutes.Reset();
+        var now = new DateTime(2026, 10, 29, 12, 0, 0, DateTimeKind.Utc);
+        FederationPlaybackRoutes.UtcNow = () => now;
+        try
+        {
+            FederationPlaybackRoutes.Record(" session-1 ", FederatedRoute.Direct);
+            Assert.Equal(FederatedRoute.Direct, FederationPlaybackRoutes.Get("session-1"));
+            FederationPlaybackRoutes.Forget("session-1");
+            Assert.Null(FederationPlaybackRoutes.Get("session-1"));
+
+            FederationPlaybackRoutes.Record("session-2", FederatedRoute.Relay);
+            now = now.AddHours(13);
+            Assert.Null(FederationPlaybackRoutes.Get("session-2"));
+        }
+        finally
+        {
+            FederationPlaybackRoutes.UtcNow = () => DateTime.UtcNow;
+            FederationPlaybackRoutes.Reset();
+        }
     }
 
     [Fact]

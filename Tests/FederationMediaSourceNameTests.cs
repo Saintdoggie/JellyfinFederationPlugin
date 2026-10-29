@@ -36,6 +36,17 @@ public class FederationMediaSourceNameTests
         Assert.Equal("mkv", alternate.Container);
         Assert.Equal(99, alternate.RunTimeTicks);
         Assert.Equal(2160, Assert.Single(alternate.MediaStreams).Height);
+        Assert.False(alternate.SupportsDirectPlay);
+        Assert.True(alternate.SupportsDirectStream);
+    }
+
+    [Fact]
+    public void BuildAlternate_OverCapCannotClaimDirectStream()
+    {
+        var alternate = FederationMediaSourceNameFilter.BuildAlternate(new FederatedSource(), "friend", 5, fitsBandwidth: false);
+        Assert.False(alternate.SupportsDirectPlay);
+        Assert.False(alternate.SupportsDirectStream);
+        Assert.True(alternate.SupportsTranscoding);
     }
 
     [Fact]

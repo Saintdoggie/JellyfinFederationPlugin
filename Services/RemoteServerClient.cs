@@ -1102,7 +1102,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 var cacheKey = purpose == FederationTokenPurpose.Playback
                     ? $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}"
                     : $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}:{purpose}";
-                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow
+                    && (purpose != FederationTokenPurpose.Playback || !PeerTranscodeCapability.NeedsRefresh(_server.Id)))
                 {
                     return (cached.Token, null);
                 }
