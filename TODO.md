@@ -10,8 +10,9 @@
 - [x] Mark over-cap Proxy/Plex sources for real conversion, cap converted output, and stop throttling the original input that ffmpeg must decode.
 - [x] Improve native-app compatibility: identify clients from authenticated session data or standard Jellyfin headers on token-only requests, enable original direct play only for suitable native transports, preserve Android/browser fallbacks, and refresh cached negative transcode capabilities when a friend re-enables handoff.
 - [x] Automated gate passed twice: 1,788 plugin, 227 Companion and 153 web tests per pass, plus clean builds and private-sharing sandbox checks. Focused playback suites and Release builds also passed. The disposable two-server handoff smoke passed negotiation, owner conversion, direct segments, seek/subtitle/audio, stop/log cleanup, revocation, opt-out fallback, off→on recovery, concurrent-session refusal and owner restart.
+- [x] The full push gate passed on the review branch, including the Windows Companion cross-build and disposable Plex/Jellyfin integration with real media mounts, Range handling, media decoding and sharing revocation.
 - [ ] Validate the same title on the physical F213/Firefox setup and affected handheld/TV devices, including original vs converted codecs, startup/seek, subtitles, stalls, dropped frames and actual route measurements.
-- [ ] Run the full two-server encoded-media, concurrent-viewer, fluctuating-WAN and Plex/Companion integration matrix. The live `--all` gate is currently blocked on this machine because `rclone` is unavailable; Podman and ffmpeg are present. No physical-device or live-WAN claim is made from unit/jsdom tests.
+- [ ] Complete concurrent-viewer and fluctuating-WAN playback checks. The automated Plex/Jellyfin gate is not a physical-device or live-WAN substitute; no stable release has been published.
 
 ## 0.0.206 — sparse updates, inherited ratings and playback repairs
 
