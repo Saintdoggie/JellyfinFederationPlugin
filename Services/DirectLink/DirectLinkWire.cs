@@ -84,8 +84,18 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         private static readonly IPNetwork Tailscale = IPNetwork.Parse("100.64.0.0/10");
 
-        /// <summary>Gets a value indicating whether the smoke-test relaxations are on.</summary>
-        public static bool TestMode => Environment.GetEnvironmentVariable(TestAllowPrivateEnv) == "1";
+        /// <summary>Gets a value indicating whether the isolated NAT test build's relaxations are on.</summary>
+        public static bool TestMode
+        {
+            get
+            {
+#if FEDERATION_TEST_HOOKS
+                return Environment.GetEnvironmentVariable(TestAllowPrivateEnv) == "1";
+#else
+                return false;
+#endif
+            }
+        }
 
         /// <summary>A new random session id (32 hex characters).</summary>
         public static string NewSessionId() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();

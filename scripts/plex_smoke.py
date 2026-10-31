@@ -81,7 +81,11 @@ def smoke(repo, dotnet, published_app, tools):
         command_args += [image]
         # Register before run: a failed start may still create a container.
         created.append(name)
-        command(command_args)
+        try:
+            command(command_args)
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or '').strip()
+            raise RuntimeError(f'Container engine exited {error.returncode}: {detail}') from None
         mapping = command([engine, 'port', name]).splitlines()[0].rsplit(' -> ', 1)[-1]
         return 'http://' + mapping
 
@@ -128,6 +132,7 @@ def smoke(repo, dotnet, published_app, tools):
         plugin = config / 'plugins/Federation'
         plugin.mkdir(parents=True)
         shutil.copy(repo / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
+        shutil.copy(repo / 'Plex/bin/Release/net10.0/Jellyfin.Plugin.Federation.Plex.dll', plugin)
         jf = container(jf_name, ['-p', '127.0.0.1::8096', '-v', f'{config}:/config', '-v', f'{media}:/media:ro'], tools['jellyfin_image'])
         stage = 'Jellyfin startup and import'
         wait_for(lambda: request(jf, '/System/Info/Public'), 'Jellyfin did not start')

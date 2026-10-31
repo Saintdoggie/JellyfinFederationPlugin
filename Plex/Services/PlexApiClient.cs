@@ -77,10 +77,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// an integrity or authentication check.
         /// </summary>
         public static Guid RatingKeyToGuid(string ratingKey)
-        {
-            var bytes = MD5.HashData(Encoding.UTF8.GetBytes("plex-item:" + ratingKey));
-            return new Guid(bytes);
-        }
+            => ExternalItemIds.PlexRatingKeyToGuid(ratingKey);
 
         /// <summary>
         /// Stable Guid for a synthesized season, which Plex does return as a real
@@ -354,7 +351,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task<HttpResponseMessage?> GetPrimaryImageResponseAsync(string ratingKey, CancellationToken cancellationToken)
         {
             var paths = await GetImagePathsAsync(ratingKey, cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(paths?.Thumb))
+            if (string.IsNullOrWhiteSpace(paths?.Thumb) || !IsPlexRelativePath(paths.Value.Thumb))
             {
                 return null;
             }
@@ -391,11 +388,26 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// True for a path on the Plex server itself ("/library/..."). A value that
+        /// doesn't start with a single slash would change which host the request,
+        /// and the Plex token with it, goes to once appended to the base address.
+        /// </summary>
+        internal static bool IsPlexRelativePath(string? path)
+            => !string.IsNullOrEmpty(path)
+               && path[0] == '/'
+               && (path.Length == 1 || (path[1] != '/' && path[1] != '\\'));
+
+        /// <summary>
         /// Opens an image at a Plex-relative path (a <c>thumb</c> or <c>art</c> value),
         /// token sent as a header. The caller owns the returned response.
         /// </summary>
         public async Task<HttpResponseMessage?> GetImageAsync(string plexPath, CancellationToken cancellationToken)
         {
+            if (!IsPlexRelativePath(plexPath))
+            {
+                return null;
+            }
+
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, _baseUrl + plexPath);

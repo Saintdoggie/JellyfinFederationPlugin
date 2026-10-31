@@ -89,6 +89,10 @@ public class ReviewFixesTests
     [InlineData("https://foo.co.uk/x", "https://www.foo.co.uk/x", true)]
     [InlineData("https://alice.duckdns.org/x", "https://bob.duckdns.org/x", false)]
     [InlineData("https://alice.ts.net/x", "https://bob.ts.net/x", false)]
+    [InlineData("https://alice.fly.dev/x", "https://bob.fly.dev/x", false)]
+    [InlineData("https://alice.onrender.com/x", "https://bob.onrender.com/x", false)]
+    [InlineData("https://alice.run.app/x", "https://bob.run.app/x", false)]
+    [InlineData("https://alice.azurecontainer.io/x", "https://bob.azurecontainer.io/x", false)]
     [InlineData("https://10.0.0.1/x", "https://10.0.0.2/x", false)]
     [InlineData("https://example.com/x", "https://www.example.com:8443/x", false)]
     public void TokenRedirect_AllowsOnlySameSiteHttpsHopsBetweenHosts(string from, string to, bool expected)

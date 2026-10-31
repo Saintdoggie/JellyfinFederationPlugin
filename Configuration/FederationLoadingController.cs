@@ -119,12 +119,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return NotFound(new { error = "Not a federated title." });
             }
 
-            if (_externalCatalogs.For(server) is not PlexCatalogProvider plex || entry.GetNativeId(source) is not { Length: > 0 } nativeId)
+            if (server.Kind != ServerKind.Plex
+                || _externalCatalogs.For(server) is not { } provider
+                || entry.GetNativeId(source) is not { Length: > 0 } nativeId)
             {
-                return BadRequest(new { error = "This title does not come from a Plex server." });
+                return BadRequest(new { error = "This title does not have an available Plex provider. Install the optional Plex add-in." });
             }
 
-            var result = await plex.ProbeTranscodeAsync(server, nativeId, kbps, seconds, cancellationToken).ConfigureAwait(false);
+            var result = await provider.ProbeTranscodeAsync(server, nativeId, kbps, seconds, cancellationToken).ConfigureAwait(false);
             return result == null
                 ? StatusCode(502, new { error = "Could not build a Plex client for this server." })
                 : Ok(new
@@ -138,8 +140,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     observedMbps = result.Mbps.HasValue ? Math.Round(result.Mbps.Value, 2) : (double?)null,
                     contentType = result.ContentType,
                     detail = result.Detail,
-                    plexDecision = result.PlexDecision,
-                    plexMessage = result.PlexMessage,
+                    plexDecision = result.Decision,
+                    plexMessage = result.Message,
                 });
         }
     }

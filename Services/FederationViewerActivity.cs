@@ -84,22 +84,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>This server reads the friend's file and converts it.</summary>
         public const string ConvertedHere = "converted-here";
 
+        /// <summary>The transport route has not been observed yet.</summary>
+        public const string Unknown = "unknown";
+
         /// <summary>Classifies a playback. <paramref name="handedOff"/>: the friend runs this session's conversion.</summary>
-        public static string Classify(RemoteServer server, PlayMethod? playMethod, bool handedOff)
+        public static string Classify(RemoteServer server, PlayMethod? playMethod, bool handedOff, string? observedRoute = null)
         {
             if (playMethod == MediaBrowser.Model.Session.PlayMethod.Transcode)
             {
                 return handedOff ? FriendConverts : ConvertedHere;
             }
 
-            return server.StreamingMode == StreamingMode.Direct ? Direct : Relay;
+            return observedRoute is Direct or Relay ? observedRoute : Unknown;
         }
 
         /// <summary>The play method the friend (owner) sees: when this server converts, the friend only serves the original.</summary>
         public static string OwnerPlayMethod(string route, PlayMethod? viewerMethod)
             => route == ConvertedHere
                 ? nameof(MediaBrowser.Model.Session.PlayMethod.DirectStream)
-                : (viewerMethod ?? MediaBrowser.Model.Session.PlayMethod.DirectPlay).ToString();
+                : viewerMethod?.ToString() ?? "Unknown";
     }
 
     /// <summary>
@@ -232,7 +235,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return;
                 }
 
-                var route = FederatedRoute.Classify(server, session.PlayState?.PlayMethod, _handoffs.HandedOffTo(playSessionId) != null);
+                var route = FederatedRoute.Classify(server, session.PlayState?.PlayMethod, _handoffs.HandedOffTo(playSessionId) != null, FederationPlaybackRoutes.Get(playSessionId));
                 var now = UtcNow();
                 _sent.TryGetValue(key, out var previous);
                 if (kind == ViewerEvents.Progress && previous != null && previous.ItemId == source.RemoteItemId && !IsDue(previous, now, positionTicks, isPaused, route))
@@ -385,7 +388,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Owner side: friends' viewers watching this server's titles, shown as
     /// sessions on the dashboard (title, position, paused, play method) under
-    /// "bob (friendflix)". The sessions have no local user, so nothing is
+    /// "bob (friend-a)". The sessions have no local user, so nothing is
     /// recorded against anyone's watch history here. A viewer that goes quiet
     /// for 90 s is stopped.
     /// </summary>
@@ -397,7 +400,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILibraryManager _libraryManager;
         private readonly FederationPeerAccessService _peerAccess;
         private readonly ILogger<FederationRemoteViewerService> _logger;
+        private readonly IRemoteServerClientFactory? _clientFactory;
         private readonly Dictionary<string, Viewer> _viewers = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, (DateTime ExpiresUtc, List<UserDto> Users)> _viewerRosters = new(StringComparer.Ordinal);
         private readonly SemaphoreSlim _gate = new(1, 1);
         private Timer? _sweep;
 
@@ -408,12 +413,14 @@ namespace Jellyfin.Plugin.Federation.Services
             ISessionManager sessions,
             ILibraryManager libraryManager,
             FederationPeerAccessService peerAccess,
-            ILogger<FederationRemoteViewerService> logger)
+            ILogger<FederationRemoteViewerService> logger,
+            IRemoteServerClientFactory? clientFactory = null)
         {
             _sessions = sessions;
             _libraryManager = libraryManager;
             _peerAccess = peerAccess;
             _logger = logger;
+            _clientFactory = clientFactory;
         }
 
         /// <summary>Clock, replaceable in tests.</summary>
@@ -475,6 +482,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return 400;
             }
 
+            if (report.Event != ViewerEvents.Stop && !await IsVerifiedViewer(caller, report).ConfigureAwait(false))
+            {
+                return 403;
+            }
+
             var key = caller.Id + "|" + report.Key;
             await _gate.WaitAsync().ConfigureAwait(false);
             try
@@ -509,6 +521,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (viewer == null)
                 {
+                    var callerPrefix = caller.Id + "|";
+                    if (_viewers.Keys.Count(k => k.StartsWith(callerPrefix, StringComparison.Ordinal)) >= MaxViewersPerFriend)
+                    {
+                        return 429;
+                    }
+
                     var session = await _sessions.LogSessionActivity(
                         Clean(report.Client, 64) ?? "Jellyfin",
                         Clean(report.ClientVersion, 32) ?? "0",
@@ -525,35 +543,37 @@ namespace Jellyfin.Plugin.Federation.Services
                 viewer.Route = report.Route;
                 viewer.PlaySessionId = Clean(report.PlaySessionId, 64);
                 viewer.LastReportUtc = UtcNow();
-                var method = Enum.TryParse<PlayMethod>(report.PlayMethod, true, out var parsed) ? parsed : PlayMethod.DirectPlay;
-                if (!viewer.Started)
+                if (Enum.TryParse<PlayMethod>(report.PlayMethod, true, out var method))
                 {
-                    await _sessions.OnPlaybackStart(new PlaybackStartInfo
+                    if (!viewer.Started)
                     {
-                        ItemId = item.Id,
-                        SessionId = viewer.Session.Id,
-                        MediaSourceId = item.Id.ToString("N"),
-                        PositionTicks = report.PositionTicks,
-                        IsPaused = report.IsPaused,
-                        PlayMethod = method,
-                        PlaySessionId = viewer.PlaySessionId,
-                        CanSeek = true
-                    }).ConfigureAwait(false);
-                    viewer.Started = true;
-                }
-                else
-                {
-                    await _sessions.OnPlaybackProgress(new PlaybackProgressInfo
+                        await _sessions.OnPlaybackStart(new PlaybackStartInfo
+                        {
+                            ItemId = item.Id,
+                            SessionId = viewer.Session.Id,
+                            MediaSourceId = item.Id.ToString("N"),
+                            PositionTicks = report.PositionTicks,
+                            IsPaused = report.IsPaused,
+                            PlayMethod = method,
+                            PlaySessionId = viewer.PlaySessionId,
+                            CanSeek = true
+                        }).ConfigureAwait(false);
+                        viewer.Started = true;
+                    }
+                    else
                     {
-                        ItemId = item.Id,
-                        SessionId = viewer.Session.Id,
-                        MediaSourceId = item.Id.ToString("N"),
-                        PositionTicks = report.PositionTicks,
-                        IsPaused = report.IsPaused,
-                        PlayMethod = method,
-                        PlaySessionId = viewer.PlaySessionId,
-                        CanSeek = true
-                    }).ConfigureAwait(false);
+                        await _sessions.OnPlaybackProgress(new PlaybackProgressInfo
+                        {
+                            ItemId = item.Id,
+                            SessionId = viewer.Session.Id,
+                            MediaSourceId = item.Id.ToString("N"),
+                            PositionTicks = report.PositionTicks,
+                            IsPaused = report.IsPaused,
+                            PlayMethod = method,
+                            PlaySessionId = viewer.PlaySessionId,
+                            CanSeek = true
+                        }).ConfigureAwait(false);
+                    }
                 }
 
                 return 204;
@@ -569,23 +589,48 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>How a friend's viewer is named on the dashboard: "bob (friendflix)".</summary>
+        internal async Task<bool> IsVerifiedViewer(RemoteServer caller, PeerViewerReport report)
+        {
+            if (_clientFactory == null || !Guid.TryParse(report.ViewerId, out var viewerId) || string.IsNullOrWhiteSpace(report.ViewerName))
+            {
+                return false;
+            }
+
+            var now = UtcNow();
+            if (!_viewerRosters.TryGetValue(caller.Id, out var cached) || cached.ExpiresUtc <= now)
+            {
+                var users = await _clientFactory.GetClient(caller).GetUsersAsync().ConfigureAwait(false);
+                if (users == null)
+                {
+                    return false;
+                }
+
+                cached = (now + TimeSpan.FromMinutes(5), users);
+                _viewerRosters[caller.Id] = cached;
+            }
+
+            return cached.Users.Any(u => Guid.TryParse(u.Id, out var id) && id == viewerId && string.Equals(u.Name, report.ViewerName, StringComparison.Ordinal));
+        }
+
+        /// <summary>How a friend's viewer is named on the dashboard: "bob (friend-a)".</summary>
         internal static string Label(string? viewerName, string friendName)
             => (Clean(viewerName, 64) ?? "Someone") + " (" + friendName + ")";
 
-        /// <summary>The device line: "Chrome · via friendflix".</summary>
+        /// <summary>The device line: "Chrome · via friend-a".</summary>
         internal static string DeviceLabel(string? deviceName, string friendName)
             => (Clean(deviceName, 64) ?? "Device") + " · via " + friendName;
+
+        /// <summary>How many viewer sessions one friend can have open here at once.</summary>
+        private const int MaxViewersPerFriend = 20;
 
         /// <summary>
         /// The viewer's own device id, so a conversion this server runs for them
         /// (the handoff asks with that device id) shows its details on the same
-        /// session. Prefixed with nothing: Jellyfin keys sessions by client,
-        /// device and user, and these have no user, so they never merge with a
-        /// real session.
+        /// session. The caller namespace prevents one friend from attaching its
+        /// report to another friend's or a local device session.
         /// </summary>
         internal static string DeviceIdFor(RemoteServer caller, PeerViewerReport report)
-            => Clean(report.DeviceId, 128) ?? ("federation-viewer-" + caller.Id + "-" + report.Key);
+            => "federation-viewer-" + caller.Id + "-" + (Clean(report.DeviceId, 96) ?? report.Key);
 
         private async Task SweepAsync()
         {

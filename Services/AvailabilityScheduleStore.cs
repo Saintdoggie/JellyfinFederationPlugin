@@ -62,7 +62,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public void Initialize(string path)
         {
             _path = path ?? string.Empty;
-            if (string.IsNullOrEmpty(_path) || !File.Exists(_path))
+            if (string.IsNullOrEmpty(_path) || !File.Exists(_path) || new FileInfo(_path).Length > 1_000_000)
             {
                 _state = new AvailabilityScheduleState();
                 return;
@@ -146,6 +146,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
         public void AcceptReceivedSelf(string serverId, string? federationId, AvailabilityScheduleBlob blob)
         {
+            if (!AvailabilitySchedule.IsValidSelfBlob(blob))
+            {
+                return;
+            }
+
             lock (_sync)
             {
                 var row = FriendUnlocked(serverId);
@@ -246,10 +251,15 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             state.SelfOnline = Fit(state.SelfOnline);
             state.SelfTotal = Fit(state.SelfTotal);
+            state.Friends ??= new Dictionary<string, FriendAvailabilityRecord>(StringComparer.OrdinalIgnoreCase);
             foreach (var row in state.Friends.Values)
             {
                 row.Online = Fit(row.Online);
                 row.Total = Fit(row.Total);
+                if (!AvailabilitySchedule.IsValidSelfBlob(row.ReceivedSelf))
+                {
+                    row.ReceivedSelf = null;
+                }
             }
         }
 

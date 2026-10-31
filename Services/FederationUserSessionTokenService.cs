@@ -28,6 +28,8 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(6);
 
+        internal const int MaxTokensPerFriend = 200;
+
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
 
         /// <summary>
@@ -41,6 +43,16 @@ namespace Jellyfin.Plugin.Federation.Services
         public string Issue(string federationId, string remoteUserId)
         {
             Prune();
+
+            // A friend that keeps registering without playing would otherwise grow this
+            // store without limit for six hours; past the cap its oldest tokens go first.
+            var mine = _tokens.Where(kvp => string.Equals(kvp.Value.FederationId, federationId, StringComparison.Ordinal))
+                .OrderBy(kvp => kvp.Value.ExpiresUtc)
+                .ToList();
+            foreach (var stale in mine.Take(Math.Max(0, mine.Count - MaxTokensPerFriend + 1)))
+            {
+                _tokens.TryRemove(stale.Key, out _);
+            }
 
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
             _tokens[token] = new Entry(federationId, remoteUserId, DateTime.UtcNow + TokenLifetime);

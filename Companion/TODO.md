@@ -13,7 +13,7 @@ Updated 2026-10-01. Source: the repository checkout. The Plex ownership/playback
 
 ## User clarification and root causes
 
-Friend runs Windows. The Helluva Boss titles were third-party media federated to the user, and should never have reached the friend's Plex. Downloads also showed items from the wrong selected server. Prior screenshots showed posters but Video/Audio None and playback errors.
+Friend runs Windows. The example titles were third-party media federated to the user, and should never have reached the friend's Plex. Downloads also showed items from the wrong selected server. Prior screenshots showed posters but Video/Audio None and playback errors.
 
 The peer authorization service lacked a FederationKey exclusion before allow-all; Downloads accepted stale responses after server changes; older peer exports needed receiving-side filtering. Native Plex scanned `.strm` text as unplayable metadata. Do not describe successful catalog import as successful playback or renumber third-party shows.
 

@@ -592,10 +592,9 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Validates a proxy URL signature in constant time. v2 binds expiry and
-        /// download purpose and Auto-selection authority. Legacy v1 (64 hex, no expiry) remains play-only so
-        /// persisted Paths keep working until the next restamp; it never authorizes
-        /// <c>download=true</c>.
+        /// Validates a proxy URL signature in constant time. v2 binds expiry,
+        /// download purpose and Auto-selection authority. Non-expiring legacy
+        /// signatures are refused; stored paths are restamped during reconciliation.
         /// </summary>
         public bool ValidateProxySignature(
             string serverId,
@@ -633,17 +632,6 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var normalizedUser = Guid.TryParse(requestingUserId, out var userGuid) ? userGuid.ToString("N") : string.Empty;
-            var v1Expected = ComputeProxySignatureMac(
-                server.ApiKey,
-                BuildV1ProxySignaturePayload(serverId, remoteItemId, isAudio, normalizedUser));
-            var isV1Shape = signature.Length == 64;
-            for (var i = 0; i < signature.Length && isV1Shape; i++)
-            {
-                isV1Shape = Uri.IsHexDigit(signature[i]);
-            }
-
-            var v1Match = isV1Shape && MacEquals(v1Expected, signature);
-
             var v2Match = false;
             var separator = signature.IndexOf('.');
             if (separator == 64 && signature.Length >= 66)
@@ -669,7 +657,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            return download || autoSelect ? v2Match : (v2Match | v1Match);
+            return v2Match;
         }
 
         /// <summary>
@@ -755,9 +743,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static long GetUtcUnixHour(DateTimeOffset utcNow)
             => utcNow.ToUnixTimeSeconds() / 3600;
-
-        private static string BuildV1ProxySignaturePayload(string serverId, Guid remoteItemId, bool isAudio, string normalizedUser)
-            => $"v1\n{serverId}\n{remoteItemId:N}\n{(isAudio ? "1" : "0")}\n{normalizedUser}";
 
         private static string BuildV2ProxySignaturePayload(
             string serverId,
@@ -922,18 +907,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <c>Static=true</c>; a positive WAN cap requests h264/aac at that bitrate.
         /// Audio is never capped.
         /// </summary>
-        public static string BuildDirectGatewayLoopbackUrl(string localBaseUrl, Guid itemId, bool audio, int? capMbps, int maxHeight = 0)
+        public static string BuildDirectGatewayLoopbackUrl(string localBaseUrl, Guid itemId, bool audio, int? capMbps, int maxHeight = 0, string? mediaSourceId = null)
         {
             var endpoint = audio ? "Audio" : "Videos";
             var baseUrl = $"{localBaseUrl.TrimEnd('/')}/{endpoint}/{itemId:N}/stream";
+            var sourceParam = string.IsNullOrWhiteSpace(mediaSourceId) || mediaSourceId.Length > 128
+                ? string.Empty
+                : $"&MediaSourceId={Uri.EscapeDataString(mediaSourceId)}";
             if (audio || capMbps is null or <= 0)
             {
-                return $"{baseUrl}?Static=true";
+                return $"{baseUrl}?Static=true{sourceParam}";
             }
 
             var videoBitrateBps = capMbps.Value * 950_000L - 256_000L;
             var heightParam = maxHeight > 0 ? $"&MaxHeight={maxHeight}" : string.Empty;
-            return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}";
+            return $"{baseUrl}.mp4?VideoCodec=h264&AudioCodec=aac&VideoBitrate={videoBitrateBps}&AudioBitrate=256000{heightParam}{sourceParam}";
         }
 
         /// <summary>

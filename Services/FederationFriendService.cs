@@ -26,11 +26,14 @@ namespace Jellyfin.Plugin.Federation.Services
     /// </summary>
     public class FederationFriendService
     {
-        private static readonly HttpClient DefaultHttpClient = new HttpClient(FederationHttp.Handler()) { Timeout = TimeSpan.FromSeconds(20) };
+        private static readonly HttpClient DefaultHttpClient = new HttpClient(FederationHttp.Handler())
+        {
+            Timeout = TimeSpan.FromSeconds(20),
+            MaxResponseContentBufferSize = HttpContentReader.ControlJsonLimit
+        };
 
-        // Inbound origin-verify only: a 3xx from a public FromServerUrl must not be
-        // followed onto loopback/RFC1918/metadata. Admin-initiated Send/Accept/Reject
-        // keep DefaultHttpClient's normal redirect policy so LAN friends still work.
+        // Inbound origin-verify only: redirects are never followed, including to
+        // loopback/RFC1918/metadata or another host that could receive credentials.
         internal static readonly SocketsHttpHandler DefaultVerifyHandler = new()
         {
             AllowAutoRedirect = false,
@@ -80,6 +83,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IRemoteServerClientFactory _clientFactory;
+        private readonly IPlexCompanionIntegration _plexCompanion;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationFriendService"/> class.
@@ -90,7 +94,8 @@ namespace Jellyfin.Plugin.Federation.Services
             IServerApplicationHost applicationHost,
             FederationLibraryManager federationManager,
             IHttpContextAccessor httpContextAccessor,
-            IRemoteServerClientFactory clientFactory)
+            IRemoteServerClientFactory clientFactory,
+            IPlexCompanionIntegration? plexCompanion = null)
         {
             _logger = logger;
             _authManager = authManager;
@@ -98,6 +103,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
             _clientFactory = clientFactory;
+            _plexCompanion = plexCompanion ?? new UnavailablePlexCompanionIntegration();
         }
 
         // Name under which this plugin's single internal relay API key is
@@ -109,7 +115,8 @@ namespace Jellyfin.Plugin.Federation.Services
         // friend requests would otherwise grow IncomingFriendRequests without bound.
         internal const int MaxPendingIncomingFriendRequests = 25;
 
-        private static readonly TimeSpan IncomingFriendRequestMaxAge = TimeSpan.FromDays(14);
+        private static readonly TimeSpan IncomingFriendRequestMaxAge = TimeSpan.FromDays(1);
+        private static readonly ConcurrentDictionary<string, Queue<DateTime>> FriendRequestAttempts = new(StringComparer.Ordinal);
 
         // Local SetPoolIconAsync already rejects icons over this length; inbound
         // peer notices must use the same bound.
@@ -124,59 +131,50 @@ namespace Jellyfin.Plugin.Federation.Services
         // has to be static to actually serialize across those instances. In practice
         // this happens at most once per server lifetime.
         private static readonly SemaphoreSlim InternalRelayKeyLock = new(1, 1);
-
-        // Once-per-process guard for the orphaned-key sweep below (0 = not run yet).
+        private static string _internalRelayApiKey = string.Empty;
         private static int _orphanKeySweepDone;
-
-        // When the stored internal relay key was last confirmed to exist in Jellyfin.
         private static DateTime _relayKeyCheckedUtc = DateTime.MinValue;
 
         internal static TimeSpan RelayKeyCheckInterval { get; set; } = TimeSpan.FromMinutes(10);
 
-        /// <summary>Test seam: forget when the relay key was last checked.</summary>
-        internal static void ResetRelayKeyCheckForTests() => _relayKeyCheckedUtc = DateTime.MinValue;
+        internal static void ResetRelayKeyCheckForTests()
+        {
+            _internalRelayApiKey = string.Empty;
+            _relayKeyCheckedUtc = DateTime.MinValue;
+            _orphanKeySweepDone = 0;
+        }
 
         /// <summary>
-        /// Gets this server's own internal relay API key (see
-        /// <see cref="PluginConfiguration.InternalRelayApiKey"/>), creating and
-        /// persisting one on first use. Purely server-side plumbing: this key is
-        /// never sent to a friend server or exposed to any client, only used
-        /// locally to fetch this server's own native stream endpoint over loopback
-        /// when relaying a Direct-mode playback-token request.
+        /// Gets this server's process-lifetime internal relay API key, creating one
+        /// on first use. The native admin-equivalent credential is deliberately never
+        /// written to plugin configuration.
         /// </summary>
         public async Task<string> GetOrCreateInternalRelayApiKeyAsync(bool forceCheck = false)
         {
-            var config = Plugin.Instance!.Configuration;
-            if (!string.IsNullOrEmpty(config.InternalRelayApiKey)
+            if (!string.IsNullOrEmpty(_internalRelayApiKey)
                 && !forceCheck
                 && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
             {
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                return config.InternalRelayApiKey;
+                return _internalRelayApiKey;
             }
 
             await InternalRelayKeyLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                config = Plugin.Instance!.Configuration;
-                var stored = config.InternalRelayApiKey;
-                if (!string.IsNullOrEmpty(stored))
+                var current = _internalRelayApiKey;
+                if (!string.IsNullOrEmpty(current))
                 {
                     if (!forceCheck && DateTime.UtcNow - _relayKeyCheckedUtc < RelayKeyCheckInterval)
                     {
-                        return stored;
+                        return current;
                     }
 
-                    // The stored key is only useful while Jellyfin still knows it. It
-                    // disappears when an admin deletes it under Dashboard > API Keys,
-                    // or with a database reset or reinstall that kept the plugin's
-                    // settings - and then every read of this server's own library
-                    // failed ("Invalid token") and every friend got a 503, forever.
                     bool exists;
                     try
                     {
                         var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
-                        exists = keys.Any(k => string.Equals(k.AccessToken, stored, StringComparison.Ordinal));
+                        exists = keys.Any(k => string.Equals(k.AccessToken, current, StringComparison.Ordinal));
                     }
                     catch (Exception ex)
                     {
@@ -188,19 +186,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         _relayKeyCheckedUtc = DateTime.UtcNow;
                         await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                        return stored;
+                        return current;
                     }
-
-                    _logger.LogWarning(
-                        "[Federation] The internal API key this plugin uses to read this server's own library no longer exists in Jellyfin (deleted under Dashboard > API Keys, or lost with a database reset or reinstall). Creating a new one");
                 }
 
-                var apiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
-                config.InternalRelayApiKey = apiKey;
-                Plugin.Instance.SaveConfiguration();
+                _internalRelayApiKey = await CreateApiKeyAsync(InternalRelayKeyName).ConfigureAwait(false);
                 _relayKeyCheckedUtc = DateTime.UtcNow;
                 await SweepOrphanedRelayKeysOnceAsync().ConfigureAwait(false);
-                return apiKey;
+                return _internalRelayApiKey;
             }
             finally
             {
@@ -217,7 +210,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                var current = Plugin.Instance?.Configuration?.InternalRelayApiKey;
+                var current = _internalRelayApiKey;
                 var keys = await _authManager.GetApiKeys().ConfigureAwait(false);
                 foreach (var key in keys.Where(k => string.Equals(k.AppName, InternalRelayKeyName, StringComparison.Ordinal)
                                                     && !string.Equals(k.AccessToken, current, StringComparison.Ordinal)).ToList())
@@ -330,6 +323,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private async Task<(bool Success, string Message)> SendFriendRequestCoreAsync(string remoteUrl, FederationPool? pool, string? replacesServerId, CancellationToken cancellationToken, FriendSharing? sharing = null)
         {
             var config = Plugin.Instance!.Configuration;
+            if (config.OutgoingFriendRequests.Count >= MaxOutgoingFriendRequests)
+            {
+                return (false, "Too many outgoing friend requests are still pending. Cancel or accept some before sending more.");
+            }
 
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
@@ -368,7 +365,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (false, $"Friend request rejected by the remote server (HTTP {(int)response.StatusCode}). Check the address - is Federation installed there too, and running a compatible version?");
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendRequestResponse>(body, JsonOpts);
 
                 config.OutgoingFriendRequests.Add(new FriendRequest
@@ -378,7 +375,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     RemoteServerName = result?.ServerName ?? remoteUrl,
                     ApiKey = apiKey,
                     ReplacesServerId = replacesServerId,
-                    ShareAllLibraries = sharing?.ShareAll,
+                    ShareAllLibraries = sharing?.ShareAll ?? (pool != null ? false : null),
                     SharedLibraryFolderIds = sharing?.FolderIds?.ToList(),
                     CreatedUtc = DateTime.UtcNow,
                     PoolId = pool?.Id,
@@ -399,115 +396,15 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Friends-of-friends discovery: asks each current friend who their other
-        /// friends are, and automatically sends a friend request to anyone new. A
-        /// no-op unless <see cref="PluginConfiguration.AllowFriendsOfFriends"/> is on.
-        /// Consent is never skipped by this: a friend only reveals their friends list
-        /// if they've opted in themselves, and an auto-sent request still needs the
-        /// discovered server's own admin to accept it, same as a manually sent one.
-        /// Content stays scoped the same way regardless of how a friendship started -
-        /// see the FederationKey check in FederationSyncService, which already
-        /// refuses to pull in anything a source server only has because it was
-        /// federated into *them* from somewhere else.
+        /// Refreshes reviewable friends-of-friends results without contacting any
+        /// discovered candidate. An administrator must explicitly choose a candidate
+        /// and its sharing scope before a friend request is sent.
         /// </summary>
-        public async Task<int> DiscoverFriendsOfFriendsAsync(CancellationToken cancellationToken)
-        {
-            var config = Plugin.Instance!.Configuration;
-            if (!config.AllowFriendsOfFriends)
-            {
-                return 0;
-            }
+        public Task<int> DiscoverFriendsOfFriendsAsync(CancellationToken cancellationToken)
+            => Plugin.Instance!.Configuration.AllowFriendsOfFriends
+                ? RefreshDiscoveredServersAsync(cancellationToken)
+                : Task.FromResult(0);
 
-            var localUrl = ResolveLocalUrl();
-            var sent = 0;
-
-            var requestsLeft = MaxAutoRequestsPerPass;
-            var now = DateTime.UtcNow;
-            if (config.DeclinedDiscoveryCandidates.RemoveAll(d => d.UntilUtc <= now) > 0)
-            {
-                Plugin.Instance.SaveConfiguration();
-            }
-
-            // Only Jellyfin friends with a usable address speak Friends/List; Plex and
-            // Companion entries have no such endpoint (and may have no URL at all).
-            foreach (var friend in config.RemoteServers.Where(s =>
-                         s.Enabled
-                         && s.Kind == ServerKind.Jellyfin
-                         && ConfigValidator.IsValidServerUrl(s.Url)).ToList())
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                List<FriendListEntry>? friendsOfFriend;
-                try
-                {
-                    var client = _clientFactory.GetClient(friend);
-                    friendsOfFriend = await client.GetFriendsListAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "[Federation] Friends-of-friends lookup failed for {Server} (non-fatal)", friend.Name);
-                    continue;
-                }
-
-                if (friendsOfFriend == null)
-                {
-                    continue;
-                }
-
-                foreach (var fof in friendsOfFriend)
-                {
-                    if (string.IsNullOrEmpty(fof.Url) || !ConfigValidator.IsValidServerUrl(fof.Url))
-                    {
-                        continue;
-                    }
-
-                    var candidateUrl = fof.Url.TrimEnd('/');
-                    if (!string.IsNullOrEmpty(localUrl) && string.Equals(candidateUrl, localUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
-                    {
-                        // That's us - friend.Name is friends with us already, no need
-                        // to introduce us to ourselves.
-                        continue;
-                    }
-
-                    if (AlreadyKnown(config, candidateUrl))
-                    {
-                        continue;
-                    }
-
-                    // A friend's list is not an instruction to contact LAN hosts, and a
-                    // server that already said no is not asked again until the expiry.
-                    if (!IsAutoIntroducibleUrl(candidateUrl)
-                        || config.DeclinedDiscoveryCandidates.Any(d => string.Equals(d.Url, candidateUrl, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        continue;
-                    }
-
-                    if (requestsLeft <= 0)
-                    {
-                        return sent;
-                    }
-
-                    requestsLeft--;
-                    var (success, message) = await SendFriendRequestAsync(candidateUrl, cancellationToken).ConfigureAwait(false);
-                    if (success)
-                    {
-                        sent++;
-                        _logger.LogInformation("[Federation] Discovered {Url} through friend {Friend} and sent a friend request", candidateUrl, friend.Name);
-                    }
-                    else
-                    {
-                        _logger.LogDebug("[Federation] Discovered {Url} through friend {Friend} but could not send a request: {Message}", candidateUrl, friend.Name, message);
-                    }
-                }
-            }
-
-            return sent;
-        }
-
-        /// <summary>Most automatic friends-of-friends requests sent in one sync pass.</summary>
-        internal const int MaxAutoRequestsPerPass = 5;
-
-        /// <summary>How long a server that rejected an automatic request is left alone.</summary>
         internal static readonly TimeSpan DeclinedCandidateTtl = TimeSpan.FromDays(30);
 
         // In-memory only, static so it survives across this Scoped service's
@@ -520,13 +417,12 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, DiscoveredServer> DiscoveredServersCache = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
-        /// Admin-triggered: asks every current friend who their other friends are -
-        /// the same primitive <see cref="DiscoverFriendsOfFriendsAsync"/> uses for
-        /// automatic discovery, but here purely to populate the Discovery
-        /// dashboard's search results. Never adds anyone as a friend by itself; the
-        /// admin picks who to send a request to from the results. Requires the
-        /// asked friend to have <see cref="PluginConfiguration.AllowFriendsOfFriends"/>
-        /// enabled on their side, same gate as the automatic path.
+        /// Admin-triggered: asks every current friend who their other friends are,
+        /// using the same primitive as <see cref="DiscoverFriendsOfFriendsAsync"/>,
+        /// to populate the Discovery dashboard's search results. Never adds anyone
+        /// as a friend by itself; the admin picks who to send a request to. Requires
+        /// the asked friend to have <see cref="PluginConfiguration.AllowFriendsOfFriends"/>
+        /// enabled on their side.
         /// </summary>
         public async Task<int> RefreshDiscoveredServersAsync(CancellationToken cancellationToken)
         {
@@ -572,20 +468,22 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 foreach (var entry in entries)
                 {
-                    if (string.IsNullOrEmpty(entry.Url) || !ConfigValidator.IsValidServerUrl(entry.Url))
+                    if (found >= 500 || string.IsNullOrEmpty(entry.Url) || !ConfigValidator.IsValidServerUrl(entry.Url))
                     {
                         continue;
                     }
 
                     var normalizedUrl = entry.Url.TrimEnd('/');
-                    if (!string.IsNullOrEmpty(localUrl) && string.Equals(normalizedUrl, localUrl, StringComparison.OrdinalIgnoreCase))
+                    if ((!string.IsNullOrEmpty(localUrl) && string.Equals(normalizedUrl, localUrl, StringComparison.OrdinalIgnoreCase))
+                        || AlreadyKnown(config, normalizedUrl)
+                        || !IsAutoIntroducibleUrl(normalizedUrl))
                     {
                         continue;
                     }
 
                     DiscoveredServersCache[normalizedUrl] = new DiscoveredServer
                     {
-                        Name = string.IsNullOrEmpty(entry.Name) ? normalizedUrl : entry.Name,
+                        Name = TrimTo(entry.Name, 200) ?? normalizedUrl,
                         Url = normalizedUrl,
                         DiscoveredViaFriendName = friend.Name,
                         DiscoveredViaFriendId = friend.Id,
@@ -626,13 +524,23 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Handles an inbound friend request. Anonymous by design - the sender has no
         /// key for us yet, since issuing one is the whole point of this handshake.
         /// </summary>
-        public async Task<FriendRequestResponse> ReceiveFriendRequestAsync(FriendRequestPayload payload, CancellationToken cancellationToken)
+        public async Task<FriendRequestResponse> ReceiveFriendRequestAsync(FriendRequestPayload payload, CancellationToken cancellationToken, string? sourceAddress = null)
         {
             var config = Plugin.Instance!.Configuration;
 
-            if (string.IsNullOrEmpty(payload.RequestId)
+            if (payload == null
+                || string.IsNullOrEmpty(payload.RequestId)
+                || payload.RequestId.Length > 128
                 || !ConfigValidator.IsValidServerUrl(payload.FromServerUrl)
-                || string.IsNullOrEmpty(payload.ApiKeyForYou))
+                || payload.FromServerUrl.Length > 2048
+                || string.IsNullOrEmpty(payload.ApiKeyForYou)
+                || payload.ApiKeyForYou.Length > 128
+                || payload.FromServerName?.Length > 200
+                || payload.FromServerId?.Length > 128
+                || payload.PoolId?.Length > 128
+                || payload.PoolName?.Length > MaxPoolNameLength
+                || payload.PoolOwnerFederationId?.Length > 128
+                || payload.PoolOwnerName?.Length > 200)
             {
                 return new FriendRequestResponse { Success = false, Message = "Malformed friend request." };
             }
@@ -664,7 +572,15 @@ namespace Jellyfin.Plugin.Federation.Services
             var existing = config.IncomingFriendRequests.FirstOrDefault(r => r.Id == payload.RequestId);
             if (existing == null)
             {
-                if (config.IncomingFriendRequests.Count >= MaxPendingIncomingFriendRequests)
+                var knownFriend = config.RemoteServers.FirstOrDefault(s =>
+                    s.Kind == ServerKind.Jellyfin
+                    && string.Equals(s.Url.TrimEnd('/'), fromUrl, StringComparison.OrdinalIgnoreCase));
+                var pendingLimit = knownFriend == null ? MaxPendingIncomingFriendRequests - 5 : MaxPendingIncomingFriendRequests;
+                var sourceFull = config.IncomingFriendRequests.Count(r =>
+                    string.Equals(r.RemoteServerUrl.TrimEnd('/'), fromUrl, StringComparison.OrdinalIgnoreCase)) >= MaxIncomingRequestsPerSource;
+                if (!AllowFriendRequestAttempt(sourceAddress)
+                    || sourceFull
+                    || config.IncomingFriendRequests.Count >= pendingLimit)
                 {
                     if (swept > 0)
                     {
@@ -674,18 +590,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     return new FriendRequestResponse
                     {
                         Success = false,
-                        Message = "This server already has too many pending friend requests. Ask the admin to accept or reject the existing ones."
+                        Message = "Too many pending friend requests or attempts from this source. Try again later."
                     };
                 }
 
-                // A request from the exact address of an existing friend asks to
-                // renew that friendship's keys (the friend was reinstalled, or one
-                // side lost its keys). It still needs the admin's approval, and is
-                // only ever matched by the stored address: accepting sends the new
-                // keys to that address, never to one named in a request.
-                var knownFriend = config.RemoteServers.FirstOrDefault(s =>
-                    s.Kind == ServerKind.Jellyfin
-                    && string.Equals(s.Url.TrimEnd('/'), fromUrl, StringComparison.OrdinalIgnoreCase));
                 // Both admins may press Reconnect at the same time; either request
                 // renews the keys on both sides, so only a duplicate incoming one is
                 // refused.
@@ -716,7 +624,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     PoolName = payload.PoolName,
                     PoolOwnerFederationId = payload.PoolOwnerFederationId,
                     PoolOwnerName = payload.PoolOwnerName,
-                    PoolRoster = payload.PoolRoster
+                    PoolRoster = BoundPoolRoster(payload.PoolRoster)
                 };
                 config.IncomingFriendRequests.Add(existing);
             }
@@ -788,8 +696,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                using var content = JsonContent(payload);
-                using var response = await SharedHttpClient.PostAsync($"{acceptUrl}/Plugins/Federation/Friends/Accept", content, cancellationToken).ConfigureAwait(false);
+                using var response = await PostAuthenticatedAsync(
+                    $"{acceptUrl}/Plugins/Federation/Friends/Accept",
+                    payload,
+                    entry.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     return (false, $"Could not confirm with {entry.RemoteServerName} (HTTP {(int)response.StatusCode}). They may have cancelled the request, are unreachable right now, or are running an incompatible Federation plugin version - try again shortly, or ask them to upgrade.");
@@ -851,140 +762,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// to be on the Plex owner's Tailscale; LAN and 100.x tailnet addresses
         /// are rejected so a "connected" server is actually reachable.
         /// </summary>
-        public async Task<(bool Success, string Message, RemoteServer? Server)> ConnectPlexCompanionAsync(string? code, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(code))
-            {
-                return (false, "Paste a valid Companion connect code.", null);
-            }
-
-            CompanionConnectCodePayload? decoded;
-            try
-            {
-                decoded = JsonSerializer.Deserialize<CompanionConnectCodePayload>(
-                    Convert.FromBase64String(code.Trim()),
-                    JsonOpts);
-            }
-            catch (Exception ex) when (ex is FormatException or JsonException)
-            {
-                return (false, "That connect code could not be read - check it was copied in full.", null);
-            }
-
-            if (decoded == null || string.IsNullOrWhiteSpace(decoded.Url) || string.IsNullOrWhiteSpace(decoded.Token))
-            {
-                return (false, "That connect code is missing an address or token.", null);
-            }
-
-            if (!ConfigValidator.IsValidServerUrl(decoded.Url))
-            {
-                return (false, "That connect code has an invalid server address.", null);
-            }
-
-            string plexUrl;
-            string plexToken;
-            string serverName;
-            IReadOnlyList<CompanionSharedLibrary> libraries;
-
-            // Historical codes omitted <c>claim</c> and put Companion's public
-            // URL + a one-time token in {url, token}. The settings page used to
-            // save those as Plex credentials, which only worked on the same
-            // tailnet. Default is to claim.
-            if (decoded.Claim != false)
-            {
-                var claimed = await ClaimCompanionLinkAsync(decoded, cancellationToken).ConfigureAwait(false);
-                if (claimed.Success)
-                {
-                    plexUrl = claimed.PlexUrl!;
-                    plexToken = claimed.PlexToken!;
-                    serverName = claimed.ServerName!;
-                    libraries = claimed.Libraries;
-                }
-                else if (!string.IsNullOrWhiteSpace(decoded.FallbackUrl)
-                    && !string.IsNullOrWhiteSpace(decoded.FallbackToken))
-                {
-                    // Funnel TLS is often advertised while dead. The same code
-                    // can carry Plex Remote Access/Relay as a backup so the
-                    // Starlink friend still connects.
-                    plexUrl = decoded.FallbackUrl.Trim().TrimEnd('/');
-                    plexToken = decoded.FallbackToken;
-                    serverName = string.IsNullOrWhiteSpace(decoded.Name) ? plexUrl : decoded.Name.Trim();
-                    libraries = decoded.Libraries ?? new List<CompanionSharedLibrary>();
-                }
-                else
-                {
-                    return (false, claimed.Message, null);
-                }
-            }
-            else
-            {
-                plexUrl = decoded.Url.Trim().TrimEnd('/');
-                plexToken = decoded.Token;
-                serverName = string.IsNullOrWhiteSpace(decoded.Name) ? plexUrl : decoded.Name.Trim();
-                libraries = decoded.Libraries ?? new List<CompanionSharedLibrary>();
-            }
-
-            if (ConfigValidator.IsPrivateOrLoopbackHost(plexUrl))
-            {
-                return (false, "That Plex server only published a local or Tailscale address. Ask your friend to enable Plex Remote Access or Plex Relay so you can connect without being on their Tailscale.", null);
-            }
-
-            var config = Plugin.Instance?.Configuration;
-            if (config == null)
-            {
-                return (false, "Plugin not initialized.", null);
-            }
-
-            config.RemoteServers ??= new List<RemoteServer>();
-            if (config.RemoteServers.Any(s =>
-                    !string.IsNullOrWhiteSpace(s.Url)
-                    && string.Equals(s.Url.TrimEnd('/'), plexUrl, StringComparison.OrdinalIgnoreCase)))
-            {
-                return (false, "A server with this address is already configured - edit it in the list instead of adding it again.", null);
-            }
-
-            var server = new RemoteServer
-            {
-                Id = Guid.NewGuid().ToString(),
-                Kind = ServerKind.Plex,
-                Name = serverName,
-                Url = plexUrl,
-                ApiKey = plexToken,
-                CompanionUrl = decoded.Claim != false
-                    && decoded.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-                    && !ConfigValidator.IsPrivateOrLoopbackHost(decoded.Url)
-                    ? decoded.Url.Trim().TrimEnd('/')
-                    : string.Empty,
-                FederationId = Guid.NewGuid().ToString(),
-                IssuedApiKey = FederationTokenAuth.GenerateToken(),
-                StreamingMode = StreamingMode.Proxy,
-                Enabled = true
-            };
-
-            var shared = libraries
-                .Where(l => !string.IsNullOrWhiteSpace(l.SectionKey))
-                .Select(l => new CompanionSharedLibrary
-                {
-                    SectionKey = l.SectionKey,
-                    Title = l.Title,
-                    Type = l.Type
-                })
-                .ToList();
-
-            if (shared.Count > 0)
-            {
-                server.AllowedExternalLibraryIds = shared.Select(l => l.SectionKey!).ToList();
-            }
-
-            config.RemoteServers.Add(server);
-            AttachPlexLibraryMappings(config, server, shared);
-            Plugin.Instance!.SaveConfiguration();
-            _clientFactory.InvalidateAll();
-
-            var sharedNote = shared.Count == 0
-                ? " They have not marked any libraries shared yet, so nothing will sync until they do."
-                : $" {shared.Count} shared library(ies) are mapped and will sync.";
-            return (true, $"Connected to {server.Name}.{sharedNote}", server);
-        }
+        public Task<(bool Success, string Message, RemoteServer? Server)> ConnectPlexCompanionAsync(string? code, CancellationToken cancellationToken)
+            => _plexCompanion.ConnectAsync(code, cancellationToken);
 
         /// <summary>
         /// Stores a Plex Companion share that was pushed by typing this
@@ -992,263 +771,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// applied until then.
         /// </summary>
         public (bool Success, string Message) ReceivePlexOffer(string? code)
-        {
-            var config = Plugin.Instance?.Configuration;
-            if (config == null)
-            {
-                return (false, "Plugin not initialized.");
-            }
+            => _plexCompanion.ReceiveOffer(code);
 
-            if (string.IsNullOrWhiteSpace(code))
-            {
-                return (false, "That share request is empty.");
-            }
-
-            CompanionConnectCodePayload? decoded;
-            try
-            {
-                decoded = JsonSerializer.Deserialize<CompanionConnectCodePayload>(
-                    Convert.FromBase64String(code.Trim()),
-                    JsonOpts);
-            }
-            catch (Exception ex) when (ex is FormatException or JsonException)
-            {
-                return (false, "That share request could not be read.");
-            }
-
-            if (decoded == null || string.IsNullOrWhiteSpace(decoded.Url) || string.IsNullOrWhiteSpace(decoded.Token))
-            {
-                return (false, "That share request is missing an address or token.");
-            }
-
-            config.IncomingPlexOffers ??= new List<IncomingPlexOffer>();
-            config.IncomingPlexOffers.RemoveAll(o => o.CreatedUtc < DateTime.UtcNow.AddHours(-24));
-            if (config.IncomingPlexOffers.Count >= 25)
-            {
-                return (false, "This server already has too many pending Plex share requests. Ask the admin to accept or reject the existing ones.");
-            }
-
-            if (config.IncomingPlexOffers.Any(o => string.Equals(o.Code, code.Trim(), StringComparison.Ordinal)))
-            {
-                return (true, "That share request is already waiting for the admin to accept.");
-            }
-
-            config.IncomingPlexOffers.Add(new IncomingPlexOffer
-            {
-                Code = code.Trim(),
-                ServerName = string.IsNullOrWhiteSpace(decoded.Name) ? decoded.Url : decoded.Name.Trim(),
-                CompanionUrl = decoded.Url.Trim().TrimEnd('/'),
-                CreatedUtc = DateTime.UtcNow
-            });
-            Plugin.Instance!.SaveConfiguration();
-            return (true, "Share request received. The Jellyfin admin can Accept it under Federation → Companion.");
-        }
-
-        public async Task<(bool Success, string Message, RemoteServer? Server)> AcceptPlexOfferAsync(string offerId, CancellationToken cancellationToken)
-        {
-            var config = Plugin.Instance?.Configuration;
-            var offer = config?.IncomingPlexOffers?.FirstOrDefault(o => o.Id == offerId);
-            if (offer == null)
-            {
-                return (false, "That Plex share request was not found. It may have been accepted or rejected already.", null);
-            }
-
-            var (success, message, server) = await ConnectPlexCompanionAsync(offer.Code, cancellationToken).ConfigureAwait(false);
-            if (success)
-            {
-                config!.IncomingPlexOffers.RemoveAll(o => o.Id == offerId);
-                Plugin.Instance!.SaveConfiguration();
-            }
-
-            return (success, message, server);
-        }
+        public Task<(bool Success, string Message, RemoteServer? Server)> AcceptPlexOfferAsync(string offerId, CancellationToken cancellationToken)
+            => _plexCompanion.AcceptOfferAsync(offerId, cancellationToken);
 
         public (bool Success, string Message) RejectPlexOffer(string offerId)
-        {
-            var config = Plugin.Instance?.Configuration;
-            if (config?.IncomingPlexOffers == null)
-            {
-                return (false, "That Plex share request was not found.");
-            }
-
-            var removed = config.IncomingPlexOffers.RemoveAll(o => o.Id == offerId) > 0;
-            if (!removed)
-            {
-                return (false, "That Plex share request was not found.");
-            }
-
-            Plugin.Instance!.SaveConfiguration();
-            return (true, "Plex share request rejected.");
-        }
-
-        private async Task<(bool Success, string Message, string? PlexUrl, string? PlexToken, string? ServerName, List<CompanionSharedLibrary> Libraries)> ClaimCompanionLinkAsync(
-            CompanionConnectCodePayload decoded,
-            CancellationToken cancellationToken)
-        {
-            var claimUrl = decoded.Url!.Trim().TrimEnd('/') + "/api/link/complete";
-            try
-            {
-                using var response = await SharedHttpClient.PostAsync(
-                    claimUrl,
-                    JsonContent(new
-                    {
-                        token = decoded.Token,
-                        requesterName = _applicationHost.FriendlyName
-                    }),
-                    cancellationToken).ConfigureAwait(false);
-
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var remoteError = TryReadError(body);
-                    if (LooksLikePlexInsteadOfCompanion(body))
-                    {
-                        return (false, "That public address is Plex, not Companion. Ask your friend to Update Companion and send the share request again — it will use Plex's own public path so you can Accept without calling Companion through Funnel.", null, null, null, new List<CompanionSharedLibrary>());
-                    }
-
-                    return (false, remoteError ?? "Could not reach the Companion app to finish the connect code. Ask your friend to enable Plex Remote Access / Plex Relay and generate a new code — they do not need port forwarding or a working Funnel for that.", null, null, null, new List<CompanionSharedLibrary>());
-                }
-
-                if (LooksLikePlexInsteadOfCompanion(body))
-                {
-                    return (false, "That public address is Plex, not Companion. Ask your friend to Update Companion and send the share request again — it will use Plex's own public path so you can Accept without calling Companion through Funnel.", null, null, null, new List<CompanionSharedLibrary>());
-                }
-
-                var claimed = JsonSerializer.Deserialize<CompanionLinkCompleteResponse>(body, JsonOpts);
-                if (claimed == null || string.IsNullOrWhiteSpace(claimed.PlexUrl) || string.IsNullOrWhiteSpace(claimed.PlexToken))
-                {
-                    return (false, "The Companion app did not return a usable Plex address.", null, null, null, new List<CompanionSharedLibrary>());
-                }
-
-                return (
-                    true,
-                    "ok",
-                    claimed.PlexUrl.TrimEnd('/'),
-                    claimed.PlexToken,
-                    string.IsNullOrWhiteSpace(claimed.ServerName) ? (decoded.Name ?? claimed.PlexUrl) : claimed.ServerName.Trim(),
-                    claimed.Libraries ?? new List<CompanionSharedLibrary>());
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
-            {
-                _logger.LogWarning(ex, "[Federation] Companion connect-code claim failed for {Url}", decoded.Url);
-                return (false, DescribeClaimTransportFailure(decoded.Url, ex), null, null, null, new List<CompanionSharedLibrary>());
-            }
-        }
-
-        internal static string DescribeClaimTransportFailure(string? companionUrl, Exception ex)
-        {
-            var host = Uri.TryCreate(companionUrl, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host)
-                ? uri.Host
-                : companionUrl ?? "their Companion app";
-
-            if (IsTlsHandshakeFailure(ex))
-            {
-                return $"Could not complete HTTPS to {host}. Their Tailscale Funnel is advertised but TLS is not serving — DNS and the HTTP redirect work, the certificate handshake does not. This particular code cannot be used until Funnel HTTPS works. Ask them to enable Plex Remote Access (Relay works on Starlink with no port forwarding) and generate a new connect code. Companion will use Plex's own public address instead of Funnel.";
-            }
-
-            if (ex is TaskCanceledException)
-            {
-                return $"Timed out reaching {host}. Ask them to generate a new code after Plex Remote Access / Plex Relay is on — they do not need port forwarding or a working Funnel for that.";
-            }
-
-            return $"Could not reach {host} over the internet. They do not need to join your Tailscale. Ask them to enable Plex Remote Access / Plex Relay and generate a new connect code.";
-        }
-
-        internal static bool LooksLikePlexInsteadOfCompanion(string? body)
-        {
-            if (string.IsNullOrWhiteSpace(body))
-            {
-                return false;
-            }
-
-            return body.Contains("MediaContainer", StringComparison.OrdinalIgnoreCase)
-                || body.Contains("Plex Media Server", StringComparison.OrdinalIgnoreCase)
-                || body.Contains("<html", StringComparison.OrdinalIgnoreCase) && body.Contains("plex", StringComparison.OrdinalIgnoreCase);
-        }
-
-        internal static bool IsTlsHandshakeFailure(Exception ex)
-        {
-            for (var current = ex; current != null; current = current.InnerException)
-            {
-                if (current is System.Security.Authentication.AuthenticationException)
-                {
-                    return true;
-                }
-
-                var message = current.Message ?? string.Empty;
-                if (message.Contains("SSL", StringComparison.OrdinalIgnoreCase)
-                    || message.Contains("TLS", StringComparison.OrdinalIgnoreCase)
-                    || message.Contains("unexpected EOF", StringComparison.OrdinalIgnoreCase)
-                    || message.Contains("trust relationship", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static string? TryReadError(string body)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(body);
-                if (doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
-                {
-                    return error.GetString();
-                }
-            }
-            catch (JsonException)
-            {
-                // Body is not JSON - keep the generic caller-side message.
-            }
-
-            return null;
-        }
-
-        private void AttachPlexLibraryMappings(PluginConfiguration config, RemoteServer server, IReadOnlyList<CompanionSharedLibrary> libraries)
-        {
-            config.LibraryMappings ??= new List<LibraryMapping>();
-            foreach (var library in libraries)
-            {
-                var mediaType = string.Equals(library.Type, "show", StringComparison.OrdinalIgnoreCase)
-                    ? "Series"
-                    : "Movie";
-                var mappingName = _federationManager.LocalLibraryNameFor(mediaType);
-                var mapping = config.LibraryMappings.FirstOrDefault(m =>
-                    string.Equals(m.LocalLibraryName, mappingName, StringComparison.OrdinalIgnoreCase));
-                if (mapping == null)
-                {
-                    mapping = new LibraryMapping
-                    {
-                        LocalLibraryName = mappingName,
-                        MediaType = mediaType,
-                        Enabled = true,
-                        AutoProvision = true,
-                        AutoManaged = true
-                    };
-                    config.LibraryMappings.Add(mapping);
-                }
-
-                if (!mapping.RemoteServerIds.Contains(server.Id))
-                {
-                    mapping.RemoteServerIds.Add(server.Id);
-                }
-
-                if (!mapping.RemoteLibrarySources.Any(s =>
-                        s.ServerId == server.Id
-                        && string.Equals(s.RemoteLibraryId, library.SectionKey, StringComparison.Ordinal)))
-                {
-                    mapping.RemoteLibrarySources.Add(new RemoteLibrarySource
-                    {
-                        ServerId = server.Id,
-                        ServerName = server.Name,
-                        RemoteLibraryId = library.SectionKey ?? string.Empty,
-                        RemoteLibraryName = string.IsNullOrWhiteSpace(library.Title) ? mappingName : library.Title!
-                    });
-                }
-            }
-        }
+            => _plexCompanion.RejectOffer(offerId);
 
         /// <summary>
         /// Admin-triggered: registers a non-Jellyfin consumer of our own catalog
@@ -1263,75 +792,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <c>/api/connect/generate</c> already produces, for symmetry.
         /// </summary>
         public (bool Success, string Message, string? ConnectCode) CreateCompanionFriend(string name, bool shareAllLibraries, List<string>? sharedLibraryFolderIds)
-        {
-            var localUrl = ResolveLocalUrl();
-            if (string.IsNullOrEmpty(localUrl))
-            {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first, since your friend's Companion app needs it to reach back.", null);
-            }
+            => _plexCompanion.CreateReceiver(name, shareAllLibraries, sharedLibraryFolderIds);
 
-            var config = Plugin.Instance?.Configuration;
-            if (config == null)
-            {
-                return (false, "Plugin not initialized.", null);
-            }
-
-            var token = FederationTokenAuth.GenerateToken();
-            var friendlyName = string.IsNullOrWhiteSpace(name) ? "Plex friend" : name.Trim();
-            var server = new RemoteServer
-            {
-                Id = Guid.NewGuid().ToString(),
-                Kind = ServerKind.Companion,
-                Name = friendlyName,
-                IssuedApiKey = token,
-                // Playback/session tokens minted for this peer are bound to its
-                // FederationId at mint time and re-resolved through
-                // FindByFederationId at stream time (see
-                // FederationController.IsStreamTokenAuthorized). Leaving this
-                // empty - as entries created by 0.0.116 were - made every
-                // DirectStream request from the Companion's .strm files 403,
-                // because an empty id can never be re-resolved to a friend.
-                FederationId = Guid.NewGuid().ToString(),
-                Enabled = true,
-                ShareAllLibraries = shareAllLibraries,
-                SharedLibraryFolderIds = sharedLibraryFolderIds ?? new List<string>()
-            };
-
-            config.RemoteServers ??= new List<RemoteServer>();
-            config.RemoteServers.Add(server);
-            Plugin.Instance!.SaveConfiguration();
-
-            return (true, $"Connect code generated for {friendlyName}.", BuildConnectCode(localUrl, token, friendlyName));
-        }
-
-        /// <summary>
-        /// Reconstructs the same connect code <see cref="CreateCompanionFriend"/>
-        /// returns, from an already-stored <see cref="RemoteServer.IssuedApiKey"/> -
-        /// so an admin who lost the copied text can pull it up again without
-        /// rotating the token (and breaking their friend's existing Companion
-        /// setup in the process).
-        /// </summary>
         public (bool Success, string Message, string? ConnectCode) GetCompanionConnectCode(RemoteServer server)
-        {
-            var localUrl = ResolveLocalUrl();
-            if (string.IsNullOrEmpty(localUrl))
-            {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first.", null);
-            }
+            => _plexCompanion.GetConnectCode(server);
 
-            if (string.IsNullOrEmpty(server.IssuedApiKey))
-            {
-                return (false, "This friend has no issued token yet.", null);
-            }
-
-            return (true, "Connect code ready.", BuildConnectCode(localUrl, server.IssuedApiKey, server.Name));
-        }
-
-        private static string BuildConnectCode(string url, string token, string name)
-        {
-            var payload = JsonSerializer.Serialize(new { url, token, name });
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
-        }
+        public Task<string?> TryGetPlexCompanionVersionAsync(RemoteServer server, CancellationToken cancellationToken)
+            => _plexCompanion.TryGetVersionAsync(server, cancellationToken);
 
         /// <summary>
         /// Backfills a missing <see cref="RemoteServer.FederationId"/> on an
@@ -1436,12 +903,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, $"No address/key on file for {friend.Name} yet.");
             }
 
-            if (friend.Kind != ServerKind.Jellyfin && !PlexCompanionEndpoint.CanReceivePoolInvite(friend))
+            var companionInviteUrl = friend.Kind == ServerKind.Jellyfin ? null : _plexCompanion.GetPoolInviteUrl(friend);
+            if (friend.Kind != ServerKind.Jellyfin && companionInviteUrl == null)
             {
-                return (false, $"{friend.Name} is a Plex friend without a Companion/Funnel address, so a pool invite cannot be delivered. Ask them to turn on Funnel in Companion and reconnect.");
+                return (false, $"{friend.Name} is a Plex friend without an available Companion address, so a pool invite cannot be delivered. Install the Plex add-in, or ask them to enable Companion with Tailscale Funnel pointing to Companion rather than Plex, then reconnect.");
             }
 
             var config = Plugin.Instance!.Configuration;
+            if (pool.Members.Count >= MaxPoolMembers)
+            {
+                return (false, $"This pool already has the maximum of {MaxPoolMembers} members.");
+            }
+
+            if (config.OutgoingPoolInvites.Count >= MaxOutgoingPoolInvites)
+            {
+                return (false, "Too many pool invitations are still pending.");
+            }
+
             if (config.OutgoingPoolInvites.Any(i => i.PoolId == pool.Id && string.Equals(i.RemoteServerUrl.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
             {
                 return (false, $"{friend.Name} already has a pending invite to this pool.");
@@ -1479,18 +957,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     FederationPluginVersion = pluginVersion
                 };
 
-                string inviteUrl;
-                string authToken;
-                if (friend.Kind == ServerKind.Jellyfin)
-                {
-                    inviteUrl = $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/InviteNotice";
-                    authToken = friend.ApiKey;
-                }
-                else
-                {
-                    inviteUrl = PlexCompanionEndpoint.PoolInviteUrl(PlexCompanionEndpoint.TryGetBaseUrl(friend)!);
-                    authToken = friend.ApiKey;
-                }
+                var inviteUrl = friend.Kind == ServerKind.Jellyfin
+                    ? $"{friend.Url.TrimEnd('/')}/Plugins/Federation/Pools/InviteNotice"
+                    : companionInviteUrl!;
+                var authToken = friend.ApiKey;
 
                 using var response = await PostAuthenticatedAsync(
                     inviteUrl,
@@ -1553,6 +1023,15 @@ namespace Jellyfin.Plugin.Federation.Services
             var existingPool = config.Pools.FirstOrDefault(p => p.Id == payload.PoolId);
             if (existingPool != null)
             {
+                var senderUrl = sender.Url.TrimEnd('/');
+                if (!existingPool.Members.Any(m =>
+                        (!string.IsNullOrEmpty(sender.FederationId) && string.Equals(m.FederationId, sender.FederationId, StringComparison.OrdinalIgnoreCase))
+                        || string.Equals(m.Url.TrimEnd('/'), senderUrl, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _logger.LogWarning("[Federation] Ignored a pool invite/sync from {Friend}: they are not a member of pool {PoolId}", sender.Name, payload.PoolId);
+                    return Task.CompletedTask;
+                }
+
                 ApplyInboundPoolIcon(existingPool, payload.IconBase64);
 
                 return AdoptPoolRosterAndFanOutAsync(
@@ -1573,18 +1052,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Task.CompletedTask;
             }
 
+            // One friend can't fill the pending list (it is stored in the plugin config).
+            if (config.IncomingPoolInvites.Count >= MaxPendingPoolInvites
+                || config.IncomingPoolInvites.Count(i => string.Equals(i.RemoteServerId, sender.FederationId, StringComparison.Ordinal)) >= MaxPendingPoolInvitesPerFriend)
+            {
+                return Task.CompletedTask;
+            }
+
             config.IncomingPoolInvites.Add(new PoolInvite
             {
                 Id = payload.InviteId,
                 PoolId = payload.PoolId,
-                PoolName = payload.PoolName ?? payload.PoolId,
+                PoolName = TrimTo(payload.PoolName, MaxPoolNameLength) ?? payload.PoolId,
                 OwnerFederationId = payload.OwnerFederationId ?? string.Empty,
                 OwnerName = payload.OwnerName ?? sender.Name,
                 RemoteServerUrl = sender.Url,
                 RemoteServerName = sender.Name,
                 RemoteServerId = sender.FederationId,
-                Roster = payload.Roster ?? new List<PoolMember>(),
-                IconBase64 = CapInboundPoolIcon(payload.IconBase64)
+                Roster = BoundPoolRoster(payload.Roster),
+                IconBase64 = NormalizePoolIcon(payload.IconBase64)
             });
             Plugin.Instance.SaveConfiguration();
             return Task.CompletedTask;
@@ -1603,6 +1089,20 @@ namespace Jellyfin.Plugin.Federation.Services
             if (entry == null)
             {
                 return (false, "Pool invite not found.");
+            }
+
+            if (config.Pools.Count >= MaxPools && config.Pools.All(p => p.Id != entry.PoolId))
+            {
+                return (false, $"This server already has the maximum of {MaxPools} pools.");
+            }
+
+            var existingPool = config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+            var normalizedTarget = entry.RemoteServerUrl.TrimEnd('/');
+            if (existingPool != null
+                && existingPool.Members.Count >= MaxPoolMembers
+                && existingPool.Members.All(m => !string.Equals(m.Url.TrimEnd('/'), normalizedTarget, StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, $"This pool already has the maximum of {MaxPoolMembers} members.");
             }
 
             var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == entry.RemoteServerId);
@@ -1722,13 +1222,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// every other current member so the mesh learns about the newcomer without
         /// each of them having to sync independently.
         /// </summary>
-        public bool HandlePoolAcceptNotice(PoolInviteResponsePayload payload)
+        public bool HandlePoolAcceptNotice(RemoteServer caller, PoolInviteResponsePayload payload)
         {
             var config = Plugin.Instance!.Configuration;
-            var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == payload.InviteId);
-            if (entry == null)
+            var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == payload?.InviteId);
+            if (entry == null || !MatchesPoolInviteTarget(caller, entry))
             {
-                _logger.LogWarning("[Federation] Received a pool-accept callback for an unknown/expired invite {InviteId}", payload.InviteId);
+                _logger.LogWarning("[Federation] Rejected a pool-accept callback from someone other than the invited friend");
                 return false;
             }
 
@@ -1743,6 +1243,11 @@ namespace Jellyfin.Plugin.Federation.Services
             var normalized = entry.RemoteServerUrl.TrimEnd('/');
             if (!pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
             {
+                if (pool.Members.Count >= MaxPoolMembers)
+                {
+                    return false;
+                }
+
                 pool.Members.Add(new PoolMember { FederationId = entry.RemoteServerId, Name = entry.RemoteServerName, Url = entry.RemoteServerUrl });
             }
 
@@ -1755,21 +1260,26 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Server-to-server: the friend we invited into a pool declined - just
-        /// clears our outgoing record, nothing else changed.
+        /// Server-to-server: the invited friend declined this specific pool invite.
         /// </summary>
-        public void HandlePoolRejectNotice(string inviteId)
+        public bool HandlePoolRejectNotice(RemoteServer caller, string inviteId)
         {
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingPoolInvites.FirstOrDefault(i => i.Id == inviteId);
-            if (entry == null)
+            if (entry == null || !MatchesPoolInviteTarget(caller, entry))
             {
-                return;
+                return false;
             }
 
             config.OutgoingPoolInvites.Remove(entry);
             Plugin.Instance.SaveConfiguration();
+            return true;
         }
+
+        private static bool MatchesPoolInviteTarget(RemoteServer caller, PoolInvite invite)
+            => (!string.IsNullOrEmpty(invite.RemoteServerId)
+                && string.Equals(caller.FederationId, invite.RemoteServerId, StringComparison.OrdinalIgnoreCase))
+                || string.Equals(caller.Url.TrimEnd('/'), invite.RemoteServerUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Admin-triggered: sets or clears a pool's icon and best-effort spreads it
@@ -1785,12 +1295,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Pool not found.");
             }
 
-            if (!string.IsNullOrEmpty(iconBase64) && iconBase64.Length > MaxPoolIconBase64Length)
+            var normalizedIcon = NormalizePoolIcon(iconBase64);
+            if (!string.IsNullOrEmpty(iconBase64) && normalizedIcon == null)
             {
-                return (false, "Icon is too large - please use a smaller image.");
+                return (false, "Icon must be a valid PNG image no larger than 150,000 base64 characters.");
             }
 
-            pool.IconBase64 = string.IsNullOrEmpty(iconBase64) ? null : iconBase64;
+            pool.IconBase64 = normalizedIcon;
             Plugin.Instance.SaveConfiguration();
 
             await BroadcastPoolNoticeAsync(pool, excludeFederationId: null, cancellationToken).ConfigureAwait(false);
@@ -1940,10 +1451,16 @@ namespace Jellyfin.Plugin.Federation.Services
             var pool = config.Pools.FirstOrDefault(p => p.Id == poolId);
             if (pool == null)
             {
+                if (config.Pools.Count >= MaxPools)
+                {
+                    _logger.LogWarning("[Federation] Ignored a new pool while the {Limit}-pool limit is reached", MaxPools);
+                    return;
+                }
+
                 pool = new FederationPool
                 {
                     Id = poolId,
-                    Name = poolName ?? poolId,
+                    Name = TrimTo(poolName, MaxPoolNameLength) ?? poolId,
                     IsOwner = false,
                     OwnerFederationId = ownerFederationId ?? string.Empty,
                     OwnerName = ownerName ?? reachedViaName ?? string.Empty
@@ -1963,7 +1480,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 // A roster comes from another server: only well-formed public
-                // addresses are stored (and later contacted automatically).
+                // addresses are stored, and only already-known friends are contacted.
                 if (fromRoster && !IsAutoIntroducibleUrl(url))
                 {
                     _logger.LogDebug("[Federation] Ignored pool roster entry {Url}: not a valid public server address", url);
@@ -1971,12 +1488,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var normalized = url.TrimEnd('/');
-                if (pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
+                if (pool.Members.Count >= MaxPoolMembers
+                    || pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
                 {
                     return;
                 }
 
-                pool.Members.Add(new PoolMember { FederationId = federationId ?? string.Empty, Name = name ?? url, Url = url });
+                pool.Members.Add(new PoolMember
+                {
+                    FederationId = TrimTo(federationId, 128) ?? string.Empty,
+                    Name = TrimTo(name, 200) ?? normalized,
+                    Url = normalized
+                });
             }
 
             AddMember(selfId, selfName, selfUrl);
@@ -1993,7 +1516,9 @@ namespace Jellyfin.Plugin.Federation.Services
             var toIntroduce = pool.Members
                 .Where(m => !string.Equals(m.Url.TrimEnd('/'), selfUrlNormalized, StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(m.Url.TrimEnd('/'), reachedViaUrlNormalized, StringComparison.OrdinalIgnoreCase)
-                    && IsAutoIntroducibleUrl(m.Url))
+                    && IsAutoIntroducibleUrl(m.Url)
+                    && config.RemoteServers.Any(s => s.Enabled
+                        && string.Equals(s.Url.TrimEnd('/'), m.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)))
                 .Take(MaxPoolRosterEntries)
                 .ToList();
 
@@ -2082,6 +1607,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 return Task.CompletedTask;
             }
 
+            var senderUrl = sender.Url.TrimEnd('/');
+            if (!existingPool.Members.Any(m =>
+                    (!string.IsNullOrEmpty(sender.FederationId) && string.Equals(m.FederationId, sender.FederationId, StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(m.Url.TrimEnd('/'), senderUrl, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogWarning("[Federation] Ignored a pool sync notice from {Friend}: they are not a member of pool {PoolId}", sender.Name, payload.PoolId);
+                return Task.CompletedTask;
+            }
+
             ApplyInboundPoolIcon(existingPool, payload.IconBase64);
 
             return AdoptPoolRosterAndFanOutAsync(
@@ -2116,8 +1650,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             try
             {
-                using var content = JsonContent(new FriendRejectPayload { RequestId = entry.Id });
-                await SharedHttpClient.PostAsync($"{entry.RemoteServerUrl}/Plugins/Federation/Friends/Reject", content, cancellationToken).ConfigureAwait(false);
+                using var response = await PostAuthenticatedAsync(
+                    $"{entry.RemoteServerUrl.TrimEnd('/')}/Plugins/Federation/Friends/Reject",
+                    new FriendRejectPayload { RequestId = entry.Id },
+                    entry.ApiKey,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -2158,21 +1695,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// to its admin on anything but success, so this is what actually stops
         /// an incompatible acceptance from creating a broken friend entry here.
         /// </summary>
-        public bool HandleAcceptCallback(FriendRequestPayload payload)
+        public bool HandleAcceptCallback(FriendRequestPayload payload, string? presentedCredential = null)
         {
-            if (!payload.SupportsFederationToken)
+            if (payload == null || !payload.SupportsFederationToken || string.IsNullOrEmpty(payload.ApiKeyForYou))
             {
-                _logger.LogWarning(
-                    "[Federation] Rejected an accept callback for request {RequestId}: the other side did not confirm scoped federation-token support (likely an incompatible/old plugin version)",
-                    payload.RequestId);
+                _logger.LogWarning("[Federation] Rejected a malformed or incompatible friend-accept callback");
                 return false;
             }
 
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingFriendRequests.FirstOrDefault(r => r.Id == payload.RequestId);
-            if (entry == null)
+            if (entry == null
+                || string.IsNullOrEmpty(entry.ApiKey)
+                || presentedCredential == null
+                || !FederationTokenAuth.FixedTimeEquals(entry.ApiKey, presentedCredential))
             {
-                _logger.LogWarning("[Federation] Received an accept callback for an unknown/expired request {RequestId}", payload.RequestId);
+                _logger.LogWarning("[Federation] Rejected a friend-accept callback without the pending request credential");
                 return false;
             }
 
@@ -2213,6 +1751,14 @@ namespace Jellyfin.Plugin.Federation.Services
                     memberUrl);
             }
 
+            var targetPool = string.IsNullOrEmpty(entry.PoolId) ? null : config.Pools.FirstOrDefault(p => p.Id == entry.PoolId);
+            if (targetPool != null
+                && targetPool.Members.Count >= MaxPoolMembers
+                && targetPool.Members.All(m => !string.Equals(m.Url.TrimEnd('/'), memberUrl, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
             config.RemoteServers.Add(new RemoteServer
             {
                 Id = Guid.NewGuid().ToString(),
@@ -2225,7 +1771,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 StreamingMode = StreamingMode.Direct,
                 // Chosen in the friend request dialog before sending; the friend
                 // could not see anything before accepting.
-                ShareAllLibraries = entry.ShareAllLibraries ?? true,
+                ShareAllLibraries = entry.ShareAllLibraries ?? string.IsNullOrEmpty(entry.PoolId),
                 SharedLibraryFolderIds = entry.SharedLibraryFolderIds?.ToList() ?? new List<string>()
             });
 
@@ -2251,22 +1797,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="Configuration.RemoteServer.IssuedApiKey"/> - dropping the
         /// now-unused <see cref="FriendRequest"/> entry is enough.
         /// </summary>
-        public void HandleRejectCallbackAsync(string requestId)
+        public bool HandleRejectCallbackAsync(string requestId, string? presentedCredential = null)
         {
             var config = Plugin.Instance!.Configuration;
             var entry = config.OutgoingFriendRequests.FirstOrDefault(r => r.Id == requestId);
-            if (entry == null)
+            if (entry == null
+                || string.IsNullOrEmpty(entry.ApiKey)
+                || presentedCredential == null
+                || !FederationTokenAuth.FixedTimeEquals(entry.ApiKey, presentedCredential))
             {
-                return;
+                return false;
             }
 
             config.OutgoingFriendRequests.Remove(entry);
 
-            // Remember the no so automatic discovery doesn't ask them again every sync.
             var declinedUrl = entry.RemoteServerUrl.TrimEnd('/');
             config.DeclinedDiscoveryCandidates.RemoveAll(d => string.Equals(d.Url, declinedUrl, StringComparison.OrdinalIgnoreCase));
             config.DeclinedDiscoveryCandidates.Add(new DeclinedDiscoveryCandidate { Url = declinedUrl, UntilUtc = DateTime.UtcNow + DeclinedCandidateTtl });
             Plugin.Instance.SaveConfiguration();
+            return true;
         }
 
         /// <summary>
@@ -2335,13 +1884,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "A remote user id is required.");
             }
 
-            server.RemoteUserAccessRules.RemoveAll(r => string.Equals(r.RemoteUserId, rule.RemoteUserId, StringComparison.OrdinalIgnoreCase));
+            var updated = server.RemoteUserAccessRules
+                .Where(r => !string.Equals(r.RemoteUserId, rule.RemoteUserId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
             var hasExtraRestrictions = !string.IsNullOrWhiteSpace(rule.MaxAllowedRating) || !rule.AllowDownload || (rule.BlockedItemIds != null && rule.BlockedItemIds.Count > 0);
             if (rule.Mode != RemoteUserAccessMode.AllLibraries || hasExtraRestrictions)
             {
-                server.RemoteUserAccessRules.Add(rule);
+                updated.Add(rule);
             }
 
+            if (!ValidRemoteUserRules(updated))
+            {
+                return (false, "The rule set is too large or contains invalid values.");
+            }
+
+            server.RemoteUserAccessRules = updated;
             Plugin.Instance.SaveConfiguration();
 
             if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
@@ -2384,23 +1941,52 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Applied to <paramref name="caller"/> (the token), not whoever
         /// <c>payload.FromFederationId</c> names.
         /// </summary>
-        public bool ReceiveRemoteUserAccessRules(RemoteServer caller, RemoteUserAccessRulesPayload payload)
+        public RemoteUserRulesUpdateResult ReceiveRemoteUserAccessRules(RemoteServer caller, RemoteUserAccessRulesPayload payload)
         {
-            if (caller == null || payload == null)
+            if (caller == null || payload == null
+                || !ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "remote-user access rules"))
             {
-                return false;
+                return RemoteUserRulesUpdateResult.Invalid;
             }
 
-            if (!ClaimedFederationIdMatchesCaller(caller, payload.FromFederationId, "remote-user access rules"))
+            var rules = payload.Rules ?? new List<RemoteUserAccessRule>();
+            if (!ValidRemoteUserRules(rules))
             {
-                return false;
+                return RemoteUserRulesUpdateResult.TooLarge;
             }
 
-            caller.FriendUserAccessRules = payload.Rules ?? new List<RemoteUserAccessRule>();
+            if (JsonSerializer.Serialize(rules) == JsonSerializer.Serialize(caller.FriendUserAccessRules ?? new List<RemoteUserAccessRule>()))
+            {
+                return RemoteUserRulesUpdateResult.Unchanged;
+            }
+
+            caller.FriendUserAccessRules = rules;
             Plugin.Instance!.SaveConfiguration();
             _logger.LogInformation("[Federation] {Name} updated their per-user access rules for us ({Count} rule(s))", caller.Name, caller.FriendUserAccessRules.Count);
-            return true;
+            return RemoteUserRulesUpdateResult.Changed;
         }
+
+        internal static bool ValidRemoteUserRules(List<RemoteUserAccessRule> rules)
+        {
+            if (rules.Count > 100
+                || rules.Any(r => r == null)
+                || rules.Sum(r => (r.ItemIds?.Count ?? 0) + (r.LibraryFolderIds?.Count ?? 0) + (r.BlockedItemIds?.Count ?? 0)) > 5000)
+            {
+                return false;
+            }
+
+            return rules.All(r => !string.IsNullOrWhiteSpace(r.RemoteUserId)
+                && r.RemoteUserId.Length <= 128
+                && (r.RemoteUserName == null || r.RemoteUserName.Length <= 200)
+                && (r.MaxAllowedRating == null || r.MaxAllowedRating.Length <= 50)
+                && Enum.IsDefined(r.Mode)
+                && ValidRuleIds(r.ItemIds)
+                && ValidRuleIds(r.LibraryFolderIds)
+                && ValidRuleIds(r.BlockedItemIds));
+        }
+
+        private static bool ValidRuleIds(List<string>? ids)
+            => ids == null || (ids.Count <= 1000 && ids.All(id => !string.IsNullOrWhiteSpace(id) && id.Length <= 128));
 
         /// <summary>
         /// True when the body federation id is absent or matches the authenticated
@@ -2423,23 +2009,38 @@ namespace Jellyfin.Plugin.Federation.Services
             return false;
         }
 
-        // Oversized peer icons are dropped; the rest of the notice still applies.
-        private static string? CapInboundPoolIcon(string? iconBase64)
+        private static string? NormalizePoolIcon(string? iconBase64)
         {
-            if (string.IsNullOrEmpty(iconBase64) || iconBase64.Length > MaxPoolIconBase64Length)
+            if (string.IsNullOrEmpty(iconBase64))
             {
                 return null;
             }
 
-            return iconBase64;
+            if (iconBase64.Length > MaxPoolIconBase64Length)
+            {
+                return null;
+            }
+
+            try
+            {
+                var bytes = Convert.FromBase64String(iconBase64);
+                ReadOnlySpan<byte> pngSignature = stackalloc byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
+                return bytes.Length > pngSignature.Length && bytes.AsSpan(0, pngSignature.Length).SequenceEqual(pngSignature)
+                    ? Convert.ToBase64String(bytes)
+                    : null;
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
         }
 
         private static void ApplyInboundPoolIcon(FederationPool pool, string? iconBase64)
         {
-            var capped = CapInboundPoolIcon(iconBase64);
-            if (capped != null)
+            var normalized = NormalizePoolIcon(iconBase64);
+            if (normalized != null)
             {
-                pool.IconBase64 = capped;
+                pool.IconBase64 = normalized;
             }
         }
 
@@ -2584,15 +2185,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return string.Empty;
             }
 
-            var scheme = request.Scheme;
-            var forwardedProto = request.Headers["X-Forwarded-Proto"].FirstOrDefault();
-            if (!string.IsNullOrEmpty(forwardedProto)
-                && (forwardedProto == Uri.UriSchemeHttp || forwardedProto == Uri.UriSchemeHttps))
-            {
-                scheme = forwardedProto;
-            }
-
-            var derived = $"{scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
+            var derived = $"{request.Scheme}://{request.Host}{request.PathBase}".TrimEnd('/');
 
             // An admin managing Jellyfin from their own LAN (very common - even a
             // publicly-tunnelled server's admin dashboard is usually opened over the
@@ -2615,8 +2208,67 @@ namespace Jellyfin.Plugin.Federation.Services
             return derived;
         }
 
-        /// <summary>Most roster entries or discovery candidates acted on from one notice.</summary>
         internal const int MaxPoolRosterEntries = 50;
+        internal const int MaxPoolMembers = 250;
+        internal const int MaxPools = 100;
+        internal const int MaxPendingPoolInvites = 100;
+        internal const int MaxPendingPoolInvitesPerFriend = 10;
+        internal const int MaxOutgoingPoolInvites = 100;
+        internal const int MaxOutgoingFriendRequests = 100;
+        internal const int MaxIncomingRequestsPerSource = 2;
+        internal const int MaxPoolNameLength = 100;
+
+        private static string? TrimTo(string? value, int max)
+            => value != null && value.Length > max ? value[..max] : value;
+
+        private static List<PoolMember> BoundPoolRoster(List<PoolMember>? roster)
+            => (roster ?? new List<PoolMember>()).Take(MaxPoolRosterEntries).Select(member => new PoolMember
+            {
+                FederationId = TrimTo(member?.FederationId, 128) ?? string.Empty,
+                Name = TrimTo(member?.Name, 200) ?? string.Empty,
+                Url = TrimTo(member?.Url, 2048) ?? string.Empty
+            }).ToList();
+
+        private static bool AllowFriendRequestAttempt(string? sourceAddress)
+        {
+            if (string.IsNullOrEmpty(sourceAddress))
+            {
+                return true;
+            }
+
+            var now = DateTime.UtcNow;
+            var attempts = FriendRequestAttempts.GetOrAdd(sourceAddress, _ => new Queue<DateTime>());
+            lock (attempts)
+            {
+                while (attempts.Count > 0 && now - attempts.Peek() > TimeSpan.FromMinutes(1))
+                {
+                    attempts.Dequeue();
+                }
+
+                if (attempts.Count >= 5)
+                {
+                    return false;
+                }
+
+                attempts.Enqueue(now);
+            }
+
+            if (FriendRequestAttempts.Count > 1024)
+            {
+                foreach (var pair in FriendRequestAttempts)
+                {
+                    lock (pair.Value)
+                    {
+                        if (pair.Value.Count == 0 || now - pair.Value.Last() > TimeSpan.FromMinutes(1))
+                        {
+                            FriendRequestAttempts.TryRemove(pair.Key, out _);
+                        }
+                    }
+                }
+            }
+
+            return true;
+        }
 
         /// <summary>
         /// Addresses another server handed us are only contacted automatically when
@@ -2633,14 +2285,10 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// POSTs to an endpoint on an already-known friend's server, authenticated
-        /// with the scoped federation token they issued this server (see
-        /// <see cref="FederationTokenAuth"/>) - unlike the handshake endpoints
-        /// (Friends/Request, Friends/Accept, Friends/Reject), which are anonymous
-        /// by necessity since no token exists yet at that point. Unlike the real
-        /// Jellyfin API key this used to send, this token satisfies nothing on
-        /// Jellyfin's own native auth - it only means anything to the friend's own
-        /// <see cref="FederationTokenAuth.ResolveCaller"/> check.
+        /// POSTs with a scoped federation token (see <see cref="FederationTokenAuth"/>).
+        /// Established friends use the token they issued this server; accept/reject
+        /// callbacks use the credential issued for that pending handshake. The token
+        /// satisfies nothing on Jellyfin's own native auth.
         /// </summary>
         private static async Task<HttpResponseMessage> PostAuthenticatedAsync(string url, object payload, string apiKey, CancellationToken cancellationToken)
         {
@@ -2712,43 +2360,6 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the pool's membership as known by the sender when this request was sent.</summary>
         public List<PoolMember>? PoolRoster { get; set; }
-    }
-
-    internal sealed class CompanionConnectCodePayload
-    {
-        public string? Url { get; set; }
-
-        public string? Token { get; set; }
-
-        public string? Name { get; set; }
-
-        public bool? Claim { get; set; }
-
-        public string? FallbackUrl { get; set; }
-
-        public string? FallbackToken { get; set; }
-
-        public List<CompanionSharedLibrary>? Libraries { get; set; }
-    }
-
-    internal sealed class CompanionLinkCompleteResponse
-    {
-        public string? PlexUrl { get; set; }
-
-        public string? PlexToken { get; set; }
-
-        public string? ServerName { get; set; }
-
-        public List<CompanionSharedLibrary>? Libraries { get; set; }
-    }
-
-    internal sealed class CompanionSharedLibrary
-    {
-        public string? SectionKey { get; set; }
-
-        public string? Title { get; set; }
-
-        public string? Type { get; set; }
     }
 
     /// <summary>
@@ -2911,6 +2522,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets or sets the id of the friend that listed this server (not sent to the browser).</summary>
         [System.Text.Json.Serialization.JsonIgnore]
         public string DiscoveredViaFriendId { get; set; } = string.Empty;
+    }
+
+    public enum RemoteUserRulesUpdateResult
+    {
+        Invalid,
+        TooLarge,
+        Unchanged,
+        Changed
     }
 
     /// <summary>What a new friend may see of this server, chosen before the friendship exists.</summary>

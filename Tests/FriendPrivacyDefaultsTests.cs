@@ -119,8 +119,9 @@ public sealed class FriendPrivacyDefaultsTests : IDisposable
         Assert.Contains("config.ShareViewerNamesWithFriends = existing.ShareViewerNamesWithFriends;", src);
         Assert.Contains("server.SharePopular = oldServer.SharePopular;", src);
         Assert.Contains("server.ShareViewerNames = oldServer.ShareViewerNames;", src);
-        Assert.Contains("s.SharePopular,", src);
-        Assert.Contains("s.ShareViewerNames,", src);
+        var shown = FederationServerPresentation.Sanitize(new RemoteServer { SharePopular = true, ShareViewerNames = false }, null);
+        Assert.Equal(true, shown.GetType().GetProperty("SharePopular")!.GetValue(shown));
+        Assert.Equal(false, shown.GetType().GetProperty("ShareViewerNames")!.GetValue(shown));
         var speedTest = src.Substring(src.IndexOf("public async Task<IActionResult> PeerBitrateTest", StringComparison.Ordinal), 1500);
         Assert.Contains("IsOverCap(caller.FederationId", speedTest);
         Assert.Contains("RelayWithDataLimitAsync(caller", speedTest);

@@ -86,6 +86,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 host = uri.Host;
             }
 
+            host = host.TrimEnd('.');
             if (IsWellKnownLoopbackOrMetadataHostname(host))
             {
                 return true;
@@ -101,7 +102,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 ip = ip.MapToIPv4();
             }
 
-            if (IPAddress.IsLoopback(ip))
+            if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
             {
                 return true;
             }
@@ -109,7 +110,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
             if (ip.AddressFamily == AddressFamily.InterNetwork)
             {
                 var b = ip.GetAddressBytes();
-                return b[0] == 10
+                return b[0] == 0
+                    || b[0] == 10
+                    || b[0] >= 224
                     || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
                     || (b[0] == 192 && b[1] == 168)
                     || (b[0] == 169 && b[1] == 254)
@@ -118,9 +121,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             if (ip.AddressFamily == AddressFamily.InterNetworkV6)
             {
-                // fc00::/7 (unique local) and fe80::/10 (link-local).
+                // Multicast, fc00::/7 (unique local) and fe80::/10 (link-local).
                 var b = ip.GetAddressBytes();
-                return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80);
+                return b[0] == 0xff || (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80);
             }
 
             return false;
@@ -234,7 +237,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             var duplicateNames = mappings
                 .Where(m => !string.IsNullOrWhiteSpace(m.LocalLibraryName))
-                .GroupBy(m => m.LocalLibraryName, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(m => m.LocalLibraryName.Trim(), StringComparer.OrdinalIgnoreCase)
                 .Where(g => g.Count() > 1)
                 .Select(g => g.Key);
             foreach (var name in duplicateNames)

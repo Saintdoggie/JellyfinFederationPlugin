@@ -22,6 +22,41 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 public partial class FederationSyncServiceTests
 {
+    [Fact]
+    public async Task RefreshWanBandwidth_SequencesSamplesPerServer_AndKeepsServersParallel()
+    {
+        var servers = new[]
+        {
+            new RemoteServer { Id = "wan-a", Name = "WAN A", Url = "http://203.0.113.10", Enabled = true, WanCapMode = WanCapMode.Auto },
+            new RemoteServer { Id = "wan-b", Name = "WAN B", Url = "http://203.0.113.11", Enabled = true, WanCapMode = WanCapMode.Auto },
+        };
+        var handler = new CoordinatedBandwidthHandler(servers.Length);
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        foreach (var server in servers)
+        {
+            var httpClient = new HttpClient(handler) { BaseAddress = new Uri(server.Url) };
+            var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+            clientFactory.Setup(f => f.GetClient(server.Id)).Returns(client);
+        }
+
+        clientFactory.Setup(f => f.ProbeHttpsUpgradeAsync(It.IsAny<RemoteServer>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, clientFactory.Object);
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        var lm = new Mock<ILibraryManager>();
+        var libraryManager = new FederationLibraryManager(lm.Object, NullLogger<FederationLibraryManager>.Instance, clientFactory.Object, cache, monitor, Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
+        var persistence = new FederationItemPersistenceService(lm.Object, NullLogger<FederationItemPersistenceService>.Instance, libraryManager, Mock.Of<MediaBrowser.Controller.Persistence.IItemPersistenceService>());
+        var sync = new FederationSyncService(NullLogger<FederationSyncService>.Instance, libraryManager, clientFactory.Object, cache, persistence, monitor, Mock.Of<IServiceProvider>(), new ExternalCatalogRegistry(Array.Empty<IExternalCatalogProvider>()));
+
+        var method = typeof(FederationSyncService).GetMethod("RefreshWanBandwidthAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(sync, new object?[] { servers, CancellationToken.None })!;
+
+        foreach (var server in servers)
+        {
+            Assert.Equal(3, handler.RequestCount(server));
+        }
+    }
+
     /// <summary>
     /// Regression test for a bug where synthesized Season entries were deleted in
     /// the same sync pass that created them: PruneServerSources removes any raw-keyed
@@ -608,6 +643,43 @@ public partial class FederationSyncServiceTests
         }
 
         return null;
+    }
+
+    private sealed class CoordinatedBandwidthHandler : HttpMessageHandler
+    {
+        private static readonly byte[] Sample = new byte[10_000_000];
+        private readonly object _gate = new();
+        private readonly Dictionary<string, int> _requests = new(StringComparer.OrdinalIgnoreCase);
+        private readonly TaskCompletionSource _allServersStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly int _serverCount;
+
+        public CoordinatedBandwidthHandler(int serverCount) => _serverCount = serverCount;
+
+        public int RequestCount(RemoteServer server)
+        {
+            lock (_gate)
+            {
+                return _requests.GetValueOrDefault(new Uri(server.Url).Host);
+            }
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var host = request.RequestUri!.Host;
+            lock (_gate)
+            {
+                _requests[host] = _requests.GetValueOrDefault(host) + 1;
+                if (_requests.Count == _serverCount)
+                {
+                    _allServersStarted.TrySetResult();
+                }
+            }
+
+            // Both different-server refreshes must reach their sample before either
+            // can finish; per-server duplicates are counted and asserted above.
+            await _allServersStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Sample) };
+        }
     }
 
     private sealed class FakeHttpMessageHandler : HttpMessageHandler

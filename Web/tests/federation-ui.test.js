@@ -9,6 +9,7 @@ const { JSDOM } = require('jsdom');
 const root = path.resolve(__dirname, '../..');
 const badgeScript = fs.readFileSync(path.join(root, 'Web/client/federation-badge.js'), 'utf8');
 const configPage = fs.readFileSync(path.join(root, 'Web/admin/configPage.html'), 'utf8');
+const plexPage = fs.readFileSync(path.join(root, 'Plex/Web/admin/plexPage.html'), 'utf8');
 const itemId = '11111111111111111111111111111111';
 
 function settle() {
@@ -383,6 +384,74 @@ test('all rendered tabs are routable and the inline configuration script parses'
   dom.window.close();
 });
 
+test('Plex add-in script parses, has unique ids, and wires every rendered action', () => {
+  const scriptMatch = plexPage.match(/<script type="text\/javascript">([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch);
+  assert.doesNotThrow(() => new Function(scriptMatch[1]));
+
+  const dom = new JSDOM(plexPage);
+  const ids = [...dom.window.document.querySelectorAll('[id]')].map((element) => element.id);
+  assert.equal(new Set(ids).size, ids.length, 'Plex add-in contains duplicate element ids');
+  dom.window.close();
+
+  const actions = new Set([...plexPage.matchAll(/data-plex-action="([a-z0-9-]+)"/g)].map((match) => match[1]));
+  const cases = new Set([...scriptMatch[1].matchAll(/case '([^']+)'/g)].map((match) => match[1]));
+  assert.ok(actions.size > 0);
+  assert.deepEqual([...actions].filter((action) => !cases.has(action)), []);
+  assert.match(configPage, /data-fed-action="open-plex-addin"/);
+  assert.doesNotMatch(configPage, /PlexSetup|PlexOffers|data-fed-action="connect-plex-source"/);
+});
+
+test('add-in loader authenticates the named page and initializes its injected scripts', async () => {
+  const addinPage = fs.readFileSync(path.join(root, 'Web/admin/addinPage.html'), 'utf8');
+  const loaderScript = addinPage.match(/<script type="text\/javascript">([\s\S]*?)<\/script>/);
+  assert.ok(loaderScript);
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'dangerously',
+    url: 'http://localhost/web/index.html#!/configurationpage?name=FederationPlex'
+  });
+  const requests = [];
+  const errors = [];
+  dom.window.addEventListener('error', (event) => errors.push(event.error || event.message));
+  dom.window.ApiClient = { accessToken: () => 'synthetic-browser-token' };
+  dom.window.fetch = (url, options) => {
+    const address = String(url);
+    requests.push({ url: address, options });
+    if (address.includes('/AddInPages/FederationPlex')) {
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(plexPage) });
+    }
+    let data = {};
+    if (address.endsWith('/Configuration')) data = { RemoteServers: [], LibraryMappings: [] };
+    if (address.endsWith('/PlexOffers') || address.endsWith('/LocalLibraries')) data = [];
+    return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(data)) });
+  };
+  dom.window.document.body.innerHTML = addinPage;
+  dom.window.eval(loaderScript[1]);
+  for (let i = 0; i < 20; i++) { await settle(); }
+
+  const resource = requests.find((entry) => entry.url.includes('/AddInPages/FederationPlex'));
+  assert.ok(resource);
+  assert.equal(resource.options.headers.Authorization, 'MediaBrowser Token="synthetic-browser-token"');
+  assert.equal(resource.options.headers['X-Emby-Token'], undefined);
+  assert.ok(dom.window.document.getElementById('federationPlexPage'));
+  assert.equal(typeof dom.window.__federationPlexDisposePage, 'function');
+  assert.ok(requests.some((entry) => entry.url.endsWith('/PlexSetup/Status')));
+  assert.deepEqual(errors, []);
+  dom.window.__federationPlexDisposePage();
+  dom.window.close();
+});
+
+test('Plex add-in keeps credentials in authenticated request bodies and headers, not URLs', () => {
+  assert.match(plexPage, /headers\.Authorization = 'MediaBrowser Token="' \+ encodeURIComponent\(token\) \+ '"'/);
+  assert.match(plexPage, /response\.status === 401 \|\| response\.status === 403/);
+  assert.match(plexPage, /plexMetaCall\('POST', 'Manual', \{ Url: url, Token: token \}\)/);
+  assert.match(plexPage, /id="fedPlexManualToken" class="emby-input" type="password"|type="password" id="fedPlexManualToken"/);
+  assert.match(plexPage, /id="fedPlexMetaToken" class="emby-input" type="password"|type="password" id="fedPlexMetaToken"/);
+  assert.doesNotMatch(plexPage, /[?&](?:api_key|access_token|token)=/i);
+  assert.doesNotMatch(plexPage, /X-Plex-Token=/i);
+  assert.doesNotMatch(plexPage, /JSON\.parse\(atob/);
+});
+
 function configResponseParser() {
   const match = configPage.match(/function readJson\(response\) \{([\s\S]*?)\n {20}\}\n\n {20}function q/);
   assert.ok(match, 'readJson response parser not found');
@@ -536,22 +605,22 @@ test('library picker merges friend sections into existing Movies and Shows', () 
   assert.equal(configPage.includes("lib.libraryName.trim().toLowerCase() + '|' + lib.mediaType"), false);
 });
 
-test('Plex share requests can be accepted from the Companion tab without pasting a code', () => {
-  assert.match(configPage, /fedPlexOffersIncoming/);
-  assert.match(configPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
-  assert.match(configPage, /accept-plex-offer/);
-  assert.match(configPage, /this<\/em> server's public address/);
-  assert.match(configPage, /Funnel opens Plex/);
-  assert.match(configPage, /explicitly choose Plex Remote Access/);
+test('Plex share requests can be accepted from the add-in without pasting a code', () => {
+  assert.match(plexPage, /fedPlexOffersIncoming/);
+  assert.match(plexPage, /PlexOffers\/' \+ encodeURIComponent\(id\) \+ '\/Accept/);
+  assert.match(plexPage, /accept-plex-offer/);
+  assert.match(plexPage, /this<\/em> server's public address/);
+  assert.match(plexPage, /Funnel opens Plex/);
+  assert.match(plexPage, /explicitly choose Plex Remote Access/);
 });
 
 test('Plex connect-code posts the raw code to the server-side claim endpoint', () => {
-  // Regression: the settings page used to base64-decode the Companion code in
-  // the browser and POST {url, token} to ExternalServers as if they were Plex
-  // credentials. That saved Companion's Funnel URL + a one-time claim token,
-  // which only worked when both machines shared a Tailscale tailnet. The
-  // plugin must claim the code server-to-server instead.
-  const fn = configPage.match(/function connectPlexSource\(\) \{[\s\S]*?\n {20}\}/);
+  // Regression: the add-in must not base64-decode the Companion code in the
+  // browser and POST {url, token} to ExternalServers as if they were Plex
+  // credentials. That saves Companion's Funnel URL + a one-time claim token,
+  // which only works when both machines share a Tailscale tailnet. The plugin
+  // must claim the code server-to-server instead.
+  const fn = plexPage.match(/function connectPlexSource\(\) \{[\s\S]*?\n {20}\}/);
   assert.ok(fn, 'connectPlexSource not found');
   assert.equal(fn[0].includes('JSON.parse(atob'), false);
   assert.match(fn[0], /ExternalServers\/ConnectCode/);
@@ -1307,6 +1376,7 @@ function poolMembershipHarness(success) {
   q('.fedPoolPick[data-friend="friend-1"]').value = 'pool-1';
   q('#fedPoolInvite-pool-1').value = 'https://friend.example';
   const api = new Function('fedFetch', 'q', `
+    function cssEscape(value) { return value; }
     function setFriendPoolStatus() {}
     function setPoolStatus() {}
     function readJson(r) { return r.json(); }
@@ -1662,9 +1732,9 @@ test('admin tab row is one scrollable row and switchTab keeps the active tab in 
 });
 
 function plexGuidedImport() {
-  const block = configPage.match(/(var plexImportPlanData = null;[\s\S]*?)\n {20}function collectServer/);
+  const block = plexPage.match(/(var plexStateText = \{[\s\S]*?)\n {20}function loadConfiguration/);
   assert.ok(block, 'guided Plex import script not found');
-  const dom = new JSDOM(configPage);
+  const dom = new JSDOM(plexPage);
   const doc = dom.window.document;
   const posts = [];
   const helpers = {
@@ -1676,7 +1746,8 @@ function plexGuidedImport() {
     loadPlexSetup: () => {},
     plexMetaCall: (method, apiPath, body) => { posts.push({ method, apiPath, body }); return Promise.resolve({ Results: [] }); }
   };
-  const api = new Function(...Object.keys(helpers), block[1] + '\nreturn { renderPlexPlan, plexImport, renderPlexMapRows, setRows: (r) => { plexMapRows = r; }, updatePlexImportButton };');
+  const state = 'var plexImportPlanData = null; var plexMapRows = [];';
+  const api = new Function(...Object.keys(helpers), state + block[1] + '\nreturn { renderPlexPlan, plexImport, renderPlexMapRows, setRows: (r) => { plexMapRows = r; }, updatePlexImportButton };');
   return { doc, posts, ...api(...Object.values(helpers)) };
 }
 
@@ -1873,8 +1944,8 @@ test("friends' favorites appear as one row per friend below the native favorites
     { Id: 'ccc', Name: 'Song', Type: 'Audio', AlbumArtist: 'Band', ImageTags: { Primary: 't3' } }
   ];
   const { dom, calls, itemQueries } = makeFavoritesWindow([
-    { serverId: 'f1', name: 'friendflix', itemIds: ['bbb', 'aaa'] },
-    { serverId: 'f2', name: 'Slowpoke', itemIds: ['ccc', 'gone'] },
+    { serverId: 'f1', name: 'friend-a', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f2', name: 'slow-peer', itemIds: ['ccc', 'gone'] },
     { serverId: 'f3', name: 'Empty', itemIds: ['gone'] }
   ], items);
   await settleMany();
@@ -1886,7 +1957,7 @@ test("friends' favorites appear as one row per friend below the native favorites
   const tab = doc.getElementById('favoritesTab');
   assert.equal(tab.querySelector('.sections').textContent, 'native');
   const sections = [...tab.querySelectorAll('.federation-favorites-section')];
-  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Favorites on friendflix', 'Favorites on Slowpoke']);
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Favorites on friend-a', 'Favorites on slow-peer']);
   const first = [...sections[0].querySelectorAll('.federation-fav-card')];
   assert.deepEqual(first.map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
   assert.equal(first[1].getAttribute('href'), '#/details?id=aaa&serverId=srv');
@@ -2007,9 +2078,9 @@ test('inside a group the menu offers "Invite friends", or says who it is shared 
   assert.deepEqual(invite.posts[0].body, { GroupId: 'g1' });
   invite.dom.window.close();
 
-  const shared = makeSyncPlayMenu(['leave-group'], { shared: true, hostedHere: true, friends: ['friendflix'], canHost: true }, groups);
+  const shared = makeSyncPlayMenu(['leave-group'], { shared: true, hostedHere: true, friends: ['friend-a'], canHost: true }, groups);
   await settleMany();
-  assert.equal(shared.dom.window.document.querySelector('.federation-party-item').textContent.trim(), 'Watching with friendflix');
+  assert.equal(shared.dom.window.document.querySelector('.federation-party-item').textContent.trim(), 'Watching with friend-a');
   shared.dom.window.close();
 });
 
@@ -2152,15 +2223,26 @@ function makePlayerStats(connection) {
 test('Playback Info gets a Federation block for friends\' titles, and keeps it across re-renders', async () => {
   const { dom, calls } = makePlayerStats({
     federated: true,
-    friend: 'friendflix',
+    friend: 'friend-a',
     route: 'friend-converts',
-    routeText: 'friendflix converts it and sends it straight to this player',
+    routeText: 'friend-a converts it and sends it straight to this player',
+    playMethod: 'Transcode',
+    conversion: 'friend-a',
+    originalContainer: 'mkv',
+    originalVideoCodec: 'hevc',
+    originalAudioCodec: 'eac3',
+    originalBitrate: 59000000,
+    deliveredContainer: 'ts',
+    deliveredVideoCodec: 'h264',
+    deliveredAudioCodec: 'aac',
+    deliveredBitrate: 12000000,
+    transcodeReasons: 'VideoCodecNotSupported',
     placement: 'Friend converts (full hardware conversion)',
     latencyMs: 42,
     linkMbps: 87.4,
     capMbps: 20,
     friendHardware: 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC',
-    alsoOn: ['Slowpoke']
+    alsoOn: ['slow-peer']
   });
   await settleMany();
   const doc = dom.window.document;
@@ -2170,14 +2252,19 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
   const rows = [...block.querySelectorAll('.playerStats-stat')].map((r) => [r.querySelector('.playerStats-stat-label').textContent, r.querySelector('.playerStats-stat-value').textContent]);
   assert.deepEqual(rows, [
     ['Federation', ''],
-    ['Friend', 'friendflix'],
-    ['Route', 'friendflix converts it and sends it straight to this player'],
-    ['Who converts', 'Friend converts (full hardware conversion)'],
+    ['Friend', 'friend-a'],
+    ['Playback', 'Transcode'],
+    ['Route', 'friend-a converts it and sends it straight to this player'],
+    ['Conversion', 'friend-a'],
+    ['Original', 'mkv / hevc / eac3 · 59 Mbps'],
+    ['Delivered', 'ts / h264 / aac · 12 Mbps'],
+    ['Conversion reason', 'VideoCodecNotSupported'],
+    ['Placement reason', 'Friend converts (full hardware conversion)'],
     ['Round trip', '42 ms'],
-    ['Link speed', '87 Mbps'],
+    ['Server route speed', '87 Mbps'],
     ['Bitrate cap', '20 Mbps'],
-    ['friendflix converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
-    ['Also on', 'Slowpoke']
+    ['friend-a converts with', 'RX 6600 + Ryzen 5 (12 threads); hardware encodes H264, HEVC'],
+    ['Also on', 'slow-peer']
   ]);
   assert.ok(block.querySelector('.playerStats-stat-header'));
 
@@ -2186,6 +2273,38 @@ test('Playback Info gets a Federation block for friends\' titles, and keeps it a
   await settleMany();
   assert.equal(doc.querySelectorAll('.federation-stats').length, 1);
   assert.equal(calls.filter((u) => u.includes('/Playback/Connection')).length, 1);
+  dom.window.close();
+});
+
+test('route telemetry sends bounded numeric observations without media URLs or tokens', async () => {
+  const { dom } = makePlayerStats({
+    federated: true,
+    itemId: '11111111111111111111111111111111',
+    serverId: 'friend-a',
+    remoteItemId: '22222222222222222222222222222222',
+    route: 'friend-converts',
+    routeText: 'friend-a converts it'
+  });
+  await settleMany();
+  const originalFetch = dom.window.fetch;
+  const bodies = [];
+  dom.window.fetch = (url, options) => {
+    if (String(url).includes('/Playback/Metrics')) bodies.push(options.body);
+    return originalFetch(url, options);
+  };
+  dom.window.__federationRouteTelemetry.observe([
+    { name: 'https://owner.example/Plugins/Federation/Peer/Play/secret-token/videos/22222222222222222222222222222222/main.m3u8?api_key=secret', encodedBodySize: 1000000, duration: 500 },
+    { name: 'https://owner.example/Plugins/Federation/Peer/Play/other-secret/videos/33333333333333333333333333333333/main.m3u8', encodedBodySize: 9000000, duration: 500 }
+  ]);
+  await dom.window.__federationRouteTelemetry.flush();
+  assert.equal(bodies.length, 1);
+  const body = JSON.parse(bodies[0]);
+  assert.equal(body.bytes, 1000000);
+  assert.equal(body.durationMs, 500);
+  assert.equal(body.itemId, '11111111111111111111111111111111');
+  assert.equal(body.serverId, 'friend-a');
+  assert.doesNotMatch(bodies[0], /owner\.example|secret|m3u8|api_key/);
+  assert.equal(dom.window.__federationRouteTelemetry.matches('https://owner.example/Plugins/Federation/DirectStream/33333333333333333333333333333333?token=secret', { serverId: 'friend-a', remoteItemId: '22222222222222222222222222222222', route: 'direct' }), false);
   dom.window.close();
 });
 
@@ -2296,7 +2415,7 @@ test("popular titles appear on the Home tab as one row per friend, most popular 
     { Id: 'bbb', Name: 'Show', Type: 'Series', ImageTags: {} }
   ];
   const { dom, calls } = makePopularWindow([
-    { serverId: 'f1', name: 'friendflix', itemIds: ['bbb', 'aaa'] },
+    { serverId: 'f1', name: 'friend-a', itemIds: ['bbb', 'aaa'] },
     { serverId: 'f2', name: 'Empty', itemIds: ['gone'] }
   ], items);
   await settleMany();
@@ -2305,7 +2424,7 @@ test("popular titles appear on the Home tab as one row per friend, most popular 
   const tab = dom.window.document.getElementById('homeTab');
   assert.equal(tab.querySelector('.sections').textContent, 'native');
   const sections = [...tab.querySelectorAll('.federation-popular-section')];
-  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Popular on friendflix']);
+  assert.deepEqual(sections.map((s) => s.querySelector('.sectionTitle').textContent), ['Popular on friend-a']);
   assert.deepEqual([...sections[0].querySelectorAll('.federation-fav-card')].map((a) => a.getAttribute('data-id')), ['bbb', 'aaa']);
   dom.window.close();
 });
@@ -2342,7 +2461,7 @@ test('Beta tab sits before Advanced and holds the pairing card, off by default',
   assert.match(configPage, /id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1"[^>]*data-tab="beta" role="tab" aria-selected="false"/);
   assert.match(configPage, /id="fedPanelBeta" aria-labelledby="fedTabBeta" class="fed-tabpanel" data-tab-panel="beta" role="tabpanel"/);
   assert.match(configPage, /Pairing codes \(Beta\) <span class="fed-pill fed-pill-off">Beta<\/span>/);
-  assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" \/>/);
+  assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" disabled title="Pairing codes are disabled in this build while the feature is under review\." \/>/);
   assert.ok(configPage.includes('Direct links and pairing codes are on the'));
   const dom = new JSDOM(configPage);
   const d = dom.window.document;
@@ -2363,6 +2482,8 @@ test('pairing actions and routes are wired', () => {
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Complete'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Status'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/' + encodeURIComponent(id) + '/Confirm'"));
+  assert.ok(configPage.includes("confirmPairing(t.getAttribute('data-id'), t.getAttribute('data-safety-number'))"));
+  assert.ok(configPage.includes("'POST', { SafetyNumber: safetyNumber }, '#fedPairingFriendStatus'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer/' + encodeURIComponent(id), 'DELETE'"));
   assert.match(configPage, /if \(tab === 'beta'\) \{\s*startPairingPoll\(\);\s*\} else \{\s*stopPairingPoll\(\);/);
   assert.ok(configPage.includes('escapeHtml(f.CallsItself)'));
@@ -2430,10 +2551,47 @@ test('pairing status renders untrusted text safely and gates the confirm button'
   const btn = list.querySelector('[data-fed-action="pairing-confirm"]');
   assert.equal(btn.disabled, true, 'confirm is disabled until the box is ticked');
   assert.equal(btn.getAttribute('data-id'), 'abc');
+  assert.equal(btn.getAttribute('data-safety-number'), '12345 <i>6</i>');
+  list.querySelector('.fedPairConfirmChk').checked = true;
+  api.renderPairingStatus({ Available: true, Friends: [friend({ SafetyNumber: '98765 43210' })] });
+  const refreshed = list.querySelector('[data-fed-action="pairing-confirm"]');
+  assert.equal(refreshed.getAttribute('data-safety-number'), '98765 43210');
+  assert.equal(refreshed.disabled, true, 'approval does not carry over to a changed safety number');
+  assert.equal(list.querySelector('.fedPairConfirmChk').checked, false);
   api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true })] });
   assert.match(list.textContent, /Waiting for your friend to confirm/);
   api.renderPairingStatus({ Available: true, Friends: [friend({ Confirmed: true, FriendConfirmed: true, Ready: true })] });
   assert.match(list.textContent, /Ready\. Choose what to share/);
   api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
   assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
+});
+
+test('dynamic CSS selectors safely match hostile quote and backslash IDs', () => {
+  const dom = new JSDOM('<div class="fedDirectLinkLine"></div><div class="fedDirectLinkLine" data-id="other"></div>');
+  const source = configPage.match(/function cssEscape\([\s\S]*?\n {20}\}\n/);
+  assert.ok(source, 'cssEscape not found');
+  const escape = new Function('window', source[0] + '\nreturn cssEscape;')(dom.window.window);
+  const hostile = 'friend\\"] , [data-id="other';
+  const expected = dom.window.document.querySelector('.fedDirectLinkLine');
+  expected.setAttribute('data-id', hostile);
+  const selected = dom.window.document.querySelector('.fedDirectLinkLine[data-id="' + escape(hostile) + '"]');
+  assert.equal(selected, expected);
+  assert.notEqual(selected.getAttribute('data-id'), 'other');
+  dom.window.close();
+});
+
+test('HTML helper escapes quoted attribute breakouts and pool icons are escaped', () => {
+  const dom = new JSDOM('');
+  const source = configPage.match(/function escapeHtml\([\s\S]*?\n {20}\}\n/);
+  assert.ok(source, 'escapeHtml not found');
+  const escape = new Function('document', source[0] + '\nreturn escapeHtml;')(dom.window.document);
+  const hostile = '" onerror="globalThis.compromised=true\' data-x=';
+  const html = '<img src="data:image/png;base64,' + escape(hostile) + '" alt="" />';
+  const rendered = new JSDOM(html);
+  const image = rendered.window.document.querySelector('img');
+  assert.equal(image.getAttribute('onerror'), null);
+  assert.equal(rendered.window.compromised, undefined);
+  assert.match(configPage, /data:image\/png;base64,' \+ escapeHtml\(p\.IconBase64\)/);
+  dom.window.close();
+  rendered.window.close();
 });

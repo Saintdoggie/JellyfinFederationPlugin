@@ -108,15 +108,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
             return friendId == null ? BadRequest(new { success = false, message = error }) : Ok(new { success = true, friendId });
         }
 
-        /// <summary>Admin: the safety number matched the friend's.</summary>
+        /// <summary>Admin: the displayed safety number matched the friend's.</summary>
         /// <param name="id">The paired friend's id.</param>
+        /// <param name="body">The number the admin actually compared.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Result.</returns>
         [HttpPost("Pairing/{id}/Confirm")]
         [Authorize(Policy = "RequiresElevation")]
-        public async Task<IActionResult> Confirm(string id, CancellationToken cancellationToken)
+        public async Task<IActionResult> Confirm(string id, [FromBody] PairingConfirmationBody? body, CancellationToken cancellationToken)
         {
-            var error = await _pairing.ConfirmAsync(id, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(body?.SafetyNumber) || body.SafetyNumber.Length > 256)
+            {
+                return BadRequest(new { success = false, message = "Compare the current safety number before confirming." });
+            }
+
+            var error = await _pairing.ConfirmAsync(id, body.SafetyNumber, cancellationToken).ConfigureAwait(false);
             return error == null ? Ok(new { success = true }) : NotFound(new { success = false, message = error });
         }
 
@@ -125,7 +131,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// <returns>204, or 404 when the request didn't come over a paired link.</returns>
         [HttpPost("Pairing/Peer/Confirmed")]
         [AllowAnonymous]
-        public async Task<IActionResult> PeerConfirmed(CancellationToken cancellationToken)
+        public async Task<IActionResult> PeerConfirmed([FromBody] PairingConfirmationBody? body, CancellationToken cancellationToken)
         {
             var friendId = LinkFriend();
             if (friendId == null)
@@ -133,8 +139,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 return NotFound();
             }
 
-            await _pairing.OnPeerConfirmedAsync(friendId, cancellationToken).ConfigureAwait(false);
-            return NoContent();
+            if (string.IsNullOrEmpty(body?.SafetyNumber) || body.SafetyNumber.Length > 256)
+            {
+                return BadRequest();
+            }
+
+            return await _pairing.OnPeerConfirmedAsync(friendId, body.SafetyNumber, cancellationToken).ConfigureAwait(false)
+                ? NoContent()
+                : Conflict();
         }
 
         /// <summary>Paired friend, over its link only: swaps federation ids and tokens once both admins confirmed.</summary>
@@ -171,6 +183,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
     {
         /// <summary>Gets or sets the code.</summary>
         public string Code { get; set; } = string.Empty;
+    }
+
+    /// <summary>Body carrying the safety number displayed to the admin.</summary>
+    public class PairingConfirmationBody
+    {
+        /// <summary>Gets or sets the compared safety number.</summary>
+        public string SafetyNumber { get; set; } = string.Empty;
     }
 
     /// <summary>Body of <c>Settings/Pairing</c>.</summary>

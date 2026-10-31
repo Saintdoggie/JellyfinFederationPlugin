@@ -138,6 +138,73 @@ public sealed class FederationChangeNotifierTests : IDisposable
         Assert.True(DateTime.UtcNow < deadline);
     }
 
+    [Fact]
+    public async Task UrgentNoticeFlood_DoesNotContinuallyBypassSpacing()
+    {
+        using var stopping = new CancellationTokenSource();
+        var sync = CreateSyncService();
+        sync.NotifiedSyncSpacing = TimeSpan.FromHours(1);
+        sync.UrgentNotifiedSyncSpacing = TimeSpan.FromHours(1);
+        var calls = 0;
+        var first = new TaskCompletionSource();
+        sync.NotifiedSyncOverride = (_, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            first.TrySetResult();
+            return Task.FromResult(new SyncResult { Success = true, Message = "Synced" });
+        };
+
+        Assert.True(sync.OnFriendCatalogChanged("friend", stopping.Token, urgent: true));
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var i = 0; i < 10; i++)
+        {
+            sync.OnFriendCatalogChanged("friend", stopping.Token, urgent: true);
+        }
+
+        await Task.Delay(150);
+        Assert.Equal(1, Volatile.Read(ref calls));
+        stopping.Cancel();
+    }
+
+    [Fact]
+    public async Task UrgentNoticeDuringRun_RefreshesLatestStateOnce()
+    {
+        using var stopping = new CancellationTokenSource();
+        var sync = CreateSyncService();
+        sync.NotifiedSyncSpacing = TimeSpan.FromHours(1);
+        sync.UrgentNotifiedSyncSpacing = TimeSpan.Zero;
+        var calls = 0;
+        var first = new TaskCompletionSource();
+        var second = new TaskCompletionSource();
+        sync.NotifiedSyncOverride = async (_, ct) =>
+        {
+            var call = Interlocked.Increment(ref calls);
+            if (call == 1)
+            {
+                await Task.Delay(100, ct);
+                first.TrySetResult();
+            }
+            else if (call == 2)
+            {
+                second.TrySetResult();
+            }
+
+            return new SyncResult { Success = true, Message = "Synced" };
+        };
+
+        Assert.True(sync.OnFriendCatalogChanged("friend", stopping.Token, urgent: true));
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var i = 0; i < 10; i++)
+        {
+            sync.OnFriendCatalogChanged("friend", stopping.Token, urgent: true);
+        }
+
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(100);
+        Assert.Equal(2, Volatile.Read(ref calls));
+        stopping.Cancel();
+    }
+
     private static FederationSyncService CreateSyncService()
     {
         var factory = new Mock<IRemoteServerClientFactory>();

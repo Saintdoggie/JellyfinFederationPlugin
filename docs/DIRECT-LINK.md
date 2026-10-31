@@ -1,6 +1,6 @@
 # Direct link: friend-to-friend UDP connection (design spec)
 
-Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux first, Windows later.
+Status: shipped on `master`; direct links remain opt-in. Linux x64/arm64 are supported by the bundled native library; Windows still needs physical-host validation.
 
 > Implementation notes (what changed from the first draft below):
 > - **QUIC runs in a private AssemblyLoadContext.** Jellyfin's web host asks
@@ -29,9 +29,8 @@ Status: built on branch `test-branch-udp-connection` (0.0.195 test build). Linux
 
 ## Why
 
-A friend whose server is only reachable through a forwarding VPS (e.g. friendflix:
-home -> Hetzner Hillsboro -> everyone) streams at ~25 Mbps on one connection even
-though both homes have 500 Mbps. The direct link opens an encrypted UDP (QUIC)
+A friend whose server is only reachable through a forwarding VPS may get much
+less throughput on one connection than both homes' internet links can carry. The direct link opens an encrypted UDP (QUIC)
 connection straight between the two Jellyfin servers, punched through both home
 routers like Tailscale does, with no port forwarding. Only the small connection
 details go over the existing (slow) route.
@@ -108,11 +107,10 @@ Response (responder -> initiator), or 403 if the responder has the link off for
 this friend, 409/503 if it can't (no QUIC, busy):
 ```json
 { "Version": 1, "Fingerprint": "<hex>", "Secret": "<base64 32B>",
-  "Candidates": [ ... ], "NatType": "...", "PunchStartUnixMs": 1760000000000 }
+  "Candidates": [ ... ], "NatType": "..." }
 ```
-`PunchStartUnixMs` = responder time + 300 ms; both sides start punching then, so
-neither side's router drops the first packets as unsolicited. The initiator
-adjusts for the request's round-trip time.
+No clock synchronization is required: the responder starts punching when it
+answers, and the initiator starts when it receives that answer.
 
 Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
 (`DirectLinkVersion`). The initiator only offers to friends that advertise it.
@@ -136,8 +134,8 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   2 = ack) + sessionId (16 bytes) + 32-byte HMAC-SHA256 tag over the previous bytes,
   keyed with the **peer's** secret for probes we send. Anything else is ignored
   (never answered), so the socket can't be used for reflection or scanning.
-- From `PunchStartUnixMs`: both sides send a probe to every candidate every 50 ms
-  for up to 6 s. Received valid probe -> reply ack to that source endpoint and mark
+- Both sides send a probe to every candidate on a short interval for up to 8 s.
+  Received valid probe -> reply ack to that source endpoint and mark
   it working; received valid ack -> mark working. The first working endpoint is
   the path.
 - Hand-over to QUIC (the QUIC stack owns its own socket, so the punch socket is
@@ -163,9 +161,13 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   backoff 30 s, 2 m, 10 m, 30 m, 1 h (reset on success). The new session gets new
   secrets and candidates each time.
 - After connecting, measure throughput with `Peer/BitrateTest` (8 MB) over the
-  link, and record it.
-- Responder caps: at most 1 active link per friend and 32 total, and at most 10
-  offers per friend per 10 minutes (429 otherwise).
+  link asynchronously, and record it. The authenticated link is usable while the
+  sample runs; until a valid result arrives, Auto mode retains the existing WAN
+  cap instead of becoming unlimited. A late result cannot update a replacement link.
+- Responder caps: at most 1 active link per friend and 32 total, at most 256
+  forwarded requests across all direct links (429 above that), and at most 10
+  offers per friend per 10 minutes (429 otherwise). Four inbound and four outbound
+  setups may run at once; eligibility and capacity are rechecked before serving.
 
 ## HTTP over the link
 
@@ -232,6 +234,9 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   answers no offers.
 - `DirectLinkStunServers` (string[], defaults above)
 - per friend `DirectLinkMode`: `Auto` (default) | `Off`
+- Production paired-link receive windows are bounded to 16 MiB per connection and
+  4 MiB per stream. These replace the library's much smaller defaults to allow
+  more in-flight data on higher-latency links without unbounded buffering.
 
 ## Status and UI
 
@@ -248,6 +253,20 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
 - Info logs on state changes only (no per-request logs).
 
 ## Testing
+
+The NAT fixture uses private addresses as its isolated "internet". Production builds
+always refuse that relaxation. Build a separate test-hooks copy before running the
+fixture, and pass that output directory explicitly so a normal Release build is not
+silently reused:
+
+```sh
+dotnet build JellyfinFederationPlugin.csproj -c Release -p:FederationTestHooks=true
+python3 scripts/federation_directlink_smoke.py --plugin-dir bin/Release/net10.0
+```
+
+Run `dotnet build JellyfinFederationPlugin.csproj -c Release` afterward to restore the
+normal production output. The test build still requires the fixture's
+`FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE=1`; never set it for a real server.
 
 - Unit tests: STUN encode/decode (incl. XOR-MAPPED-ADDRESS, IPv4), probe packet
   MAC and rejection, offer validation, request-head parser and allowlist (fuzz-ish

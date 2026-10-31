@@ -22,10 +22,10 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
         /// <summary>Remembers the grant behind one offered source.</summary>
-        public static void Record(Guid userId, Guid itemId, string sourceId, string serverId, Guid remoteItemId, string token)
+        public static void Record(Guid userId, Guid itemId, string sourceId, string serverId, Guid remoteItemId, string token, string? remoteMediaSourceId = null)
         {
             Prune();
-            Grants[(userId, itemId, Normalize(sourceId))] = new Grant(serverId, remoteItemId, token, UtcNow() + Lifetime);
+            Grants[(userId, itemId, Normalize(sourceId))] = new Grant(serverId, remoteItemId, token, UtcNow() + Lifetime, remoteMediaSourceId);
         }
 
         /// <summary>The grant for this viewer's source, or null when unknown or expired.</summary>
@@ -81,6 +81,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="RemoteItemId">The friend's own item id.</param>
         /// <param name="Token">The item-scoped Playback token.</param>
         /// <param name="ExpiresUtc">When to stop using it.</param>
-        public sealed record Grant(string ServerId, Guid RemoteItemId, string Token, DateTime ExpiresUtc);
+        /// <param name="RemoteMediaSourceId">The exact encoding on the friend, when the item has more than one.</param>
+        public sealed record Grant(string ServerId, Guid RemoteItemId, string Token, DateTime ExpiresUtc, string? RemoteMediaSourceId = null);
     }
 }

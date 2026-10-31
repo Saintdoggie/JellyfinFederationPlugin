@@ -70,6 +70,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ConcurrentDictionary<string, Channel<Func<Task>>> _outboxes = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Guid, HostParty> _hosted = new();
         private readonly Dictionary<Guid, RemoteParty> _remote = new();
+
+        /// <summary>How many parties one friend can have announced here at once.</summary>
+        private const int MaxRemotePartiesPerHost = 10;
         private readonly CancellationTokenSource _stopping = new();
         private Timer? _timer;
 
@@ -161,7 +164,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var session = await ViewerSessionAsync(user, info, remoteIp).ConfigureAwait(false);
-                var groupName = string.IsNullOrWhiteSpace(name) ? user.Username + "'s watch party" : name.Trim();
+                var groupName = Clean(name, 80) ?? user.Username + "'s watch party";
                 var group = _syncPlay.NewGroup(session, new NewGroupRequest(groupName), CancellationToken.None);
                 var party = await HostAsync(group.GroupId, groupName, user, friends).ConfigureAwait(false);
                 return party == null
@@ -345,6 +348,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     return 400;
                 }
 
+                if (!PartyWireValidation.ValidAnnouncement(announcement))
+                {
+                    return 413;
+                }
+
                 if (_remote.TryGetValue(announcement.PartyId, out var existing) && !string.Equals(existing.HostServerId, caller.Id, StringComparison.Ordinal))
                 {
                     return 409;
@@ -358,6 +366,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     return 200;
+                }
+
+                if (existing == null && _remote.Values.Count(r => string.Equals(r.HostServerId, caller.Id, StringComparison.Ordinal)) >= MaxRemotePartiesPerHost)
+                {
+                    return 429;
                 }
 
                 existing ??= _remote[announcement.PartyId] = new RemoteParty(announcement.PartyId, caller.Id);
@@ -377,6 +390,11 @@ namespace Jellyfin.Plugin.Federation.Services
         public Task<int> ReceiveJoinAsync(RemoteServer caller, Guid partyId, PartyMembership membership)
             => RunAsync(async () =>
             {
+                if (!PartyWireValidation.ValidMembership(membership))
+                {
+                    return 413;
+                }
+
                 if (!_hosted.TryGetValue(partyId, out var party))
                 {
                     return 404;
@@ -436,6 +454,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (e == null || !(PartyEventKind.All.Contains(e.Kind) || e.Kind is "Members" or PartyLink.Wait or PartyLink.Go))
                 {
                     return Task.FromResult(400);
+                }
+
+                if (!PartyWireValidation.ValidEvent(e))
+                {
+                    return Task.FromResult(413);
                 }
 
                 LinkHandle? link = null;
@@ -797,7 +820,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var ids = new List<Guid>();
             var index = -1;
-            for (var i = 0; i < snapshot.Items.Count && i < 500; i++)
+            for (var i = 0; i < snapshot.Items.Count && i < PartyWireValidation.MaxSnapshotItems; i++)
             {
                 var local = _mapper.Resolve(snapshot.Items[i]);
                 if (local == null)
@@ -841,10 +864,11 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var now = DateTime.UtcNow;
             var local = logic.Local;
+            var skip = local.Index >= PartyWireValidation.MaxSnapshotItems ? local.Index - PartyWireValidation.MaxSnapshotItems + 1 : 0;
             return new PartySnapshot
             {
-                Items = local.Playlist.Select(p => _mapper.Describe(p.ItemId, peer)).ToList(),
-                Index = local.Index,
+                Items = local.Playlist.Skip(skip).Take(PartyWireValidation.MaxSnapshotItems).Select(p => _mapper.Describe(p.ItemId, peer)).ToList(),
+                Index = local.Index - skip,
                 PositionTicks = local.PositionAt(now),
                 IsPlaying = local.State == GroupStateType.Playing,
                 Stable = local.State is GroupStateType.Playing or GroupStateType.Paused,
@@ -1132,7 +1156,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <summary>How a linked server's viewers appear in a group: "bob, carol (friendflix)".</summary>
+        /// <summary>How a linked server's viewers appear in a group: "bob, carol (friend-a)".</summary>
         internal static string LinkLabel(IReadOnlyCollection<string>? participants, string serverName)
         {
             var names = (participants ?? Array.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).Take(4).ToList();
@@ -1157,14 +1181,14 @@ namespace Jellyfin.Plugin.Federation.Services
         private static string Safe(string value)
             => new string(value.Where(char.IsLetterOrDigit).Take(40).ToArray());
 
-        private static string? Clean(string? value, int max)
+        internal static string? Clean(string? value, int max)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
                 return null;
             }
 
-            var cleaned = new string(value.Where(c => !char.IsControl(c)).ToArray()).Trim();
+            var cleaned = new string(value.Where(c => !char.IsControl(c) && c != '<' && c != '>').ToArray()).Trim();
             return cleaned.Length == 0 ? null : cleaned.Length > max ? cleaned[..max] : cleaned;
         }
 

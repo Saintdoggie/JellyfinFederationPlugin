@@ -9,7 +9,10 @@ folders, `jellyfin-test`, caches, and backups are not source-of-truth copies.
 - Jellyfin plugin that merges explicitly connected friends' Jellyfin libraries
   into local virtual libraries. This is private friend-to-friend federation,
   not discovery of arbitrary public servers.
-- The plugin also supports Plex as an external catalog source.
+- `Plex/` is an optional add-in loaded beside the core DLL. It owns all Plex
+  catalog, Companion, metadata/import and `.strm` export integration. Core
+  Jellyfin federation must remain functional without it, and an absent provider
+  must preserve Plex configuration/cache without Jellyfin-protocol fallthrough.
 - `Companion/` is a separate ASP.NET Core app for Plex owners. It handles Plex
   sign-in, library consent, one-time connect codes, peers, and Jellyfin-to-Plex
   imports through a read-only media mount (legacy `.strm` exports are not
@@ -36,11 +39,16 @@ Core lifecycle and configuration:
 
 HTTP, UI, and browser injection:
 
-- `Configuration/FederationPluginController.cs` — the entire plugin HTTP API;
-  check authorization attributes and input validation for every changed route.
-- `Web/admin/configPage.html` — embedded admin UI. It is currently a large
-  single-file page with Friends, Pools, Companion, Discovery, Libraries,
-  Browse/Downloads, Catalog, Storage, and Advanced tabs.
+- `Configuration/FederationPluginController.cs` — core plugin HTTP API;
+  `Plex/Configuration/PlexController.cs` and `PlexMetadataSetupController.cs`
+  own Plex/Companion routes. Check authorization and input validation on every
+  changed route; anonymous Plex offers are the intentional exception.
+  `Configuration/FederationAddInPageController.cs` serves only named, elevated
+  add-in page resources through the core loader in `Web/admin/addinPage.html`.
+- `Web/admin/configPage.html` — embedded core admin UI. It is currently a large
+  single-file page with Friends, Pools, Discovery, Libraries, Browse/Downloads,
+  Catalog, Storage, and Advanced tabs, plus links to the optional add-in.
+  `Plex/Web/admin/plexPage.html` owns Plex/Companion setup, import and export UI.
 - `Web/client/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
 - `Services/WebClientInjector.cs` and `Middleware/BadgeScriptInjectionMiddleware.cs`
@@ -54,8 +62,12 @@ Federation data flow:
   mappings, dedup, external sources, pruning, and reconciliation calls.
 - `Services/RemoteServerClient.cs` — Jellyfin peer HTTP client, token/session
   calls, item/media parsing, version probing, and retry behavior.
-- `Services/IExternalCatalogProvider.cs` — adapter contract for non-Jellyfin
-  sources. `PlexCatalogProvider.cs` is the current implementation.
+- `Services/IExternalCatalogProvider.cs` and `ExternalCatalogRegistry.cs` —
+  optional non-Jellyfin provider contracts. `Plex/Services/PlexCatalogProvider.cs`
+  and the other concrete Plex services are compiled only into the add-in.
+- `Plex/Configuration/PlexServiceRegistrator.cs` — add-in DI registrations;
+  `Plex/INSTALL.md` — install/removal behavior. Build a non-release package with
+  `scripts/package-plex-addin.sh`.
 - `Services/FederationItemCache.cs` — persisted, deduplicated catalog and
   remote-to-local source index.
 - `Services/FederationItemPersistenceService.cs` — reconciles cache entries
@@ -108,6 +120,22 @@ Playback, authorization, and downloads:
   `FederationMediaSourceProvider` before a grant is recorded); `Playback/Connection`
   feeds the "Federation" block in the player's Playback Info (`federation-badge.js`).
 - `Services/WanBandwidthMonitor.cs` — local/WAN classification and caps.
+- `Services/PlaybackRouteMetrics.cs` — bounded per-user/device/route browser
+  telemetry (numeric only, never media URLs); native clients without telemetry keep
+  declared/server-route limits. `Services/FederationBandwidthAllocator.cs` shares
+  measured capacity between PlaySessionIds and releases on stop/idle expiry.
+- Provider playback enumerates every Jellyfin remote media source. Exact remote
+  `mediaSourceId` values must stay bound through local source IDs, DirectStream,
+  `PeerPlaybackGrants`, HLS/progressive/subtitle paths, and native loopback URLs.
+- `Services/NativeClientCapabilities.cs` resolves native app identity from the
+  authenticated session and standard Jellyfin headers, including token-only requests.
+  Raw HTTP Direct Play is enabled only for suitable native transports; known Android
+  raw-HTTP and browser paths retain Direct Stream/transcode behavior. This is transport
+  detection, not a codec blacklist.
+- Playback Info reports play method, observed transport, conversion location, and
+  original/delivered formats independently. Unknown is not Direct Play.
+- Proxy/Plex over-cap sources require conversion. Never throttle the original input
+  to ffmpeg; cap the converted output instead.
 - Remote-transcode handoff (0.0.187): `Services/RemoteMediaPath.cs` (allow-list
   shared by both sides), `HlsPlaylistRewriter.cs`, `FederationRemoteTranscodeGateway.cs`
   + controller `Peer/Play/{token}/{**path}` and `Peer/PlayControl` (owner);
@@ -184,7 +212,7 @@ Tests and project history:
   capability bound to server, item, media kind, and optional normalized user.
   Stream time also verifies server enabled state, cache/source membership, and
   the current access rule. Rotating/removing the server credential revokes old
-  URLs. These capabilities do not yet carry an expiry; see `TODO.md`.
+  URLs. Current v2 capabilities expire and bind download/auto-selection purpose; non-expiring legacy signatures are rejected and stored paths are restamped.
 - Per-request provider URLs cryptographically bind `requestingUserId`; never
   regress to appending an unsigned user id. Userless static paths must continue
   to pass `IsAllowedForEveryConfiguredUser` both when built and when streamed.
@@ -200,9 +228,22 @@ Tests and project history:
   Apply endpoint always refuses replacement downloads. Storage removal requires
   explicit selected IDs plus confirmation and rebuilds the candidate set before
   deleting any exact local file.
-- `Web/admin/configPage.html` is approximately 5,700 lines and
-  `Web/client/federation-badge.js` approximately 1,000 lines. Make narrow changes with
-  regression tests before attempting structural cleanup.
+- The core and Plex admin pages and `Web/client/federation-badge.js` are large
+  single-file assets. Make narrow changes with regression tests before attempting
+  structural cleanup.
+- Native Jellyfin relay keys are process-lifetime and memory-only. The legacy
+  `InternalRelayApiKey` configuration field stays empty; never persist that
+  admin-equivalent credential through `ApiKeyProtector` or plugin XML.
+- Pool notices and existing-pool invitations require sender membership; accept/reject
+  callbacks must match the invited friend. Pool membership and pending requests are capped.
+- Discovery is review-only and never contacts candidates automatically. Friend accept/reject
+  callbacks require the pending handshake credential; only explicit admin requests choose sharing.
+- Friend-facing HTTP disables redirects and outbound .NET proxy use. Reverse-proxy
+  deployments remain supported, including browser playback-header checks. Control responses use
+  `ResponseHeadersRead` and `HttpContentReader` limits rather than unbounded reads.
+- Direct-link requests carry the authenticated link-friend context, punching and
+  QUIC acceptance use exact endpoints, and read-ahead revalidates before serving.
+  Pairing remains review-locked; non-home relay tickets are not implemented.
 
 ## Validation and release policy
 

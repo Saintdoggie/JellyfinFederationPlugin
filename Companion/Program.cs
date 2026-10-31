@@ -67,6 +67,7 @@ using var streamSockets = new SocketsHttpHandler
     ConnectTimeout = TimeSpan.FromSeconds(15)
 };
 using var streamHttp = new HttpClient(streamSockets, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
+using var callbackHttp = PoolCallbackClient.CreateClient();
 apiHttp.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FederationCompanion", CompanionVersion.FederationPluginVersion()));
 streamHttp.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FederationCompanion", CompanionVersion.FederationPluginVersion()));
 
@@ -337,7 +338,7 @@ app.MapGet("/api/pools/invites", (CompanionState s) => Results.Ok(s.IncomingPool
     i.CreatedUtc
 })));
 
-app.MapPost("/api/pools/invites/{id}/accept", async (string id, CompanionState s, HttpClient http, CancellationToken ct) =>
+app.MapPost("/api/pools/invites/{id}/accept", async (string id, CompanionState s, CancellationToken ct) =>
 {
     var invite = s.IncomingPoolInvites.FirstOrDefault(i => i.InviteId == id);
     if (invite == null)
@@ -349,18 +350,24 @@ app.MapPost("/api/pools/invites/{id}/accept", async (string id, CompanionState s
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, invite.CallbackUrl.TrimEnd('/') + "/Plugins/Federation/Pools/AcceptNotice")
+            var callback = await PoolCallbackClient.SendAsync(
+                callbackHttp,
+                invite.CallbackUrl,
+                invite.CallbackToken,
+                "/Plugins/Federation/Pools/AcceptNotice",
+                new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId },
+                ct).ConfigureAwait(false);
+            if (callback.Outcome == PoolCallbackOutcome.PolicyRejected)
             {
-                Content = JsonContent.Create(new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId })
-            };
-            req.Headers.TryAddWithoutValidation("X-Federation-Token", invite.CallbackToken);
-            using var response = await http.SendAsync(req, ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+                return Results.BadRequest(new { error = "Could not confirm with the Jellyfin server because its callback address is not allowed." });
+            }
+
+            if (callback.Outcome == PoolCallbackOutcome.HttpError)
             {
-                return Results.BadRequest(new { error = $"Could not confirm with the Jellyfin server (HTTP {(int)response.StatusCode}). Try again shortly." });
+                return Results.BadRequest(new { error = $"Could not confirm with the Jellyfin server (HTTP {callback.StatusCode}). Try again shortly." });
             }
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (Exception ex) when (ex is HttpRequestException or SocketException or TaskCanceledException)
         {
             return Results.BadRequest(new { error = "Could not reach the Jellyfin server to confirm. Check Funnel/public URL on their side." });
         }
@@ -372,7 +379,7 @@ app.MapPost("/api/pools/invites/{id}/accept", async (string id, CompanionState s
     return Results.Ok(new { message = $"You joined {invite.PoolName}." });
 });
 
-app.MapPost("/api/pools/invites/{id}/reject", async (string id, CompanionState s, HttpClient http, CancellationToken ct) =>
+app.MapPost("/api/pools/invites/{id}/reject", async (string id, CompanionState s, CancellationToken ct) =>
 {
     var invite = s.IncomingPoolInvites.FirstOrDefault(i => i.InviteId == id);
     if (invite == null)
@@ -384,12 +391,13 @@ app.MapPost("/api/pools/invites/{id}/reject", async (string id, CompanionState s
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, invite.CallbackUrl.TrimEnd('/') + "/Plugins/Federation/Pools/RejectNotice")
-            {
-                Content = JsonContent.Create(new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId })
-            };
-            req.Headers.TryAddWithoutValidation("X-Federation-Token", invite.CallbackToken);
-            await http.SendAsync(req, ct).ConfigureAwait(false);
+            _ = await PoolCallbackClient.SendAsync(
+                callbackHttp,
+                invite.CallbackUrl,
+                invite.CallbackToken,
+                "/Plugins/Federation/Pools/RejectNotice",
+                new { InviteId = invite.InviteId, FromFederationId = invite.FromFederationId },
+                ct).ConfigureAwait(false);
         }
         catch
         {

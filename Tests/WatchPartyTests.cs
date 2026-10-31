@@ -52,6 +52,33 @@ public class WatchPartyTests
     private static string Kinds(IEnumerable<PartyAction> actions) => string.Join(",", actions.Select(a => a.Kind));
 
     [Fact]
+    public void PartyWire_RejectsOversizedSnapshotsAndNestedData()
+    {
+        PartyItemRef Item() => new()
+        {
+            Owners = new List<PartyOwnerRef> { new PartyOwnerRef { Fid = "friend", Id = Guid.NewGuid().ToString("N") } }
+        };
+        var snapshot = new PartySnapshot { Items = Enumerable.Range(0, 500).Select(_ => Item()).ToList() };
+        Assert.True(PartyWireValidation.ValidSnapshot(snapshot));
+
+        snapshot.Items.Add(Item());
+        Assert.False(PartyWireValidation.ValidSnapshot(snapshot));
+        Assert.False(PartyWireValidation.ValidAnnouncement(new PartyAnnouncement
+        {
+            Participants = Enumerable.Range(0, 21).Select(i => $"user-{i}").ToList()
+        }));
+    }
+
+    [Fact]
+    public void PartyLabels_RemoveMarkupAndControlCharacters()
+    {
+        var cleaned = FederatedPartyService.Clean("<script>alert(1)</script>\n", 80);
+        Assert.Equal("scriptalert(1)/script", cleaned);
+        Assert.DoesNotContain('<', cleaned!);
+        Assert.DoesNotContain('>', cleaned!);
+    }
+
+    [Fact]
     public void UserPause_IsSentOnce_AndItsEchoIsDropped()
     {
         var link = Playing(PartyLinkRole.HostSide);
@@ -282,8 +309,8 @@ public class WatchPartyTests
     [Fact]
     public void Labels_NameTheFriendAndWhoIsWatchingThere()
     {
-        Assert.Equal("(friendflix)", FederatedPartyService.LinkLabel(null, "friendflix"));
-        Assert.Equal("bob, carol (friendflix)", FederatedPartyService.LinkLabel(new[] { "bob", "carol" }, "friendflix"));
+        Assert.Equal("(friend-a)", FederatedPartyService.LinkLabel(null, "friend-a"));
+        Assert.Equal("bob, carol (friend-a)", FederatedPartyService.LinkLabel(new[] { "bob", "carol" }, "friend-a"));
         Assert.Equal("a, b, c, d +2 (x)", FederatedPartyService.LinkLabel(new[] { "a", "b", "c", "d", "e", "f" }, "x"));
     }
 
@@ -299,7 +326,7 @@ public class WatchPartyTests
     public void GroupList_AddsFriendsPartiesOnce_AfterTheNativeGroups()
     {
         var native = new GroupInfoDto(Guid.NewGuid(), "Local", GroupStateType.Idle, new List<string>(), T0);
-        var party = new GroupInfoDto(Guid.NewGuid(), "Movie night · friendflix", GroupStateType.Playing, new List<string> { "alice (friendflix)" }, T0);
+        var party = new GroupInfoDto(Guid.NewGuid(), "Movie night · friend-a", GroupStateType.Playing, new List<string> { "alice (friend-a)" }, T0);
         var merged = FederatedPartyFilter.Merge(new[] { native }, new[] { party, party });
         Assert.Equal(new[] { native.GroupId, party.GroupId }, merged.Select(g => g.GroupId));
 

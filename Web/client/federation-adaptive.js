@@ -52,7 +52,28 @@
     }
     return 0;
   }
-  var core = { compatible: compatible, choose: choose, bufferedAhead: bufferedAhead };
+  function hlsOptions(startPosition) {
+    return {
+      maxBufferLength: 45, maxMaxBufferLength: 60, maxBufferSize: 128 * 1024 * 1024,
+      backBufferLength: 30, startPosition: Math.max(0, startPosition), enableWorker: false,
+      manifestLoadingTimeOut: 20000, manifestLoadingMaxRetry: 3,
+      fragLoadingTimeOut: 20000, fragLoadingMaxRetry: 3,
+      fragLoadingRetryDelay: 1000, fragLoadingMaxRetryDelay: 8000
+    };
+  }
+  function nextQualityCap(currentCap, defaultCap, failed, healthyMs) {
+    var current = currentCap > 0 ? currentCap : defaultCap;
+    if (!(current > 0) || !(defaultCap > 0)) return null;
+    if (failed) {
+      var lower = Math.max(2000000, Math.floor(current * 0.6));
+      return lower < current ? lower : null;
+    }
+    if (currentCap > 0 && healthyMs >= 60000 && current < defaultCap) {
+      return Math.min(defaultCap, Math.ceil(current * 1.25));
+    }
+    return null;
+  }
+  var core = { compatible: compatible, choose: choose, bufferedAhead: bufferedAhead, hlsOptions: hlsOptions, nextQualityCap: nextQualityCap };
   window.__federationAdaptiveCore = core;
   var hlsLoading;
   function loadHls(api) {
@@ -92,10 +113,11 @@
         this.name = 'Federation adaptive web preview'; this.id = 'federation-adaptive'; this.type = 'mediaplayer'; this.priority = -1;
         this.isLocalPlayer = true; this.deps = dependencies; this.revision = 0; this.active = null;
         this.preparing = null; this.timer = null; this.enabled = true; this.lastTime = 0;
+        this.qualityCap = null; this.lastQualityChange = 0; this.healthySince = 0;
       }
       canPlayMediaType(type) { return type === 'Video'; }
       canPlayItem(item, options) {
-        var federated = !window.NativeShell && !!window.MediaSource && item.Type === 'Movie' && !(item.PartCount > 1)
+        var federated = !window.NativeShell && !!window.MediaSource && (item.Type === 'Movie' || item.Type === 'Episode') && !(item.PartCount > 1)
           && ((item.ProviderIds && item.ProviderIds.FederationKey)
           || (item.MediaSources || []).some(function (s) { return /\/Plugins\/Federation\/Stream\?/.test(s.Path || ''); }));
         // jellyfin-web treats an alternate MediaSourceId as a separate local
@@ -159,12 +181,14 @@
         return field(result, 'Sources') || [];
       }
       async playbackInfo(id, position, audio, subtitle, signal) {
+        var defaultCap = this.deps.playbackManager.getMaxStreamingBitrate(this);
+        var maxBitrate = this.qualityCap > 0 && defaultCap > 0 ? Math.min(this.qualityCap, defaultCap) : (this.qualityCap || defaultCap);
         var response = await fetch(this.api.getUrl('Items/' + this.item.Id + '/PlaybackInfo'), {
           method: 'POST', signal: signal, headers: { Authorization: this.authorization(this.api), 'Content-Type': 'application/json' },
           body: JSON.stringify({ UserId: this.api.getCurrentUserId(), MediaSourceId: id, StartTimeTicks: Math.round(position * TICKS),
             AudioStreamIndex: audio, SubtitleStreamIndex: subtitle == null ? -1 : subtitle, DeviceProfile: await this.getDeviceProfile(),
             IsPlayback: true, AutoOpenLiveStream: false, EnableDirectPlay: false, EnableDirectStream: false,
-            MaxStreamingBitrate: this.deps.playbackManager.getMaxStreamingBitrate(this), AllowVideoStreamCopy: false, AllowAudioStreamCopy: false })
+            MaxStreamingBitrate: maxBitrate, AllowVideoStreamCopy: false, AllowAudioStreamCopy: false })
         });
         if (!response.ok) throw new Error('Replacement refused');
         var result = await response.json();
@@ -203,15 +227,45 @@
         this.policy = { currentId: field(current, 'Id'), reference: current, audio: options.mediaSource.DefaultAudioStreamIndex,
           subtitle: options.mediaSource.DefaultSubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSubtitleStreamIndex,
           lastSwitch: Date.now(), rejected: {}, pendingId: null };
+        this.qualityCap = null; this.lastQualityChange = 0; this.healthySince = Date.now();
         this.initialOffset = options.transcodingOffsetTicks || 0;
-        var initial = await this.openSource(options.mediaSource, options.url, options.playSessionId,
-          this.offsetFor(options.url, options.transcodingOffsetTicks / TICKS || 0), options.playerStartPositionTicks / TICKS || 0);
+        var initial;
+        try {
+          initial = await this.openSource(options.mediaSource, options.url, options.playSessionId,
+            this.offsetFor(options.url, options.transcodingOffsetTicks / TICKS || 0), options.playerStartPositionTicks / TICKS || 0);
+        } catch (error) {
+          initial = await this.recoverStartup(sources, options);
+        }
         if (revision !== this.revision) { this.disposeSource(initial); throw new Error('Playback cancelled'); }
         this.active = initial;
         initial.video.controls = true; initial.video.style.visibility = 'visible'; initial.video.muted = false;
         this.bind(initial);
         await initial.video.play();
         this.refreshTrackControls(); this.schedule();
+      }
+      async recoverStartup(sources, options) {
+        var position = options.playerStartPositionTicks / TICKS || 0;
+        var originalSession = options.playSessionId;
+        while (true) {
+          var candidate = choose(this.policy, sources, Date.now(), true);
+          if (!candidate) throw new Error('No replacement source is available');
+          var session = null;
+          try {
+            var tracks = compatible(this.policy.reference, candidate, this.policy.audio, this.policy.subtitle);
+            if (!tracks) throw new Error('Replacement tracks do not match');
+            var result = await this.playbackInfo(field(candidate, 'Id'), position, tracks.audio, tracks.subtitle, null);
+            var source = result.MediaSources && result.MediaSources[0];
+            var url = this.api.getUrl(source.TranscodingUrl);
+            session = result.PlaySessionId || new URL(url, this.api.serverAddress()).searchParams.get('PlaySessionId');
+            var entry = await this.openSource(source, url, session, this.offsetFor(url, position), position, null);
+            this.stopEncoding(originalSession);
+            this.policy.currentId = field(candidate, 'Id'); this.policy.reference = candidate; this.policy.lastSwitch = Date.now();
+            return entry;
+          } catch (_) {
+            if (session) this.stopEncoding(session);
+            this.policy.rejected[field(candidate, 'Id')] = Date.now() + 60000;
+          }
+        }
       }
       offsetFor(url, fallback) {
         return /copytimestamps=true/i.test(url) || /\.m3u8(?:\?|$)/i.test(url) ? 0 : fallback;
@@ -263,11 +317,17 @@
             {
               var Hls = await loadHls(this.api);
               if (!Hls || !Hls.isSupported()) throw new Error('HLS is not supported');
-              entry.hls = new Hls({ maxBufferLength: 12, maxMaxBufferLength: 20, maxBufferSize: 16 * 1024 * 1024,
-                backBufferLength: 2, startPosition: Math.max(0, at - offset), enableWorker: false,
-                manifestLoadingTimeOut: 10000, fragLoadingTimeOut: 10000, fragLoadingMaxRetry: 1 });
+              entry.hls = new Hls(hlsOptions(at - offset));
               entry.hls.attachMedia(video); entry.hls.loadSource(parsed.href);
-              entry.hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) entry.error = true; });
+              entry.hls.on(Hls.Events.ERROR, (_, data) => {
+                if (!data.fatal) return;
+                entry.error = true;
+                console.warn('[Federation] HLS playback failed', {
+                  type: data.type, details: data.details,
+                  status: data.response && data.response.code,
+                  fragment: data.frag && data.frag.sn
+                });
+              });
             }
           } else video.src = parsed.href;
           var until = Date.now() + 18000;
@@ -283,11 +343,14 @@
         var video = entry.video;
         ['timeupdate', 'pause', 'volumechange', 'waiting'].forEach((name) => video.addEventListener(name, () => {
           if (this.active !== entry) return;
-          if (name === 'timeupdate') { this.waitingAt = 0; this.lastTime = this.currentTime(); }
-          if (name === 'waiting' && !this.waitingAt) this.waitingAt = Date.now();
+          if (name === 'timeupdate') { this.waitingAt = 0; if (!this.healthySince) this.healthySince = Date.now(); this.lastTime = this.currentTime(); }
+          if (name === 'waiting' && !this.waitingAt) {
+            this.waitingAt = Date.now(); this.healthySince = 0;
+            console.debug('[Federation] Playback waiting', { bufferedSeconds: Math.round(bufferedAhead(video, video.currentTime) * 10) / 10 });
+          }
           this.emit(name);
         }));
-        video.addEventListener('playing', () => { if (this.active === entry) { this.waitingAt = 0; this.emit('unpause'); } });
+        video.addEventListener('playing', () => { if (this.active === entry) { this.waitingAt = 0; if (!this.healthySince) this.healthySince = Date.now(); this.emit('unpause'); } });
         video.addEventListener('seeking', () => { if (this.active === entry) this.cancelPreparation(); });
         video.addEventListener('error', () => { if (this.active === entry) { entry.error = true; this.schedule(true); } });
         video.addEventListener('ended', () => { if (this.active === entry) { this.lastTime = this.currentTime(); this.emit('stopped'); this.cleanup(); } });
@@ -306,9 +369,29 @@
           if (revision !== this.revision || !this.active) return;
           var failed = this.active.error || !sources.some((s) => field(s, 'Id') === this.policy.currentId)
             || (this.waitingAt && Date.now() - this.waitingAt > 3000 && bufferedAhead(this.active.video, this.active.video.currentTime) < 1);
+          var current = sources.find((s) => field(s, 'Id') === this.policy.currentId);
+          var healthyMs = !failed && this.healthySince ? Date.now() - this.healthySince : 0;
+          if (current && await this.adjustQuality(current, failed, healthyMs)) return;
           var next = choose(this.policy, sources, Date.now(), failed);
           if (next) await this.prepare(next, failed);
         } catch (_) { /* A ranking service outage must not stop a playable stream. */ }
+      }
+      async adjustQuality(source, failed, healthyMs) {
+        var now = Date.now();
+        if (now - this.lastQualityChange < 45000) return false;
+        var defaultCap = this.deps.playbackManager.getMaxStreamingBitrate(this);
+        var nextCap = nextQualityCap(this.qualityCap, defaultCap, failed, healthyMs);
+        if (!nextCap) return false;
+        var previous = this.qualityCap;
+        this.qualityCap = nextCap;
+        this.lastQualityChange = now;
+        try {
+          await this.prepare(source, failed);
+          return true;
+        } catch (_) {
+          this.qualityCap = previous;
+          return false;
+        }
       }
       async prepare(next, failed) {
         if (this.preparing || !this.active) return;
@@ -362,7 +445,7 @@
           this.policy.currentId = field(next, 'Id'); this.policy.reference = next;
           this.policy.audio = tracks.audio; this.policy.subtitle = tracks.subtitle; this.policy.lastSwitch = Date.now(); this.policy.pendingId = null;
           this.audioStreamIndex = tracks.audio; this.subtitleStreamIndex = tracks.subtitle;
-          this.streamInfo.mediaSource = source; this.streamInfo.playSessionId = entry.session; this.streamInfo.url = entry.url;
+          if (this.streamInfo) { this.streamInfo.mediaSource = source; this.streamInfo.playSessionId = entry.session; this.streamInfo.url = entry.url; }
           preparation.candidate = null; preparation.session = null;
           this.disposeSource(current); this.refreshTrackControls(); this.emit('timeupdate');
           this.notice.textContent = 'Switched to ' + field(next, 'Name'); this.notice.style.display = 'block';
@@ -372,7 +455,7 @@
           clearTimeout(timeout);
           if (preparation.candidate) this.disposeSource(preparation.candidate);
           else if (preparation.session) this.stopEncoding(preparation.session, api);
-          if (preparation.lease) fetch(api.getUrl('Plugins/Federation/Adaptive/Preparation/' + preparation.lease), { method: 'DELETE', headers: { Authorization: this.authorization(api) } }).catch(function () {});
+          if (preparation.lease) fetch(api.getUrl('Plugins/Federation/Adaptive/Preparation/' + encodeURIComponent(String(preparation.lease))), { method: 'DELETE', headers: { Authorization: this.authorization(api) } }).catch(function () {});
           if (this.preparing === preparation) this.preparing = null;
         }
       }

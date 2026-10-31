@@ -25,6 +25,7 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static readonly TimeSpan EndedWindow = TimeSpan.FromMinutes(30);
 
         private readonly ConcurrentDictionary<(string Friend, string Session), Entry> _sessions = new();
+        private readonly object _gate = new();
 
         /// <summary>Clock, replaceable in tests.</summary>
         internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
@@ -32,33 +33,40 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Records a gateway request for <paramref name="playSessionId"/>, unless it
         /// would start a new session beyond <paramref name="limit"/> (0 = none).
-        /// Returns false when refused.
+        /// Returns false when refused or when the session was already stopped.
         /// </summary>
         public bool TryTouch(string friendFederationId, string playSessionId, string? deviceId, int limit, Guid itemId = default)
         {
-            Prune();
-            var key = (friendFederationId, playSessionId.ToLowerInvariant());
-            var now = UtcNow();
-            if (_sessions.TryGetValue(key, out var existing))
+            lock (_gate)
             {
-                existing.LastSeenUtc = now;
-                existing.DeviceId ??= deviceId;
-                existing.Ended = false;
-                if (existing.ItemId == Guid.Empty)
+                Prune();
+                var key = (friendFederationId, playSessionId.ToLowerInvariant());
+                var now = UtcNow();
+                if (_sessions.TryGetValue(key, out var existing))
                 {
-                    existing.ItemId = itemId;
+                    if (existing.Ended)
+                    {
+                        return false;
+                    }
+
+                    existing.LastSeenUtc = now;
+                    existing.DeviceId ??= deviceId;
+                    if (existing.ItemId == Guid.Empty)
+                    {
+                        existing.ItemId = itemId;
+                    }
+
+                    return true;
                 }
 
+                if (limit > 0 && ActiveCount(friendFederationId) >= limit)
+                {
+                    return false;
+                }
+
+                _sessions[key] = new Entry { DeviceId = deviceId, LastSeenUtc = now, StartedUtc = now, ItemId = itemId };
                 return true;
             }
-
-            if (limit > 0 && ActiveCount(friendFederationId) >= limit)
-            {
-                return false;
-            }
-
-            _sessions[key] = new Entry { DeviceId = deviceId, LastSeenUtc = now, StartedUtc = now, ItemId = itemId };
-            return true;
         }
 
         /// <summary>
@@ -76,22 +84,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool TryGetForLog(string friendFederationId, string playSessionId, out Guid itemId, out DateTime startedUtc, out IReadOnlyCollection<string> conversions)
         {
-            itemId = Guid.Empty;
-            startedUtc = default;
-            conversions = Array.Empty<string>();
-            if (!_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) || entry.ItemId == Guid.Empty)
+            lock (_gate)
             {
-                return false;
-            }
+                itemId = Guid.Empty;
+                startedUtc = default;
+                conversions = Array.Empty<string>();
+                if (!_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) || entry.ItemId == Guid.Empty)
+                {
+                    return false;
+                }
 
-            itemId = entry.ItemId;
-            startedUtc = entry.StartedUtc;
-            lock (entry.Conversions)
-            {
+                itemId = entry.ItemId;
+                startedUtc = entry.StartedUtc;
                 conversions = entry.Conversions.ToArray();
+                return true;
             }
-
-            return true;
         }
 
         /// <summary>
@@ -101,15 +108,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public void RememberConversion(string friendFederationId, string playSessionId, string? outputPath)
         {
-            if (string.IsNullOrWhiteSpace(outputPath)
-                || !_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry))
+            if (string.IsNullOrWhiteSpace(outputPath))
             {
                 return;
             }
 
-            lock (entry.Conversions)
+            lock (_gate)
             {
-                if (entry.Conversions.Count < 16)
+                if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry)
+                    && entry.Conversions.Count < 16)
                 {
                     entry.Conversions.Add(outputPath);
                 }
@@ -119,13 +126,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Marks a known session as alive (a pause ping). False when unknown.</summary>
         public bool TryPing(string friendFederationId, string playSessionId)
         {
-            if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
+            lock (_gate)
             {
-                entry.LastSeenUtc = UtcNow();
-                return true;
-            }
+                if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
+                {
+                    entry.LastSeenUtc = UtcNow();
+                    return true;
+                }
 
-            return false;
+                return false;
+            }
         }
 
         /// <summary>
@@ -134,25 +144,31 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool TryEnd(string friendFederationId, string playSessionId, out string? deviceId)
         {
-            deviceId = null;
-            // Kept (marked ended) so the friend can still fetch the finished
-            // conversion log; it no longer counts toward the limit.
-            if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
+            lock (_gate)
             {
-                entry.Ended = true;
-                entry.LastSeenUtc = UtcNow();
-                deviceId = entry.DeviceId;
-                return true;
-            }
+                deviceId = null;
+                // Kept (marked ended) so the friend can still fetch the finished
+                // conversion log; it no longer counts toward the limit.
+                if (_sessions.TryGetValue((friendFederationId, playSessionId.ToLowerInvariant()), out var entry) && !entry.Ended)
+                {
+                    entry.Ended = true;
+                    entry.LastSeenUtc = UtcNow();
+                    deviceId = entry.DeviceId;
+                    return true;
+                }
 
-            return false;
+                return false;
+            }
         }
 
         /// <summary>Sessions of this friend active in the last <see cref="ActiveWindow"/>.</summary>
         public int ActiveCount(string friendFederationId)
         {
-            var since = UtcNow() - ActiveWindow;
-            return _sessions.Count(kv => kv.Key.Friend == friendFederationId && !kv.Value.Ended && kv.Value.LastSeenUtc >= since);
+            lock (_gate)
+            {
+                var since = UtcNow() - ActiveWindow;
+                return _sessions.Count(kv => kv.Key.Friend == friendFederationId && !kv.Value.Ended && kv.Value.LastSeenUtc >= since);
+            }
         }
 
         private void Prune()

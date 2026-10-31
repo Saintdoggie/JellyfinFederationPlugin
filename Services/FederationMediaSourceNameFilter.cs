@@ -14,7 +14,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <summary>
     /// Jellyfin builds a federated item's own (primary) media source from its stamped path and
     /// names it after the movie, while this plugin's extra sources are named after their server.
-    /// The version picker then reads "Civil War" next to "plexpal" and you cannot tell which server is
+    /// The version picker then reads "Civil War" next to "plex-source" and you cannot tell which server is
     /// which. This renames the item's own source after the server it plays from, in every item and
     /// playback-info response, so every client (web, Android, TV) shows one label per server.
     /// </summary>
@@ -160,7 +160,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 // A copy on a server that is down right now is still listed, so you can see where else the title
                 // lives; it is marked so you know it will not play until that server is back.
                 var offline = FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true;
-                var alternate = BuildAlternate(source, other.Name, entry.Metadata.RunTimeTicks, offline, serverCounts[source.ServerId] > 1 || source.ServerId == primary!.ServerId);
+                var cap = _federation.GetEffectiveWanCapMbps(other);
+                var fits = source.Bitrate is > 0 && (!cap.HasValue || source.Bitrate.Value <= cap.Value * 1_000_000L);
+                var alternate = BuildAlternate(source, other.Name, entry.Metadata.RunTimeTicks, offline, serverCounts[source.ServerId] > 1 || source.ServerId == primary!.ServerId, fits);
                 if (list.All(existing => existing.Id != alternate.Id))
                 {
                     list.Add(alternate);
@@ -174,7 +176,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// A description of another server's copy built from what the catalog already knows about it. Its id is the same
         /// one the playback path uses, so choosing it in the dropdown plays exactly that server's copy.
         /// </summary>
-        internal static MediaSourceInfo BuildAlternate(FederatedSource source, string serverName, long? fallbackRuntime, bool offline = false, bool needsDetail = false)
+        internal static MediaSourceInfo BuildAlternate(FederatedSource source, string serverName, long? fallbackRuntime, bool offline = false, bool needsDetail = false, bool fitsBandwidth = true)
             => new()
             {
                 Id = FederationMediaSourceProvider.BuildSourceId(source),
@@ -186,8 +188,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 Bitrate = source.Bitrate,
                 RunTimeTicks = source.RunTimeTicks ?? fallbackRuntime,
                 MediaStreams = source.MediaStreams?.ToList() ?? new List<MediaBrowser.Model.Entities.MediaStream>(),
-                SupportsDirectPlay = true,
-                SupportsDirectStream = true,
+                SupportsDirectPlay = false,
+                SupportsDirectStream = fitsBandwidth,
                 SupportsTranscoding = true,
                 SupportsProbing = true,
             };

@@ -138,6 +138,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Blanks keys, tokens and passwords (a log can hold stream URLs).</summary>
         public static string Redact(string text) => Secrets.Replace(text, "$1REDACTED");
 
+        /// <summary>A single-line, bounded attribution for a received conversion log.</summary>
+        public static string DescribeSource(string friendName, string playSessionId)
+        {
+            var friend = new string((friendName ?? "friend").Where(c => !char.IsControl(c)).Take(80).ToArray()).Trim();
+            var session = new string((playSessionId ?? string.Empty).Where(char.IsLetterOrDigit).Take(64).ToArray());
+            return $"Conversion log from friend \"{friend}\" for play session {session}";
+        }
+
         /// <summary>
         /// Receiver side: the file in this server's log folder for one play's log,
         /// named like Jellyfin's own conversion logs so the dashboard lists it with

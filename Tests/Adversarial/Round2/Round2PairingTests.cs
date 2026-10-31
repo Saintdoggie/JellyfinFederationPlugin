@@ -134,6 +134,19 @@ public class Round2PairingTests
         }
     }
 
+    [Theory]
+    [InlineData("12345 67890", "12345 67890", true)]
+    [InlineData("12345 67890", "12345 67891", false)]
+    [InlineData("12345 67890", "", false)]
+    [InlineData("", "", false)]
+    [InlineData("12345 67890", "12345 67890 ", false)]
+    public void ConfirmSafetyNumber_RequiresTheCurrentExactNumber(string current, string displayed, bool expected)
+    {
+        var friend = new RemoteServer { PairSafetyNumber = current };
+        Assert.Equal(expected, PairingService.TryConfirmSafetyNumber(friend, displayed));
+        Assert.Equal(expected, friend.PairSafetyConfirmed);
+    }
+
     /// <summary>OnHello's contract (docs): tokens swap "once both admins confirmed". It hands out this side's token when only this side confirmed.</summary>
     [Fact]
     public void OnHello_RefusesWhileThePeerHasNotConfirmed()

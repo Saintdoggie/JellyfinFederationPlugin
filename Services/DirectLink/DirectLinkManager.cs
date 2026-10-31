@@ -140,6 +140,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         private const int MaxInboundLinks = 32;
         private const int MaxConcurrentResponderPunches = 4;
+        private const int MaxConcurrentOutboundAttempts = 4;
         private static readonly TimeSpan StableLink = TimeSpan.FromMinutes(2);
         private const int MaxOffersPerWindow = 10;
         private static readonly TimeSpan OfferWindow = TimeSpan.FromMinutes(10);
@@ -151,11 +152,13 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private readonly FederationLibraryManager? _library;
         private readonly MediaBrowser.Common.Net.INetworkManager? _network;
         private readonly SemaphoreSlim _responderPunches = new(MaxConcurrentResponderPunches);
+        private readonly SemaphoreSlim _outboundAttempts = new(MaxConcurrentOutboundAttempts);
         private readonly ConcurrentDictionary<string, Outbound> _outbound = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, DirectLinkConnection> _inbound = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, Queue<DateTime>> _offers = new(StringComparer.OrdinalIgnoreCase);
         private readonly CancellationTokenSource _shutdown = new();
         private readonly object _identityGate = new();
+        private readonly object _inboundGate = new();
         private DirectLinkIdentity? _identity;
         private Task? _loop;
         private int _stopped;
@@ -419,7 +422,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             var allowPrivate = AllowPrivateFor(caller);
             var allowTailscale = AllowTailscaleFor(caller);
-            var candidates = DirectLinkProtocol.AcceptCandidates(offer.Candidates, allowPrivate, allowTailscale);
+            var candidates = await AcceptPeerCandidatesAsync(offer.Candidates, caller, allowPrivate, allowTailscale, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0)
             {
                 return (400, null, "The offer had no usable address.");
@@ -556,12 +559,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             foreach (var (friendId, link) in _inbound.ToList())
             {
                 var friend = config.RemoteServers.FirstOrDefault(s => string.Equals(s.Id, friendId, StringComparison.OrdinalIgnoreCase));
-                string? reason = config.DirectLinkOptIn != true ? "direct links were switched off here"
-                    : friend == null ? "the friend was removed"
-                    : !friend.Enabled ? "the friend was disabled"
-                    : string.Equals(friend.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase) ? "direct links were switched off for this friend"
-                    : _network != null && _network.ShouldAllowServerAccess(link.RemoteEndPoint.Address) != MediaBrowser.Common.Net.RemoteAccessPolicyResult.Allow ? "Jellyfin's network settings no longer allow its address"
-                    : null;
+                var reason = InboundRefusal(config, friendId, link.RemoteEndPoint);
                 if (reason == null)
                 {
                     continue;
@@ -574,6 +572,17 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     await link.DisposeAsync().ConfigureAwait(false);
                 }
             }
+        }
+
+        private string? InboundRefusal(PluginConfiguration? config, string friendId, IPEndPoint remote)
+        {
+            var friend = config?.RemoteServers.FirstOrDefault(s => string.Equals(s.Id, friendId, StringComparison.OrdinalIgnoreCase));
+            return config?.DirectLinkOptIn != true ? "direct links were switched off here"
+                : friend == null ? "the friend was removed"
+                : !friend.Enabled ? "the friend was disabled"
+                : string.Equals(friend.DirectLinkMode, "Off", StringComparison.OrdinalIgnoreCase) ? "direct links were switched off for this friend"
+                : _network != null && _network.ShouldAllowServerAccess(remote.Address) != MediaBrowser.Common.Net.RemoteAccessPolicyResult.Allow ? "Jellyfin's network settings no longer allow its address"
+                : null;
         }
 
         /// <summary>The measured speed of friend <paramref name="serverId"/>'s link (0 when down or not measured).</summary>
@@ -652,6 +661,64 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     || (IPAddress.TryParse(uri.Host, out var ip) && DirectLinkProtocol.IsTailscale(ip)));
         }
 
+        private static async Task<List<IPEndPoint>> AcceptPeerCandidatesAsync(
+            IEnumerable<DirectLinkCandidate>? offered,
+            RemoteServer server,
+            bool allowPrivate,
+            bool allowTailscale,
+            CancellationToken cancellationToken)
+        {
+            var candidates = DirectLinkProtocol.AcceptCandidates(offered, allowPrivate, allowTailscale);
+            if (DirectLinkProtocol.TestMode || candidates.Count == 0 || !Uri.TryCreate(server.Url, UriKind.Absolute, out var uri))
+            {
+                return candidates;
+            }
+
+            var resolved = new HashSet<IPAddress>();
+            try
+            {
+                foreach (var address in await Dns.GetHostAddressesAsync(uri.Host, cancellationToken).ConfigureAwait(false))
+                {
+                    resolved.Add(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address);
+                }
+            }
+            catch (SocketException)
+            {
+                return new List<IPEndPoint>();
+            }
+
+            var ownSubnets = new List<(IPAddress Address, int PrefixLength)>();
+            var hasTailscale = false;
+            try
+            {
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up))
+                {
+                    foreach (var unicast in nic.GetIPProperties().UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
+                    {
+                        ownSubnets.Add((unicast.Address, unicast.PrefixLength));
+                        hasTailscale |= DirectLinkProtocol.IsTailscale(unicast.Address);
+                    }
+                }
+            }
+            catch (NetworkInformationException)
+            {
+            }
+
+            return candidates.Where(endpoint =>
+            {
+                var address = endpoint.Address.IsIPv4MappedToIPv6 ? endpoint.Address.MapToIPv4() : endpoint.Address;
+                if (resolved.Contains(address))
+                {
+                    return true;
+                }
+
+                var bytes = address.GetAddressBytes();
+                var isPrivate = bytes[0] == 10 || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) || (bytes[0] == 192 && bytes[1] == 168);
+                return (allowPrivate && isPrivate && Pairing.PairingEndpoints.IsAcceptable(endpoint, ownSubnets))
+                    || (allowTailscale && hasTailscale && DirectLinkProtocol.IsTailscale(address));
+            }).ToList();
+        }
+
         private List<(IPEndPoint Endpoint, string Kind)> LocalCandidates(Socket socket, IPEndPoint? publicEndpoint, bool allowPrivate, bool allowTailscale)
         {
             var port = ((IPEndPoint)socket.LocalEndPoint!).Port;
@@ -687,6 +754,12 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         {
             var servers = await StunClient.ResolveAsync(Plugin.Instance?.Configuration?.DirectLinkStunServers ?? Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
             var (publicEndpoint, nat) = await StunClient.DiscoverAsync(socket, servers, cancellationToken).ConfigureAwait(false);
+            if (publicEndpoint != null)
+            {
+                var candidate = new DirectLinkCandidate { Kind = "srflx", Address = publicEndpoint.Address.ToString(), Port = publicEndpoint.Port };
+                publicEndpoint = DirectLinkProtocol.AcceptCandidate(candidate, DirectLinkProtocol.TestMode, DirectLinkProtocol.TestMode);
+            }
+
             if (publicEndpoint != null)
             {
                 // This server's own address, shown only to its admin.
@@ -792,8 +865,13 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
         private async Task AttemptAsync(RemoteServer server, Outbound state, CancellationToken cancellationToken)
         {
+            var acquired = false;
             try
             {
+                // Avoid a synchronized STUN/socket/punch/speed-test burst when many
+                // friends retry together. Per-friend backoff remains independent.
+                await _outboundAttempts.WaitAsync(cancellationToken).ConfigureAwait(false);
+                acquired = true;
                 var failure = await ConnectAsync(server, state, cancellationToken).ConfigureAwait(false);
                 if (failure != null)
                 {
@@ -811,6 +889,11 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
             finally
             {
+                if (acquired)
+                {
+                    _outboundAttempts.Release();
+                }
+
                 lock (state)
                 {
                     state.Busy = false;
@@ -919,7 +1002,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 return ("The friend's answer was malformed.", false, null);
             }
 
-            var peerCandidates = DirectLinkProtocol.AcceptCandidates(answer.Candidates, allowPrivate, allowTailscale);
+            var peerCandidates = await AcceptPeerCandidatesAsync(answer.Candidates, server, allowPrivate, allowTailscale, cancellationToken).ConfigureAwait(false);
             state.NatRemote = DirectLinkProtocol.ParseNat(answer.NatType);
             if (peerCandidates.Count == 0)
             {
@@ -943,7 +1026,6 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             // The QUIC stack opens its own socket on the same port; the routers'
             // mappings are keyed on that port, so the punched path carries over.
             socket.Close();
-            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
             object quic;
             try
             {
@@ -965,7 +1047,6 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 true,
                 () => Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == serverId)?.ApiKey);
             link.StartCloseWatch();
-            link.Mbps = await MeasureAsync(link, cancellationToken).ConfigureAwait(false);
             lock (state)
             {
                 if (!ReferenceEquals(_outbound.GetValueOrDefault(server.Id), state)
@@ -984,11 +1065,10 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             _logger.LogInformation(
-                "[Federation] Direct link to {Friend} is up via {Endpoint} in {Ms} ms ({Mbps:F0} Mbps; routers: here {NatLocal}, friend {NatRemote})",
+                "[Federation] Direct link to {Friend} is up via {Endpoint} in {Ms} ms (routers: here {NatLocal}, friend {NatRemote})",
                 server.Name,
                 DirectLinkProtocol.Redact(punch.Path),
                 sw.ElapsedMilliseconds,
-                link.Mbps,
                 DirectLinkProtocol.NatName(nat),
                 DirectLinkProtocol.NatName(state.NatRemote));
 
@@ -1021,7 +1101,34 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
+
+            // Authentication, not an 8 MiB speed sample, makes the link usable.
+            // A slow sample must not hold playback on the old tunnel for 20 seconds.
+            _ = MeasureAndUpdateAsync(server, state, link, _shutdown.Token);
             return null;
+        }
+
+        private async Task MeasureAndUpdateAsync(RemoteServer server, Outbound state, DirectLinkConnection link, CancellationToken cancellationToken)
+        {
+            var measured = await MeasureAsync(link, cancellationToken).ConfigureAwait(false);
+            if (measured <= 0)
+            {
+                return;
+            }
+
+            lock (state)
+            {
+                // A reconnect may have replaced this link while the old sample was
+                // running. Never let that late result describe the replacement.
+                if (!ReferenceEquals(state.Link, link) || link.IsClosed)
+                {
+                    return;
+                }
+
+                link.Mbps = measured;
+            }
+
+            _logger.LogInformation("[Federation] Direct link to {Friend} measured {Mbps:F0} Mbps", server.Name, measured);
         }
 
         private async Task<double> MeasureAsync(DirectLinkConnection link, CancellationToken cancellationToken)
@@ -1048,7 +1155,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 return total * 8 / 1e6 / Math.Max(sw.Elapsed.TotalSeconds, 0.001);
             }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.IO.IOException)
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.IO.IOException or ObjectDisposedException)
             {
                 _logger.LogDebug(ex, "[Federation] Direct link speed test failed");
                 return 0;
@@ -1084,7 +1191,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
                 var quic = await DirectLinkHandshake.AcceptAsync(
                     localPort,
-                    punch.Path.Address,
+                    punch.Path,
                     identity.Certificate,
                     offer.Fingerprint,
                     sessionKey,
@@ -1108,13 +1215,39 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     throw;
                 }
 
-                // The friend reconnected (its end dropped first): the new link replaces the old.
+                // Settings may have changed during STUN, punching and the TLS
+                // handshake. Recheck authorization and capacity immediately before
+                // the link can serve, and serialize check-plus-insert across peers.
                 DirectLinkConnection? previous = null;
-                _inbound.AddOrUpdate(caller.Id, link, (_, old) =>
+                string? refusal = null;
+                lock (_inboundGate)
                 {
-                    previous = old;
-                    return link;
-                });
+                    refusal = InboundRefusal(Plugin.Instance?.Configuration, caller.Id, punch.Path);
+                    if (refusal == null && !_inbound.ContainsKey(caller.Id)
+                        && _inbound.Values.Count(l => !l.IsClosed) >= MaxInboundLinks)
+                    {
+                        refusal = "this server has as many direct links as it takes";
+                    }
+
+                    if (refusal == null)
+                    {
+                        // A reconnect atomically replaces this friend's old link.
+                        _inbound.AddOrUpdate(caller.Id, link, (_, old) =>
+                        {
+                            previous = old;
+                            return link;
+                        });
+                    }
+                }
+
+                if (refusal != null)
+                {
+                    _logger.LogInformation("[Federation] Direct link from {Friend} closed before serving: {Reason}", caller.Name, DirectLinkProtocol.RedactText(refusal));
+                    link.MarkClosed(refusal);
+                    await link.DisposeAsync().ConfigureAwait(false);
+                    return;
+                }
+
                 if (previous != null && !ReferenceEquals(previous, link))
                 {
                     await previous.DisposeAsync().ConfigureAwait(false);
