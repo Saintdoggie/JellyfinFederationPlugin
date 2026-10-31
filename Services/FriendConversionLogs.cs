@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -28,8 +29,28 @@ namespace Jellyfin.Plugin.Federation.Services
         /// credentials blanked. Null when there are none.
         /// </summary>
         public static string? Collect(string logDirectory, Guid itemId, DateTime startedUtc)
+            => Collect(logDirectory, itemId, startedUtc, null, null);
+
+        /// <summary>
+        /// Same, limited to logs that name one of <paramref name="conversions"/>
+        /// (the output files of this session's own conversions, so another
+        /// viewer's conversion of the same title is never included), with the
+        /// folders in <paramref name="privateFolders"/> blanked.
+        /// </summary>
+        public static string? Collect(string logDirectory, Guid itemId, DateTime startedUtc, IReadOnlyCollection<string>? conversions, IEnumerable<string?>? privateFolders)
         {
             if (string.IsNullOrEmpty(logDirectory) || !Directory.Exists(logDirectory) || itemId == Guid.Empty)
+            {
+                return null;
+            }
+
+            var markers = conversions?
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(m => !string.IsNullOrEmpty(m) && m!.Length >= 8)
+                .Select(m => m!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (conversions != null && (markers == null || markers.Count == 0))
             {
                 return null;
             }
@@ -40,7 +61,8 @@ namespace Jellyfin.Plugin.Federation.Services
             var files = new DirectoryInfo(logDirectory)
                 .EnumerateFiles("FFmpeg.Transcode-*.log")
                 .Where(f => (f.Name.Contains(n, StringComparison.OrdinalIgnoreCase) || f.Name.Contains(d, StringComparison.OrdinalIgnoreCase))
-                    && f.LastWriteTimeUtc >= since)
+                    && f.LastWriteTimeUtc >= since
+                    && (markers == null || NamesAny(f, markers)))
                 .OrderBy(f => f.CreationTimeUtc)
                 .TakeLast(5)
                 .ToList();
@@ -71,8 +93,46 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            var text = Redact(sb.ToString());
+            var text = Redact(BlankFolders(sb.ToString(), privateFolders));
             return text.Length > MaxBytes ? text[^MaxBytes..] : text;
+        }
+
+        /// <summary>
+        /// Replaces each of <paramref name="folders"/> (as written in the
+        /// command line and in the JSON of the media source) with "[folder]",
+        /// so the friend doesn't learn how this server's disks are laid out.
+        /// </summary>
+        internal static string BlankFolders(string text, IEnumerable<string?>? folders)
+        {
+            foreach (var folder in (folders ?? Array.Empty<string?>())
+                .Where(f => !string.IsNullOrWhiteSpace(f) && f!.Trim().Length > 1)
+                .Select(f => f!.TrimEnd('/', '\\'))
+                .Distinct(StringComparer.Ordinal)
+                .OrderByDescending(f => f.Length))
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(folder);
+                text = text.Replace(folder, "[folder]", StringComparison.Ordinal)
+                    .Replace(json.Substring(1, json.Length - 2), "[folder]", StringComparison.Ordinal);
+            }
+
+            return text;
+        }
+
+        /// <summary>Whether the head of a log (its media source and command line) names one of the markers.</summary>
+        private static bool NamesAny(FileInfo file, IReadOnlyCollection<string> markers)
+        {
+            try
+            {
+                using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var buffer = new byte[(int)Math.Min(stream.Length, 512 * 1024)];
+                var read = stream.Read(buffer, 0, buffer.Length);
+                var head = Encoding.UTF8.GetString(buffer, 0, read);
+                return markers.Any(m => head.Contains(m, StringComparison.Ordinal));
+            }
+            catch (IOException)
+            {
+                return false;
+            }
         }
 
         /// <summary>Blanks keys, tokens and passwords (a log can hold stream URLs).</summary>

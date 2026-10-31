@@ -40,7 +40,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// nothing that could be used as a token.
     /// </para>
     /// </summary>
-    public class FederationPlaybackTokenService
+    public class FederationPlaybackTokenService : IDisposable
     {
         private static readonly TimeSpan PlaybackTokenLifetime = TimeSpan.FromHours(24);
         private static readonly TimeSpan DownloadTokenLifetime = TimeSpan.FromMinutes(15);
@@ -426,6 +426,23 @@ namespace Jellyfin.Plugin.Federation.Services
                 // A damaged file only means friends mint new tokens, as after
                 // any expiry; never a reason to fail startup.
             }
+        }
+
+        /// <summary>
+        /// Writes a pending save at shutdown: a token minted in the last moments
+        /// before a restart would otherwise be lost while the friend keeps using
+        /// it, and every direct play it starts is refused until the friend's
+        /// cached copy runs out.
+        /// </summary>
+        public void Dispose()
+        {
+            _saveTimer?.Dispose();
+            if (Volatile.Read(ref _saveScheduled) != 0)
+            {
+                Save();
+            }
+
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>Writes the outstanding tokens' hashes; internal for tests.</summary>

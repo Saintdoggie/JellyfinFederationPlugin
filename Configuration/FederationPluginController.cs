@@ -30,7 +30,7 @@ namespace Jellyfin.Plugin.Federation.Api
     /// </summary>
     [ApiController]
     [Route("Plugins/Federation")]
-    public class FederationController : ControllerBase
+    public partial class FederationController : ControllerBase
     {
         /// <summary>
         /// The first plugin version whose Peer/* endpoints accept a scoped
@@ -362,17 +362,25 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.FederationId = oldServer.FederationId;
                         server.ShareAllLibraries = oldServer.ShareAllLibraries;
                         server.SharedLibraryFolderIds = oldServer.SharedLibraryFolderIds;
+                        server.ShareAllUsers = oldServer.ShareAllUsers;
+                        server.SharedUserIds = oldServer.SharedUserIds;
                         server.RemoteUserAccessRules = oldServer.RemoteUserAccessRules;
                         server.FriendUserAccessRules = oldServer.FriendUserAccessRules;
                         server.ExcludedItemIds = oldServer.ExcludedItemIds;
                         server.AllowDownloads = oldServer.AllowDownloads;
                         server.AllowBulkDownloads = oldServer.AllowBulkDownloads;
+                        server.SharingExpiresUtc = oldServer.SharingExpiresUtc;
+                        server.LibraryShareExpiries = oldServer.LibraryShareExpiries;
                         server.AllowRemoteTranscode = oldServer.AllowRemoteTranscode;
                         server.MonthlyDataCapGb = oldServer.MonthlyDataCapGb;
                         server.MaxConcurrentStreams = oldServer.MaxConcurrentStreams;
+                        server.SharePopular = oldServer.SharePopular;
+                        server.ShareViewerNames = oldServer.ShareViewerNames;
                         server.DirectLinkMode = oldServer.DirectLinkMode;
                         server.PeerAllowsDownloads = oldServer.PeerAllowsDownloads;
                         server.PeerSharesFavorites = oldServer.PeerSharesFavorites;
+                        server.ShareAllFriends = oldServer.ShareAllFriends;
+                        server.SharedFriendIds = oldServer.SharedFriendIds;
 
                         // IssuedApiKey (the federation token this server minted for the
                         // friend, added alongside the token-rewrite) was missing from
@@ -506,6 +514,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.DownloadDestination = existing.DownloadDestination;
                     config.ShareViewersWithFriends = existing.ShareViewersWithFriends;
                     config.ShowFriendsViewers = existing.ShowFriendsViewers;
+                    config.ShareViewerNamesWithFriends = existing.ShareViewerNamesWithFriends;
                     config.ShareTranscodeHardware = existing.ShareTranscodeHardware;
                     config.SmartTranscodePlacement = existing.SmartTranscodePlacement;
                     config.TranscodeHardwareMode = existing.TranscodeHardwareMode;
@@ -1421,13 +1430,15 @@ namespace Jellyfin.Plugin.Federation.Api
         /// Server-to-server: a friend asking (using the federation token we gave
         /// them) who our other friends are, for friends-of-friends discovery.
         /// Gated on AllowFriendsOfFriends and a valid federation token - see
-        /// <see cref="FederationTokenAuth"/>.
+        /// <see cref="FederationTokenAuth"/> - and lists only the friends this
+        /// caller may see (<see cref="FederationPeerAccessService.IsFriendVisible"/>).
         /// </summary>
         [HttpGet("Friends/List")]
         [AllowAnonymous]
         public IActionResult GetFriendsList()
         {
-            if (FederationTokenAuth.ResolveCaller(Request) == null)
+            var caller = FederationTokenAuth.ResolveCaller(Request);
+            if (caller == null)
             {
                 return Unauthorized();
             }
@@ -1439,7 +1450,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var friends = (config.RemoteServers ?? new List<RemoteServer>())
-                .Where(s => s.Enabled)
+                .Where(s => FederationPeerAccessService.IsFriendVisible(caller, s))
                 .Select(s => new { name = s.Name, url = s.Url });
             return Ok(new { allowsIntroductions = true, friends });
         }
@@ -1534,6 +1545,32 @@ namespace Jellyfin.Plugin.Federation.Api
         }
 
         /// <summary>
+        /// Admin-triggered: which of this server's local users a friend may see
+        /// (names only, so their admin can set per-user rules). Enforced by
+        /// <see cref="GetPeerUsers"/>; nothing is pushed to the friend.
+        /// </summary>
+        [HttpPost("Friends/{id}/UserSharing")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendUserSharing(string id, [FromBody] UserSharingBody? body)
+        {
+            var server = Plugin.Instance?.Configuration?.RemoteServers?.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            server.ShareAllUsers = body?.ShareAll ?? false;
+            server.SharedUserIds = (body?.UserIds ?? new List<string>())
+                .Select(u => Guid.TryParse(u, out var g) ? g.ToString("N") : null)
+                .Where(u => u != null)
+                .Select(u => u!)
+                .Distinct()
+                .ToList();
+            Plugin.Instance!.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved. They see " + (server.ShareAllUsers ? "all your users." : server.SharedUserIds.Count == 0 ? "none of your users." : server.SharedUserIds.Count + " of your users.") });
+        }
+
+        /// <summary>
         /// Admin: whether this friend may convert our titles on this server for its
         /// viewers (owner side of the remote-transcode handoff).
         /// </summary>
@@ -1582,6 +1619,32 @@ namespace Jellyfin.Plugin.Federation.Api
             }
             Plugin.Instance!.SaveConfiguration();
             return Ok(new { success = true, message = "Limits saved." });
+        }
+
+        /// <summary>
+        /// Admin-triggered: which of this server's other friends a friend may see
+        /// for friends-of-friends discovery. Enforced by <see cref="GetFriendsList"/>;
+        /// nothing is pushed to the friend.
+        /// </summary>
+        [HttpPost("Friends/{id}/FriendSharing")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult SetFriendFriendSharing(string id, [FromBody] FriendSharingBody? body)
+        {
+            var config = Plugin.Instance!.Configuration;
+            var server = config.RemoteServers.FirstOrDefault(s => s.Id == id);
+            if (server == null)
+            {
+                return NotFound(new { success = false, message = "Friend not found." });
+            }
+
+            var known = config.RemoteServers.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+            server.ShareAllFriends = body?.ShareAll ?? true;
+            server.SharedFriendIds = (body?.FriendIds ?? new List<string>())
+                .Where(f => known.Contains(f) && f != server.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            Plugin.Instance.SaveConfiguration();
+            return Ok(new { success = true, message = "Saved." });
         }
 
         /// <summary>Admin: the remote-transcode handoff settings, both directions.</summary>
@@ -2066,13 +2129,37 @@ namespace Jellyfin.Plugin.Federation.Api
             };
         }
 
+        /// <summary>
+        /// Applies per-friend choices from a settings card: null follows the
+        /// default. A friend not listed keeps its choice; unknown ids are ignored.
+        /// </summary>
+        private static void ApplyFriendChoices(PluginConfiguration config, List<FriendChoice>? choices, Action<RemoteServer, bool?> apply)
+        {
+            foreach (var choice in choices ?? new List<FriendChoice>())
+            {
+                var server = config.RemoteServers?.FirstOrDefault(s => s.Id == choice.Id);
+                if (server != null)
+                {
+                    apply(server, choice.Share);
+                }
+            }
+        }
+
         /// <summary>Settings for showing viewers across friends.</summary>
         [HttpGet("Settings/Viewers")]
         [Authorize(Policy = "RequiresElevation")]
         public IActionResult GetViewerSettings()
         {
             var config = Plugin.Instance!.Configuration;
-            return Ok(new { config.ShareViewersWithFriends, config.ShowFriendsViewers });
+            return Ok(new
+            {
+                config.ShareViewersWithFriends,
+                config.ShowFriendsViewers,
+                config.ShareViewerNamesWithFriends,
+                Friends = (config.RemoteServers ?? new List<RemoteServer>())
+                    .Where(s => s.Kind == ServerKind.Jellyfin)
+                    .Select(s => new { s.Id, s.Name, s.ShareViewerNames })
+            });
         }
 
         /// <summary>Saves the viewer-sharing settings.</summary>
@@ -2096,6 +2183,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.ShowFriendsViewers = body.ShowFriendsViewers.Value;
             }
 
+            if (body.ShareViewerNamesWithFriends.HasValue)
+            {
+                config.ShareViewerNamesWithFriends = body.ShareViewerNamesWithFriends.Value;
+            }
+
+            ApplyFriendChoices(config, body.ViewerNameFriends, (s, share) => s.ShareViewerNames = share);
             Plugin.Instance.SaveConfiguration();
             return Ok(new { success = true, message = "Saved." });
         }
@@ -2353,7 +2446,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.ShowFriendsPopular,
                 Friends = (config.RemoteServers ?? new List<RemoteServer>())
                     .Where(s => s.Kind == ServerKind.Jellyfin)
-                    .Select(s => new { s.Id, s.Name, SharesFavorites = s.PeerSharesFavorites, AllowsDownloads = s.PeerAllowsDownloads })
+                    .Select(s => new { s.Id, s.Name, SharesFavorites = s.PeerSharesFavorites, AllowsDownloads = s.PeerAllowsDownloads, s.SharePopular })
             });
         }
 
@@ -2389,6 +2482,8 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 config.ShowFriendsPopular = body.ShowFriendsPopular.Value;
             }
+
+            ApplyFriendChoices(config, body.PopularFriends, (s, share) => s.SharePopular = share);
             Plugin.Instance.SaveConfiguration();
             return Ok(new
             {
@@ -2530,6 +2625,27 @@ namespace Jellyfin.Plugin.Federation.Api
                     }
                 }
             }, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Admin-only: this server's own local users (id and name), for choosing
+        /// which ones a friend may see.
+        /// </summary>
+        [HttpGet("LocalUsers")]
+        [Authorize(Policy = "RequiresElevation")]
+        public IActionResult GetLocalUsers()
+        {
+            var users = new List<object>();
+            foreach (var u in EnumerateLocalUsers())
+            {
+                var t = u.GetType();
+                if (t.GetProperty("Id")?.GetValue(u) is Guid guid && t.GetProperty("Username")?.GetValue(u) is string name)
+                {
+                    users.Add(new { id = guid.ToString("N"), name, isAdministrator = IsAdministratorUser(u) });
+                }
+            }
+
+            return Ok(users);
         }
 
         /// <summary>
@@ -4070,6 +4186,11 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct)).ConfigureAwait(false);
+            if (path.StartsWork && !string.IsNullOrEmpty(playSessionId))
+            {
+                RememberConversion(owner.FederationId, playSessionId);
+            }
+
             return new EmptyResult();
         }
 
@@ -4094,15 +4215,42 @@ namespace Jellyfin.Plugin.Federation.Api
             if (Plugin.Instance?.Configuration?.ShareConversionLogsWithFriends == false
                 || string.IsNullOrWhiteSpace(playSessionId)
                 || playSessionId.Length > 128
-                || !_remoteTranscodeSessions.TryGetForLog(caller.FederationId, playSessionId, out var itemId, out var startedUtc))
+                || !_remoteTranscodeSessions.TryGetForLog(caller.FederationId, playSessionId, out _, out _))
             {
                 return NotFound();
             }
 
+            RememberConversion(caller.FederationId, playSessionId);
+            _remoteTranscodeSessions.TryGetForLog(caller.FederationId, playSessionId, out var itemId, out var startedUtc, out var conversions);
+
+            // Only this session's own conversions, never another viewer's of the
+            // same title, and without this server's folder layout.
             var paths = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Common.Configuration.IApplicationPaths)) as MediaBrowser.Common.Configuration.IApplicationPaths;
-            var text = FriendConversionLogs.Collect(paths?.LogDirectoryPath ?? string.Empty, itemId, startedUtc);
+            var mediaPath = _libraryManager.GetItemById(itemId)?.Path;
+            var privateFolders = conversions.Select(System.IO.Path.GetDirectoryName)
+                .Append(string.IsNullOrEmpty(mediaPath) ? null : System.IO.Path.GetDirectoryName(mediaPath))
+                .Append(paths?.ProgramDataPath)
+                .Append(paths?.CachePath);
+            var text = FriendConversionLogs.Collect(paths?.LogDirectoryPath ?? string.Empty, itemId, startedUtc, conversions, privateFolders);
             Response.Headers.CacheControl = "private, no-store";
             return text == null ? NoContent() : Content(text, "text/plain; charset=utf-8");
+        }
+
+        /// <summary>
+        /// Notes which conversion Jellyfin runs for a friend's session (its output
+        /// file), so <see cref="GetRemoteTranscodeLog"/> shares only that one's log.
+        /// </summary>
+        private void RememberConversion(string friendFederationId, string playSessionId)
+        {
+            try
+            {
+                var transcodes = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Controller.MediaEncoding.ITranscodeManager)) as MediaBrowser.Controller.MediaEncoding.ITranscodeManager;
+                _remoteTranscodeSessions.RememberConversion(friendFederationId, playSessionId, transcodes?.GetTranscodingJob(playSessionId)?.Path);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not look up the conversion of a friend's play");
+            }
         }
 
         /// <summary>CORS preflight for <see cref="RemoteTranscodeGateway"/>.</summary>
@@ -4137,6 +4285,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var transcodes = HttpContext.RequestServices.GetService(typeof(MediaBrowser.Controller.MediaEncoding.ITranscodeManager)) as MediaBrowser.Controller.MediaEncoding.ITranscodeManager;
+            RememberConversion(caller.FederationId, request.PlaySessionId);
             if (string.Equals(request.Action, "stop", StringComparison.OrdinalIgnoreCase))
             {
                 _limits?.ForgetStream(caller.FederationId, "p:" + request.PlaySessionId);
@@ -4445,19 +4594,29 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
+            // Speed tests are data sent to the friend like any other: counted
+            // toward their monthly limit and refused once it is reached.
+            if (_limits != null && _limits.IsOverCap(caller.FederationId, FriendDataLimits.CapBytes(caller.MonthlyDataCapGb)))
+            {
+                return await RefuseForLimitAsync(caller, FriendDataLimits.DataLimitReason).ConfigureAwait(false);
+            }
+
             var clamped = Math.Clamp(size, 1, 50_000_000);
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "application/octet-stream";
             Response.ContentLength = clamped;
 
-            var chunk = new byte[64 * 1024];
-            var remaining = clamped;
-            while (remaining > 0)
+            await RelayWithDataLimitAsync(caller, cancellationToken, async ct =>
             {
-                var take = Math.Min(chunk.Length, remaining);
-                await Response.Body.WriteAsync(chunk.AsMemory(0, take), cancellationToken).ConfigureAwait(false);
-                remaining -= take;
-            }
+                var chunk = new byte[64 * 1024];
+                var remaining = clamped;
+                while (remaining > 0)
+                {
+                    var take = Math.Min(chunk.Length, remaining);
+                    await Response.Body.WriteAsync(chunk.AsMemory(0, take), ct).ConfigureAwait(false);
+                    remaining -= take;
+                }
+            }).ConfigureAwait(false);
 
             return new EmptyResult();
         }
@@ -5060,6 +5219,8 @@ namespace Jellyfin.Plugin.Federation.Api
         /// a <see cref="RemoteUserAccessRule"/> (see <c>GetRemoteUsers</c>) - the
         /// only remaining reason anything needs this list under the new model,
         /// since sync/playback no longer impersonates any of this server's users.
+        /// Only the users this server's admin shares with the caller
+        /// (<see cref="FederationPeerAccessService.IsUserVisible"/>); none by default.
         /// Same shape as native <c>/Users</c> (Id, Name, Policy.IsAdministrator)
         /// so <see cref="Services.UserDto"/>'s existing deserialization needs no
         /// changes.
@@ -5074,9 +5235,14 @@ namespace Jellyfin.Plugin.Federation.Api
                 return Unauthorized();
             }
 
-            if (!caller.ShareAllLibraries && (caller.SharedLibraryFolderIds == null || caller.SharedLibraryFolderIds.Count == 0))
+            // The users this server chose to show this friend are the sharing scope
+            // here: none chosen, an empty list (whatever libraries are shared; the
+            // friend's admin page then says so instead of reporting an error), and
+            // chosen ones are listed even to a friend we share no library with - it
+            // needs them to show its viewers' names on our dashboard.
+            if (!caller.ShareAllUsers && (caller.SharedUserIds == null || caller.SharedUserIds.Count == 0))
             {
-                return StatusCode(StatusCodes.Status403Forbidden, new { error = "User enumeration requires an active sharing scope." });
+                return Ok(Array.Empty<object>());
             }
 
             var users = new List<object>();
@@ -5085,7 +5251,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 var t = u.GetType();
                 var id = t.GetProperty("Id")?.GetValue(u);
                 var name = t.GetProperty("Username")?.GetValue(u) as string;
-                if (id is Guid guid && name != null)
+                if (id is Guid guid && name != null && FederationPeerAccessService.IsUserVisible(caller, guid))
                 {
                     users.Add(new { Id = guid.ToString("N"), Name = name, Policy = new { IsAdministrator = IsAdministratorUser(u) } });
                 }
@@ -7280,6 +7446,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether friends' viewers show on this dashboard.</summary>
         public bool? ShowFriendsViewers { get; set; }
+
+        /// <summary>Gets or sets whether reports include user and device names by default; null keeps it.</summary>
+        public bool? ShareViewerNamesWithFriends { get; set; }
+
+        /// <summary>Gets or sets per-friend choices for names in reports; null keeps every friend's choice.</summary>
+        public List<FriendChoice>? ViewerNameFriends { get; set; }
     }
 
     public class HardwareSettingsBody
@@ -7332,6 +7504,19 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether our Home tab shows what is popular on friends' servers.</summary>
         public bool? ShowFriendsPopular { get; set; }
+
+        /// <summary>Gets or sets per-friend choices for sharing what is popular; null keeps every friend's choice.</summary>
+        public List<FriendChoice>? PopularFriends { get; set; }
+    }
+
+    /// <summary>One friend's choice for a sharing setting: null follows the default.</summary>
+    public class FriendChoice
+    {
+        /// <summary>Gets or sets the friend (<see cref="RemoteServer.Id"/>).</summary>
+        public string Id { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the choice: true, false, or null for the default.</summary>
+        public bool? Share { get; set; }
     }
 
     /// <summary>Body of <c>Peer/PlayControl</c>.</summary>
@@ -7415,10 +7600,24 @@ namespace Jellyfin.Plugin.Federation.Api
         public List<string>? ExcludedItemIds { get; set; }
     }
 
+    public class UserSharingBody
+    {
+        public bool ShareAll { get; set; }
+
+        public List<string>? UserIds { get; set; }
+    }
+
     public class DownloadAccessBody
     {
         public bool AllowDownloads { get; set; } = true;
 
         public bool AllowBulkDownloads { get; set; } = false;
+    }
+
+    public class FriendSharingBody
+    {
+        public bool ShareAll { get; set; } = true;
+
+        public List<string>? FriendIds { get; set; }
     }
 }

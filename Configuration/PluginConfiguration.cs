@@ -560,10 +560,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Gets or sets whether friends may see which of this server's own titles
         /// were most played here in the last 30 days: counts of distinct users,
         /// never who, and only titles already shared with the viewer asking.
-        /// Shown on their Home tab as "Popular on (this server)". Managed by
-        /// <c>Settings/Favorites</c>, preserved by the main Save.
+        /// Shown on their Home tab as "Popular on (this server)". This is the
+        /// default for friends without their own choice
+        /// (<see cref="RemoteServer.SharePopular"/>); off on new installs, since
+        /// on a server with few users it shows what those people watch.
+        /// Managed by <c>Settings/Favorites</c>, preserved by the main Save.
         /// </summary>
-        public bool SharePopularWithFriends { get; set; } = true;
+        public bool SharePopularWithFriends { get; set; }
 
         /// <summary>
         /// Gets or sets whether this server's Home tab shows a "Popular on
@@ -591,6 +594,16 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets whether friends' viewers watching this server's titles show on the dashboard like local sessions.</summary>
         public bool ShowFriendsViewers { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets whether the viewer reports of <see cref="ShareViewersWithFriends"/>
+        /// include this server's user and device names. Off by default: the
+        /// friend then sees "Someone" watching, with position and pause state.
+        /// The default for friends without their own choice
+        /// (<see cref="RemoteServer.ShareViewerNames"/>). Managed by
+        /// <c>Settings/Viewers</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareViewerNamesWithFriends { get; set; }
 
         /// <summary>Gets or sets whether friends may see what this server converts video with (GPU/CPU model and codecs; nothing else).</summary>
         public bool ShareTranscodeHardware { get; set; } = true;
@@ -819,6 +832,23 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public List<string> ExcludedItemIds { get; set; } = new List<string>();
 
         /// <summary>
+        /// Gets or sets when everything shared with this friend stops being
+        /// shared (UTC), or null to share without an end date. After it the
+        /// friend sees nothing of this server's libraries, as if blocked;
+        /// enforced at request and stream time by
+        /// <see cref="Services.FederationPeerAccessService"/>. Managed by
+        /// <c>Friends/{id}/Expiry</c>, preserved by the main Save.
+        /// </summary>
+        public DateTime? SharingExpiresUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets end dates for individual shared libraries. An expired
+        /// library is no longer visible to this friend even when
+        /// <see cref="ShareAllLibraries"/> is on.
+        /// </summary>
+        public List<LibraryShareExpiry> LibraryShareExpiries { get; set; } = new List<LibraryShareExpiry>();
+
+        /// <summary>
         /// Gets or sets a value indicating whether this server is enabled.
         /// </summary>
         public bool Enabled { get; set; } = true;
@@ -851,6 +881,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// (and irrelevant) otherwise.
         /// </summary>
         public List<string> SharedLibraryFolderIds { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this friend may see every one
+        /// of this server's local user accounts (names, for their per-user
+        /// rules). False by default, also for friends made before this setting
+        /// existed: a friend sees no users unless shared here or in
+        /// <see cref="SharedUserIds"/>. Enforced by <c>Peer/Users</c>. Managed
+        /// by <c>Friends/{id}/UserSharing</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareAllUsers { get; set; }
+
+        /// <summary>
+        /// Gets or sets the ids (normalized "N" form) of this server's own local
+        /// users this friend may see when <see cref="ShareAllUsers"/> is false.
+        /// </summary>
+        public List<string> SharedUserIds { get; set; } = new List<string>();
 
         /// <summary>
         /// Gets or sets the streaming mode to use for content from this server.
@@ -975,6 +1021,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public int MaxConcurrentStreams { get; set; }
 
         /// <summary>
+        /// Gets or sets whether this friend sees what is popular on this server:
+        /// null follows <see cref="PluginConfiguration.SharePopularWithFriends"/>.
+        /// Managed by <c>Settings/Favorites</c>, preserved by the main Save.
+        /// </summary>
+        public bool? SharePopular { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether viewer reports to this friend include user and
+        /// device names: null follows <see cref="PluginConfiguration.ShareViewerNamesWithFriends"/>.
+        /// Managed by <c>Settings/Viewers</c>, preserved by the main Save.
+        /// </summary>
+        public bool? ShareViewerNames { get; set; }
+
+        /// <summary>
         /// Gets or sets whether a direct link to this friend is used: <c>Auto</c>
         /// (when both sides support it) or <c>Off</c>. Managed by
         /// <c>Friends/{id}/DirectLink</c>, preserved by the main Save.
@@ -995,6 +1055,22 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Set only by the pairing service; the main Save keeps it as it was.
         /// </summary>
         public bool Paired { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether this friend may see all of this
+        /// server's other friends in <c>Friends/List</c> (friends-of-friends,
+        /// which <see cref="PluginConfiguration.AllowFriendsOfFriends"/> must turn
+        /// on first). True by default, also for friends made before this setting
+        /// existed. When false, only <see cref="SharedFriendIds"/> are listed.
+        /// Managed by <c>Friends/{id}/FriendSharing</c>, preserved by the main Save.
+        /// </summary>
+        public bool ShareAllFriends { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the ids (<see cref="Id"/>) of this server's other friends
+        /// this friend may see when <see cref="ShareAllFriends"/> is false.
+        /// </summary>
+        public List<string> SharedFriendIds { get; set; } = new List<string>();
 
         /// <summary>Gets or sets the 64-bit pairing id (16 hex digits) in this friend's link address.</summary>
         public string PairingId { get; set; } = string.Empty;
@@ -1111,6 +1187,19 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// allows.
         /// </summary>
         Blocked = 3
+    }
+
+    /// <summary>
+    /// End date for sharing one library with a friend. A list entry rather
+    /// than a dictionary: the plugin configuration is XML-serialized.
+    /// </summary>
+    public class LibraryShareExpiry
+    {
+        /// <summary>Gets or sets the library folder id (same id space as <see cref="RemoteServer.SharedLibraryFolderIds"/>).</summary>
+        public string FolderId { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets when sharing this library ends (UTC).</summary>
+        public DateTime ExpiresUtc { get; set; }
     }
 
     /// <summary>

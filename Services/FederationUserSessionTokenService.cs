@@ -1,7 +1,12 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
@@ -18,28 +23,51 @@ namespace Jellyfin.Plugin.Federation.Services
     /// itself minted for a specific, named user, not a self-reported header riding
     /// on the shared friend-wide token.
     /// <para>
-    /// Deliberately simple, same shape as <see cref="FederationPlaybackTokenService"/>:
-    /// purely in-memory, no revocation UI, opportunistic pruning on every call. A
-    /// server restart clearing every outstanding session is fine - the next play
-    /// just re-registers.
+    /// Same shape as <see cref="FederationPlaybackTokenService"/>: no revocation
+    /// UI, opportunistic pruning on every call, and outstanding tokens survive a
+    /// restart. Friends cache a session token for hours, and a direct play sends
+    /// the viewer's player straight here with it, so nothing on the friend's side
+    /// notices a refusal and fetches a new one: a restart that forgot them refused
+    /// that friend's direct plays until its cache ran out. Only a SHA-256 of each
+    /// token is kept, in memory and in <c>federation-session-tokens.json</c>.
     /// </para>
     /// </summary>
-    public class FederationUserSessionTokenService
+    public class FederationUserSessionTokenService : IDisposable
     {
         private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(6);
 
         internal const int MaxTokensPerFriend = 200;
 
+        private const int MaxStoredTokens = 20000;
+
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
+        private readonly string? _storePath;
+        private readonly Timer? _saveTimer;
+        private int _saveScheduled;
 
         /// <summary>
-        /// Mints a fresh session token scoped to one of a friend's own local
-        /// users, valid for 6 hours - long enough to cover a normal viewing
-        /// session without needing to re-register on every single play, short
-        /// enough that a stale session doesn't linger indefinitely.
+        /// Initializes a new instance of the <see cref="FederationUserSessionTokenService"/> class
+        /// that keeps its tokens in the plugin's data folder (none in tests).
         /// </summary>
-        /// <param name="federationId">The calling friend's persistent federation id (<see cref="Configuration.RemoteServer.FederationId"/>), used to re-resolve which friend this session belongs to at stream time.</param>
-        /// <param name="remoteUserId">The friend's own local user id this session is scoped to.</param>
+        public FederationUserSessionTokenService()
+            : this(DefaultStorePath())
+        {
+        }
+
+        internal FederationUserSessionTokenService(string? storePath)
+        {
+            _storePath = storePath;
+            if (storePath != null)
+            {
+                Load(storePath);
+                _saveTimer = new Timer(_ => Save(), null, Timeout.Infinite, Timeout.Infinite);
+            }
+        }
+
+        /// <summary>
+        /// Mints a session token for <paramref name="remoteUserId"/> on the friend
+        /// identified by <paramref name="federationId"/>, valid for 6 hours.
+        /// </summary>
         public string Issue(string federationId, string remoteUserId)
         {
             Prune();
@@ -55,18 +83,14 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-            _tokens[token] = new Entry(federationId, remoteUserId, DateTime.UtcNow + TokenLifetime);
+            _tokens[Key(token)] = new Entry(federationId, remoteUserId, DateTime.UtcNow + TokenLifetime);
+            ScheduleSave();
             return token;
         }
 
         /// <summary>
-        /// Validates a session token, returning the friend/user it was issued for
-        /// when valid and not expired. Callers must still re-check
-        /// <see cref="FederationPeerAccessService.IsItemVisible(Configuration.RemoteServer, string?, Guid)"/>
-        /// per item at stream time - registration only confirms the user wasn't
-        /// blocked outright at the moment they started playing, not that every
-        /// item they might request with this token stays visible for its whole
-        /// lifetime.
+        /// Whether <paramref name="token"/> is a live session token; if so, which
+        /// friend and which of its users it was minted for.
         /// </summary>
         public bool TryValidate(string? token, out string? federationId, out string? remoteUserId)
         {
@@ -74,14 +98,14 @@ namespace Jellyfin.Plugin.Federation.Services
             remoteUserId = null;
             Prune();
 
-            if (string.IsNullOrEmpty(token) || !_tokens.TryGetValue(token, out var entry))
+            if (string.IsNullOrEmpty(token) || !_tokens.TryGetValue(Key(token), out var entry))
             {
                 return false;
             }
 
             if (entry.ExpiresUtc <= DateTime.UtcNow)
             {
-                _tokens.TryRemove(token, out _);
+                _tokens.TryRemove(Key(token), out _);
                 return false;
             }
 
@@ -91,10 +115,55 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Opportunistically drops expired entries. See <see cref="FederationPlaybackTokenService.Prune"/>
-        /// for the same reasoning - this store is bounded by normal usage volume,
-        /// so a timer would be unnecessary overhead.
+        /// Writes a pending save at shutdown: a token minted in the last moments
+        /// before a restart would otherwise be lost while the friend keeps using
+        /// it, and every direct play it starts is refused until the friend's
+        /// cached copy runs out.
         /// </summary>
+        public void Dispose()
+        {
+            _saveTimer?.Dispose();
+            if (Volatile.Read(ref _saveScheduled) != 0)
+            {
+                Save();
+            }
+
+            GC.SuppressFinalize(this);
+        }
+
+        /// <summary>Writes the outstanding tokens' hashes; internal for tests.</summary>
+        internal void Save()
+        {
+            Interlocked.Exchange(ref _saveScheduled, 0);
+            if (_storePath == null)
+            {
+                return;
+            }
+
+            try
+            {
+                Prune();
+                var list = _tokens
+                    .OrderByDescending(kv => kv.Value.ExpiresUtc)
+                    .Take(MaxStoredTokens)
+                    .Select(kv => new StoredToken
+                    {
+                        Key = kv.Key,
+                        FederationId = kv.Value.FederationId,
+                        RemoteUserId = kv.Value.RemoteUserId,
+                        ExpiresUtc = kv.Value.ExpiresUtc
+                    })
+                    .ToList();
+                var temp = _storePath + ".tmp";
+                File.WriteAllText(temp, JsonSerializer.Serialize(list));
+                File.Move(temp, _storePath, overwrite: true);
+            }
+            catch (Exception)
+            {
+                // Best effort, see Load.
+            }
+        }
+
         private void Prune()
         {
             var now = DateTime.UtcNow;
@@ -104,6 +173,56 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        private void ScheduleSave()
+        {
+            if (_saveTimer != null && Interlocked.Exchange(ref _saveScheduled, 1) == 0)
+            {
+                _saveTimer.Change(TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        private void Load(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                var now = DateTime.UtcNow;
+                var stored = JsonSerializer.Deserialize<List<StoredToken>>(File.ReadAllText(path)) ?? new List<StoredToken>();
+                foreach (var t in stored.Where(t => !string.IsNullOrEmpty(t.Key) && t.ExpiresUtc > now))
+                {
+                    _tokens[t.Key] = new Entry(t.FederationId, t.RemoteUserId, DateTime.SpecifyKind(t.ExpiresUtc, DateTimeKind.Utc));
+                }
+            }
+            catch (Exception)
+            {
+                // A damaged file only means friends register again, as after any
+                // expiry; never a reason to fail startup.
+            }
+        }
+
+        private static string Key(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+
+        private static string? DefaultStorePath()
+        {
+            var dir = Plugin.Instance?.DataFolderPath;
+            return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "federation-session-tokens.json");
+        }
+
         private readonly record struct Entry(string FederationId, string RemoteUserId, DateTime ExpiresUtc);
+
+        private sealed class StoredToken
+        {
+            public string Key { get; set; } = string.Empty;
+
+            public string FederationId { get; set; } = string.Empty;
+
+            public string RemoteUserId { get; set; } = string.Empty;
+
+            public DateTime ExpiresUtc { get; set; }
+        }
     }
 }
