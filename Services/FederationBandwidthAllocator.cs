@@ -14,7 +14,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
         internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
-        public BandwidthAllocation Allocate(string serverId, string? playSessionId, int? requestedCapMbps, int? sharedCapacityMbps)
+        /// <summary>
+        /// Books bandwidth from <paramref name="serverId"/>'s measured capacity for one play.
+        /// <paramref name="viewer"/> (user and device) identifies who plays: a device plays
+        /// one thing at a time, so its new play replaces its earlier reservation (the next
+        /// episode, or jellyfin-web retrying with a new play session after a failed start).
+        /// The capacity is an estimate, so a play is never refused for it: once it is used
+        /// up, a new play gets an equal share instead.
+        /// </summary>
+        public BandwidthAllocation Allocate(string serverId, string? playSessionId, int? requestedCapMbps, int? sharedCapacityMbps, string? viewer = null)
         {
             if (string.IsNullOrWhiteSpace(playSessionId) || sharedCapacityMbps is not > 0 || requestedCapMbps is not > 0)
             {
@@ -39,20 +47,26 @@ namespace Jellyfin.Plugin.Federation.Services
                     return new BandwidthAllocation(true, Math.Min(requestedCapMbps.Value, existing.Mbps));
                 }
 
+                var who = string.IsNullOrWhiteSpace(viewer) ? null : Normalize(viewer, 256);
+                if (who != null)
+                {
+                    foreach (var earlier in _reservations.Where(pair => pair.Key.Server == server && pair.Value.Viewer == who).Select(pair => pair.Key).ToArray())
+                    {
+                        _reservations.Remove(earlier);
+                    }
+                }
+
                 if (_reservations.Count >= MaxReservations)
                 {
                     return new BandwidthAllocation(false, null);
                 }
 
-                var used = _reservations.Values.Where(r => r.Server == server).Sum(r => r.Mbps);
-                var remaining = Math.Max(0, sharedCapacityMbps.Value - used);
-                if (remaining < 1)
-                {
-                    return new BandwidthAllocation(false, null);
-                }
-
-                var allocated = Math.Min(requestedCapMbps.Value, remaining);
-                _reservations[key] = new Reservation(server, allocated, now);
+                var others = _reservations.Values.Where(r => r.Server == server).ToList();
+                var remaining = sharedCapacityMbps.Value - others.Sum(r => r.Mbps);
+                var allocated = remaining >= 1
+                    ? Math.Min(requestedCapMbps.Value, remaining)
+                    : Math.Max(1, Math.Min(requestedCapMbps.Value, sharedCapacityMbps.Value / (others.Count + 1)));
+                _reservations[key] = new Reservation(server, allocated, now, who);
                 return new BandwidthAllocation(true, allocated);
             }
         }
@@ -121,14 +135,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private sealed class Reservation
         {
-            public Reservation(string server, int mbps, DateTime seen)
+            public Reservation(string server, int mbps, DateTime seen, string? viewer = null)
             {
                 Server = server;
                 Mbps = mbps;
                 LastSeenUtc = seen;
+                Viewer = viewer;
             }
 
             public string Server { get; }
+
+            public string? Viewer { get; }
             public int Mbps { get; }
             public DateTime LastSeenUtc { get; set; }
         }

@@ -31,6 +31,20 @@ public class RemoteTranscodeHandoffTests
         Assert.Equal(string.Empty, FederationRemoteTranscodeGateway.PublicGatewayBase((string?)null));
     }
 
+    [Fact]
+    public void GatewayBase_WithoutAPublicAddress_IsAPathTheReceiverPutsOnItsOwnAddress()
+    {
+        // A friend that never set its public address answered every converted
+        // play with a bare 502 (and logged nothing).
+        Assert.Equal("/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.HostlessGatewayBase(null));
+        Assert.Equal("/jellyfin/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.HostlessGatewayBase("/jellyfin"));
+        var playlist = "#EXTM3U\n#EXT-X-MAP:URI=\"" + FederationRemoteTranscodeGateway.HostlessGatewayBase(null) + "tok/videos/x/hls1/main/-1.mp4\"\n"
+            + FederationRemoteTranscodeGateway.HostlessGatewayBase(null) + "tok/videos/x/hls1/main/0.mp4\n";
+        var rewritten = HandoffPlaylistLinks.Rewrite(playlist, "https://flix.example.net", null);
+        Assert.Contains("URI=\"https://flix.example.net/Plugins/Federation/Peer/Play/tok/videos/x/hls1/main/-1.mp4\"", rewritten);
+        Assert.Contains("\nhttps://flix.example.net/Plugins/Federation/Peer/Play/tok/videos/x/hls1/main/0.mp4", rewritten);
+    }
+
     [Theory]
     [InlineData("/videos/0123456789abcdef0123456789abcdef/master.m3u8", RemoteMediaKind.HlsMaster, false)]
     [InlineData("/Videos/01234567-89AB-CDEF-0123-456789ABCDEF/main.m3u8", RemoteMediaKind.HlsVariant, false)]
