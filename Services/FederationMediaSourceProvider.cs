@@ -71,18 +71,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <see cref="RemoteAccessControlService.IsAllowed"/> treats that as "allow",
         /// the same as before this feature existed.
         /// </summary>
-        private async Task<Guid?> ResolveLocalUserId()
+        private async Task<AuthorizationInfo?> ResolveAuthorizationInfo()
         {
             try
             {
                 var context = _httpContextAccessor.HttpContext;
-                if (context == null)
-                {
-                    return null;
-                }
-
-                var info = await _authorizationContext.GetAuthorizationInfo(context).ConfigureAwait(false);
-                return info != null && info.UserId != Guid.Empty ? info.UserId : null;
+                return context == null ? null : await _authorizationContext.GetAuthorizationInfo(context).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -127,7 +121,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 var entrySources = entry.GetSourcesSnapshot();
                 var selectedStaticSource = _federationManager.GetPlaybackSource(entry);
                 var primaryIndex = Array.IndexOf(entrySources, selectedStaticSource);
-                var localUserId = await ResolveLocalUserId().ConfigureAwait(false);
+                var authorization = await ResolveAuthorizationInfo().ConfigureAwait(false);
+                var localUserId = authorization != null && authorization.UserId != Guid.Empty ? authorization.UserId : (Guid?)null;
+                var nativeIdentity = NativeClientCapabilities.Identify(_httpContextAccessor.HttpContext?.Request, authorization);
 
                 _logger.LogInformation(
                     "[Federation] Debug GetMediaSources: {Name} ({Type}) key={Key}, sources={SourceCount} [{Sources}]",
@@ -296,7 +292,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var remoteResults = fetchWhenAll.Result;
                 var paths = pathWhenAll.Result;
 
-                var playable = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName, MediaSourceInfo Remote, string Path)>();
+                var playable = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName, MediaSourceInfo Remote, string Path, string? RemoteMediaSourceId, bool Distinguish)>();
                 for (int c = 0; c < candidates.Count; c++)
                 {
                     var (i, src, server, sourceName) = candidates[c];
@@ -312,13 +308,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    var remote = remoteResults[c];
-
-                    // A source that failed its live preflight must not remain in
-                    // the list as a probe-able/default candidate. That old fallback
-                    // is what made Auto repeatedly select a known 404 while a
-                    // healthy duplicate was available.
-                    if (remote == null)
+                    var remotes = remoteResults[c];
+                    if (remotes.Count == 0)
                     {
                         _logger.LogWarning(
                             "[Federation] GetMediaSources: {Name} source #{Index} on {ServerName} failed live preflight - skipping",
@@ -328,16 +319,21 @@ namespace Jellyfin.Plugin.Federation.Services
                         continue;
                     }
 
-                    _logger.LogInformation(
-                        "[Federation] GetMediaSources: {Name} source #{Index} on {ServerName} -> container={Container}, streams={StreamCount}, bitrate={Bitrate}",
-                        item.Name,
-                        i,
-                        server.Name,
-                        remote.Container ?? "(none)",
-                        remote.MediaStreams?.Count ?? 0,
-                        remote.Bitrate);
+                    var direct = server.StreamingMode == StreamingMode.Direct && server.Kind == ServerKind.Jellyfin;
+                    foreach (var remote in direct ? remotes : remotes.Take(1))
+                    {
+                        _logger.LogInformation(
+                            "[Federation] GetMediaSources: {Name} source #{Index} on {ServerName} -> id={MediaSourceId}, container={Container}, streams={StreamCount}, bitrate={Bitrate}",
+                            item.Name,
+                            i,
+                            server.Name,
+                            remote.Id ?? "(none)",
+                            remote.Container ?? "(none)",
+                            remote.MediaStreams?.Count ?? 0,
+                            remote.Bitrate);
 
-                    playable.Add((i, src, server, sourceName, remote, path));
+                        playable.Add((i, src, server, sourceName, remote, direct ? WithRemoteMediaSourceId(path, remote.Id) : path, remote.Id, direct && remotes.Count > 1));
+                    }
                 }
 
                 if (playable.Count == 0)
@@ -379,7 +375,9 @@ namespace Jellyfin.Plugin.Federation.Services
                                 RunTimeTicks = FirstPositiveRuntime(src.RunTimeTicks, entry.Metadata.RunTimeTicks, item.RunTimeTicks),
                                 MediaStreams = cachedStreams
                             },
-                            path));
+                            path,
+                            null,
+                            false));
                     }
                 }
 
@@ -397,22 +395,20 @@ namespace Jellyfin.Plugin.Federation.Services
                     .ToList();
 
                 var sources = new List<MediaSourceInfo>(ordered.Count);
+                var replacedStatic = false;
                 for (int position = 0; position < ordered.Count; position++)
                 {
                     var candidate = ordered[position];
                     var remote = candidate.Remote;
                     var advertised = DescribeDeliveredSource(candidate.Server, candidate.Path, remote, entry.ItemType);
 
-                    // The primary source takes the item's own id. Every client asks
-                    // for MediaSourceId == item id (the only source the details page
-                    // knows about), and Jellyfin 12 matches that id exactly and sorts
-                    // it first, so under a hashed id this source was never chosen
-                    // and the item's stored loopback Path always won.
-                    // FederationMediaSourceManager drops that stored copy when this
-                    // one is present. Adaptive playback addresses sources by their
-                    // hashed ids, so it keeps them.
-                    var replacesStatic = !adaptive && candidate.Index == primaryIndex;
-                    var sourceId = replacesStatic ? item.Id.ToString("N") : BuildSourceId(candidate.Src);
+                    // Only one representation can take the item's own id; additional
+                    // encodings on that same friend need distinct deterministic ids.
+                    var replacesStatic = !adaptive && candidate.Index == primaryIndex && !replacedStatic;
+                    replacedStatic |= replacesStatic;
+                    var sourceId = replacesStatic
+                        ? item.Id.ToString("N")
+                        : BuildSourceId(candidate.Src, candidate.Distinguish ? candidate.RemoteMediaSourceId : null);
 
                     // Remote-transcode handoff: remember the friend token behind this
                     // source for this viewer, so FederationRemoteTranscodeFilter can
@@ -438,10 +434,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     if (handoff && localUserId.HasValue && PeerPlaybackGrants.TokenFromDirectPath(candidate.Path) is { } grantToken)
                     {
-                        PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken);
+                        PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken, candidate.RemoteMediaSourceId);
                     }
 
-                    var mustConvert = handoff && SourceOverageBitrate(candidate.Server, remote) > 0;
+                    var mustConvert = SourceOverageBitrate(candidate.Server, remote) > 0
+                        && (handoff || candidate.Server.StreamingMode == StreamingMode.Proxy || candidate.Server.Kind != ServerKind.Jellyfin);
+                    var sourceName = candidate.Distinguish
+                        ? $"{candidate.SourceName} ({SourceVariantName(remote)})"
+                        : candidate.SourceName;
 
                     sources.Add(new MediaSourceInfo
                     {
@@ -449,7 +449,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         // expects a plain 32-char hex string; the old
                         // "{serverId}:{remoteItemId}" composite did not survive that.
                         Id = sourceId,
-                        Name = position == 0 ? $"{candidate.SourceName} (Auto)" : candidate.SourceName,
+                        Name = position == 0 ? $"{sourceName} (Auto)" : sourceName,
                         Path = candidate.Path,
                         Protocol = MediaProtocol.Http,
 
@@ -466,7 +466,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         Size = advertised.Size,
                         Bitrate = advertised.Bitrate,
                         MediaStreams = advertised.MediaStreams,
-                        SupportsDirectPlay = !mustConvert,
+                        // Native apps that can fetch the original directly avoid a
+                        // conversion; browser and known Android raw-HTTP paths keep
+                        // the container-aware Direct Stream/transcode route.
+                        SupportsDirectPlay = !mustConvert && NativeClientCapabilities.SupportsRawHttpDirectPlay(_httpContextAccessor.HttpContext?.Request, nativeIdentity.Client, nativeIdentity.Device),
                         SupportsDirectStream = !mustConvert,
 
                         // Enabled so a client that cannot direct-play the remote's
@@ -520,7 +523,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// the exact source-bound media snapshot captured during sync. Returns null
         /// when the source is not currently viable, which removes it from Auto.
         /// </summary>
-        private async Task<MediaSourceInfo?> FetchRemoteSourceAsync(RemoteServer server, FederatedSource src, Guid? localUserId, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<MediaSourceInfo>> FetchRemoteSourceAsync(RemoteServer server, FederatedSource src, Guid? localUserId, CancellationToken cancellationToken)
         {
             var external = _externalCatalogs.For(server);
             if (external != null)
@@ -534,32 +537,36 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (string.IsNullOrWhiteSpace(nativeId)
                     || await external.ResolveStreamUrlAsync(server, nativeId, cancellationToken).ConfigureAwait(false) == null)
                 {
-                    return null;
+                    return Array.Empty<MediaSourceInfo>();
                 }
 
                 var currentSource = await external.GetMediaSourceAsync(server, nativeId, cancellationToken).ConfigureAwait(false);
-                if (currentSource != null) return currentSource;
+                if (currentSource != null) return new[] { currentSource };
 
-                return new MediaSourceInfo
+                return new[]
                 {
-                    Container = src.Container,
-                    Size = src.Size,
-                    Bitrate = src.Bitrate,
-                    RunTimeTicks = src.RunTimeTicks,
-                    MediaStreams = src.MediaStreams?.ToList() ?? new List<MediaStream>()
+                    new MediaSourceInfo
+                    {
+                        Container = src.Container,
+                        Size = src.Size,
+                        Bitrate = src.Bitrate,
+                        RunTimeTicks = src.RunTimeTicks,
+                        MediaStreams = src.MediaStreams?.ToList() ?? new List<MediaStream>()
+                    }
                 };
+            }
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                return Array.Empty<MediaSourceInfo>();
             }
 
             var client = _federationManager.GetClient(src.ServerId);
             if (client == null)
             {
-                return null;
+                return Array.Empty<MediaSourceInfo>();
             }
 
-            // PlaybackInfo is a per-user endpoint, and an API key alone does not
-            // identify one. GetPlaybackInfoAsync falls back to the remote's first
-            // user when no UserId is configured, so an empty UserId is not fatal:
-            // we still try, and log whether a user was resolved.
             if (string.IsNullOrEmpty(server.UserId))
             {
                 _logger.LogInformation(
@@ -572,28 +579,30 @@ namespace Jellyfin.Plugin.Federation.Services
                 cancellationToken: cancellationToken,
                 localActingUserId: localUserId?.ToString("N")).ConfigureAwait(false);
 
-            var remote = info?.MediaSources?.FirstOrDefault();
-            if (remote == null)
+            var remotes = info?.MediaSources?.Where(source => source != null).ToArray() ?? Array.Empty<MediaSourceInfo>();
+            if (remotes.Length == 0)
             {
                 _logger.LogWarning(
                     "[Federation] No remote media source for item {RemoteItemId} on server {ServerId}; falling back to cached metadata (playback will likely fail)",
                     src.RemoteItemId,
                     src.ServerId);
-                return null;
+                return Array.Empty<MediaSourceInfo>();
             }
 
-            // The remote's per-stream Path values are paths on *its* filesystem and
-            // are meaningless (and needlessly disclosing) here. Only the container and
-            // codec details matter for profile matching.
-            if (remote.MediaStreams != null)
+            foreach (var remote in remotes)
             {
+                if (remote.MediaStreams == null)
+                {
+                    continue;
+                }
+
                 foreach (var stream in remote.MediaStreams)
                 {
                     FederationLibraryManager.RedactStreamPath(stream);
                 }
             }
 
-            return remote;
+            return remotes;
         }
 
         /// <summary>
@@ -660,10 +669,24 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static string PrimarySourceName(string serverName, int sourceCount)
             => sourceCount > 1 ? $"{serverName} (primary)" : serverName;
 
-        internal static string BuildSourceId(FederatedSource src)
+        internal static string BuildSourceId(FederatedSource src, string? remoteMediaSourceId = null)
         {
-            var bytes = MD5.HashData(Encoding.UTF8.GetBytes($"{src.ServerId}:{src.RemoteItemId:N}"));
+            var suffix = string.IsNullOrWhiteSpace(remoteMediaSourceId) ? string.Empty : ":" + remoteMediaSourceId;
+            var bytes = MD5.HashData(Encoding.UTF8.GetBytes($"{src.ServerId}:{src.RemoteItemId:N}{suffix}"));
             return new Guid(bytes).ToString("N");
+        }
+
+        private static string WithRemoteMediaSourceId(string path, string? remoteMediaSourceId)
+            => string.IsNullOrWhiteSpace(remoteMediaSourceId)
+                ? path
+                : path + (path.Contains('?') ? '&' : '?') + "mediaSourceId=" + Uri.EscapeDataString(remoteMediaSourceId);
+
+        private static string SourceVariantName(MediaSourceInfo source)
+        {
+            var video = source.MediaStreams?.FirstOrDefault(stream => stream.Type == MediaStreamType.Video);
+            var details = new[] { video?.Codec, video?.Height is > 0 ? video.Height + "p" : null, source.Container }
+                .Where(value => !string.IsNullOrWhiteSpace(value));
+            return string.Join(" · ", details);
         }
 
         /// <summary>
@@ -721,8 +744,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var audioBitrate = 256_000;
             var videoBitrate = (int)Math.Min(int.MaxValue, Math.Max(1, (long)capMbps.Value * 950_000L - audioBitrate));
             var originalVideo = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
-            var originalAudio = remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio && s.IsDefault == true)
-                ?? remote.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio);
+            var originalAudio = remote.MediaStreams?.Where(s => s.Type == MediaStreamType.Audio).ToList() ?? new List<MediaStream>();
             var streams = new List<MediaStream>();
             if (originalVideo != null)
             {
@@ -744,19 +766,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 });
             }
 
-            streams.Add(originalAudio == null
-                ? new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, BitRate = audioBitrate, IsDefault = true }
-                : new MediaStream
+            if (originalAudio.Count == 0)
+            {
+                streams.Add(new MediaStream { Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, BitRate = audioBitrate, IsDefault = true });
+            }
+            else
+            {
+                streams.AddRange(originalAudio.Select(audio => new MediaStream
                 {
-                    Type = originalAudio.Type,
-                    Index = originalAudio.Index,
+                    Type = audio.Type,
+                    Index = audio.Index,
                     Codec = "aac",
-                    Language = originalAudio.Language,
-                    IsDefault = originalAudio.IsDefault,
+                    Language = audio.Language,
+                    IsDefault = audio.IsDefault,
                     BitRate = audioBitrate,
-                    Channels = Math.Max(1, Math.Min(originalAudio.Channels.GetValueOrDefault(2), 2)),
-                    SampleRate = originalAudio.SampleRate
-                });
+                    Channels = Math.Max(1, Math.Min(audio.Channels.GetValueOrDefault(2), 2)),
+                    SampleRate = audio.SampleRate
+                }));
+            }
+
+            streams.AddRange((remote.MediaStreams ?? new List<MediaStream>())
+                .Where(stream => stream.Type == MediaStreamType.Subtitle && stream.IsTextSubtitleStream == true));
 
             return new MediaSourceInfo
             {

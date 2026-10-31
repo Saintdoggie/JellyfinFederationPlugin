@@ -39,9 +39,14 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Largest segment held in memory to share between a request and its retries.</summary>
         private const int MaxSharedSegmentBytes = 96 * 1024 * 1024;
+        private const int MaxSharedSegments = 2;
+        private const long MaxSharedSegmentTotalBytes = 256L * 1024 * 1024;
 
         /// <summary>How long a delivered segment is kept for a player's retry of it.</summary>
         private static readonly TimeSpan SharedSegmentKeep = TimeSpan.FromMinutes(1);
+
+        // Test seam for deterministic retention checks; production uses the real UTC clock.
+        internal static Func<DateTime> SharedSegmentUtcNow { get; set; } = () => DateTime.UtcNow;
 
         /// <summary>How long a shared segment request may take (a slow 4K start included).</summary>
         private static readonly TimeSpan SharedSegmentTimeout = TimeSpan.FromMinutes(5);
@@ -79,19 +84,19 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// The absolute base every gateway URL starts with, as the caller reached
-        /// this server (through a reverse proxy or tunnel when one reports it).
-        /// Ends with a slash; the token and native path follow.
+        /// The absolute configured public base every gateway URL starts with.
+        /// Request Host and scheme are deliberately not trusted for token URLs.
         /// </summary>
         public static string PublicGatewayBase(HttpRequest request)
-        {
-            static string First(string value) => value.Split(',')[0].Trim();
+            => PublicGatewayBase(Plugin.Instance?.Configuration?.ServerUrl);
 
-            var proto = request.Headers["X-Forwarded-Proto"].ToString();
-            var host = request.Headers["X-Forwarded-Host"].ToString();
-            var scheme = string.IsNullOrEmpty(proto) ? request.Scheme : First(proto);
-            var authority = string.IsNullOrEmpty(host) ? request.Host.Value : First(host);
-            return $"{scheme}://{authority}{request.PathBase}/Plugins/Federation/Peer/Play/";
+        internal static string PublicGatewayBase(string? configured)
+        {
+            return Uri.TryCreate(configured, UriKind.Absolute, out var uri)
+                && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
+                && string.IsNullOrEmpty(uri.UserInfo)
+                ? configured!.TrimEnd('/') + "/Plugins/Federation/Peer/Play/"
+                : string.Empty;
         }
 
         /// <summary>Adds CORS headers: players fetch playlists/segments with XHR from another origin.</summary>
@@ -118,6 +123,16 @@ namespace Jellyfin.Plugin.Federation.Services
             headers["Access-Control-Max-Age"] = "600";
         }
 
+        internal static string NativeUrl(string loopbackBase, RemoteMediaPath path, string filteredQuery, Guid? internalUserId)
+        {
+            if (path.Kind == RemoteMediaKind.UniversalAudio && internalUserId.HasValue)
+            {
+                filteredQuery += (filteredQuery.Length == 0 ? "?" : "&") + $"UserId={internalUserId.Value:N}";
+            }
+
+            return $"{loopbackBase.TrimEnd('/')}/{path.ToNativePath(path.ItemId, path.MediaSourceId)}{filteredQuery}";
+        }
+
         /// <summary>
         /// Relays one allowed native request to this server's Jellyfin and writes
         /// the (rewritten, for playlists) response.
@@ -134,12 +149,12 @@ namespace Jellyfin.Plugin.Federation.Services
             string token,
             string internalRelayKey,
             string loopbackBase,
+            Guid? internalUserId,
             CancellationToken cancellationToken)
         {
             var request = context.Request;
             var response = context.Response;
-            var nativePath = path.ToNativePath(path.ItemId, path.MediaSourceId);
-            var url = $"{loopbackBase.TrimEnd('/')}/{nativePath}{RemoteMediaPath.FilterQuery(request.Query)}";
+            var url = NativeUrl(loopbackBase, path, RemoteMediaPath.FilterQuery(request.Query), internalUserId);
             var isHead = HttpMethods.IsHead(request.Method);
 
             if (path.Kind == RemoteMediaKind.HlsSegment && !isHead && !request.Headers.ContainsKey("Range"))
@@ -240,8 +255,15 @@ namespace Jellyfin.Plugin.Federation.Services
                         return;
                     }
 
-                    var gatewayBase = PublicGatewayBase(request) + Uri.EscapeDataString(token) + "/";
-                    var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + nativePath, (target, query) =>
+                    var publicBase = PublicGatewayBase(request);
+                    if (string.IsNullOrEmpty(publicBase))
+                    {
+                        response.StatusCode = StatusCodes.Status502BadGateway;
+                        return;
+                    }
+
+                    var gatewayBase = publicBase + Uri.EscapeDataString(token) + "/";
+                    var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + path.ToNativePath(path.ItemId, path.MediaSourceId), (target, query) =>
                         target.ItemId == path.ItemId
                             ? gatewayBase + target.ToNativePath(target.ItemId, target.MediaSourceId) + RemoteMediaPath.FilterQuery(RemoteMediaPath.ParseQuery(query))
                             : null);
@@ -294,21 +316,67 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Null when the segment is too large to hold in memory.
         /// </summary>
         private Task<SharedSegment?> GetSharedSegmentAsync(string url, string internalRelayKey)
+            => GetSharedSegmentAsync(url, () => FetchSegmentAsync(url, internalRelayKey));
+
+        internal Task<SharedSegment?> GetSharedSegmentAsync(string url, Func<Task<SharedSegment?>> fetch)
         {
-            var now = DateTime.UtcNow;
+            TrimSharedSegments();
+            if (SharedSegments.TryGetValue(url, out var existing))
+            {
+                return existing.Fetch.Value;
+            }
+
+            if (SharedSegments.Count >= MaxSharedSegments)
+            {
+                return fetch();
+            }
+
+            var entry = SharedSegments.GetOrAdd(url, _ => new SharedFetch(self => new Lazy<Task<SharedSegment?>>(async () =>
+            {
+                try
+                {
+                    return await fetch().ConfigureAwait(false);
+                }
+                finally
+                {
+                    self.CompletedUtc = SharedSegmentUtcNow();
+                    TrimSharedSegments();
+                }
+            })));
+            TrimSharedSegments();
+            return entry.Fetch.Value;
+        }
+
+        private static void TrimSharedSegments()
+        {
+            var now = SharedSegmentUtcNow();
             foreach (var kv in SharedSegments)
             {
-                if (kv.Value.Fetch.IsValueCreated && kv.Value.Fetch.Value.IsCompleted && now - kv.Value.StartedUtc > SharedSegmentKeep)
+                if (kv.Value.CompletedUtc is { } completedUtc && now - completedUtc > SharedSegmentKeep)
                 {
                     SharedSegments.TryRemove(kv);
                 }
             }
 
-            // Lazy: GetOrAdd may build two entries in a race, but only the stored
-            // one ever starts a request (a second request would restart ffmpeg).
-            var entry = SharedSegments.GetOrAdd(url, u => new SharedFetch(new Lazy<Task<SharedSegment?>>(() => FetchSegmentAsync(u, internalRelayKey)), now));
-            return entry.Fetch.Value;
+            while (SharedSegments.Count > MaxSharedSegments || SharedSegments.Values.Sum(BytesOf) > MaxSharedSegmentTotalBytes)
+            {
+                var oldest = SharedSegments
+                    .Where(kv => kv.Value.CompletedUtc != null)
+                    .OrderBy(kv => kv.Value.CompletedUtc)
+                    .FirstOrDefault();
+                if (oldest.Key == null)
+                {
+                    return;
+                }
+
+                SharedSegments.TryRemove(oldest);
+            }
         }
+
+        private static long BytesOf(SharedFetch entry)
+            => entry.Fetch.IsValueCreated && entry.Fetch.Value.Status == TaskStatus.RanToCompletion
+                ? entry.Fetch.Value.Result?.Body.LongLength ?? 0
+                : 0;
 
         private async Task<SharedSegment?> FetchSegmentAsync(string url, string internalRelayKey)
         {
@@ -389,8 +457,18 @@ namespace Jellyfin.Plugin.Federation.Services
             return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
         }
 
-        private sealed record SharedFetch(Lazy<Task<SharedSegment?>> Fetch, DateTime StartedUtc);
+        private sealed class SharedFetch
+        {
+            public SharedFetch(Func<SharedFetch, Lazy<Task<SharedSegment?>>> fetchFactory)
+            {
+                Fetch = fetchFactory(this);
+            }
 
-        private sealed record SharedSegment(int Status, string? ContentType, byte[] Body);
+            public Lazy<Task<SharedSegment?>> Fetch { get; }
+
+            public DateTime? CompletedUtc { get; set; }
+        }
+
+        internal sealed record SharedSegment(int Status, string? ContentType, byte[] Body);
     }
 }

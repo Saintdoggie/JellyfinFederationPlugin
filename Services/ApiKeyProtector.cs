@@ -9,9 +9,8 @@ namespace Jellyfin.Plugin.Federation.Services
     /// ASP.NET Core's DataProtection API with a key ring kept alongside this
     /// plugin's own config file (see <see cref="Plugin.GetDefaultCachePath"/> for
     /// the sibling convention of scoping plugin-owned files under its data
-    /// folder). These keys are never real Jellyfin API keys used anywhere except
-    /// <see cref="Configuration.PluginConfiguration.InternalRelayApiKey"/> - the
-    /// rest are the scoped federation tokens minted by
+    /// folder). Native Jellyfin relay keys are process-memory only and never use
+    /// this protector. These are scoped federation tokens minted by
     /// <see cref="FederationFriendService"/>'s handshake, which already carry no
     /// access beyond the <c>Peer/*</c> endpoints - but a friend's server address
     /// plus a valid token for it is still a real credential worth not leaving in
@@ -48,47 +47,90 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        private const string ProtectedPrefix = "fedenc:v1:";
+        private const string LegacyPayloadBase64Marker = "CfDJ8";
+        private static readonly byte[] LegacyPayloadMarker = { 0x09, 0xf0, 0xc9 };
+
         /// <summary>
-        /// Encrypts <paramref name="plaintext"/> for storage. Returns it unchanged
-        /// if null/empty (nothing to protect) or if <see cref="Initialize"/> was
-        /// never called (fails safe to "don't crash a save" rather than silently
-        /// losing the key - callers only reach this after the plugin's own
-        /// constructor has already called <see cref="Initialize"/>, so this is
-        /// purely a defensive fallback).
+        /// Encrypts <paramref name="plaintext"/> for storage in a versioned envelope.
+        /// Null and empty values need no protection. Callers initialize the key ring
+        /// before configuration is loaded or saved.
         /// </summary>
         public static string Protect(string? plaintext)
         {
-            if (string.IsNullOrEmpty(plaintext) || _protector == null)
+            if (string.IsNullOrEmpty(plaintext))
             {
-                return plaintext ?? string.Empty;
+                return string.Empty;
             }
 
-            return _protector.Protect(plaintext);
+            if (_protector == null)
+            {
+                throw new InvalidOperationException("The federation credential protector is not initialized.");
+            }
+
+            return ProtectedPrefix + _protector.Protect(plaintext);
         }
 
         /// <summary>
-        /// Decrypts a value produced by <see cref="Protect"/>. A value that fails
-        /// to decrypt is treated as already-plaintext rather than an error - the
-        /// only way that happens is a key saved before this feature existed (or,
-        /// after a config restore, a key ring that no longer matches), and in
-        /// both cases the right behavior is to keep using the value as-is; the
-        /// next save re-encrypts it for real. This is what makes upgrading an
-        /// existing install transparent, with no explicit migration step.
+        /// Decrypts current and pre-envelope protected values. Damaged protected
+        /// data returns an empty credential so ciphertext can never authenticate or
+        /// be saved again as plaintext. Unprotected legacy credentials remain
+        /// readable and are migrated to the envelope on the next configuration save.
         /// </summary>
         public static string Unprotect(string? value)
         {
-            if (string.IsNullOrEmpty(value) || _protector == null)
+            if (string.IsNullOrEmpty(value))
             {
-                return value ?? string.Empty;
+                return string.Empty;
+            }
+
+            if (_protector == null)
+            {
+                throw new InvalidOperationException("The federation credential protector is not initialized.");
+            }
+
+            if (value.StartsWith(ProtectedPrefix, StringComparison.Ordinal))
+            {
+                try
+                {
+                    return _protector.Unprotect(value[ProtectedPrefix.Length..]);
+                }
+                catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException)
+                {
+                    return string.Empty;
+                }
             }
 
             try
             {
                 return _protector.Unprotect(value);
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException && LooksLikeLegacyProtectedValue(value))
+            {
+                return string.Empty;
+            }
+            catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException)
             {
                 return value;
+            }
+        }
+
+        private static bool LooksLikeLegacyProtectedValue(string value)
+        {
+            if (value.StartsWith(LegacyPayloadBase64Marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            try
+            {
+                var bytes = Convert.FromBase64String(value);
+                return bytes.Length >= LegacyPayloadMarker.Length
+                    && bytes.AsSpan(0, LegacyPayloadMarker.Length).SequenceEqual(LegacyPayloadMarker);
+            }
+            catch (FormatException)
+            {
+                return false;
             }
         }
     }

@@ -14,6 +14,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -441,7 +442,7 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void ProxySignature_LegacyV1_IsPlayOnly()
+    public void ProxySignature_LegacyV1WithoutExpiry_IsRefused()
     {
         AddServer(StreamingMode.Proxy);
         var itemId = Guid.NewGuid();
@@ -450,7 +451,7 @@ public class FederationStreamPathTests : IDisposable
         var v1 = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes("secret-key"), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
 
         Assert.Equal(64, v1.Length);
-        Assert.True(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
+        Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1));
         Assert.False(_manager.ValidateProxySignature("serverA", itemId, false, userId, v1, download: true));
     }
 
@@ -741,18 +742,16 @@ public class FederationStreamPathTests : IDisposable
     }
 
     [Fact]
-    public void WanCapMode_Auto_ConfirmedWan_MeasuredFast_StaysUncapped()
+    public void WanCapMode_Auto_ConfirmedWan_MeasuredFast_UsesMeasuredCapacityWithoutCutoff()
     {
-        // Measured comfortably above what any real source needs - forcing a second
-        // transcode pass would cost CPU on both ends for no benefit, so direct play
-        // wins even on a confirmed WAN link.
         var server = AddServer();
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 80.0);
 
         var entry = AddEntry("Movie", Guid.NewGuid());
         var liveUrl = _manager.BuildPlaybackUrl(entry.ItemType, entry.GetPrimarySource()!);
 
-        Assert.Contains("Static=true", liveUrl);
+        Assert.Contains("VideoBitrate=64344000", liveUrl);
+        Assert.DoesNotContain("Static=true", liveUrl);
     }
 
     [Fact]
@@ -819,6 +818,21 @@ public class FederationStreamPathTests : IDisposable
         _bandwidthMonitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 20.0);
 
         Assert.Equal("&capMbps=17", _manager.BuildDirectStreamCapQuery(server, isAudio: false));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(12)]
+    public void DirectGatewayLoopback_PreservesExactMediaSource(int? capMbps)
+    {
+        var itemId = Guid.NewGuid();
+        var sourceId = Guid.NewGuid().ToString("N");
+
+        var url = FederationLibraryManager.BuildDirectGatewayLoopbackUrl("http://127.0.0.1:8096", itemId, false, capMbps, 1080, sourceId);
+
+        Assert.Contains("/Videos/" + itemId.ToString("N") + "/stream", url);
+        Assert.Contains("MediaSourceId=" + sourceId, url);
+        Assert.Equal(capMbps.HasValue, url.Contains("VideoCodec=h264", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1110,13 +1124,15 @@ public class FederationStreamPathTests : IDisposable
             item.LockedFields.OrderBy(f => f));
     }
 
-    [Fact]
-    public async Task GetMediaSources_DirectMode_UsesItemScopedPlaybackToken_NotSessionToken()
+    [Theory]
+    [InlineData("Jellyfin for Android", false)]
+    [InlineData("Findroid", true)]
+    public async Task GetMediaSources_DirectMode_RawHttpUsesScopedTokenAndNativeTransportCapability(string client, bool expectedDirectPlay)
     {
         // Direct-mode Path is client-visible. A session token authorizes any
         // currently visible item, so swapping itemId on that URL would fetch a
-        // different title. This pins that a known local user still gets an
-        // item-scoped playback token, not RegisterUserSession.
+        // different title. Raw HTTP must also stay out of Android's HLS-only
+        // direct-play path while retaining original-file streaming and conversion.
         var serverId = "direct-client-path-" + Guid.NewGuid().ToString("N");
         var remoteId = Guid.NewGuid();
         var localUserId = Guid.NewGuid();
@@ -1160,7 +1176,7 @@ public class FederationStreamPathTests : IDisposable
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
         httpContextAccessor.SetupGet(a => a.HttpContext).Returns(new DefaultHttpContext());
         var authorization = new Mock<IAuthorizationContext>();
-        var authInfo = new AuthorizationInfo();
+        var authInfo = new AuthorizationInfo { Client = client, Device = "Test device" };
         var userType = typeof(AuthorizationInfo).GetProperty("User")!.PropertyType;
         var user = Activator.CreateInstance(userType, "alice", "auth", "reset")!;
         userType.GetProperty("Id")!.SetValue(user, localUserId);
@@ -1179,10 +1195,74 @@ public class FederationStreamPathTests : IDisposable
         Assert.Equal(0, handler.RegisterUserSessionCalls);
         Assert.True(handler.PlaybackTokenCalls >= 1);
         Assert.DoesNotContain("\"Purpose\":\"Image\"", handler.LastPlaybackTokenBody);
-        var path = Assert.Single(sources).Path;
-        Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", path);
-        Assert.DoesNotContain("session-tok-123", path);
+        var source = Assert.Single(sources);
+        Assert.Equal(MediaProtocol.Http, source.Protocol);
+        Assert.Equal("mkv", source.Container);
+        Assert.Equal(expectedDirectPlay, source.SupportsDirectPlay);
+        Assert.True(source.SupportsDirectStream);
+        Assert.True(source.SupportsTranscoding);
+        Assert.Contains($"/Plugins/Federation/DirectStream/{remoteId:N}?token=item-tok-123", source.Path);
+        Assert.DoesNotContain("session-tok-123", source.Path);
         Assert.Equal(localUserId.ToString("N"), handler.LastRemoteUserId);
+    }
+
+    [Fact]
+    public async Task GetMediaSources_DirectMode_EmitsEveryRemoteEncodingWithExactIdsAndPaths()
+    {
+        var serverId = "direct-multiple-" + Guid.NewGuid().ToString("N");
+        var remoteId = Guid.NewGuid();
+        var hevcId = Guid.NewGuid().ToString("N");
+        var h264Id = Guid.NewGuid().ToString("N");
+        var server = new RemoteServer
+        {
+            Id = serverId,
+            Name = "Friend",
+            Url = "http://friend.example:8096",
+            ApiKey = "secret-key",
+            Enabled = true,
+            StreamingMode = StreamingMode.Direct
+        };
+        _plugin.Configuration.RemoteServers.Add(server);
+        _cache.UpsertRaw(
+            "Movies",
+            serverId,
+            remoteId,
+            new BaseItemDto { Id = remoteId, Name = "Two encodings", Type = Jellyfin.Data.Enums.BaseItemKind.Movie, Container = "mkv" },
+            0,
+            "Movie");
+        var entry = _cache.GetEntriesForMapping("Movies").First(e => e.GetPrimarySource()?.ServerId == serverId);
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-so-provider-emits-direct-path";
+
+        var handler = new DirectPathTokenHandler
+        {
+            PlaybackInfoJson = "{\"MediaSources\":[" +
+                "{\"Id\":\"" + hevcId + "\",\"Container\":\"mkv\",\"Bitrate\":59000000,\"MediaStreams\":[{\"Type\":1,\"Index\":0,\"Codec\":\"hevc\",\"Height\":2160}]}," +
+                "{\"Id\":\"" + h264Id + "\",\"Container\":\"mp4\",\"Bitrate\":8000000,\"MediaStreams\":[{\"Type\":1,\"Index\":0,\"Codec\":\"h264\",\"Height\":1080}]}]}"
+        };
+        var remoteClient = new RemoteServerClient(server, NullLogger.Instance, new HttpClient(handler) { BaseAddress = new Uri(server.Url) });
+        var clientFactory = new Mock<IRemoteServerClientFactory>();
+        clientFactory.Setup(f => f.GetClient(It.IsAny<RemoteServer>())).Returns(remoteClient);
+        clientFactory.Setup(f => f.GetClient(It.IsAny<string>())).Returns(remoteClient);
+        var manager = new FederationLibraryManager(
+            Mock.Of<ILibraryManager>(), NullLogger<FederationLibraryManager>.Instance, clientFactory.Object,
+            _cache, _bandwidthMonitor, _mediaStreamRepository.Object);
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(new DefaultHttpContext());
+        var provider = new FederationMediaSourceProvider(
+            NullLogger<FederationMediaSourceProvider>.Instance, manager, accessor.Object,
+            Mock.Of<IAuthorizationContext>(), new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(2, sources.Count);
+        Assert.Equal(2, sources.Select(source => source.Id).Distinct().Count());
+        Assert.Single(sources, source => source.Id == item.Id.ToString("N"));
+        Assert.Contains(sources, source => source.Path.Contains("mediaSourceId=" + hevcId, StringComparison.Ordinal) && source.MediaStreams[0].Codec == "hevc");
+        Assert.Contains(sources, source => source.Path.Contains("mediaSourceId=" + h264Id, StringComparison.Ordinal) && source.MediaStreams[0].Codec == "h264");
+        var alternate = sources.Single(source => source.Id != item.Id.ToString("N"));
+        Assert.Equal(FederationMediaSourceProvider.BuildSourceId(entry.GetPrimarySource()!, alternate.MediaStreams[0].Codec == "hevc" ? hevcId : h264Id), alternate.Id);
+        Assert.All(sources, source => Assert.Contains("p", source.Name, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1643,6 +1723,8 @@ public class FederationStreamPathTests : IDisposable
 
         public string? LastRemoteUserId { get; private set; }
 
+        public string PlaybackInfoJson { get; set; } = "{\"MediaSources\":[{\"Id\":\"src1\",\"Container\":\"mkv\",\"Size\":1}]}";
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri?.AbsolutePath ?? string.Empty;
@@ -1667,7 +1749,7 @@ public class FederationStreamPathTests : IDisposable
 
             if (path.Contains("/Peer/PlaybackInfo", StringComparison.OrdinalIgnoreCase))
             {
-                return Json("{\"MediaSources\":[{\"Id\":\"src1\",\"Container\":\"mkv\",\"Size\":1}]}");
+                return Json(PlaybackInfoJson);
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);

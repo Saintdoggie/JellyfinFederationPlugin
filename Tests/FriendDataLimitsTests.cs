@@ -258,9 +258,10 @@ public class FriendDataLimitsTests
 
         Assert.NotNull(dir);
         var src = File.ReadAllText(Path.Combine(dir!, "Configuration", "FederationPluginController.cs"));
+        var presentation = File.ReadAllText(Path.Combine(dir!, "Services", "FederationServerPresentation.cs"));
         Assert.Contains("server.MonthlyDataCapGb = oldServer.MonthlyDataCapGb;", src);
         Assert.Contains("server.MaxConcurrentStreams = oldServer.MaxConcurrentStreams;", src);
-        Assert.Contains("s.MonthlyDataCapGb,", src);
-        Assert.Contains("s.MaxConcurrentStreams,", src);
+        Assert.Contains("server.MonthlyDataCapGb,", presentation);
+        Assert.Contains("server.MaxConcurrentStreams,", presentation);
     }
 }

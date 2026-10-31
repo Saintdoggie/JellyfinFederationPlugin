@@ -73,7 +73,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 && ownSubnets.Any(s => s.Address.AddressFamily == AddressFamily.InterNetwork
                     && s.PrefixLength is >= 8 and <= 30
                     && !s.Address.Equals(endpoint.Address)
-                    && In(ip, ToUInt(s.Address) & Mask(s.PrefixLength), s.PrefixLength));
+                    && In(ip, ToUInt(s.Address) & Mask(s.PrefixLength), s.PrefixLength)
+                    && (ip & ~Mask(s.PrefixLength)) != 0
+                    && (ip & ~Mask(s.PrefixLength)) != ~Mask(s.PrefixLength));
         }
 
         /// <summary>The acceptable endpoints of a list, in order, without duplicates.</summary>

@@ -85,7 +85,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private readonly byte[] _sessionId;
         private readonly byte[] _punchKey;
         private readonly List<IPEndPoint> _targets;
-        private readonly HashSet<IPAddress> _allowedSources;
+        private readonly HashSet<IPEndPoint> _allowedSources;
+        private readonly HashSet<string> _seenNonces = new(StringComparer.Ordinal);
+        private readonly Queue<string> _nonceOrder = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Puncher"/> class.
@@ -103,7 +105,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             _sessionId = Convert.FromHexString(sessionIdHex);
             _punchKey = DirectLinkProtocol.SubKey(sessionKey, "punch");
             _targets = Targets(candidates, peerSymmetric);
-            _allowedSources = candidates.Select(c => c.Address).ToHashSet();
+            _allowedSources = _targets.ToHashSet();
         }
 
         /// <summary>Most endpoints probed in one session.</summary>
@@ -208,12 +210,18 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         return new PunchResult(null, false, "the UDP socket failed (" + ex.SocketErrorCode + ")");
                     }
 
-                    if (received.RemoteEndPoint is not IPEndPoint from || !_allowedSources.Contains(from.Address))
+                    if (received.RemoteEndPoint is not IPEndPoint from || !_allowedSources.Contains(from))
                     {
                         continue;
                     }
 
-                    var type = PunchPacket.Verify(buffer.AsSpan(0, received.ReceivedBytes), !_isInitiator, _sessionId, _punchKey);
+                    var packet = buffer.AsSpan(0, received.ReceivedBytes);
+                    var type = PunchPacket.Verify(packet, !_isInitiator, _sessionId, _punchKey);
+                    if (type != 0 && !MarkFresh(packet))
+                    {
+                        continue;
+                    }
+
                     if (type == PunchPacket.Probe)
                     {
                         try
@@ -277,6 +285,23 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
         }
 
+        private bool MarkFresh(ReadOnlySpan<byte> packet)
+        {
+            var key = packet[5] + ":" + Convert.ToHexString(packet.Slice(23, 8));
+            if (!_seenNonces.Add(key))
+            {
+                return false;
+            }
+
+            _nonceOrder.Enqueue(key);
+            if (_nonceOrder.Count > 1024)
+            {
+                _seenNonces.Remove(_nonceOrder.Dequeue());
+            }
+
+            return true;
+        }
+
         // Keeps acking probes briefly so the other side also gets its ack.
         private async Task LingerAsync(CancellationToken cancellationToken)
         {
@@ -288,7 +313,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 while (true)
                 {
                     var received = await _socket.ReceiveFromAsync(buffer, SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), linger.Token).ConfigureAwait(false);
-                    if (received.RemoteEndPoint is IPEndPoint from && _allowedSources.Contains(from.Address)
+                    if (received.RemoteEndPoint is IPEndPoint from && _allowedSources.Contains(from)
                         && PunchPacket.Verify(buffer.AsSpan(0, received.ReceivedBytes), !_isInitiator, _sessionId, _punchKey) == PunchPacket.Probe)
                     {
                         await _socket.SendToAsync(PunchPacket.Build(PunchPacket.Ack, _isInitiator, _sessionId, _punchKey), SocketFlags.None, from, linger.Token).ConfigureAwait(false);

@@ -32,7 +32,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// play.
     /// </para>
     /// </summary>
-    public class PlexStrmExportService
+    public class PlexStrmExportService : IFederationPostSyncExport
     {
         private const string MoviesFolderName = "Movies";
         private const string ShowsFolderName = "Shows";

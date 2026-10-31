@@ -61,8 +61,15 @@ namespace Jellyfin.Plugin.Federation.Services
         internal const int ViewerDownloadFriendLimit = 120;
 
         private const int MaxStoredTokens = 20000;
+        private const int MaxNewTokensPerFriendPerMinute = 600;
+        private const int MaxNewTokensGlobalPerMinute = 5000;
 
         private readonly ConcurrentDictionary<string, Entry> _tokens = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ScopedToken> _scopeTokens = new(StringComparer.Ordinal);
+        private readonly object _mintGate = new();
+        private readonly Dictionary<string, int> _friendMintCounts = new(StringComparer.OrdinalIgnoreCase);
+        private DateTime _mintWindowUtc = DateTime.MinValue;
+        private int _globalMintCount;
         private readonly string? _storePath;
         private readonly Timer? _saveTimer;
         private int _saveScheduled;
@@ -115,12 +122,70 @@ namespace Jellyfin.Plugin.Federation.Services
             FederationTokenPurpose purpose,
             string? remoteUserId = null)
         {
-            Prune();
+            if (!TryIssue(remoteItemId, federationId, purpose, remoteUserId, out var token, out _))
+            {
+                throw new InvalidOperationException("The playback-token mint limit was reached.");
+            }
 
-            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-            _tokens[Key(token)] = new Entry(remoteItemId, federationId, purpose, remoteUserId, DateTime.UtcNow + GetLifetime(purpose, !string.IsNullOrWhiteSpace(remoteUserId)));
+            return token!;
+        }
+
+        public bool TryIssue(
+            string remoteItemId,
+            string federationId,
+            FederationTokenPurpose purpose,
+            string? remoteUserId,
+            out string? token,
+            out TimeSpan retryAfter)
+        {
+            token = null;
+            retryAfter = TimeSpan.Zero;
+            Prune();
+            var scope = string.Join('\n', federationId, remoteItemId, ((int)purpose).ToString(), remoteUserId ?? string.Empty);
+            var now = DateTime.UtcNow;
+            lock (_mintGate)
+            {
+                if (_scopeTokens.TryGetValue(scope, out var existing)
+                    && existing.ExpiresUtc > now
+                    && _tokens.ContainsKey(existing.Key))
+                {
+                    token = existing.Token;
+                    return true;
+                }
+
+                if (now - _mintWindowUtc >= TimeSpan.FromMinutes(1))
+                {
+                    _mintWindowUtc = now;
+                    _globalMintCount = 0;
+                    _friendMintCounts.Clear();
+                }
+
+                _friendMintCounts.TryGetValue(federationId, out var friendCount);
+                if (friendCount >= MaxNewTokensPerFriendPerMinute || _globalMintCount >= MaxNewTokensGlobalPerMinute)
+                {
+                    retryAfter = _mintWindowUtc + TimeSpan.FromMinutes(1) - now;
+                    return false;
+                }
+
+                token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+                var key = Key(token);
+                var expires = now + GetLifetime(purpose, !string.IsNullOrWhiteSpace(remoteUserId));
+                _tokens[key] = new Entry(remoteItemId, federationId, purpose, remoteUserId, expires);
+                _scopeTokens[scope] = new ScopedToken(key, token, expires);
+                _friendMintCounts[federationId] = friendCount + 1;
+                _globalMintCount++;
+
+                if (_tokens.Count > MaxStoredTokens)
+                {
+                    foreach (var old in _tokens.OrderBy(kv => kv.Value.ExpiresUtc).Take(_tokens.Count - MaxStoredTokens))
+                    {
+                        _tokens.TryRemove(old.Key, out _);
+                    }
+                }
+            }
+
             ScheduleSave();
-            return token;
+            return true;
         }
 
         /// <summary>
@@ -317,6 +382,11 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _tokens.TryRemove(key, out _);
             }
+
+            foreach (var stale in _scopeTokens.Where(kvp => kvp.Value.ExpiresUtc <= now || !_tokens.ContainsKey(kvp.Value.Key)).Select(kvp => kvp.Key).ToList())
+            {
+                _scopeTokens.TryRemove(stale, out _);
+            }
         }
 
         private static string Key(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
@@ -407,6 +477,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
             public DateTime ExpiresUtc { get; set; }
         }
+
+        private readonly record struct ScopedToken(string Key, string Token, DateTime ExpiresUtc);
 
         private readonly record struct Entry(
             string RemoteItemId,

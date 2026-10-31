@@ -84,6 +84,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
             {
                 using (held)
                 {
+                    var revalidated = await RevalidateReadAheadAsync(link, target, cancellationToken).ConfigureAwait(false);
+                    if (revalidated != true)
+                    {
+                        if (revalidated == null)
+                        {
+                            RedirectToFriend(server, target);
+                        }
+                        else
+                        {
+                            Response.StatusCode = StatusCodes.Status403Forbidden;
+                        }
+
+                        return;
+                    }
+
                     bool arrived;
                     try
                     {
@@ -194,7 +209,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 try
                 {
                     await using var stream = await upstream.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                    await stream.CopyToAsync(Response.Body, 64 * 1024, cancellationToken).ConfigureAwait(false);
+                    await CopyWithStallTimeoutAsync(stream, Response.Body, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is System.IO.IOException or HttpRequestException or ObjectDisposedException
                     || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
@@ -203,6 +218,40 @@ namespace Jellyfin.Plugin.Federation.Configuration
                     // to the friend if the link is still down).
                     HttpContext.Abort();
                 }
+            }
+        }
+
+        private static async Task CopyWithStallTimeoutAsync(System.IO.Stream source, System.IO.Stream destination, CancellationToken cancellationToken)
+        {
+            var buffer = new byte[64 * 1024];
+            using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            while (true)
+            {
+                stall.CancelAfter(TimeSpan.FromSeconds(60));
+                var read = await source.ReadAsync(buffer, stall.Token).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return;
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), stall.Token).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task<bool?> RevalidateReadAheadAsync(HttpClient link, string target, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, new Uri("http://federation-direct-link" + target));
+                request.Headers.TryAddWithoutValidation("Range", "bytes=0-0");
+                using var response = await link.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or System.IO.IOException or ObjectDisposedException or OperationCanceledException)
+            {
+                return null;
             }
         }
 
@@ -360,7 +409,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 config.DirectLinkStunServers = servers.Length > 0 ? servers : new PluginConfiguration().DirectLinkStunServers;
             }
 
-            config.DirectLinkOptIn = body.EnableDirectLink;
+            if (body.EnableDirectLink.HasValue)
+            {
+                config.DirectLinkOptIn = body.EnableDirectLink.Value;
+            }
             Plugin.Instance.SaveConfiguration();
             foreach (var server in config.RemoteServers)
             {
@@ -424,7 +476,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
     public class DirectLinkSettingsBody
     {
         /// <summary>Gets or sets a value indicating whether direct links are on.</summary>
-        public bool EnableDirectLink { get; set; }
+        public bool? EnableDirectLink { get; set; }
 
         /// <summary>Gets or sets the STUN servers (null keeps the current ones).</summary>
         public string[]? DirectLinkStunServers { get; set; }

@@ -1576,8 +1576,102 @@
   // device is playing; the answer is refreshed every 10 seconds.
   // ---------------------------------------------------------------------
   var connection = { data: null, fetchedAt: 0, pending: false, panel: null };
+  var routeTelemetry = { samples: [], pending: false, waitingSince: 0, started: false };
+
+  function telemetryResourceMatches(name, data) {
+    if (!name || !data || !data.serverId || !data.remoteItemId) { return false; }
+    var url = String(name).toLowerCase().replace(/-/g, '');
+    var remote = String(data.remoteItemId).toLowerCase().replace(/-/g, '');
+    var server = String(data.serverId).toLowerCase().replace(/-/g, '');
+    if (url.indexOf(remote) < 0) { return false; }
+    if (data.route === 'relay') {
+      return url.indexOf('/plugins/federation/stream') >= 0 && url.indexOf('serverid=' + server) >= 0;
+    }
+    if (data.route === 'direct-link') {
+      return url.indexOf('/directlink/' + server + '/') >= 0;
+    }
+    return url.indexOf('/plugins/federation/directstream/') >= 0 || url.indexOf('/plugins/federation/peer/play/') >= 0;
+  }
+
+  function observeRoutePerformance(entries) {
+    var data = connection.data;
+    if (!data || !data.federated) { return; }
+    entries.forEach(function (entry) {
+      if (!telemetryResourceMatches(entry.name, data)) { return; }
+      var bytes = Number(entry.encodedBodySize || 0);
+      var duration = Number(entry.duration || 0);
+      if (bytes >= 65536 && bytes <= 1000000000 && duration >= 250 && duration <= 300000) {
+        routeTelemetry.samples.push({ bytes: bytes, durationMs: duration });
+      }
+    });
+    routeTelemetry.samples = routeTelemetry.samples.slice(-50);
+  }
+
+  function videoRouteHealth() {
+    var video = document.querySelector('video');
+    var buffered = null;
+    if (video && isFinite(video.currentTime)) {
+      for (var i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= video.currentTime + 0.05 && video.buffered.end(i) > video.currentTime) {
+          buffered = Math.max(0, video.buffered.end(i) - video.currentTime);
+          break;
+        }
+      }
+    }
+    var quality = video && typeof video.getVideoPlaybackQuality === 'function' ? video.getVideoPlaybackQuality() : null;
+    return {
+      stalled: !!routeTelemetry.waitingSince,
+      bufferedSeconds: buffered,
+      droppedFrames: quality && isFinite(quality.droppedVideoFrames) ? quality.droppedVideoFrames : null,
+      totalFrames: quality && isFinite(quality.totalVideoFrames) ? quality.totalVideoFrames : null
+    };
+  }
+
+  function flushRouteTelemetry() {
+    var data = connection.data;
+    if (!data || !data.federated || routeTelemetry.pending) { return Promise.resolve(); }
+    var samples = routeTelemetry.samples.splice(0);
+    var health = videoRouteHealth();
+    if (!samples.length && !health.stalled && health.bufferedSeconds == null && health.droppedFrames == null) { return Promise.resolve(); }
+    var body = {
+      itemId: data.itemId, serverId: data.serverId, route: data.route,
+      bytes: samples.length ? samples.reduce(function (sum, sample) { return sum + sample.bytes; }, 0) : null,
+      durationMs: samples.length ? samples.reduce(function (sum, sample) { return sum + sample.durationMs; }, 0) : null,
+      stalled: health.stalled, bufferedSeconds: health.bufferedSeconds,
+      droppedFrames: health.droppedFrames, totalFrames: health.totalFrames
+    };
+    routeTelemetry.pending = true;
+    return federationFetch('/Plugins/Federation/Playback/Metrics', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    }).catch(function () {
+      routeTelemetry.samples = samples.concat(routeTelemetry.samples).slice(-50);
+    }).then(function () { routeTelemetry.pending = false; });
+  }
+
+  function startRouteTelemetry() {
+    if (routeTelemetry.started) { return; }
+    routeTelemetry.started = true;
+    if (typeof window.PerformanceObserver === 'function') {
+      try {
+        var observer = new window.PerformanceObserver(function (list) { observeRoutePerformance(list.getEntries()); });
+        observer.observe({ type: 'resource', buffered: true });
+        routeTelemetry.observer = observer;
+      } catch (_) { /* Browser timing is optional; no measurement is reported without it. */ }
+    }
+    document.addEventListener('waiting', function () { routeTelemetry.waitingSince = Date.now(); }, true);
+    document.addEventListener('playing', function () { routeTelemetry.waitingSince = 0; }, true);
+    window.setInterval(flushRouteTelemetry, 15000);
+  }
+
+  window.__federationRouteTelemetry = {
+    flush: flushRouteTelemetry,
+    matches: telemetryResourceMatches,
+    observe: observeRoutePerformance,
+    samples: routeTelemetry.samples
+  };
 
   function injectPlaybackConnection() {
+    startRouteTelemetry();
     var stats = document.querySelector('.playerStats:not(.hide) .playerStats-stats');
     if (!stats) {
       connection.panel = null;
@@ -1612,10 +1706,25 @@
       return null;
     }
 
-    var rows = [['Friend', data.friend], ['Route', data.routeText]];
-    if (data.placement) { rows.push(['Who converts', data.placement]); }
+    var rows = [['Friend', data.friend], ['Playback', data.playMethod || 'Unknown'], ['Route', data.routeText || 'Unknown'], ['Conversion', data.conversion || 'Unknown']];
+    function formatFormat(container, video, audio, bitrate) {
+      var codecs = [container, video, audio].filter(function (value) { return !!value; }).join(' / ');
+      if (typeof bitrate === 'number' && bitrate > 0) {
+        codecs += (codecs ? ' · ' : '') + (bitrate / 1000000).toFixed(bitrate < 10000000 ? 1 : 0) + ' Mbps';
+      }
+      return codecs;
+    }
+    var original = formatFormat(data.originalContainer, data.originalVideoCodec, data.originalAudioCodec, data.originalBitrate);
+    var delivered = formatFormat(data.deliveredContainer, data.deliveredVideoCodec, data.deliveredAudioCodec, data.deliveredBitrate);
+    if (original) { rows.push(['Original', original]); }
+    if (delivered) { rows.push(['Delivered', delivered]); }
+    if (data.transcodeReasons && data.transcodeReasons !== '0') { rows.push(['Conversion reason', data.transcodeReasons]); }
+    if (data.placement) { rows.push(['Placement reason', data.placement]); }
     if (typeof data.latencyMs === 'number') { rows.push(['Round trip', Math.round(data.latencyMs) + ' ms']); }
-    if (typeof data.linkMbps === 'number') { rows.push(['Link speed', data.linkMbps.toFixed(data.linkMbps < 10 ? 1 : 0) + ' Mbps']); }
+    if (typeof data.linkMbps === 'number') { rows.push(['Server route speed', data.linkMbps.toFixed(data.linkMbps < 10 ? 1 : 0) + ' Mbps']); }
+    if (typeof data.routeMbps === 'number') { rows.push(['Device route speed', data.routeMbps.toFixed(data.routeMbps < 10 ? 1 : 0) + ' Mbps' + (typeof data.routeMeasurementAgeSeconds === 'number' ? ' · ' + data.routeMeasurementAgeSeconds + 's old' : '')]); }
+    if (typeof data.routeBufferedSeconds === 'number') { rows.push(['Buffered ahead', data.routeBufferedSeconds.toFixed(1) + 's']); }
+    if (typeof data.routeDroppedFrames === 'number' && typeof data.routeTotalFrames === 'number' && data.routeTotalFrames > 0) { rows.push(['Dropped frames', data.routeDroppedFrames + ' / ' + data.routeTotalFrames]); }
     if (data.speedNote) { rows.push(['Speed test', data.speedNote]); }
     if (data.directLink) { rows.push(['Direct link', data.directLink]); }
     if (typeof data.capMbps === 'number') { rows.push(['Bitrate cap', data.capMbps + ' Mbps']); }

@@ -53,6 +53,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 && state.Supported
                 && (state.RefusedUntil == null || state.RefusedUntil <= UtcNow());
 
+        /// <summary>True when a negative answer must be refreshed rather than reused from a token cache.</summary>
+        public static bool NeedsRefresh(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && State.TryGetValue(serverId, out var state) && !state.Supported;
+
         /// <summary>Records whether the friend shares repeated segment requests (see <see cref="PlaybackTokenResponse.SharedSegments"/>).</summary>
         public static void RecordSharedSegments(string? serverId, bool shared)
         {

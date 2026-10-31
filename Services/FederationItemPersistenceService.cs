@@ -939,7 +939,9 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             double? Projected((FederatedSource Source, RemoteServer Server) c)
-                => monitor.ProjectedStartSeconds(c.Server, c.Source.Bitrate);
+                => monitor.ProjectedStartSeconds(c.Server, c.Source.Bitrate is > 0
+                    ? c.Source.Bitrate
+                    : c.Source.MediaStreams?.Where(s => s.BitRate is > 0).Sum(s => (long)s.BitRate!.Value));
 
             var first = Projected(playable[0]);
             if (first is not > StartEstimator.StartBudgetSeconds)

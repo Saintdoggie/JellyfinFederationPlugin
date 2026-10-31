@@ -13,7 +13,8 @@ public class IncomingContentFilterTests
     [InlineData("TV-MA", "PG-13", false)]
     [InlineData("TV-G", "G", true)]
     [InlineData("TV-14", "PG-13", true)]
-    [InlineData("NR", "G", true)]
+    [InlineData("NR", "G", false)]
+    [InlineData("Unfamiliar-Regional-Rating", "G", false)]
     public void Ceiling_ranks_across_scales(string item, string ceiling, bool allowed)
         => Assert.Equal(allowed, IncomingContentFilterService.IsWithinRatingCeiling(item, ceiling));
 

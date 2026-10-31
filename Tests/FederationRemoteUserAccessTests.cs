@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Plugin.Federation.Api;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Controller;
@@ -45,6 +49,29 @@ public class FederationRemoteUserAccessTests : IDisposable
 
     private static RemoteAccessControlService MakeAccessControl()
         => new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance);
+
+    [Fact]
+    public void SessionRegistrationBlockedCheck_UsesRulesWithoutAnItemLookup()
+    {
+        var caller = new RemoteServer();
+        caller.RemoteUserAccessRules.Add(new RemoteUserAccessRule { RemoteUserId = "narrowed", Mode = RemoteUserAccessMode.CertainItems });
+        caller.RemoteUserAccessRules.Add(new RemoteUserAccessRule { RemoteUserId = "blocked", Mode = RemoteUserAccessMode.Blocked });
+
+        Assert.False(FederationController.IsRemoteUserBlocked(caller, "narrowed"));
+        Assert.True(FederationController.IsRemoteUserBlocked(caller, "blocked"));
+        Assert.False(FederationController.IsRemoteUserBlocked(caller, "unrestricted"));
+    }
+
+    [Fact]
+    public void AdministratorDetection_ReadsJellyfin12Permissions()
+    {
+        var admin = new User("admin", "auth", "reset");
+        admin.Permissions.Add(new Permission(PermissionKind.IsAdministrator, true));
+        var viewer = new User("viewer", "auth", "reset");
+
+        Assert.True(FederationController.IsAdministratorUser(admin));
+        Assert.False(FederationController.IsAdministratorUser(viewer));
+    }
 
     [Fact]
     public void IsAllowed_NoRuleForUser_FallsBackToAllowed()
@@ -488,11 +515,53 @@ public class FederationRemoteUserAccessPushTests : IDisposable
             FromFederationId = "bob-fed-id",
             Rules = new List<RemoteUserAccessRule> { newRule }
         });
-        Assert.True(applied);
+        Assert.Equal(RemoteUserRulesUpdateResult.Changed, applied);
 
         var stored = _plugin.Configuration.RemoteServers[0].FriendUserAccessRules;
         Assert.Single(stored);
         Assert.Equal("fresh-user", stored[0].RemoteUserId);
+    }
+
+    [Fact]
+    public void ReceiveRemoteUserAccessRules_UnchangedAndOversized_DoNotRewriteRules()
+    {
+        var existing = new RemoteUserAccessRule { RemoteUserId = "fresh-user", Mode = RemoteUserAccessMode.Blocked };
+        var bob = new RemoteServer
+        {
+            Id = "limits",
+            FederationId = "bob-fed-id",
+            FriendUserAccessRules = new List<RemoteUserAccessRule> { existing }
+        };
+
+        var unchanged = _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
+        {
+            FromFederationId = "bob-fed-id",
+            Rules = new List<RemoteUserAccessRule> { existing }
+        });
+        var oversized = _service.ReceiveRemoteUserAccessRules(bob, new RemoteUserAccessRulesPayload
+        {
+            FromFederationId = "bob-fed-id",
+            Rules = Enumerable.Range(0, 101).Select(i => new RemoteUserAccessRule { RemoteUserId = $"user-{i}" }).ToList()
+        });
+
+        Assert.Equal(RemoteUserRulesUpdateResult.Unchanged, unchanged);
+        Assert.Equal(RemoteUserRulesUpdateResult.TooLarge, oversized);
+        Assert.Same(existing, Assert.Single(bob.FriendUserAccessRules));
+    }
+
+    [Fact]
+    public void ReceiveRemoteUserAccessRules_RapidChanges_PreserveLatestState()
+    {
+        var bob = new RemoteServer { Id = "throttle", FederationId = "bob-fed-id" };
+        RemoteUserAccessRulesPayload Payload(string user) => new()
+        {
+            FromFederationId = "bob-fed-id",
+            Rules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule { RemoteUserId = user, Mode = RemoteUserAccessMode.Blocked } }
+        };
+
+        Assert.Equal(RemoteUserRulesUpdateResult.Changed, _service.ReceiveRemoteUserAccessRules(bob, Payload("first")));
+        Assert.Equal(RemoteUserRulesUpdateResult.Changed, _service.ReceiveRemoteUserAccessRules(bob, Payload("second")));
+        Assert.Equal("second", Assert.Single(bob.FriendUserAccessRules).RemoteUserId);
     }
 
     [Fact]
@@ -506,7 +575,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
             FromFederationId = "someone-else",
             Rules = new List<RemoteUserAccessRule> { new RemoteUserAccessRule { RemoteUserId = "x" } }
         });
-        Assert.False(applied);
+        Assert.Equal(RemoteUserRulesUpdateResult.Invalid, applied);
 
         Assert.Empty(_plugin.Configuration.RemoteServers[0].FriendUserAccessRules);
     }
@@ -548,7 +617,7 @@ public class FederationRemoteUserAccessPushTests : IDisposable
                 new RemoteUserAccessRule { RemoteUserId = "hijacked", Mode = RemoteUserAccessMode.AllLibraries }
             }
         });
-        Assert.False(applied);
+        Assert.Equal(RemoteUserRulesUpdateResult.Invalid, applied);
 
         Assert.Empty(alice.FriendUserAccessRules);
         var bobsRules = Assert.Single(bob.FriendUserAccessRules);

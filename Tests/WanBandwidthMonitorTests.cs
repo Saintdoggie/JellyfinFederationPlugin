@@ -128,6 +128,15 @@ public class WanBandwidthMonitorTests
         Assert.Null(await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(stream, () => clock, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task SteadyThroughput_TruncatedExpectedBody_IsRejected()
+    {
+        var clock = 0.0;
+        var stream = new PacedStream(totalBytes: 2_000_000, chunk: 64 * 1024, secondsPerChunk: _ => 0.001, advance: s => clock += s);
+
+        Assert.Null(await RemoteServerClient.MeasureSteadyThroughputMbpsAsync(stream, () => clock, CancellationToken.None, expectedBytes: 10_000_000));
+    }
+
     [Theory]
     [InlineData("http://jellyfin.example.org", 308, "https://jellyfin.example.org/System/Info/Public", "https://jellyfin.example.org")]
     [InlineData("http://jellyfin.example.org", 301, "https://jellyfin.example.org/System/Info/Public", "https://jellyfin.example.org")]
@@ -177,6 +186,7 @@ public class WanBandwidthMonitorTests
         Assert.Equal($"/Plugins/Federation/DirectStream/{itemId:N}", handler.DirectStreamPath);
         Assert.DoesNotContain("capMbps", handler.DirectStreamQuery);
         Assert.Equal("bytes=0-9999999", handler.DirectStreamRange);
+        Assert.Equal(3, handler.DirectStreamCalls);
         Assert.Equal(0, handler.BitrateTestCalls);
     }
 
@@ -189,7 +199,14 @@ public class WanBandwidthMonitorTests
         var client = new RemoteServerClient(server, NullLogger.Instance, new System.Net.Http.HttpClient(handler) { BaseAddress = new Uri(server.Url) });
 
         Assert.True(await client.MeasureBandwidthMbpsAsync(CancellationToken.None, Guid.NewGuid()) > 0);
-        Assert.Equal(1, handler.BitrateTestCalls);
+        Assert.Equal(3, handler.BitrateTestCalls);
+    }
+
+    [Fact]
+    public void BandwidthSamples_UseMedianInsteadOfFastestOrAverage()
+    {
+        Assert.Equal(80, RemoteServerClient.Median(new[] { 120.0, 40.0, 80.0 }));
+        Assert.Equal(90, RemoteServerClient.Median(new[] { 120.0, 80.0, 60.0, 100.0 }));
     }
 
     private sealed class PeerHandler : System.Net.Http.HttpMessageHandler
@@ -203,6 +220,8 @@ public class WanBandwidthMonitorTests
         public string DirectStreamQuery { get; private set; } = string.Empty;
 
         public string? DirectStreamRange { get; private set; }
+
+        public int DirectStreamCalls { get; private set; }
 
         public int BitrateTestCalls { get; private set; }
 
@@ -219,6 +238,7 @@ public class WanBandwidthMonitorTests
 
             if (path.StartsWith("/Plugins/Federation/DirectStream/", StringComparison.OrdinalIgnoreCase))
             {
+                DirectStreamCalls++;
                 DirectStreamPath = path;
                 DirectStreamQuery = request.RequestUri.Query;
                 DirectStreamRange = request.Headers.Range?.ToString();
@@ -289,12 +309,15 @@ public class WanBandwidthMonitorTests
     }
 
     [Theory]
-    [InlineData(4.0, 4)]
-    [InlineData(9.5, 9)]
-    [InlineData(10.0, 10)]
+    [InlineData(4.0, 3)]
+    [InlineData(9.5, 8)]
+    [InlineData(10.0, 8)]
     [InlineData(20.0, 17)]
-    [InlineData(49.0, 42)]
-    public void AutoCap_NeverExceedsMeasured(double measured, int expected)
+    [InlineData(49.0, 41)]
+    [InlineData(50.0, 42)]
+    [InlineData(100.0, 85)]
+    [InlineData(1000.0, 850)]
+    public void AutoCap_UsesSustainableShareAtEverySpeed(double measured, int expected)
     {
         var cap = WanBandwidthMonitor.AutoCapFromMeasured(measured);
         Assert.Equal(expected, cap);
@@ -302,21 +325,21 @@ public class WanBandwidthMonitorTests
     }
 
     [Fact]
-    public void GetEffectiveCapMbps_SlowLink_IsBelowMeasured()
+    public void GetEffectiveCapMbps_FastLink_DoesNotDiscardCapacityOrDisableAuto()
     {
         var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
         var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
-        monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 4.0);
-        Assert.Equal(4, monitor.GetEffectiveCapMbps(server));
+        monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: 100.0);
+        Assert.Equal(85, monitor.GetEffectiveCapMbps(server));
     }
 
     [Fact]
-    public void GetEffectiveCapMbps_PlaceholderLifts_AfterRepeatedFailedProbes()
+    public void GetEffectiveCapMbps_FailedProbe_KeepsConservativePlaceholder()
     {
         var monitor = new WanBandwidthMonitor(NullLogger<WanBandwidthMonitor>.Instance, Mock.Of<IRemoteServerClientFactory>());
         var server = MakeServer(ServerKind.Jellyfin, WanCapMode.Auto);
         monitor.SeedForTests(server.Id, isLocalNetwork: false, measuredMbps: null, failedProbes: 3);
-        Assert.Null(monitor.GetEffectiveCapMbps(server));
+        Assert.Equal(10, monitor.GetEffectiveCapMbps(server));
         Assert.Contains("Never measured", monitor.GetWanNote(server));
     }
 
@@ -331,7 +354,7 @@ public class WanBandwidthMonitorTests
 
         await monitor.RefreshIfDueAsync(server);
 
-        Assert.Equal(26, monitor.GetEffectiveCapMbps(server));
+        Assert.Equal(25, monitor.GetEffectiveCapMbps(server));
     }
 
     private sealed class DeadlineStream : System.IO.Stream

@@ -112,7 +112,7 @@ public sealed class ImportReliabilityTests
     public void CompanionUpstream_PrefersLanOverPublicAndRelay()
     {
         var server = new PlexResource { Connections = new() {
-            new() { Uri = "https://public.example" }, new() { Uri = "https://relay.example", Relay = true }, new() { Uri = "http://192.168.1.5:32400", Local = true } } };
+            new() { Uri = "https://public.example" }, new() { Uri = "https://relay.example", Relay = true }, new() { Uri = "http://10.255.255.254:32400", Local = true } } };
         Assert.True(PlexAuth.OrderLocalConnections(server).First().Local);
     }
 

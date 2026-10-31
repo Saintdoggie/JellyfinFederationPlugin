@@ -110,25 +110,36 @@ namespace Jellyfin.Plugin.Federation.Services
             };
         }
 
-        public static byte[] DecodeFractions(AvailabilityScheduleBlob? blob)
+        public static bool IsValidSelfBlob(AvailabilityScheduleBlob? blob)
         {
-            var packed = new byte[BucketCount];
-            Array.Fill(packed, UnknownFraction);
-            if (blob == null || blob.Version != Version || string.IsNullOrEmpty(blob.Probabilities))
+            if (blob == null || blob.Version != Version || blob.Id == null || blob.Id.Length > 128
+                || blob.SampleHours < 0 || blob.SampleHours > BucketCount
+                || blob.Probabilities == null || blob.Probabilities.Length != 224)
             {
-                return packed;
+                return false;
             }
 
             try
             {
                 var raw = Convert.FromBase64String(blob.Probabilities);
-                var n = Math.Min(BucketCount, raw.Length);
-                Array.Copy(raw, packed, n);
+                return raw.Length == BucketCount && string.Equals(Convert.ToBase64String(raw), blob.Probabilities, StringComparison.Ordinal);
             }
             catch (FormatException)
             {
+                return false;
+            }
+        }
+
+        public static byte[] DecodeFractions(AvailabilityScheduleBlob? blob)
+        {
+            var packed = new byte[BucketCount];
+            Array.Fill(packed, UnknownFraction);
+            if (!IsValidSelfBlob(blob))
+            {
+                return packed;
             }
 
+            Array.Copy(Convert.FromBase64String(blob!.Probabilities), packed, BucketCount);
             return packed;
         }
 

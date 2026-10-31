@@ -51,18 +51,20 @@ namespace Jellyfin.Plugin.Federation.Services
         public string Describe()
         {
             var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(Gpu))
+            var gpu = TranscodeHardware.Trim(Gpu, 80);
+            if (gpu != null)
             {
-                parts.Add(Gpu!);
+                parts.Add(gpu);
             }
             else if (!string.Equals(Acceleration, "none", StringComparison.OrdinalIgnoreCase))
             {
                 parts.Add(Acceleration.ToUpperInvariant() + " GPU");
             }
 
-            if (!string.IsNullOrWhiteSpace(Cpu))
+            var cpu = TranscodeHardware.Trim(Cpu, 80);
+            if (cpu != null)
             {
-                parts.Add(Cpu + (CpuThreads > 0 ? " (" + CpuThreads + " threads)" : string.Empty));
+                parts.Add(cpu + (CpuThreads > 0 ? " (" + CpuThreads + " threads)" : string.Empty));
             }
             else if (CpuThreads > 0)
             {
@@ -334,7 +336,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 .Distinct()
                 .ToList();
 
-        private static string? Trim(string? value, int max)
+        internal static string? Trim(string? value, int max)
         {
             if (string.IsNullOrWhiteSpace(value))
             {

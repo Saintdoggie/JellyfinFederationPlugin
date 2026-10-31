@@ -64,8 +64,17 @@ public sealed class FederationUserSharingTests
         var src = File.ReadAllText(Path.Combine(dir!, "Configuration", "FederationPluginController.cs"));
         Assert.Contains("server.ShareAllUsers = oldServer.ShareAllUsers;", src);
         Assert.Contains("server.SharedUserIds = oldServer.SharedUserIds;", src);
-        Assert.Contains("s.ShareAllUsers,", src);
-        Assert.Contains("s.SharedUserIds,", src);
         Assert.Contains("FederationPeerAccessService.IsUserVisible(caller, guid)", src);
+    }
+
+    [Fact]
+    public void Sanitize_ShowsTheUserSharingChoice()
+    {
+        var server = new RemoteServer { ShareAllUsers = true, SharedUserIds = new List<string> { "u1" } };
+
+        var shown = FederationServerPresentation.Sanitize(server, null);
+
+        Assert.Equal(true, shown.GetType().GetProperty("ShareAllUsers")!.GetValue(shown));
+        Assert.Equal(new List<string> { "u1" }, shown.GetType().GetProperty("SharedUserIds")!.GetValue(shown));
     }
 }

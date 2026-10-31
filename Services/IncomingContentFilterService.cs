@@ -63,7 +63,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Whether <paramref name="remoteItem"/> passes the global <paramref name="filter"/>.
         /// </summary>
-        public static bool IsAllowedByIncomingFilter(IncomingContentFilter? filter, BaseItemDto remoteItem)
+        public static bool IsAllowedByIncomingFilter(IncomingContentFilter? filter, BaseItemDto remoteItem, string? inheritedRating = null)
         {
             if (filter == null)
             {
@@ -83,7 +83,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // Rating ceiling
             if (!string.IsNullOrWhiteSpace(filter.MaxAllowedRating))
             {
-                var itemRating = remoteItem.OfficialRating;
+                var itemRating = string.IsNullOrWhiteSpace(remoteItem.OfficialRating) ? inheritedRating : remoteItem.OfficialRating;
                 if (!string.IsNullOrWhiteSpace(itemRating) && !IsWithinRatingCeiling(itemRating!, filter.MaxAllowedRating))
                 {
                     return false;
@@ -116,14 +116,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Whether <paramref name="rating"/> is at or below <paramref name="ceiling"/> in rank.
         /// An unrecognised ceiling fails closed for rated items (a typo must not switch filtering off).
-        /// An unrecognised ITEM rating (NR, empty, regional) stays fail-open: blocking every unrated item
-        /// would hide a large part of most libraries.
+        /// An unrecognised non-empty ITEM rating also fails closed: a ceiling is an access rule,
+        /// so NR and unfamiliar regional labels must not bypass it.
         /// </summary>
         public static bool IsWithinRatingCeiling(string rating, string ceiling)
         {
             if (!RatingRank.TryGetValue(rating.Trim(), out var itemRank))
             {
-                return true;
+                return false;
             }
 
             if (!TryRankCeiling(ceiling, out var ceilingRank))

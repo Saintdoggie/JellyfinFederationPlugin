@@ -101,47 +101,75 @@ internal static class PeerCatalogWire
     }
 
     /// <summary>
-    /// Gzips <paramref name="json"/> when the caller accepts it. Returns the body
-    /// and the Content-Encoding to send, or null for an uncompressed body.
+    /// Compresses <paramref name="json"/> with the best encoding the caller
+    /// accepts. Older callers keep the unchanged payload.
     /// </summary>
     public static (byte[] Body, string? ContentEncoding) Encode(string json, string? acceptEncoding)
     {
         var raw = Encoding.UTF8.GetBytes(json);
-        if (raw.Length < MinimumCompressedLength || !AcceptsGzip(acceptEncoding))
+        if (raw.Length < MinimumCompressedLength)
+        {
+            return (raw, null);
+        }
+
+        var encoding = AcceptsEncoding(acceptEncoding, "br") ? "br" : AcceptsGzip(acceptEncoding) ? "gzip" : null;
+        if (encoding == null)
         {
             return (raw, null);
         }
 
         using var output = new MemoryStream();
-        using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
+        using (Stream compressor = encoding == "br"
+            ? new BrotliStream(output, CompressionLevel.Fastest, leaveOpen: true)
+            : new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
         {
-            gzip.Write(raw, 0, raw.Length);
+            compressor.Write(raw, 0, raw.Length);
         }
 
-        return (output.ToArray(), "gzip");
+        return (output.ToArray(), encoding);
     }
 
-    /// <summary>Reads a response body, undoing gzip when the peer applied it.</summary>
-    public static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    /// <summary>Reads a bounded response body, undoing Brotli or gzip.</summary>
+    public static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken, int maximumBytes = 256 * 1024 * 1024)
     {
         var encodings = response.Content.Headers.ContentEncoding;
         if (encodings.Count == 0)
         {
-            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var bytes = await HttpContentReader.ReadBytesAsync(response.Content, maximumBytes, cancellationToken).ConfigureAwait(false);
+            return Encoding.UTF8.GetString(bytes);
         }
 
-        if (encodings.Count != 1 || !string.Equals(encodings.First(), "gzip", StringComparison.OrdinalIgnoreCase))
+        if (encodings.Count != 1 || !(encodings.First() is "gzip" or "br" || string.Equals(encodings.First(), "gzip", StringComparison.OrdinalIgnoreCase) || string.Equals(encodings.First(), "br", StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidDataException("Unsupported response encoding: " + string.Join(", ", encodings));
         }
 
         await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var gzip = new GZipStream(body, CompressionMode.Decompress);
-        using var reader = new StreamReader(gzip, Encoding.UTF8);
-        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        await using Stream decompressed = string.Equals(encodings.First(), "br", StringComparison.OrdinalIgnoreCase)
+            ? new BrotliStream(body, CompressionMode.Decompress)
+            : new GZipStream(body, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        var buffer = new byte[32 * 1024];
+        while (true)
+        {
+            var read = await decompressed.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return Encoding.UTF8.GetString(output.GetBuffer(), 0, (int)output.Length);
+            }
+
+            if (output.Length + read > maximumBytes)
+            {
+                throw new InvalidDataException("The remote catalog exceeds the permitted size.");
+            }
+
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
     }
 
-    internal static bool AcceptsGzip(string? acceptEncoding)
+    internal static bool AcceptsGzip(string? acceptEncoding) => AcceptsEncoding(acceptEncoding, "gzip");
+
+    private static bool AcceptsEncoding(string? acceptEncoding, string encoding)
     {
         if (string.IsNullOrWhiteSpace(acceptEncoding))
         {
@@ -151,12 +179,11 @@ internal static class PeerCatalogWire
         foreach (var part in acceptEncoding.Split(','))
         {
             var pieces = part.Split(';');
-            if (!string.Equals(pieces[0].Trim(), "gzip", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(pieces[0].Trim(), encoding, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            // "gzip;q=0" explicitly refuses it.
             foreach (var parameter in pieces.Skip(1))
             {
                 var pair = parameter.Split('=', 2);
