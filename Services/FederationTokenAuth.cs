@@ -107,7 +107,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// 64-character hex string (see <see cref="GenerateToken"/>), so a
         /// length mismatch alone is not a meaningful timing signal here.
         /// </summary>
-        private static bool FixedTimeEquals(string a, string b)
+        internal static bool FixedTimeEquals(string a, string b)
         {
             var bytesA = System.Text.Encoding.UTF8.GetBytes(a);
             var bytesB = System.Text.Encoding.UTF8.GetBytes(b);

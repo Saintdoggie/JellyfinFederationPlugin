@@ -161,11 +161,11 @@ public class DownloadsViewersHardwareTests
         try
         {
             File.WriteAllText(Path.Combine(dir, "Film (2021).mkv"), "x");
-            var path = FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friendflix");
-            Assert.Equal(Path.Combine(dir, "Film (2021) - friendflix.mkv"), path);
+            var path = FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friend-a");
+            Assert.Equal(Path.Combine(dir, "Film (2021) - friend-a.mkv"), path);
 
             File.WriteAllText(path, "x");
-            Assert.Equal(Path.Combine(dir, "Film (2021) - friendflix (2).mkv"), FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friendflix"));
+            Assert.Equal(Path.Combine(dir, "Film (2021) - friend-a (2).mkv"), FederationDownloadService.GetUniqueDestinationPath(dir, "Film (2021).mkv", "friend-a"));
         }
         finally
         {
@@ -205,23 +205,50 @@ public class DownloadsViewersHardwareTests
     // ---- Friends' viewers --------------------------------------------------
 
     private static RemoteServer Friend(StreamingMode mode = StreamingMode.Direct)
-        => new() { Id = "f1", Name = "friendflix", Kind = ServerKind.Jellyfin, StreamingMode = mode, Enabled = true };
+        => new() { Id = "f1", Name = "friend-a", Kind = ServerKind.Jellyfin, StreamingMode = mode, Enabled = true };
 
     [Fact]
-    public void Route_FollowsPlayMethodModeAndHandoff()
+    public void Route_UsesObservedTransportAndNeverGuessesFromConfiguration()
     {
-        Assert.Equal(FederatedRoute.Direct, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false));
-        Assert.Equal(FederatedRoute.Relay, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false));
+        Assert.Equal(FederatedRoute.Unknown, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false));
+        Assert.Equal(FederatedRoute.Direct, FederatedRoute.Classify(Friend(), PlayMethod.DirectPlay, false, FederatedRoute.Direct));
+        Assert.Equal(FederatedRoute.Relay, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false, FederatedRoute.Relay));
+        Assert.Equal(FederatedRoute.Unknown, FederatedRoute.Classify(Friend(StreamingMode.Proxy), PlayMethod.DirectStream, false));
         Assert.Equal(FederatedRoute.FriendConverts, FederatedRoute.Classify(Friend(), PlayMethod.Transcode, true));
         Assert.Equal(FederatedRoute.ConvertedHere, FederatedRoute.Classify(Friend(), PlayMethod.Transcode, false));
     }
 
     [Fact]
-    public void Owner_SeesConversionHereAsServingTheOriginal()
+    public void Owner_SeesConversionHereAsServingTheOriginal_AndUnknownStaysUnknown()
     {
         Assert.Equal("DirectStream", FederatedRoute.OwnerPlayMethod(FederatedRoute.ConvertedHere, PlayMethod.Transcode));
         Assert.Equal("Transcode", FederatedRoute.OwnerPlayMethod(FederatedRoute.FriendConverts, PlayMethod.Transcode));
-        Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, null));
+        Assert.Equal("Unknown", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, null));
+        Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, PlayMethod.DirectPlay));
+    }
+
+    [Fact]
+    public void ObservedRoutes_ExpireAndForgetWithoutFallingBackToConfiguration()
+    {
+        FederationPlaybackRoutes.Reset();
+        var now = new DateTime(2026, 10, 29, 12, 0, 0, DateTimeKind.Utc);
+        FederationPlaybackRoutes.UtcNow = () => now;
+        try
+        {
+            FederationPlaybackRoutes.Record(" session-1 ", FederatedRoute.Direct);
+            Assert.Equal(FederatedRoute.Direct, FederationPlaybackRoutes.Get("session-1"));
+            FederationPlaybackRoutes.Forget("session-1");
+            Assert.Null(FederationPlaybackRoutes.Get("session-1"));
+
+            FederationPlaybackRoutes.Record("session-2", FederatedRoute.Relay);
+            now = now.AddHours(13);
+            Assert.Null(FederationPlaybackRoutes.Get("session-2"));
+        }
+        finally
+        {
+            FederationPlaybackRoutes.UtcNow = () => DateTime.UtcNow;
+            FederationPlaybackRoutes.Reset();
+        }
     }
 
     [Fact]
@@ -251,12 +278,42 @@ public class DownloadsViewersHardwareTests
     [Fact]
     public void FriendsViewers_AreLabelledWithTheirServer()
     {
-        Assert.Equal("bob (friendflix)", FederationRemoteViewerService.Label("bob", "friendflix"));
-        Assert.Equal("Someone (friendflix)", FederationRemoteViewerService.Label("  ", "friendflix"));
-        Assert.Equal("Chrome · via friendflix", FederationRemoteViewerService.DeviceLabel("Chrome", "friendflix"));
-        Assert.Equal("Device · via friendflix", FederationRemoteViewerService.DeviceLabel(null, "friendflix"));
-        Assert.Equal("dev-1", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { DeviceId = "dev-1", Key = "k" }));
+        Assert.Equal("bob (friend-a)", FederationRemoteViewerService.Label("bob", "friend-a"));
+        Assert.Equal("Someone (friend-a)", FederationRemoteViewerService.Label("  ", "friend-a"));
+        Assert.Equal("Chrome · via friend-a", FederationRemoteViewerService.DeviceLabel("Chrome", "friend-a"));
+        Assert.Equal("Device · via friend-a", FederationRemoteViewerService.DeviceLabel(null, "friend-a"));
+        Assert.Equal("federation-viewer-f1-dev-1", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { DeviceId = "dev-1", Key = "k" }));
         Assert.StartsWith("federation-viewer-f1-", FederationRemoteViewerService.DeviceIdFor(Friend(), new PeerViewerReport { Key = "k" }), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task FriendsViewers_MustMatchTheAuthenticatedFriendsRoster()
+    {
+        var id = Guid.NewGuid();
+        var json = "[{\"Id\":\"" + id + "\",\"Name\":\"real-viewer\"}]";
+        using var http = new System.Net.Http.HttpClient(new StaticJsonHandler(json)) { BaseAddress = new Uri("http://friend.example") };
+        using var client = new RemoteServerClient(Friend(), Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, http);
+        var factory = new Moq.Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(client);
+        var service = new FederationRemoteViewerService(null!, null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteViewerService>.Instance, factory.Object);
+        var report = new PeerViewerReport { ViewerId = id.ToString(), ViewerName = "real-viewer" };
+
+        Assert.True(await service.IsVerifiedViewer(Friend(), report));
+        Assert.False(await service.IsVerifiedViewer(Friend(), new PeerViewerReport { ViewerId = id.ToString(), ViewerName = "spoofed-admin" }));
+        Assert.False(await service.IsVerifiedViewer(Friend(), new PeerViewerReport { ViewerId = Guid.NewGuid().ToString(), ViewerName = "real-viewer" }));
+    }
+
+    private sealed class StaticJsonHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly string _json;
+
+        public StaticJsonHandler(string json) => _json = json;
+
+        protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+            => System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent(_json, System.Text.Encoding.UTF8, "application/json")
+            });
     }
 
     // ---- Conversion hardware ------------------------------------------------
@@ -308,6 +365,22 @@ public class DownloadsViewersHardwareTests
         Assert.Equal(24, info.CpuThreads);
         Assert.DoesNotContain("bogus", info.HardwareDecode);
         Assert.Equal("Radeon RX 9070 XT + Ryzen 9 7900X (24 threads); hardware encodes H264, HEVC, AV1; runs on a separate machine", info.Describe());
+    }
+
+    [Fact]
+    public void Describe_BoundsAndFlattensPeerSuppliedHardwareNames()
+    {
+        var info = new TranscodeHardwareInfo
+        {
+            Gpu = "GPU\r\nForged: yes" + new string('x', 100),
+            Cpu = new string('c', 100),
+            CpuThreads = 8
+        };
+        var description = info.Describe();
+        Assert.DoesNotContain('\r', description);
+        Assert.DoesNotContain('\n', description);
+        Assert.Contains("GPUForged: yes", description);
+        Assert.True(description.Length < 220);
     }
 
     [Fact]

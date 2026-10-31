@@ -783,11 +783,10 @@ public class FederationStreamHandlerTests : IDisposable
     }
 
     [Fact]
-    public async Task ManualWanCap_ThrottlesRelayToTheConfiguredRate()
+    public async Task ManualWanCap_DoesNotStarveTheTranscodersSourceInput()
     {
-        // A Manual WAN cap must be enforced as an actual byte-rate throttle for
-        // a Proxy-mode source. The static Direct-mode relay serves raw bytes
-        // without a cap so its persisted format remains accurate.
+        // The cap belongs on the converted output, not on the original input
+        // that ffmpeg must decode at real-time speed.
         var server = _plugin.Configuration.RemoteServers.Single(s => s.Id == "serverA");
         server.StreamingMode = StreamingMode.Proxy;
         server.WanCapMode = WanCapMode.Manual;
@@ -807,12 +806,7 @@ public class FederationStreamHandlerTests : IDisposable
 
         Assert.Equal(remoteBytes.Length, body.Length);
 
-        // At 125,000 bytes/sec, 400,000 bytes should take ~3.2s - a 2s floor
-        // leaves generous headroom for scheduling jitter on a loaded CI box
-        // while still being far above the near-instant relay an unthrottled
-        // in-memory run would otherwise produce (proving the cap actually did
-        // something, not just that it didn't crash).
-        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2), $"expected the capped relay to take at least 2s, took {stopwatch.Elapsed}");
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"expected an unthrottled source relay, took {stopwatch.Elapsed}");
     }
 
     [Fact]
@@ -1069,6 +1063,77 @@ public class FederationStreamHandlerTests : IDisposable
 
         Assert.True(lifetime.AbortCalled);
         Assert.Equal(firstChunk, body.ToArray());
+    }
+
+    [Fact]
+    public async Task RetryReceivesNonSuccessAfterBodyBytes_AbortsInsteadOfReturningTruncatedResponse()
+    {
+        var firstChunk = new byte[100];
+        new Random(21).NextBytes(firstChunk);
+        var callCount = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new PartialThenFailContent(firstChunk, 1000)
+                };
+            }
+
+            Assert.Equal("bytes=100-", req.Headers.Range?.ToString());
+            return new HttpResponseMessage(HttpStatusCode.Forbidden);
+        }));
+        var (request, response, body) = MakeContext(null);
+        var lifetime = new SpyRequestLifetimeFeature();
+        response.HttpContext.Features.Set<IHttpRequestLifetimeFeature>(lifetime);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, callCount);
+        Assert.True(lifetime.AbortCalled);
+        Assert.Equal(firstChunk, body.ToArray());
+    }
+
+    [Fact]
+    public async Task CleanUpstreamEofBeforeContentLength_ResumesAtNextByteAndCompletesExactBody()
+    {
+        var expected = new byte[300];
+        new Random(22).NextBytes(expected);
+        const int firstLength = 117;
+        var callCount = 0;
+        FederationStreamHandler.HttpClientOverride = new HttpClient(new FakeHandler(req =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                Assert.False(req.Headers.Contains("Range"));
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    // Clean EOF after 117 bytes despite declaring all 300.
+                    Content = new StallAfterOneChunkContent(expected[..firstLength], expected.Length, isFinal: true)
+                };
+            }
+
+            Assert.Equal($"bytes={firstLength}-", req.Headers.Range?.ToString());
+            var resumed = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(expected[firstLength..])
+            };
+            resumed.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(firstLength, expected.Length - 1, expected.Length);
+            return resumed;
+        }));
+        var (request, response, body) = MakeContext(null);
+        var lifetime = new SpyRequestLifetimeFeature();
+        response.HttpContext.Features.Set<IHttpRequestLifetimeFeature>(lifetime);
+
+        await _handler.HandleProxyAsync("serverA", Guid.NewGuid().ToString("N"), request, response, CancellationToken.None);
+
+        Assert.Equal(2, callCount);
+        Assert.Equal(expected.Length, response.ContentLength);
+        Assert.Equal(expected, body.ToArray());
+        Assert.False(lifetime.AbortCalled);
     }
 
     /// <summary>

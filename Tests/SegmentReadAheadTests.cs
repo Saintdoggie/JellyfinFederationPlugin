@@ -16,7 +16,7 @@ namespace Jellyfin.Plugin.Federation.Tests;
 
 /// <summary>
 /// The direct-link relay fetches the player's next segments alongside the one it
-/// is on (live, 2026-10-22: one download to friendflix stopped near 110 Mbps, four
+/// is on (live, 2026-10-22: one download to friend-a stopped near 110 Mbps, four
 /// at once reached 178), and serves each once to the exact address the playlist
 /// listed.
 /// </summary>
@@ -187,6 +187,25 @@ public class SegmentReadAheadTests
         Assert.Equal(0, readAhead.HeldBytes);
     }
 
+    [Theory]
+    [InlineData(1024, 512)]
+    [InlineData(512, 1024)]
+    public async Task ContentLengthMismatch_IsDroppedSoThePlayerFallsBack(int declared, int actual)
+    {
+        using var readAhead = new SegmentReadAhead(now: () => DateTime.UtcNow);
+        readAhead.RememberPlaylist("f1", Gateway + "main.m3u8", PlaylistText(2));
+        readAhead.After("f1", Segment(0), 1, (_, _) =>
+        {
+            var content = new ByteArrayContent(new byte[actual]);
+            content.Headers.ContentLength = declared;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+
+        await WaitUntil(() => readAhead.Pending == 0);
+        Assert.Null(readAhead.Take("f1", Segment(1)));
+        Assert.Equal(0, readAhead.HeldBytes);
+    }
+
     [Fact]
     public async Task ALinkDropMidSegment_ReachesThePlayer_AsAnIOError()
     {
@@ -246,6 +265,64 @@ public class SegmentReadAheadTests
         Assert.Equal(0, readAhead.HeldBytes);
     }
 
+    [Fact]
+    public async Task ClaimedProducer_CannotExceedGlobalMemoryBudget()
+    {
+        const int MaxBytes = 256 * 1024;
+        const int EntryBudget = MaxBytes / 24;
+        using var readAhead = new SegmentReadAhead(maxBytes: MaxBytes, now: () => DateTime.UtcNow);
+        readAhead.RememberPlaylist("f1", Gateway + "main.m3u8?PlaySessionId=1", PlaylistText(2));
+        var body = new ClaimOnSecondReadStream(readAhead, "f1", Segment(1), EntryBudget);
+        readAhead.After("f1", Segment(0), 1, (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body),
+        }));
+
+        // The stream claims its entry before returning the second chunk. The first
+        // chunk already fills the budget, so the producer must wait for ServeAsync
+        // to drain it rather than treating a claimed entry as exempt.
+        using var entry = await body.Claimed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(await entry.WaitHeadAsync(CancellationToken.None));
+        using var copy = new MemoryStream();
+        await entry.ServeAsync(copy, CancellationToken.None);
+
+        Assert.Equal(2 * EntryBudget, copy.Length);
+        Assert.True(body.BytesAtEnd.HasValue);
+        Assert.InRange(body.BytesAtEnd.Value, 0, EntryBudget);
+        Assert.Equal(0, readAhead.HeldBytes);
+    }
+
+    [Fact]
+    public async Task EncodedQueryDelimiters_DoNotAliasDistinctSegments()
+    {
+        using var readAhead = new SegmentReadAhead(now: () => DateTime.UtcNow);
+        var prefix = Gateway + "hls1/main/shared.ts?VideoCodec=";
+        var encodedValue = prefix + "h264%26AudioCodec%3Daac";
+        var separateParameters = prefix + "h264&AudioCodec=aac";
+        var playlist = "#EXTM3U\n"
+            + "http://10.0.0.5:8096" + Segment(0) + "\n"
+            + "http://10.0.0.5:8096" + encodedValue + "\n"
+            + "http://10.0.0.5:8096" + separateParameters + "\n";
+        readAhead.RememberPlaylist("f1", Gateway + "main.m3u8?PlaySessionId=1", playlist);
+        var fetched = new ConcurrentBag<string>();
+        readAhead.After("f1", Segment(0), 2, (target, _) =>
+        {
+            fetched.Add(target);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Body(target)),
+            });
+        });
+
+        // In the decoded whole-target key, %26 and %3D become real delimiters and
+        // these different requests collide. Component-wise canonicalization keeps
+        // them distinct while the existing comma-escaping equivalence still works.
+        Assert.Equal(2, readAhead.Pending);
+        await WaitUntil(() => fetched.Count == 2);
+        Assert.Equal(Body(encodedValue), await ServeAsync(readAhead.Take("f1", encodedValue)!));
+        Assert.Equal(Body(separateParameters), await ServeAsync(readAhead.Take("f1", separateParameters)!));
+    }
+
     /// <summary>
     /// The live cap: each download from the friend is limited on its own, so a
     /// player fetching one segment at a time gets only that. With read-ahead the
@@ -290,6 +367,69 @@ public class SegmentReadAheadTests
         var with = await PlayAsync(3);
         _output.WriteLine($"one at a time: {without:F0} Mbps without read-ahead, {with:F0} Mbps with 3 ahead");
         Assert.True(with > without * 1.8, $"read-ahead {with:F0} Mbps vs {without:F0} Mbps");
+    }
+
+    /// <summary>Claims its read-ahead entry on the second read and records the global bytes held at EOF.</summary>
+    private sealed class ClaimOnSecondReadStream : Stream
+    {
+        private readonly SegmentReadAhead _owner;
+        private readonly string _serverId;
+        private readonly string _target;
+        private readonly int _chunkSize;
+        private int _reads;
+
+        public ClaimOnSecondReadStream(SegmentReadAhead owner, string serverId, string target, int chunkSize)
+        {
+            _owner = owner;
+            _serverId = serverId;
+            _target = target;
+            _chunkSize = chunkSize;
+        }
+
+        public TaskCompletionSource<SegmentReadAhead.Entry> Claimed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public long? BytesAtEnd { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => 2 * _chunkSize;
+
+        public override long Position { get; set; }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_reads == 2)
+            {
+                BytesAtEnd = _owner.HeldBytes;
+                return ValueTask.FromResult(0);
+            }
+
+            _reads++;
+            if (_reads == 2)
+            {
+                Claimed.SetResult(_owner.Take(_serverId, _target)!);
+            }
+
+            buffer.Span.Clear();
+            return ValueTask.FromResult(_chunkSize);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>Sends a fixed number of bytes no faster than a set rate.</summary>

@@ -59,8 +59,17 @@ public sealed class FederationFriendSharingTests
         var src = File.ReadAllText(Path.Combine(dir!, "Configuration", "FederationPluginController.cs"));
         Assert.Contains("server.ShareAllFriends = oldServer.ShareAllFriends;", src);
         Assert.Contains("server.SharedFriendIds = oldServer.SharedFriendIds;", src);
-        Assert.Contains("s.ShareAllFriends,", src);
-        Assert.Contains("s.SharedFriendIds,", src);
         Assert.Contains("FederationPeerAccessService.IsFriendVisible(caller, s)", src);
+    }
+
+    [Fact]
+    public void Sanitize_ShowsTheFriendSharingChoice()
+    {
+        var server = new RemoteServer { ShareAllFriends = false, SharedFriendIds = new List<string> { "b" } };
+
+        var shown = FederationServerPresentation.Sanitize(server, null);
+
+        Assert.Equal(false, shown.GetType().GetProperty("ShareAllFriends")!.GetValue(shown));
+        Assert.Equal(new List<string> { "b" }, shown.GetType().GetProperty("SharedFriendIds")!.GetValue(shown));
     }
 }

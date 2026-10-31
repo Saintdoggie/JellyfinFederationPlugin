@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -65,6 +66,26 @@ public sealed class AdaptivePlaybackControllerTests : IDisposable
         Assert.DoesNotContain("NEVER-EXPOSE-KEY", json); Assert.DoesNotContain("private-address", json); Assert.DoesNotContain("Path", json);
         _library.Verify(l => l.GetItemList(It.Is<InternalItemsQuery>(q => q.User!.Id == _userId && q.ItemIds.Contains(_itemId))), Times.Once);
     }
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task RankingFallsBackToPositiveStreamBitrateTotal(int? aggregateBitrate)
+    {
+        var source = _entry.GetSourcesSnapshot().Single();
+        source.Bitrate = aggregateBitrate;
+        source.MediaStreams = new[]
+        {
+            new MediaStream { BitRate = 6_000_000 },
+            new MediaStream { BitRate = 2_000_000 },
+            new MediaStream { BitRate = -8_000_000 },
+        };
+
+        var result = Assert.IsType<OkObjectResult>(await _controller.Sources(_itemId));
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
+        Assert.Equal(74.35, json.RootElement.GetProperty("Sources")[0].GetProperty("Score").GetDouble());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

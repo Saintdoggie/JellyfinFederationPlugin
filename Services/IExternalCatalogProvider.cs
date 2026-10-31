@@ -119,6 +119,10 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         Task<HttpResponseMessage?> GetPrimaryImageResponseAsync(RemoteServer server, string nativeId, CancellationToken cancellationToken);
 
+        /// <summary>Runs a bounded admin-only conversion diagnostic when supported.</summary>
+        Task<ExternalTranscodeProbeResult?> ProbeTranscodeAsync(RemoteServer server, string nativeId, int maxVideoKbps, int sampleSeconds, CancellationToken cancellationToken)
+            => Task.FromResult<ExternalTranscodeProbeResult?>(null);
+
         /// <summary>
         /// Verifies the server is reachable and its credential works, returning
         /// its reported friendly name, or null when it isn't usable.
@@ -153,4 +157,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// to fetch. Either may be null when the source has no such image.
     /// </summary>
     public sealed record ExternalImageSet(string? PrimaryUrl, string? BackdropUrl);
+
+    /// <summary>Provider-neutral result for an administrator's bounded conversion probe.</summary>
+    public sealed record ExternalTranscodeProbeResult(int HttpStatus, long? FirstByteMs, long Bytes, double SampleSeconds, double? Mbps, string? ContentType, string Detail, string? Decision = null, string? Message = null);
 }

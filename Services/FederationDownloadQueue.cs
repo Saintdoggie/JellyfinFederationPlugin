@@ -191,6 +191,17 @@ namespace Jellyfin.Plugin.Federation.Services
             }
             catch (Exception)
             {
+                // Keep the unreadable file: the next Upsert/Remove saves over it, which
+                // would otherwise throw away every queued job along with the corruption.
+                try
+                {
+                    File.Copy(path, path + ".corrupt", overwrite: true);
+                }
+                catch (Exception)
+                {
+                    // Best effort - the queue still starts empty.
+                }
+
                 return new List<DownloadJob>();
             }
         }

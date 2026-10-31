@@ -198,6 +198,11 @@ namespace Jellyfin.Plugin.Federation.Providers
                     return externalResult;
                 }
 
+                if (server.Kind != Configuration.ServerKind.Jellyfin)
+                {
+                    return Enumerable.Empty<RemoteImageInfo>();
+                }
+
                 var client = _federationManager.GetClient(source.ServerId);
                 if (client == null)
                 {
@@ -244,7 +249,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                 {
                     images.Add(new RemoteImageInfo
                     {
-                        Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{ImageType.Primary}?{tokenParam}&tag={remoteItem.ImageTags[ImageType.Primary]}",
+                        Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{ImageType.Primary}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.ImageTags[ImageType.Primary])}",
                         Type = ImageType.Primary,
                         ProviderName = Name
                     });
@@ -256,7 +261,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/Backdrop/{i}?{tokenParam}&tag={remoteItem.BackdropImageTags[i]}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/Backdrop/{i}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.BackdropImageTags[i])}",
                             Type = ImageType.Backdrop,
                             ProviderName = Name
                         });
@@ -269,7 +274,7 @@ namespace Jellyfin.Plugin.Federation.Providers
                     {
                         images.Add(new RemoteImageInfo
                         {
-                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{imageType}?{tokenParam}&tag={remoteItem.ImageTags[imageType]}",
+                            Url = $"{baseUrl}/Plugins/Federation/Peer/Images/{itemId}/{imageType}?{tokenParam}&tag={Uri.EscapeDataString(remoteItem.ImageTags[imageType])}",
                             Type = imageType,
                             ProviderName = Name
                         });
@@ -283,7 +288,9 @@ namespace Jellyfin.Plugin.Federation.Providers
         /// <inheritdoc />
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return SharedHttpClient.GetAsync(url, cancellationToken);
+            // Do not buffer an unbounded friend-controlled image before Jellyfin
+            // sees the response. The caller consumes and disposes the stream.
+            return SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         }
     }
 }

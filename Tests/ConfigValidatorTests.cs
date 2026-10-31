@@ -69,6 +69,21 @@ public class ConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsWhitespaceVariantDuplicateMappingNames()
+    {
+        var config = new PluginConfiguration
+        {
+            LibraryMappings = new List<LibraryMapping>
+            {
+                new() { LocalLibraryName = "Movies" },
+                new() { LocalLibraryName = " movies " }
+            }
+        };
+
+        Assert.Contains(ConfigValidator.Validate(config), e => e.Contains("Duplicate", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validate_RejectsRefreshIntervalBelowOne()
     {
         var config = new PluginConfiguration { RefreshIntervalHours = 0 };
@@ -133,7 +148,14 @@ public class ConfigValidatorTests
     [InlineData("http://100.64.1.20:8096")]
     [InlineData("http://100.127.0.1:8096")]
     [InlineData("http://localhost:8096")]
-    [InlineData("http://foo.localhost:8096")]
+    [InlineData("http://localhost.:8096")]
+    [InlineData("http://foo.localhost.:8096")]
+    [InlineData("http://0.0.0.0:8096")]
+    [InlineData("http://2130706433:8096")]
+    [InlineData("http://0x7f000001:8096")]
+    [InlineData("http://017700000001:8096")]
+    [InlineData("http://127.1:8096")]
+    [InlineData("http://[::]:8096")]
     [InlineData("http://metadata.google.internal/")]
     [InlineData("http://metadata.google.com/")]
     [InlineData("http://instance-data/latest/meta-data")]

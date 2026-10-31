@@ -217,7 +217,7 @@ public class DirectLinkTests
     [InlineData("http://friend.example.com", false)]
     [InlineData("http://100.70.1.2:8096", true)]
     [InlineData("http://box.tail1234.ts.net:8096", true)]
-    [InlineData("http://192.168.1.5:8096", false)]
+    [InlineData("http://10.255.255.254:8096", false)]
     [InlineData("not a url", false)]
     public void Signaling_NeedsHttpsOrTailscale(string url, bool safe) => Assert.Equal(safe, DirectLinkProtocol.IsSignalingSafe(url));
 
@@ -325,7 +325,8 @@ public class DirectLinkTests
     [Theory]
     [InlineData(null, true)]
     [InlineData("X-Forwarded-Host", true)]
-    [InlineData("X-Real-IP", true)]
+    [InlineData("X-Real-IP", false)]
+    [InlineData("X-Client-IP", false)]
     [InlineData("X-Forwarded-For", false)]
     [InlineData("Forwarded", false)]
     [InlineData("CF-Connecting-IP", false)]
@@ -335,7 +336,7 @@ public class DirectLinkTests
         var network = new Moq.Mock<MediaBrowser.Common.Net.INetworkManager>();
         network.Setup(n => n.IsInLocalNetwork(Moq.It.IsAny<IPAddress>())).Returns(true);
         var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
-        http.Connection.RemoteIpAddress = IPAddress.Parse("192.168.1.50");
+        http.Connection.RemoteIpAddress = IPAddress.Parse("10.255.255.253");
         if (header != null)
         {
             http.Request.Headers[header] = "1.2.3.4";
@@ -374,6 +375,7 @@ public class DirectLinkTests
         var dir = Path.Combine(Path.GetTempPath(), "fed-dl-id-" + Guid.NewGuid().ToString("N"));
         try
         {
+            Jellyfin.Plugin.Federation.Services.ApiKeyProtector.Initialize(Path.Combine(dir, "keys"));
             var first = DirectLinkIdentity.LoadOrCreate(dir, "abc");
             Assert.True(DirectLinkIdentity.IsFingerprint(first.Fingerprint));
             Assert.True(first.Certificate.HasPrivateKey);
@@ -426,7 +428,7 @@ public class DirectLinkTests
         var responderPort = FreeUdpPort();
         var initiatorPort = FreeUdpPort();
 
-        var accept = DirectLinkHandshake.AcceptAsync(responderPort, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
+        var accept = DirectLinkHandshake.AcceptAsync(responderPort, new IPEndPoint(IPAddress.Loopback, initiatorPort), responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
         var client = await DirectLinkHandshake.ConnectAsync(initiatorPort, new IPEndPoint(IPAddress.Loopback, responderPort), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
         var server = await accept;
 
@@ -491,8 +493,9 @@ public class DirectLinkTests
         var session = DirectLinkProtocol.NewSessionId();
         var key = DirectLinkProtocol.SessionKey(Key, Key.Reverse().ToArray(), session);
         var port = FreeUdpPort();
-        var accept = DirectLinkHandshake.AcceptAsync(port, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
-        var client = await DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
+        var clientPort = FreeUdpPort();
+        var accept = DirectLinkHandshake.AcceptAsync(port, new IPEndPoint(IPAddress.Loopback, clientPort), responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
+        var client = await DirectLinkHandshake.ConnectAsync(clientPort, new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
         var server = await accept;
         await using var clientLink = new DirectLinkConnection(client, "friend", true, null);
         clientLink.StartCloseWatch();
@@ -549,6 +552,13 @@ public class DirectLinkTests
     public void LinkCap_FollowsTheMeasuredLink_NotTheTunnel(double mbps, int? cap)
         => Assert.Equal(cap, Jellyfin.Plugin.Federation.Services.FederationRemoteTranscodeFilter.LinkCap(mbps));
 
+    [Theory]
+    [InlineData(0, 12, 12)]
+    [InlineData(25, 12, 20)]
+    [InlineData(1400, 12, null)]
+    public void LinkCap_UnmeasuredKeepsFallback_ButFastLinkCanRemoveIt(double mbps, int? fallback, int? expected)
+        => Assert.Equal(expected, Jellyfin.Plugin.Federation.Services.FederationRemoteTranscodeFilter.LinkCap(mbps, fallback));
+
     [Fact]
     public async Task Link_RefusesAPeerWithTheWrongCertificate()
     {
@@ -559,16 +569,18 @@ public class DirectLinkTests
         var session = DirectLinkProtocol.NewSessionId();
         var key = DirectLinkProtocol.SessionKey(Key, Key, session);
         var port = FreeUdpPort();
-        var accept = DirectLinkHandshake.AcceptAsync(port, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(4), CancellationToken.None);
+        var clientPort = FreeUdpPort();
+        var accept = DirectLinkHandshake.AcceptAsync(port, new IPEndPoint(IPAddress.Loopback, clientPort), responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(4), CancellationToken.None);
 
         // The impostor presents its own certificate where the initiator's is pinned.
-        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port), impostor.Certificate, responder.Fingerprint, key, session, impostor.Fingerprint, CancellationToken.None));
+        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(clientPort, new IPEndPoint(IPAddress.Loopback, port), impostor.Certificate, responder.Fingerprint, key, session, impostor.Fingerprint, CancellationToken.None));
         await Assert.ThrowsAnyAsync<Exception>(() => accept);
 
         // And the initiator refuses a responder that isn't the one it pinned.
         var port2 = FreeUdpPort();
-        var fake = DirectLinkHandshake.AcceptAsync(port2, IPAddress.Loopback, impostor.Certificate, initiator.Fingerprint, key, session, impostor.Fingerprint, 16, TimeSpan.FromSeconds(4), CancellationToken.None);
-        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port2), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None));
+        var clientPort2 = FreeUdpPort();
+        var fake = DirectLinkHandshake.AcceptAsync(port2, new IPEndPoint(IPAddress.Loopback, clientPort2), impostor.Certificate, initiator.Fingerprint, key, session, impostor.Fingerprint, 16, TimeSpan.FromSeconds(4), CancellationToken.None);
+        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(clientPort2, new IPEndPoint(IPAddress.Loopback, port2), initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None));
         await Assert.ThrowsAnyAsync<Exception>(() => fake);
     }
 
@@ -580,8 +592,9 @@ public class DirectLinkTests
         var responder = DirectLinkIdentity.LoadOrCreate(null, "responder");
         var session = DirectLinkProtocol.NewSessionId();
         var port = FreeUdpPort();
-        var accept = DirectLinkHandshake.AcceptAsync(port, IPAddress.Loopback, responder.Certificate, initiator.Fingerprint, DirectLinkProtocol.SessionKey(Key, Key, session), session, responder.Fingerprint, 16, TimeSpan.FromSeconds(6), CancellationToken.None);
-        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(FreeUdpPort(), new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, DirectLinkProtocol.SessionKey(Key.Reverse().ToArray(), Key, session), session, initiator.Fingerprint, CancellationToken.None));
+        var clientPort = FreeUdpPort();
+        var accept = DirectLinkHandshake.AcceptAsync(port, new IPEndPoint(IPAddress.Loopback, clientPort), responder.Certificate, initiator.Fingerprint, DirectLinkProtocol.SessionKey(Key, Key, session), session, responder.Fingerprint, 16, TimeSpan.FromSeconds(6), CancellationToken.None);
+        await Assert.ThrowsAnyAsync<Exception>(() => DirectLinkHandshake.ConnectAsync(clientPort, new IPEndPoint(IPAddress.Loopback, port), initiator.Certificate, responder.Fingerprint, DirectLinkProtocol.SessionKey(Key.Reverse().ToArray(), Key, session), session, initiator.Fingerprint, CancellationToken.None));
         await Assert.ThrowsAsync<System.Security.Authentication.AuthenticationException>(() => accept);
     }
 
@@ -607,7 +620,7 @@ public class DirectLinkTests
                 punch = await new Puncher(b, false, session, key, new[] { new IPEndPoint(IPAddress.Loopback, aPort) }, false).RunAsync(CancellationToken.None);
             }
 
-            return await DirectLinkHandshake.AcceptAsync(bPort, punch.Path!.Address, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
+            return await DirectLinkHandshake.AcceptAsync(bPort, punch.Path!, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
         });
 
         PunchResult path;

@@ -23,50 +23,31 @@ namespace Jellyfin.Plugin.Federation.Services
     ///    Same network (or not yet known either way) always means uncapped - the raw
     ///    file, best quality, no extra transcode cost on either end. A cap only ever
     ///    applies once this has positively confirmed the link is a WAN one.
-    /// 2. For a confirmed WAN link, what can it actually sustain? Measured via the
-    ///    remote's own <c>/Playback/BitrateTest</c> endpoint (see
-    ///    <see cref="RemoteServerClient.MeasureBandwidthMbpsAsync"/>) - the same
-    ///    mechanism jellyfin-web itself uses client-side. If that measurement is
-    ///    generously above what any real source is likely to need, the cap is skipped
-    ///    entirely rather than pointlessly capping a connection that didn't need it.
+    /// 2. For a confirmed WAN link, what can it actually sustain? Repeated steady-state
+    ///    samples over the real media route are combined into a robust measurement (see
+    ///    <see cref="RemoteServerClient.MeasureBandwidthMbpsAsync"/>). A compatibility
+    ///    bitrate-test endpoint is used only when media sampling is unavailable.
     ///
-    /// A Manual cap also applies to proxied/non-Jellyfin (Plex) peers, enforced as an
-    /// actual byte-rate throttle in <see cref="FederationStreamHandler"/>'s relay loop
-    /// rather than the transcode-bitrate querystring <see cref="FederationLibraryManager.BuildPlaybackUrl"/>
-    /// uses for a Direct-mode Jellyfin peer - Auto has no meaning there (see
+    /// A Manual cap also applies to proxied/non-Jellyfin (Plex) peers. Over-cap
+    /// sources require real conversion and the cap is applied to the converted output,
+    /// never by starving the original input. Auto has no meaning there (see
     /// <see cref="GetEffectiveCapMbps"/>), since there's no bandwidth probe to run.
     /// </summary>
     public class WanBandwidthMonitor
     {
-        // Above this, capping would not help - no realistic source exceeds it by
-        // enough to matter, so direct play is left alone rather than forcing a
-        // pointless second transcode pass.
-        private const double UncappedThresholdMbps = 50.0;
-
         // A confirmed-WAN server whose bandwidth has not been measured yet gets this
         // conservative placeholder for the (usually brief) window before the first
         // probe completes - better than accidentally pulling a 25+ Mbps raw file
         // across a link already known to be a WAN one.
         private const int PendingMeasurementCapMbps = 10;
 
-        // Floor kept at what the plugin's owner has asked for as a minimum
-        // acceptable streaming quality - a connection that measures below this
-        // isn't going to sustain a good federated-streaming experience regardless,
-        // so there's no benefit to capping any lower than this.
-        private const int MinAutoCapMbps = 10;
-        private const int MaxAutoCapMbps = 45;
-
-        // Consecutive failed probes (about 20 minutes apart) after which an
-        // unmeasured WAN server stops getting the placeholder cap.
+        // Failed-probe count used for the admin-facing measurement warning.
         private const int MaxPendingFailures = 3;
 
         // A speed reading this young is reused instead of probing the same friend again.
         private static readonly TimeSpan SampleReuseWindow = TimeSpan.FromMinutes(10);
 
-        // Fraction of measured bandwidth actually requested. Was 0.75; raised to
-        // 0.85 - the earlier margin was leaving real, usable bandwidth on the table
-        // on connections that measured comfortably above the floor, capping lower
-        // than the connection could actually sustain.
+        // Reserve part of the measured link for variation, audio and protocol overhead.
         private const double SafetyMargin = 0.85;
 
         private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(20);
@@ -316,15 +297,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     if (!info.MeasuredMbps.HasValue)
                     {
-                        // The placeholder only covers the brief wait for a first probe.
-                        // If probes keep failing, stop guessing: an arbitrary 10 Mbps
-                        // forever, with no sign of why, is worse than uncapped.
-                        return info.FailedProbes >= MaxPendingFailures ? null : PendingMeasurementCapMbps;
-                    }
-
-                    if (info.MeasuredMbps.Value >= UncappedThresholdMbps)
-                    {
-                        return null;
+                        return PendingMeasurementCapMbps;
                     }
 
                     return AutoCapFromMeasured(info.MeasuredMbps.Value);
@@ -332,15 +305,13 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Cap for a measured WAN speed: 85% of it, kept within the usual floor and
-        /// ceiling, but never above what was actually measured - a 4 Mbps link must
-        /// not be told it can carry 10.
+        /// Cap for a measured WAN speed: 85% of its sustained throughput, without
+        /// discarding capacity on fast links or exceeding capacity on slow links.
         /// </summary>
         internal static int AutoCapFromMeasured(double measuredMbps)
         {
-            var target = (int)Math.Round(measuredMbps * SafetyMargin);
-            var cap = Math.Clamp(target, MinAutoCapMbps, MaxAutoCapMbps);
-            return Math.Max(1, Math.Min(cap, (int)Math.Floor(measuredMbps)));
+            var target = (int)Math.Floor(measuredMbps * SafetyMargin);
+            return Math.Max(1, Math.Min(target, (int)Math.Floor(measuredMbps)));
         }
 
         /// <summary>
@@ -358,7 +329,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return info.FailedProbes >= MaxPendingFailures
-                ? "Never measured (probe keeps failing); no cap applied"
+                ? "Never measured (probe keeps failing); conservative " + PendingMeasurementCapMbps + " Mbps cap"
                 : "Not measured yet; temporary " + PendingMeasurementCapMbps + " Mbps cap";
         }
 

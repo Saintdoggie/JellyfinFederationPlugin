@@ -86,9 +86,9 @@ public sealed class FederationLibraryRemovalTests
         factory.InvalidateAll();
         factory.Invalidate(server.Id);
 
-        var http = (System.Net.Http.HttpClient)typeof(RemoteServerClient).GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(inUse)!;
+        var http = ((BoundedHttpClient)typeof(RemoteServerClient).GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(inUse)!).InnerClient;
         http.CancelPendingRequests(); // throws ObjectDisposedException once disposed
-        var fresh = (System.Net.Http.HttpClient)typeof(RemoteServerClient).GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(factory.GetClient(server))!;
+        var fresh = ((BoundedHttpClient)typeof(RemoteServerClient).GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(factory.GetClient(server))!).InnerClient;
         Assert.NotSame(http, fresh);
     }
 

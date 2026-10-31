@@ -156,6 +156,34 @@ public class FederationPlaybackTokenBindingTests
     }
 
     [Fact]
+    public void Issue_SameScope_ReusesTokenWithoutConsumingMintBudget()
+    {
+        var service = new FederationPlaybackTokenService();
+        var first = service.Issue("item-1", "friend-a", FederationTokenPurpose.Image);
+        for (var i = 0; i < 2000; i++)
+        {
+            Assert.Equal(first, service.Issue("item-1", "friend-a", FederationTokenPurpose.Image));
+        }
+
+        Assert.True(service.TryValidate(first, "item-1", out _, out var purpose));
+        Assert.Equal(FederationTokenPurpose.Image, purpose);
+    }
+
+    [Fact]
+    public void TryIssue_DistinctScopes_RateLimitsFriend()
+    {
+        var service = new FederationPlaybackTokenService();
+        for (var i = 0; i < 600; i++)
+        {
+            Assert.True(service.TryIssue("item-" + i, "friend-a", FederationTokenPurpose.Image, null, out _, out _));
+        }
+
+        Assert.False(service.TryIssue("item-overflow", "friend-a", FederationTokenPurpose.Image, null, out var token, out var retryAfter));
+        Assert.Null(token);
+        Assert.True(retryAfter > TimeSpan.Zero);
+    }
+
+    [Fact]
     public void SessionToken_IsNotItemScoped_SoClientDirectPathsMustNotUseIt()
     {
         // A session token validates for any item the user can currently see.

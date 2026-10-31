@@ -198,6 +198,14 @@ def smoke():
         qa.check(b'Handoff subtitle line' in vtt, 'Subtitle text missing')
         print('HANDOFF PASS: external subtitle served from the owner through the receiver', flush=True)
 
+        stage = 'universal audio uses the owner playback user'
+        play_token = urllib.parse.urlsplit(on_source(segment_url)).path.split('/Plugins/Federation/Peer/Play/', 1)[1].split('/', 1)[0]
+        universal = source_base + '/Plugins/Federation/Peer/Play/' + play_token + '/audio/' + native['Id'] + '/universal?AudioCodec=aac&UserId=00000000000000000000000000000000'
+        audio_head, empty = qa.request(universal, '', None, method='HEAD', raw=True)
+        _, audio = qa.request(universal, '', None, raw=True)
+        qa.check(not empty and len(audio) > 10000 and audio_head.get('Content-Type','').startswith('audio/'), 'Universal-audio gateway did not serve audio')
+        print(f'HANDOFF PASS: universal audio GET/HEAD served {len(audio)} bytes; client UserId could not replace the internal playback user', flush=True)
+
         stage = 'stop on the receiver frees the owner job at once'
         qa.request(base, '/Sessions/Playing', viewer, {'ItemId': item_id, 'PlaySessionId': play_session, 'MediaSourceId': source['Id'], 'PlayMethod': 'Transcode'}, expected=204)
         qa.request(base, '/Sessions/Playing/Progress', viewer, {'ItemId': item_id, 'PlaySessionId': play_session, 'MediaSourceId': source['Id'], 'IsPaused': True, 'PositionTicks': 300000000}, expected=204)

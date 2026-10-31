@@ -20,6 +20,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
     {
         private static readonly byte[] Forbidden = Encoding.ASCII.GetBytes("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         private static readonly byte[] BadGateway = Encoding.ASCII.GetBytes("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        private static readonly byte[] TooMany = Encoding.ASCII.GetBytes("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        private static readonly SemaphoreSlim GlobalSlots = new(MaxGlobalConcurrentStreams);
+        private const int MaxGlobalConcurrentStreams = 256;
 
         private readonly Func<Uri> _localBase;
         private readonly ILogger _logger;
@@ -51,9 +54,18 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 while (!link.Closing.IsCancellationRequested)
                 {
                     var stream = await QuicTransportHost.AcceptStream(link.Quic, link.Closing).ConfigureAwait(false);
-                    if (!await slots.WaitAsync(0).ConfigureAwait(false))
+                    var localSlot = await slots.WaitAsync(0).ConfigureAwait(false);
+                    var globalSlot = localSlot && await GlobalSlots.WaitAsync(0).ConfigureAwait(false);
+                    if (!globalSlot)
                     {
-                        QuicTransportHost.Abort(stream);
+                        if (localSlot)
+                        {
+                            slots.Release();
+                        }
+
+                        // Refuse excess work before opening a loopback connection or
+                        // asking Jellyfin to start media/transcode work.
+                        await WriteAndFinishAsync(stream, TooMany, link.Closing).ConfigureAwait(false);
                         await stream.DisposeAsync().ConfigureAwait(false);
                         continue;
                     }
@@ -66,6 +78,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         }
                         finally
                         {
+                            GlobalSlots.Release();
                             slots.Release();
                         }
                     });
@@ -140,7 +153,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                         await using (upstream.ConfigureAwait(false))
                         {
                             var hostHeader = local.IsDefaultPort ? local.Host : local.Host + ":" + local.Port;
-                            await upstream.WriteAsync(head.BuildForward(hostHeader, local.AbsolutePath), cancel).ConfigureAwait(false);
+                            await upstream.WriteAsync(head.BuildForward(hostHeader, local.AbsolutePath, link?.ServerId, link?.RemoteEndPoint.Address.ToString()), cancel).ConfigureAwait(false);
                             await upstream.FlushAsync(cancel).ConfigureAwait(false);
 
                             var buffer = new byte[64 * 1024];

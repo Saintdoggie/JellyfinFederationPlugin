@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Xunit;
 
@@ -18,6 +20,16 @@ public class RemoteTranscodeHandoffTests
 {
     private static readonly Guid Item = Guid.Parse("0123456789abcdef0123456789abcdef");
     private static readonly Guid Source = Guid.Parse("fedcba9876543210fedcba9876543210");
+
+    [Fact]
+    public void GatewayBase_UsesConfiguredPublicUrl_NotRequestHost()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Scheme = "https";
+        context.Request.Host = new HostString("attacker.example");
+        Assert.Equal("https://media.example/jellyfin/Plugins/Federation/Peer/Play/", FederationRemoteTranscodeGateway.PublicGatewayBase("https://media.example/jellyfin"));
+        Assert.Equal(string.Empty, FederationRemoteTranscodeGateway.PublicGatewayBase((string?)null));
+    }
 
     [Theory]
     [InlineData("/videos/0123456789abcdef0123456789abcdef/master.m3u8", RemoteMediaKind.HlsMaster, false)]
@@ -63,6 +75,25 @@ public class RemoteTranscodeHandoffTests
 
         Assert.True(RemoteMediaPath.TryParse("/Audio/0123456789abcdef0123456789abcdef/hls1/main/4.aac", out var segment));
         Assert.Equal($"audio/{remote:N}/hls1/main/4.aac", segment!.ToNativePath(remote, null));
+    }
+
+    [Fact]
+    public void PlaybackGrant_RetainsExactRemoteMediaSource()
+    {
+        PeerPlaybackGrants.Reset();
+        try
+        {
+            var user = Guid.NewGuid();
+            var remoteMediaSource = Guid.NewGuid().ToString("N");
+            PeerPlaybackGrants.Record(user, Item, Source.ToString("N"), "owner", Item, "token", remoteMediaSource);
+            var grant = PeerPlaybackGrants.Find(user, Item, Source.ToString("N"));
+            Assert.NotNull(grant);
+            Assert.Equal(remoteMediaSource, grant!.RemoteMediaSourceId);
+        }
+        finally
+        {
+            PeerPlaybackGrants.Reset();
+        }
     }
 
     [Fact]
@@ -156,12 +187,30 @@ public class RemoteTranscodeHandoffTests
         // again, but stays known for fetching its conversion log.
         Assert.False(registry.TryEnd("friend-a", "s1", out _));
         Assert.False(registry.TryPing("friend-a", "s1"));
+        Assert.False(registry.TryTouch("friend-a", "s1", "dev", limit: 2));
         Assert.True(registry.TryTouch("friend-a", "s3", "dev", limit: 2));
         registry.TryEnd("friend-a", "s3", out _);
 
         now += RemoteTranscodeSessionRegistry.ActiveWindow + TimeSpan.FromSeconds(1);
         Assert.True(registry.TryTouch("friend-a", "s4", "dev", limit: 2));
         Assert.True(registry.TryTouch("friend-a", "s5", "dev", limit: 2));
+    }
+
+    [Fact]
+    public void OwnerRegistry_ConcurrentAdmissionNeverExceedsTheLimit()
+    {
+        var registry = new RemoteTranscodeSessionRegistry();
+        var admitted = 0;
+        Parallel.For(0, 500, i =>
+        {
+            if (registry.TryTouch("friend", "session-" + i, "device", limit: 3))
+            {
+                Interlocked.Increment(ref admitted);
+            }
+        });
+
+        Assert.Equal(3, admitted);
+        Assert.Equal(3, registry.ActiveCount("friend"));
     }
 
     [Fact]
@@ -269,6 +318,245 @@ public class RemoteTranscodeHandoffTests
         Assert.All(streams, s => Assert.DoesNotContain("/owner", s.Path ?? string.Empty, StringComparison.Ordinal));
         Assert.Equal(0, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[1]));
         Assert.Equal(1, MediaBrowser.Controller.MediaEncoding.EncodingHelper.FindIndex(streams, streams[2]));
+    }
+
+    [Fact]
+    public async Task DirectLinkBodyFailure_FallsBackToTheFriendWithACompletePlaylist()
+    {
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            LinkClientOverride = _ => new System.Net.Http.HttpClient(new FailingLinkHandler()),
+            Send = (_, _) =>
+            {
+                var response = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8, "application/vnd.apple.mpegurl")
+                };
+                return Task.FromResult(response);
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        var file = Assert.IsType<Microsoft.AspNetCore.Mvc.FileContentResult>(result);
+        Assert.Equal("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8.GetString(file.FileContents));
+    }
+
+    [Fact]
+    public async Task PeerConnectionFailure_RetriesOnAFreshConnection()
+    {
+        var connectionClose = new List<bool>();
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (request, _) =>
+            {
+                connectionClose.Add(request.Headers.ConnectionClose == true);
+                if (connectionClose.Count == 1)
+                {
+                    throw new System.Net.Http.HttpRequestException("connection reset");
+                }
+
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8, "application/vnd.apple.mpegurl")
+                });
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(new[] { false, true }, connectionClose);
+        var file = Assert.IsType<Microsoft.AspNetCore.Mvc.FileContentResult>(result);
+        Assert.Equal("#EXTM3U\n#EXT-X-ENDLIST\n", System.Text.Encoding.UTF8.GetString(file.FileContents));
+    }
+
+    [Fact]
+    public async Task PeerPersistentConnectionFailure_Returns502AfterOneRetry()
+    {
+        var attempts = 0;
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (_, _) =>
+            {
+                attempts++;
+                throw new System.Net.Http.HttpRequestException("connection reset");
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+        Assert.Null(result);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PeerHttpError_IsNotRetried()
+    {
+        var attempts = 0;
+        var filter = new FederationRemoteTranscodeFilter(
+            null!, null!, null!, null!, null!, null!, new RemoteTranscodeHandoffs(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeFilter>.Instance)
+        {
+            Send = (_, _) =>
+            {
+                attempts++;
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.BadGateway));
+            }
+        };
+        var handoff = new FederationRemoteTranscodeFilter.Handoff(
+            "https://owner.example/Plugins/Federation/Peer/Play/token/videos/0123456789abcdef0123456789abcdef/main.m3u8",
+            "owner", "Owner", Guid.NewGuid(), Source.ToString("N"), "https://owner.example",
+            RemoteMediaKind.HlsVariant, "https://receiver.example", false);
+
+        var (result, status) = await filter.FetchAsync(handoff, true, "/relay", CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+        Assert.Null(result);
+        Assert.Equal(1, attempts);
+    }
+
+    private sealed class FailingLinkHandler : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new FailingBodyContent() });
+    }
+
+    private sealed class FailingBodyContent : System.Net.Http.HttpContent
+    {
+        protected override Task SerializeToStreamAsync(System.IO.Stream stream, System.Net.TransportContext? context)
+            => throw new NotSupportedException();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 100;
+            return true;
+        }
+
+        protected override Task<System.IO.Stream> CreateContentReadStreamAsync()
+            => Task.FromResult<System.IO.Stream>(new FailingBodyStream());
+    }
+
+    private sealed class FailingBodyStream : System.IO.MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromException<int>(new System.IO.IOException("link body dropped"));
+    }
+
+    [Fact]
+    public async Task SharedSegment_SlowCompletion_IsReusedImmediately_AndExpiresAfterDeliveryKeep()
+    {
+        var now = new DateTime(2026, 10, 24, 12, 0, 0, DateTimeKind.Utc);
+        FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => now;
+        try
+        {
+            var gateway = new FederationRemoteTranscodeGateway(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+            var delivered = new FederationRemoteTranscodeGateway.SharedSegment(200, "video/mp2t", new byte[] { 1, 2, 3 });
+            var slowFetch = new TaskCompletionSource<FederationRemoteTranscodeGateway.SharedSegment?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = 0;
+            Task<FederationRemoteTranscodeGateway.SharedSegment?> Fetch()
+            {
+                calls++;
+                return calls == 1
+                    ? slowFetch.Task
+                    : Task.FromResult<FederationRemoteTranscodeGateway.SharedSegment?>(null);
+            }
+
+            var url = "http://loopback.invalid/slow-" + Guid.NewGuid().ToString("N");
+            var first = gateway.GetSharedSegmentAsync(url, Fetch);
+
+            // Older than the one-minute delivery retention, but still converting:
+            // the in-flight entry must not be evicted or restarted.
+            now += TimeSpan.FromMinutes(2);
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+
+            slowFetch.SetResult(delivered);
+            Assert.Same(delivered, await first);
+
+            // Completion, not the two-minutes-earlier fetch start, begins the
+            // retry-retention window. The immediate retry joins the same result.
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+
+            now += TimeSpan.FromMinutes(1);
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            now += TimeSpan.FromTicks(1);
+            Assert.NotSame(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => DateTime.UtcNow;
+        }
+    }
+
+    [Fact]
+    public async Task SharedSegment_InProgressEntry_IsPreservedPastDeliveryKeep()
+    {
+        var now = new DateTime(2026, 10, 24, 13, 0, 0, DateTimeKind.Utc);
+        FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => now;
+        try
+        {
+            var gateway = new FederationRemoteTranscodeGateway(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+            var pending = new TaskCompletionSource<FederationRemoteTranscodeGateway.SharedSegment?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = 0;
+            Task<FederationRemoteTranscodeGateway.SharedSegment?> Fetch()
+            {
+                calls++;
+                return pending.Task;
+            }
+
+            var url = "http://loopback.invalid/pending-" + Guid.NewGuid().ToString("N");
+            var first = gateway.GetSharedSegmentAsync(url, Fetch);
+            now += TimeSpan.FromHours(1);
+
+            Assert.Same(first, gateway.GetSharedSegmentAsync(url, Fetch));
+            Assert.Equal(1, calls);
+            pending.SetResult(null);
+            Assert.Null(await first);
+        }
+        finally
+        {
+            FederationRemoteTranscodeGateway.SharedSegmentUtcNow = () => DateTime.UtcNow;
+        }
+    }
+
+    [Fact]
+    public async Task SharedSegments_UniqueUrls_AreCountBounded()
+    {
+        var gateway = new FederationRemoteTranscodeGateway(Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteTranscodeGateway>.Instance);
+        for (var i = 0; i < 40; i++)
+        {
+            var segment = new FederationRemoteTranscodeGateway.SharedSegment(200, "video/mp2t", new byte[1024]);
+            await gateway.GetSharedSegmentAsync("http://loopback.invalid/bounded-" + Guid.NewGuid().ToString("N"), () => Task.FromResult<FederationRemoteTranscodeGateway.SharedSegment?>(segment));
+        }
+
+        var field = typeof(FederationRemoteTranscodeGateway).GetField("SharedSegments", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var cache = (System.Collections.IDictionary)field!.GetValue(null)!;
+        Assert.True(cache.Count <= 2, "Shared segment cache grew to " + cache.Count + " entries");
     }
 }
 

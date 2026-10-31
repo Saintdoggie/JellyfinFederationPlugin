@@ -105,16 +105,20 @@ public sealed class FederationArtworkServiceTests : IDisposable
     }
 
     [Fact]
-    public void EpisodeImages_AreFetchedScaledDown_PostersAtFullSize()
+    public void Artwork_IsFetchedAtBoundedDisplaySizes()
     {
         var id = Guid.NewGuid();
         Assert.Equal(640, FederationArtworkService.MaxWidthFor("Episode"));
-        Assert.Null(FederationArtworkService.MaxWidthFor("Movie"));
-        Assert.Null(FederationArtworkService.MaxWidthFor("Series"));
-        Assert.Null(FederationArtworkService.MaxWidthFor("Season"));
+        Assert.Equal(1000, FederationArtworkService.MaxWidthFor("Movie"));
+        Assert.Equal(1000, FederationArtworkService.MaxWidthFor("Series"));
+        Assert.Equal(1000, FederationArtworkService.MaxWidthFor("Season"));
+        Assert.Null(FederationArtworkService.MaxWidthFor("Unknown"));
         Assert.Equal(
             $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t%2B1&maxWidth=640",
             FederationArtworkService.BuildPosterUrl("https://friend.example/", id, "t+1", 640));
+        Assert.Equal(
+            $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t&maxWidth=1000",
+            FederationArtworkService.BuildPosterUrl("https://friend.example", id, "t", FederationArtworkService.MaxWidthFor("Movie")));
         Assert.Equal(
             $"https://friend.example/Plugins/Federation/Peer/Images/{id:N}/Primary?token=t",
             FederationArtworkService.BuildPosterUrl("https://friend.example", id, "t", null));

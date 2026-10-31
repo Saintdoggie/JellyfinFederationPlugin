@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly FederationLibraryManager _federationManager;
         private readonly ILogger<RemoteTranscodeSessionBridge> _logger;
         private readonly IApplicationPaths? _paths;
+        private readonly FederationBandwidthAllocator? _bandwidth;
         private readonly ConcurrentDictionary<string, string> _logFiles = new(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _stopping;
 
@@ -37,8 +38,10 @@ namespace Jellyfin.Plugin.Federation.Services
             RemoteTranscodeHandoffs handoffs,
             FederationLibraryManager federationManager,
             ILogger<RemoteTranscodeSessionBridge> logger,
-            IApplicationPaths? paths = null)
+            IApplicationPaths? paths = null,
+            FederationBandwidthAllocator? bandwidth = null)
         {
+            _bandwidth = bandwidth;
             _paths = paths;
             _sessions = sessions;
             _handoffs = handoffs;
@@ -78,6 +81,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private void OnStopped(object? sender, PlaybackStopEventArgs e)
         {
+            _bandwidth?.ReleaseEverywhere(e.PlaySessionId);
             var serverId = _handoffs.TakeStop(e.PlaySessionId);
             if (serverId != null)
             {
@@ -117,7 +121,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         var text = await client.GetPlayLogAsync(playSessionId, token).ConfigureAwait(false);
                         if (!string.IsNullOrEmpty(text))
                         {
-                            var header = $"Conversion log from friend \"{server.Name}\" for play session {playSessionId} (it converted this play; fetched {DateTime.Now:yyyy-MM-dd HH:mm:ss})\n\n";
+                            var header = FriendConversionLogs.DescribeSource(server.Name, playSessionId)
+                                + $" (it converted this play; fetched {DateTime.Now:yyyy-MM-dd HH:mm:ss})\n\n";
                             await File.WriteAllTextAsync(Path.Combine(logDirectory, fileName), header + text, token).ConfigureAwait(false);
                         }
                     }

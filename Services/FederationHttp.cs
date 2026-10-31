@@ -54,15 +54,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// settings plus <see cref="ConnectAsync"/>, under <see cref="Stamp"/>.
         /// </summary>
         /// <returns>The handler.</returns>
-        public static HttpMessageHandler Handler(bool allowAutoRedirect = true) => Stamp(Sockets(allowAutoRedirect));
+        public static HttpMessageHandler Handler(bool allowAutoRedirect = false) => Stamp(Sockets(allowAutoRedirect));
 
         /// <summary>
         /// The bare sockets handler with <see cref="ConnectAsync"/>. On its own it can't
         /// reach a paired friend: wrap it with <see cref="Stamp"/>.
         /// </summary>
         /// <returns>The handler.</returns>
-        public static SocketsHttpHandler Sockets(bool allowAutoRedirect = true)
-            => new() { AllowAutoRedirect = allowAutoRedirect, ConnectCallback = ConnectAsync };
+        public static SocketsHttpHandler Sockets(bool allowAutoRedirect = false)
+            => new() { AllowAutoRedirect = allowAutoRedirect, UseProxy = false, ConnectCallback = ConnectAsync };
 
         /// <summary>
         /// Records where each request was first sent, before any redirect. .NET follows

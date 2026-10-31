@@ -21,7 +21,7 @@ namespace Jellyfin.Plugin.Federation.Tests;
 /// <summary>
 /// One download over a link with a 20 ms round trip (a UDP proxy holds every packet
 /// 10 ms each way), with the QUIC library's default receive windows and with ours.
-/// Live, 2026-10-22: one download over the link to friendflix stopped near 110 Mbps on
+/// Live, 2026-10-22: one download over the link to friend-a stopped near 110 Mbps on
 /// two fast lines; this reproduces the cap and checks the fix. Run with
 /// FEDERATION_QUIC_BENCH=1 (it moves a few hundred MB).
 /// </summary>
@@ -45,14 +45,14 @@ public class QuicWindowBenchTests
         {
             QuicTransportHost.ConfigureWindows(-1, -1);
             var before = await MeasureAsync(128L * 1024 * 1024);
-            QuicTransportHost.ConfigureWindows(32L * 1024 * 1024, 8L * 1024 * 1024);
+            QuicTransportHost.ConfigureWindows(0, 0);
             var after = await MeasureAsync(256L * 1024 * 1024);
-            _output.WriteLine($"20 ms round trip, one download: library defaults {before:F0} Mbps, our windows {after:F0} Mbps");
+            _output.WriteLine($"20 ms round trip, one download: library defaults {before:F0} Mbps, paired 16/4 MiB windows {after:F0} Mbps");
             Assert.True(after > 250, $"still capped: {after:F0} Mbps (defaults {before:F0})");
         }
         finally
         {
-            QuicTransportHost.ConfigureWindows(32L * 1024 * 1024, 8L * 1024 * 1024);
+            QuicTransportHost.ConfigureWindows(0, 0);
         }
     }
 

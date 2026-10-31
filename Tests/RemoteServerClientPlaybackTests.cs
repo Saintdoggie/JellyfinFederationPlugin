@@ -405,7 +405,7 @@ public class RemoteServerClientPlaybackTests
         // ItemPlaybackTokenCache's doc comment. Without caching, each of those
         // paid a full WAN round trip and starved the transcoder's input until
         // ffmpeg died with exit code 183.
-        var handler = new FakeHttpMessageHandler();
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"tok-123\",\"remoteTranscode\":true}");
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
         var server = new RemoteServer { Id = "server-tokcache-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
@@ -425,12 +425,55 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetPlaybackTokenAsync_NegativeTranscodeCapabilityForcesFreshCapabilityCheck()
+    {
+        PeerTranscodeCapability.Reset();
+        var handler = new FakeHttpMessageHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "capability-refresh-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+        try
+        {
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            Assert.Equal(2, handler.PlaybackTokenCallCount);
+
+            handler.PlaybackTokenJson = "{\"token\":\"tok-123\",\"remoteTranscode\":true}";
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+            Assert.Equal(3, handler.PlaybackTokenCallCount);
+            Assert.True(PeerTranscodeCapability.IsAvailable(server.Id));
+        }
+        finally
+        {
+            PeerTranscodeCapability.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task GetPlaybackTokenAsync_ExpiryInsideSkew_IsNotCached()
+    {
+        var handler = new FakeHttpMessageHandler(
+            playbackTokenJson: "{\"token\":\"short-lived\",\"expiresUtc\":\"" + DateTime.UtcNow.AddMinutes(1).ToString("O") + "\"}");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "short-token-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var first = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+        var second = await client.GetPlaybackTokenAsync("item-1", CancellationToken.None);
+
+        Assert.Equal("short-lived", first.Token);
+        Assert.Equal("short-lived", second.Token);
+        Assert.Equal(2, handler.PlaybackTokenCallCount);
+    }
+
+    [Fact]
     public async Task GetPlaybackTokenAsync_InvalidateItemPlaybackToken_ForcesRemint()
     {
         // A token the remote just rejected (remote restarted, friendship removed)
         // must be dropped on demand so the relay's 401/403 recovery path can get
         // a fresh one instead of pulling the dead token back out of the cache.
-        var handler = new FakeHttpMessageHandler();
+        var handler = new FakeHttpMessageHandler(playbackTokenJson: "{\"token\":\"tok-123\",\"remoteTranscode\":true}");
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
         var server = new RemoteServer { Id = "server-tokinv-" + Guid.NewGuid().ToString("N"), Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
         var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
@@ -680,6 +723,21 @@ public class RemoteServerClientPlaybackTests
     }
 
     [Fact]
+    public async Task GetSystemInfoDetailedAsync_OversizeValidJson_IsRejected()
+    {
+        var oversized = "{\"ServerName\":\"Remote\",\"pad\":\"" + new string('x', 128 * 1024) + "\"}";
+        var handler = new FakeHttpMessageHandler(systemInfoJson: oversized);
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://fake.local") };
+        var server = new RemoteServer { Id = "serverA", Name = "Remote", Url = "http://fake.local", ApiKey = "federation-token", Enabled = true };
+        using var client = new RemoteServerClient(server, NullLogger.Instance, httpClient);
+
+        var (info, error) = await client.GetSystemInfoDetailedAsync(CancellationToken.None);
+
+        Assert.Null(info);
+        Assert.NotNull(error);
+    }
+
+    [Fact]
     public async Task GetSystemInfoDetailedAsync_Unauthorized_ReportsTokenProblem_NotJellyfinPermissions()
     {
         var handler = new FakeHttpMessageHandler(systemInfoStatusCode: HttpStatusCode.Unauthorized);
@@ -697,7 +755,7 @@ public class RemoteServerClientPlaybackTests
     private static string[] GetDefaultHeaderValues(RemoteServerClient client, string headerName)
     {
         var field = typeof(RemoteServerClient).GetField("_httpClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var httpClient = (HttpClient)field!.GetValue(client)!;
+        var httpClient = ((BoundedHttpClient)field!.GetValue(client)!).InnerClient;
         return httpClient.DefaultRequestHeaders.TryGetValues(headerName, out var values) ? System.Linq.Enumerable.ToArray(values) : Array.Empty<string>();
     }
 
@@ -711,7 +769,7 @@ public class RemoteServerClientPlaybackTests
         private readonly string _systemInfoJson;
         private readonly HttpStatusCode _systemInfoStatusCode;
 
-        private readonly string _playbackTokenJson;
+        private string _playbackTokenJson;
         private readonly HttpStatusCode _playbackTokenStatusCode;
         private readonly string _registerUserSessionJson;
         private readonly HttpStatusCode _registerUserSessionStatusCode;
@@ -722,6 +780,7 @@ public class RemoteServerClientPlaybackTests
         public string? LastRemoteUserIdHeader { get; private set; }
         public int RegisterUserSessionCallCount { get; private set; }
         public int PlaybackTokenCallCount { get; private set; }
+        public string PlaybackTokenJson { set => _playbackTokenJson = value; }
         public string LastRequestBody { get; private set; } = string.Empty;
 
         public FakeHttpMessageHandler(

@@ -67,6 +67,12 @@ public class FederationPoolTests : IDisposable
         var federationManager = new FederationLibraryManager(libraryManager.Object, NullLogger<FederationLibraryManager>.Instance, _clientFactory.Object, cache, bandwidthMonitor, Moq.Mock.Of<MediaBrowser.Controller.Persistence.IMediaStreamRepository>());
 
         var httpContextAccessor = new Mock<IHttpContextAccessor>();
+        var plexCompanion = new PlexCompanionService(
+            NullLogger<PlexCompanionService>.Instance,
+            appHost.Object,
+            federationManager,
+            httpContextAccessor.Object,
+            _clientFactory.Object);
 
         _service = new FederationFriendService(
             NullLogger<FederationFriendService>.Instance,
@@ -74,18 +80,21 @@ public class FederationPoolTests : IDisposable
             appHost.Object,
             federationManager,
             httpContextAccessor.Object,
-            _clientFactory.Object);
+            _clientFactory.Object,
+            plexCompanion);
     }
 
     public void Dispose()
     {
         FederationFriendService.HttpClientOverride = null;
+        PlexCompanionService.HttpClientOverride = null;
         _plugin.Dispose();
     }
 
     private void UseFakeHttp(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
         FederationFriendService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
+        PlexCompanionService.HttpClientOverride = new HttpClient(new FakeHandler(responder));
         _clientFactory
             .Setup(f => f.GetClient(It.IsAny<RemoteServer>()))
             .Returns<RemoteServer>(s => new RemoteServerClient(
@@ -107,7 +116,7 @@ public class FederationPoolTests : IDisposable
             IsOwner = true,
             OwnerFederationId = "self",
             OwnerName = "This Server",
-            IconBase64 = "aWNvbg==",
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
             Members =
             {
                 new PoolMember { FederationId = "self", Name = "This Server", Url = "http://local.test:8096" }
@@ -119,7 +128,20 @@ public class FederationPoolTests : IDisposable
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
         var pool = Assert.Single(doc.RootElement.EnumerateArray());
         Assert.Equal("pool-1", pool.GetProperty("Id").GetString());
-        Assert.Equal("aWNvbg==", pool.GetProperty("IconBase64").GetString());
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.GetProperty("IconBase64").GetString());
+    }
+
+    [Fact]
+    public async Task SetPoolIcon_RejectsAttributeInjectionAndNonPngData()
+    {
+        var pool = _service.CreatePool("Movie Night");
+
+        var hostile = await _service.SetPoolIconAsync(pool.Id, "\" onerror=\"globalThis.compromised=true", CancellationToken.None);
+        var notPng = await _service.SetPoolIconAsync(pool.Id, "aWNvbg==", CancellationToken.None);
+
+        Assert.False(hostile.Success);
+        Assert.False(notPng.Success);
+        Assert.Null(_plugin.Configuration.Pools.Single().IconBase64);
     }
 
     [Fact]
@@ -329,7 +351,7 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
-    public async Task ReceivePoolNotice_ForPoolWeAlreadyBelongTo_SyncsRosterAndFansOutToUnknownMembers()
+    public async Task ReceivePoolNotice_ForPoolWeAlreadyBelongTo_SyncsRosterWithoutContactingUnknownMembers()
     {
         // Reached via someone we're already friends with, for a pool we're
         // already a member of - no accept step, this is a roster sync. The
@@ -379,7 +401,7 @@ public class FederationPoolTests : IDisposable
                 PoolName = "Movie Night",
                 OwnerFederationId = "fed-owner",
                 OwnerName = "Owner",
-                IconBase64 = "aWNvbg==",
+                IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
                 Roster = new List<PoolMember>
                 {
                     new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
@@ -393,12 +415,54 @@ public class FederationPoolTests : IDisposable
         Assert.Equal("pool-1", pool.Id);
         Assert.Equal(3, pool.Members.Count); // us, Bob, Owner
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
 
-        // Fanned out to Owner (not already known) via a real friend request; never
-        // re-sent anything to Bob, who is how we learned about this in the first place.
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
-        Assert.DoesNotContain(introducedTo, u => u.StartsWith("http://bob.example", StringComparison.Ordinal));
+        Assert.Empty(introducedTo);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_FromFriendOutsidePool_DoesNotInjectRosterOrContactAnyone()
+    {
+        var mallory = new RemoteServer
+        {
+            Id = "friend-m",
+            Name = "Mallory",
+            Url = "https://mallory.example",
+            FederationId = "mallory-fed-id"
+        };
+        _plugin.Configuration.RemoteServers.Add(mallory);
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            IconBase64 = "original-icon",
+            Members = new List<PoolMember>
+            {
+                new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "https://bob.example" }
+            }
+        });
+        var called = false;
+        UseFakeHttp(_ => { called = true; return new HttpResponseMessage(HttpStatusCode.OK); });
+
+        await _service.ReceivePoolNotice(
+            mallory,
+            new PoolNoticePayload
+            {
+                FromFederationId = "mallory-fed-id",
+                PoolId = "pool-1",
+                IconBase64 = "replacement-icon",
+                Roster = new List<PoolMember>
+                {
+                    new PoolMember { FederationId = "attacker", Name = "Attacker", Url = "https://attacker.example" }
+                }
+            },
+            CancellationToken.None);
+        await _service.PendingFanOut;
+
+        var pool = Assert.Single(_plugin.Configuration.Pools);
+        Assert.Equal("original-icon", pool.IconBase64);
+        Assert.DoesNotContain(pool.Members, m => m.Url == "https://attacker.example");
+        Assert.False(called);
     }
 
     [Fact]
@@ -606,7 +670,12 @@ public class FederationPoolTests : IDisposable
             FederationId = "bob-fed-id"
         };
         _plugin.Configuration.RemoteServers.Add(bob);
-        _plugin.Configuration.Pools.Add(new FederationPool { Id = "pool-1", Name = "Movie Night" });
+        _plugin.Configuration.Pools.Add(new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
+        });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
 
@@ -628,6 +697,40 @@ public class FederationPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceivePoolInviteNotice_NonMember_CannotInjectExistingPoolRoster()
+    {
+        var attacker = new RemoteServer
+        {
+            Id = "friend-1",
+            Name = "Mallory",
+            Url = "http://mallory.example",
+            FederationId = "mallory-fed-id"
+        };
+        var pool = new FederationPool
+        {
+            Id = "pool-1",
+            Name = "Movie Night",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "self", Url = "http://local.test:8096" } }
+        };
+        _plugin.Configuration.Pools.Add(pool);
+
+        await _service.ReceivePoolInviteNotice(
+            attacker,
+            new PoolInviteNoticePayload
+            {
+                InviteId = "invite-1",
+                FromFederationId = "mallory-fed-id",
+                PoolId = pool.Id,
+                Roster = new List<PoolMember> { new PoolMember { FederationId = "injected", Url = "http://injected.example" } }
+            },
+            CancellationToken.None);
+
+        Assert.Single(pool.Members);
+        Assert.DoesNotContain(pool.Members, m => m.FederationId is "mallory-fed-id" or "injected");
+        Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
+    }
+
+    [Fact]
     public async Task ReceivePoolNotice_OversizedIcon_IsIgnored_AndRosterStillSyncs()
     {
         var bob = new RemoteServer
@@ -643,7 +746,7 @@ public class FederationPoolTests : IDisposable
         {
             Id = "pool-1",
             Name = "Movie Night",
-            IconBase64 = "aWNvbg==",
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
             Members = new List<PoolMember>
             {
                 new PoolMember { FederationId = "self-fed-id", Name = "This Server", Url = "http://local.test:8096" },
@@ -680,7 +783,7 @@ public class FederationPoolTests : IDisposable
             CancellationToken.None);
 
         var pool = Assert.Single(_plugin.Configuration.Pools);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://owner.example");
     }
 
@@ -734,7 +837,8 @@ public class FederationPoolTests : IDisposable
         {
             Id = "pool-1",
             Name = "Movie Night",
-            IconBase64 = "aWNvbg=="
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" } }
         });
 
         UseFakeHttp(_ => throw new InvalidOperationException("No fan-out expected - roster carries no unknown members"));
@@ -754,7 +858,7 @@ public class FederationPoolTests : IDisposable
 
         Assert.Empty(_plugin.Configuration.IncomingPoolInvites);
         var pool = Assert.Single(_plugin.Configuration.Pools);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
     }
 
@@ -784,7 +888,7 @@ public class FederationPoolTests : IDisposable
                 new PoolMember { FederationId = "fed-owner", Name = "Owner", Url = "http://owner.example" },
                 new PoolMember { FederationId = "bob-fed-id", Name = "Bob", Url = "http://bob.example" }
             },
-            IconBase64 = "aWNvbg=="
+            IconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         });
 
         var introducedTo = new List<string>();
@@ -812,10 +916,10 @@ public class FederationPoolTests : IDisposable
 
         var pool = Assert.Single(_plugin.Configuration.Pools);
         Assert.Equal("pool-1", pool.Id);
-        Assert.Equal("aWNvbg==", pool.IconBase64);
+        Assert.Equal("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", pool.IconBase64);
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
         Assert.Contains(pool.Members, m => m.Url == "http://bob.example");
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
+        Assert.Empty(introducedTo);
     }
 
     [Fact]
@@ -866,7 +970,9 @@ public class FederationPoolTests : IDisposable
             RemoteServerId = "bob-fed-id"
         });
 
-        var result = _service.HandlePoolAcceptNotice(new PoolInviteResponsePayload { InviteId = "invite-1", FromFederationId = "bob-fed-id" });
+        var result = _service.HandlePoolAcceptNotice(
+            new RemoteServer { FederationId = "bob-fed-id", Url = "http://bob.example" },
+            new PoolInviteResponsePayload { InviteId = "invite-1", FromFederationId = "bob-fed-id" });
 
         Assert.True(result);
         Assert.Empty(_plugin.Configuration.OutgoingPoolInvites);
@@ -879,9 +985,29 @@ public class FederationPoolTests : IDisposable
         var pool = _service.CreatePool("Movie Night");
         _plugin.Configuration.OutgoingPoolInvites.Add(new PoolInvite { Id = "invite-1", PoolId = pool.Id, RemoteServerUrl = "http://bob.example" });
 
-        _service.HandlePoolRejectNotice("invite-1");
+        Assert.True(_service.HandlePoolRejectNotice(new RemoteServer { Url = "http://bob.example" }, "invite-1"));
 
         Assert.Empty(_plugin.Configuration.OutgoingPoolInvites);
+        Assert.DoesNotContain(pool.Members, m => m.Url == "http://bob.example");
+    }
+
+    [Fact]
+    public void PoolCallbacks_FromDifferentFriend_DoNotChangeInviteOrRoster()
+    {
+        var pool = _service.CreatePool("Movie Night");
+        _plugin.Configuration.OutgoingPoolInvites.Add(new PoolInvite
+        {
+            Id = "invite-1",
+            PoolId = pool.Id,
+            RemoteServerUrl = "http://bob.example",
+            RemoteServerId = "bob-fed-id"
+        });
+        var attacker = new RemoteServer { FederationId = "mallory-fed-id", Url = "http://mallory.example" };
+        var response = new PoolInviteResponsePayload { InviteId = "invite-1" };
+
+        Assert.False(_service.HandlePoolAcceptNotice(attacker, response));
+        Assert.False(_service.HandlePoolRejectNotice(attacker, "invite-1"));
+        Assert.Single(_plugin.Configuration.OutgoingPoolInvites);
         Assert.DoesNotContain(pool.Members, m => m.Url == "http://bob.example");
     }
 
@@ -943,10 +1069,7 @@ public class FederationPoolTests : IDisposable
         Assert.Equal(4, pool.Members.Count);
         Assert.Contains(pool.Members, m => m.Url == "http://local.test:8096");
 
-        // Fanned out to Owner and C (not B, already connected; not ourselves).
-        Assert.Contains(introducedTo, u => u == "http://owner.example/Plugins/Federation/Friends/Request");
-        Assert.Contains(introducedTo, u => u == "http://c.example/Plugins/Federation/Friends/Request");
-        Assert.DoesNotContain(introducedTo, u => u.StartsWith("http://b.example", StringComparison.Ordinal));
+        Assert.Empty(introducedTo);
     }
 
     [Fact]
@@ -1006,7 +1129,7 @@ public class FederationPoolTests : IDisposable
                 PoolId = "pool-1",
                 Roster = new List<PoolMember>
                 {
-                    new PoolMember { Name = "lan", Url = "http://192.168.1.5:8096" },
+                    new PoolMember { Name = "lan", Url = "http://10.255.255.254:8096" },
                     new PoolMember { Name = "loop", Url = "http://127.0.0.1:8096" },
                     new PoolMember { Name = "meta", Url = "http://169.254.169.254" },
                     new PoolMember { Name = "zero", Url = "http://0.0.0.0:8096" },
@@ -1025,8 +1148,7 @@ public class FederationPoolTests : IDisposable
         Assert.Contains(pool.Members, m => m.Url.Contains("100.101"));
         Assert.Contains(pool.Members, m => m.Url.Contains("ts.net"));
         Assert.Contains(pool.Members, m => m.Url == "https://ok.example");
-        Assert.Equal(3, requested.Count);
-        Assert.Contains("https://ok.example/Plugins/Federation/Friends/Request", requested);
+        Assert.Empty(requested);
     }
 
     [Fact]
@@ -1064,5 +1186,31 @@ public class FederationPoolTests : IDisposable
         gate.Set();
         await _service.PendingFanOut;
         Assert.True(posts <= FederationFriendService.MaxPoolRosterEntries);
+    }
+
+    [Fact]
+    public async Task ReceivePoolNotice_RepeatedRosters_CannotGrowPastCumulativeCap()
+    {
+        var bob = new RemoteServer { Id = "friend-1", Name = "Bob", Url = "http://bob.example", FederationId = "bob-fed-id" };
+        var pool = new FederationPool
+        {
+            Id = "pool-1",
+            Members = new List<PoolMember> { new PoolMember { FederationId = "bob-fed-id", Url = "http://bob.example" } }
+        };
+        _plugin.Configuration.Pools.Add(pool);
+
+        for (var batch = 0; batch < 10; batch++)
+        {
+            var roster = Enumerable.Range(batch * 50, 50)
+                .Select(i => new PoolMember { FederationId = $"f{i}", Url = $"https://m{i}.example" })
+                .ToList();
+            await _service.ReceivePoolNotice(
+                bob,
+                new PoolNoticePayload { FromFederationId = "bob-fed-id", PoolId = pool.Id, Roster = roster },
+                CancellationToken.None);
+        }
+
+        await _service.PendingFanOut;
+        Assert.Equal(FederationFriendService.MaxPoolMembers, pool.Members.Count);
     }
 }

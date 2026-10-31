@@ -116,4 +116,16 @@ public sealed class AvailabilityScheduleTests
         });
         Assert.All(packed, b => Assert.Equal(AvailabilitySchedule.UnknownFraction, b));
     }
+
+    [Fact]
+    public void BlobValidation_RequiresCanonicalExact168BucketPayload()
+    {
+        var valid = AvailabilitySchedule.EncodeSelf("friend", new byte[168], new byte[168], DateTime.UtcNow);
+        Assert.True(AvailabilitySchedule.IsValidSelfBlob(valid));
+        Assert.False(AvailabilitySchedule.IsValidSelfBlob(new AvailabilityScheduleBlob { Probabilities = new string('A', 5_000_000) }));
+        Assert.False(AvailabilitySchedule.IsValidSelfBlob(new AvailabilityScheduleBlob { Probabilities = "not-base64" }));
+        Assert.False(AvailabilitySchedule.IsValidSelfBlob(new AvailabilityScheduleBlob { Probabilities = Convert.ToBase64String(new byte[167]) }));
+        Assert.False(AvailabilitySchedule.IsValidSelfBlob(new AvailabilityScheduleBlob { Version = 99, Probabilities = valid.Probabilities }));
+        Assert.All(AvailabilitySchedule.DecodeFractions(new AvailabilityScheduleBlob { Probabilities = "invalid" }), b => Assert.Equal(AvailabilitySchedule.UnknownFraction, b));
+    }
 }

@@ -67,9 +67,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     var target = await ResolveRedirectAsync(context).ConfigureAwait(false);
                     if (target != null)
                     {
+                        FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId"), FederatedRoute.Direct);
                         // The URL carries an item-scoped token; never log it.
                         _logger.LogInformation("[Federation] Direct-play request for federated item {ItemId} sent straight to the friend's server", context.ActionArguments["itemId"]);
                         context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                        context.HttpContext.Response.Headers["Referrer-Policy"] = "no-referrer";
                         context.Result = new RedirectResult(target, permanent: false);
                         return;
                     }
@@ -104,19 +106,10 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// The scheme the client used, as seen through a reverse proxy when one
-        /// reports it.
+        /// The client scheme after Jellyfin's trusted-proxy middleware has processed
+        /// any forwarding headers.
         /// </summary>
-        internal static string RequestScheme(HttpRequest request)
-        {
-            var forwarded = request.Headers["X-Forwarded-Proto"].ToString();
-            if (!string.IsNullOrEmpty(forwarded))
-            {
-                return forwarded.Split(',')[0].Trim();
-            }
-
-            return request.Scheme;
-        }
+        internal static string RequestScheme(HttpRequest request) => request.Scheme;
 
         private static bool IsStaticVideoStream(ActionExecutingContext context)
         {

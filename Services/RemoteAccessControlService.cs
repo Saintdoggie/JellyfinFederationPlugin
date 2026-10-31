@@ -195,6 +195,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 return true;
             }
 
+            officialRating = FederationRating.Resolve(cache, server.Id, remoteItemId, officialRating);
             foreach (var rule in server.FriendUserAccessRules)
             {
                 if (IsRemoteItemOrAncestorListed(cache, server.Id, remoteItemId, rule.BlockedItemIds))
@@ -337,23 +338,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static string? TryResolveRating(FederationItemCache? cache, string? serverId, Guid remoteItemId)
         {
-            if (cache == null || string.IsNullOrEmpty(serverId))
-            {
-                return null;
-            }
-
             try
             {
-                // An episode/season's own remote id was never upserted as its own
-                // top-level entry key (raw or provider-id) - only its parent Series
-                // is - so this can come back empty for one; that's already covered
-                // by the sync-time incoming filter and the peer-visibility path,
-                // which check ratings up front rather than needing this
-                // reconstruction at all. This fills in the one path that couldn't:
-                // a per-user MaxAllowedRating ceiling checked lazily, after the item
-                // is already cached, with only (server, remote item id) in hand.
-                var key = cache.TryGetLocalKeyForRemoteItem(serverId, remoteItemId);
-                return key == null ? null : cache.GetEntryByKey(key)?.Metadata.OfficialRating;
+                return FederationRating.Resolve(cache, serverId, remoteItemId, null);
             }
             catch
             {
