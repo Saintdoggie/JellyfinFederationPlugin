@@ -57,7 +57,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         internal static Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], CancellationToken, Task<object>> Connect { get; private set; } = null!;
 
         /// <summary>Gets the responder accept call (see QuicTransport.AcceptAsync).</summary>
-        internal static Func<int, IPAddress, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>> Accept { get; private set; } = null!;
+        internal static Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>> Accept { get; private set; } = null!;
 
         /// <summary>Gets the call that opens a request stream.</summary>
         internal static Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, CancellationToken, Task<object>> ConnectPaired { get; private set; } = null!;
@@ -188,7 +188,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             Connect = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], CancellationToken, Task<object>>>("ConnectAsync");
-            Accept = Bind<Func<int, IPAddress, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>>>("AcceptAsync");
+            Accept = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>>>("AcceptAsync");
             ConnectPaired = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, CancellationToken, Task<object>>>("ConnectPairedAsync");
             AcceptPaired = Bind<Func<int, IPEndPoint, X509Certificate2, string, byte[], byte[], int, TimeSpan, CancellationToken, Task<object>>>("AcceptPairedAsync");
             ConfigureWindows = Bind<Action<long, long>>("ConfigureWindows");

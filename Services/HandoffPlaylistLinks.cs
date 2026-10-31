@@ -41,6 +41,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly Regex UriAttribute = new("URI=\"(?<uri>[^\"]*)\"", RegexOptions.Compiled);
 
+        private const int MaxPrefetched = 32;
+        private const int MaxPrefetchedBytes = 64 * 1024 * 1024;
+
         private static readonly ConcurrentDictionary<string, (DateTime FetchedUtc, string Text, string ContentType)> Prefetched = new(StringComparer.Ordinal);
 
         /// <summary>HTTP client for friend playlists (no redirects, no cookies).</summary>
@@ -131,6 +134,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>A playlist prefetched for <paramref name="url"/>, taken once, or null.</summary>
         public static (string Text, string ContentType)? TakePrefetched(string url)
         {
+            TrimPrefetched();
             if (Prefetched.TryRemove(url, out var hit) && DateTime.UtcNow - hit.FetchedUtc < PrefetchKeep)
             {
                 return (hit.Text, hit.ContentType);
@@ -159,23 +163,21 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 try
                 {
-                    var now = DateTime.UtcNow;
-                    foreach (var kv in Prefetched)
-                    {
-                        if (now - kv.Value.FetchedUtc > PrefetchKeep)
-                        {
-                            Prefetched.TryRemove(kv.Key, out _);
-                        }
-                    }
+                    TrimPrefetched();
 
-                    using var response = await Http.GetAsync(variantUrl).ConfigureAwait(false);
+                    // ResponseHeadersRead excludes the body from HttpClient.Timeout.
+                    // Keep a deadline across both phases so a stalled warm-up cannot
+                    // retain a response and connection forever in the background.
+                    using var playlistTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    using var response = await Http.GetAsync(variantUrl, HttpCompletionOption.ResponseHeadersRead, playlistTimeout.Token).ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                     {
                         return;
                     }
 
-                    var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var text = await HttpContentReader.ReadTextAsync(response.Content, 8 * 1024 * 1024, playlistTimeout.Token).ConfigureAwait(false);
                     Prefetched[variantUrl] = (DateTime.UtcNow, text, response.Content.Headers.ContentType?.ToString() ?? "application/vnd.apple.mpegurl");
+                    TrimPrefetched();
 
                     var firstSegment = startConversion ? FirstUri(text, peerBase) : null;
                     if (firstSegment == null || IsPlaylist(firstSegment))
@@ -202,6 +204,26 @@ namespace Jellyfin.Plugin.Federation.Services
                     logger.LogDebug(ex, "[Federation] Could not warm up a friend's playback");
                 }
             });
+        }
+
+        private static void TrimPrefetched()
+        {
+            var now = DateTime.UtcNow;
+            foreach (var expired in Prefetched.Where(kv => now - kv.Value.FetchedUtc > PrefetchKeep).Select(kv => kv.Key).ToList())
+            {
+                Prefetched.TryRemove(expired, out _);
+            }
+
+            while (Prefetched.Count > MaxPrefetched || Prefetched.Values.Sum(v => System.Text.Encoding.UTF8.GetByteCount(v.Text)) > MaxPrefetchedBytes)
+            {
+                var oldest = Prefetched.OrderBy(kv => kv.Value.FetchedUtc).FirstOrDefault();
+                if (oldest.Key == null)
+                {
+                    return;
+                }
+
+                Prefetched.TryRemove(oldest);
+            }
         }
 
         private static bool IsPlaylist(string url) => url.Split('?')[0].EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);

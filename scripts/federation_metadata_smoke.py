@@ -157,6 +157,7 @@ def smoke(companion_files=False):
         config = work / 'jellyfin'
         plugin = config / 'plugins/Federation'; plugin.mkdir(parents=True)
         shutil.copy(REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
+        shutil.copy(REPO / 'Plex/bin/Release/net10.0/Jellyfin.Plugin.Federation.Plex.dll', plugin)
         jf = container(jf_name, JELLYFIN_IMAGE, 8096, ['-v', f'{config}:/config'])
         stage = 'Jellyfin startup'
         wait_for(lambda: request(jf, '/Startup/User'), 'Jellyfin startup failed')

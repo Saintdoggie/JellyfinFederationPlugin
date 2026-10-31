@@ -157,8 +157,10 @@ public sealed class FederationSharingExpiryTests : IDisposable
         var src = File.ReadAllText(Path.Combine(dir!, "Configuration", "FederationPluginController.cs"));
         Assert.Contains("server.SharingExpiresUtc = oldServer.SharingExpiresUtc;", src);
         Assert.Contains("server.LibraryShareExpiries = oldServer.LibraryShareExpiries;", src);
-        Assert.Contains("s.SharingExpiresUtc,", src);
-        Assert.Contains("s.LibraryShareExpiries,", src);
+        var server = new RemoteServer { SharingExpiresUtc = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc), LibraryShareExpiries = new List<LibraryShareExpiry> { new() { FolderId = "f" } } };
+        var shown = FederationServerPresentation.Sanitize(server, null);
+        Assert.Equal(server.SharingExpiresUtc, shown.GetType().GetProperty("SharingExpiresUtc")!.GetValue(shown));
+        Assert.Same(server.LibraryShareExpiries, shown.GetType().GetProperty("LibraryShareExpiries")!.GetValue(shown));
     }
 
     private void SetItems(params BaseItem[] items)

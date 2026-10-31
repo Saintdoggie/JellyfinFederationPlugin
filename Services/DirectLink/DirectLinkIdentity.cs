@@ -73,13 +73,23 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         public static DirectLinkIdentity LoadOrCreate(string? folder, string commonName, ILogger? logger = null)
         {
             var path = string.IsNullOrEmpty(folder) ? null : Path.Combine(folder, FileName);
+            var passwordPath = path == null ? null : path + ".password";
             if (path != null && File.Exists(path))
             {
                 try
                 {
-                    var loaded = X509CertificateLoader.LoadPkcs12FromFile(path, null, X509KeyStorageFlags.Exportable);
+                    var hasProtectedPassword = passwordPath != null && File.Exists(passwordPath);
+                    var password = hasProtectedPassword
+                        ? ApiKeyProtector.Unprotect(File.ReadAllText(passwordPath!))
+                        : Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+                    var loaded = X509CertificateLoader.LoadPkcs12FromFile(path, hasProtectedPassword ? password : null, X509KeyStorageFlags.EphemeralKeySet);
                     if (loaded.HasPrivateKey && loaded.NotAfter > DateTime.UtcNow.AddDays(30))
                     {
+                        if (!hasProtectedPassword)
+                        {
+                            SaveIdentity(path, passwordPath!, loaded, password);
+                        }
+
                         return new DirectLinkIdentity(loaded);
                     }
 
@@ -97,11 +107,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 try
                 {
                     Directory.CreateDirectory(folder!);
-                    var temp = path + ".tmp";
-                    File.WriteAllBytes(temp, Array.Empty<byte>());
-                    RestrictToOwner(temp);
-                    File.WriteAllBytes(temp, created.Export(X509ContentType.Pkcs12));
-                    File.Move(temp, path, overwrite: true);
+                    SaveIdentity(path, passwordPath!, created, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
                 }
                 catch (Exception ex)
                 {
@@ -110,6 +116,17 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
 
             return new DirectLinkIdentity(created);
+        }
+
+        private static void SaveIdentity(string path, string passwordPath, X509Certificate2 certificate, string password)
+        {
+            var temp = path + ".tmp";
+            File.WriteAllBytes(temp, Array.Empty<byte>());
+            RestrictToOwner(temp);
+            File.WriteAllBytes(temp, certificate.Export(X509ContentType.Pkcs12, password));
+            File.WriteAllText(passwordPath, ApiKeyProtector.Protect(password));
+            RestrictToOwner(passwordPath);
+            File.Move(temp, path, overwrite: true);
         }
 
         private static X509Certificate2 Create(string commonName)
@@ -124,9 +141,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 false));
             using var made = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
 
-            // Round-trip through PKCS#12 so the key is usable by the TLS stack on
-            // every platform (an ephemeral key isn't, on Windows).
-            return X509CertificateLoader.LoadPkcs12(made.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.Exportable);
+            return X509CertificateLoader.LoadPkcs12(made.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.EphemeralKeySet);
         }
 
         private static void RestrictToOwner(string path)

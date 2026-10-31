@@ -229,7 +229,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// the friend's headers that are on the short list, and this side's own
         /// Host, Connection and marker headers.
         /// </summary>
-        public byte[] BuildForward(string localHostHeader, string basePath)
+        public byte[] BuildForward(string localHostHeader, string basePath, string? friendId = null, string? remoteAddress = null)
         {
             var builder = new StringBuilder();
             builder.Append(Method).Append(' ').Append(basePath.TrimEnd('/')).Append(Target).Append(" HTTP/1.1\r\n");
@@ -242,7 +242,15 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 }
             }
 
-            builder.Append("Connection: close\r\nX-Federation-Direct-Link: 1\r\n\r\n");
+            builder.Append("Connection: close\r\nX-Federation-Direct-Link: 1\r\n");
+            if (!string.IsNullOrEmpty(friendId))
+            {
+                builder.Append("X-Federation-Link: ").Append(Pairing.PairedLinkContext.Secret)
+                    .Append("\r\nX-Federation-Link-Friend: ").Append(friendId)
+                    .Append("\r\nX-Federation-Link-Peer: ").Append(remoteAddress ?? string.Empty).Append("\r\n");
+            }
+
+            builder.Append("\r\n");
             return Encoding.ASCII.GetBytes(builder.ToString());
         }
 

@@ -92,7 +92,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly TimeSpan ItemTokenExpirySkew = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan ItemTokenDefaultTtl = TimeSpan.FromMinutes(30);
 
-        private readonly HttpClient _httpClient;
+        private readonly BoundedHttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly RemoteServer _server;
         private bool _ownsHttpClient;
@@ -119,7 +119,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            _httpClient = new BoundedHttpClient(httpClient ?? throw new ArgumentNullException(nameof(httpClient)));
         }
 
         /// <summary>
@@ -147,7 +147,7 @@ namespace Jellyfin.Plugin.Federation.Services
             string? detail = null;
             try
             {
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(body);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
                 {
@@ -370,7 +370,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return await HttpContentReader.ReadTextAsync(response.Content, FriendConversionLogs.MaxBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -434,7 +434,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerUserRulesBody>(content, JsonOpts);
                 return body?.Rules == null ? null : new PeerUserRulesResult(true, body.Rules, body.AllowDownloads, body.ShareFavorites);
             }
@@ -474,7 +474,8 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (status, null);
                 }
 
-                var body = await response.Content.ReadFromJsonAsync<T>(PartyJson, cancellationToken).ConfigureAwait(false);
+                var json = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
+                var body = JsonSerializer.Deserialize<T>(json, PartyJson);
                 return (status, body);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -534,7 +535,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return ((int)response.StatusCode, null);
                 }
 
-                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var text = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 try
                 {
                     return ((int)response.StatusCode, JsonSerializer.Deserialize<T>(text, JsonOpts));
@@ -583,7 +584,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerFavoritesBody>(content, JsonOpts);
                 if (body == null)
                 {
@@ -632,7 +633,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var body = JsonSerializer.Deserialize<PeerPopularBody>(content, JsonOpts);
                 if (body == null)
                 {
@@ -752,7 +753,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 return ParseItem(doc.RootElement);
             }
@@ -798,7 +799,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var response = await SendGetAsync(url, localActingUserId, localActingUserName, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var playbackInfo = JsonSerializer.Deserialize<PlaybackInfoResponse>(content, JsonOpts);
                 _logger.LogDebug("[Federation] Playback metadata lookup completed in {ElapsedMs} ms", metadataTimer.Elapsed.TotalMilliseconds);
                 _logger.LogInformation(
@@ -875,7 +876,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (null, reason);
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 return (JsonSerializer.Deserialize<SystemInfo>(content, JsonOpts), null);
             }
             catch (Exception ex)
@@ -908,7 +909,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.ControlJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 return doc.RootElement.TryGetProperty("FederationPluginVersion", out var versionProp)
                     ? versionProp.GetString()
@@ -937,7 +938,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Users", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 return JsonSerializer.Deserialize<List<UserDto>>(content, JsonOpts);
             }
             catch (Exception ex)
@@ -961,7 +962,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 var response = await _httpClient.GetAsync("/Plugins/Federation/Peer/Libraries", cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(content);
                 var root = doc.RootElement;
 
@@ -1039,7 +1040,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<FriendsListResponse>(content, JsonOpts);
                 // Only an explicit "no" or a real list means "nothing here"; a reply
                 // missing both fields is garbled, not an answer.
@@ -1101,7 +1102,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 var cacheKey = purpose == FederationTokenPurpose.Playback
                     ? $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}"
                     : $"{_server.Id}:{remoteItemId}:{localActingUserId ?? string.Empty}:{purpose}";
-                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow)
+                if (ItemPlaybackTokenCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTime.UtcNow
+                    && (purpose != FederationTokenPurpose.Playback || !PeerTranscodeCapability.NeedsRefresh(_server.Id)))
                 {
                     return (cached.Token, null);
                 }
@@ -1127,7 +1129,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                 }
 
-                var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning(
@@ -1139,7 +1141,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return (null, null);
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
                 if (string.IsNullOrEmpty(result?.Token))
                 {
@@ -1172,12 +1174,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 var cachedUntil = result.ExpiresUtc.HasValue
                     ? result.ExpiresUtc.Value - ItemTokenExpirySkew
                     : DateTime.UtcNow + ItemTokenDefaultTtl;
-                if (cachedUntil <= DateTime.UtcNow)
+                // An explicitly short-lived token is still usable for this request,
+                // but must not acquire a new 30-minute lifetime in our cache.
+                if (cachedUntil > DateTime.UtcNow)
                 {
-                    cachedUntil = DateTime.UtcNow + ItemTokenDefaultTtl;
+                    ItemPlaybackTokenCache[cacheKey] = (cachedUntil, result.Token);
                 }
-
-                ItemPlaybackTokenCache[cacheKey] = (cachedUntil, result.Token);
                 return (result.Token, result.ExpiresUtc);
             }
             catch (Exception ex)
@@ -1262,7 +1264,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return result;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var batch = JsonSerializer.Deserialize<PlaybackTokenBatchResponse>(body, JsonOpts);
                 if (batch?.Tokens == null)
                 {
@@ -1364,7 +1366,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 };
 
                 using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     string? error = null;
@@ -1430,7 +1432,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     string? error = null;
@@ -1524,7 +1526,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     System.Text.Encoding.UTF8,
                     "application/json");
 
-                var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.PostAsync("/Plugins/Federation/RegisterUserSession", content, cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -1540,7 +1542,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     return null;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var body = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
                 var result = JsonSerializer.Deserialize<PlaybackTokenResponse>(body, JsonOpts);
                 if (string.IsNullOrEmpty(result?.Token))
                 {
@@ -1844,13 +1846,11 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Measures approximate download throughput from this remote server by timing
-        /// a fetch against its own <c>/Playback/BitrateTest</c> endpoint - the same
-        /// mechanism jellyfin-web itself uses client-side to auto-pick a streaming
-        /// quality before playback starts. Used by <see cref="WanBandwidthMonitor"/>
-        /// to size a WAN bitrate cap from a real measurement instead of a guessed
-        /// fixed number. Returns null on any failure; callers must keep using their
-        /// last known-good measurement rather than treat null as "no bandwidth".
+        /// Measures download throughput from this remote server with repeated
+        /// steady-state transfers and returns their median. Used by
+        /// <see cref="WanBandwidthMonitor"/> to size a WAN cap from real capacity.
+        /// Returns null when every sample fails; callers must keep their last
+        /// known-good measurement rather than treat null as "no bandwidth".
         /// </summary>
         /// <param name="cancellationToken">Cancellation.</param>
         /// <param name="sampleItemId">
@@ -1861,63 +1861,76 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </param>
         public async Task<double?> MeasureBandwidthMbpsAsync(CancellationToken cancellationToken = default, Guid? sampleItemId = null)
         {
-            // Only the steady part of the transfer is timed (see
-            // MeasureSteadyThroughputMbpsAsync), so the sample has to be big enough
-            // to have a steady part after the warm-up on a fast, high-latency link.
             const int sampleBytes = 10_000_000;
-            try
-            {
-                // The shared HttpClient's own timeout (5 minutes - reasonable for a
-                // real library sync, which can legitimately take a while) is far too
-                // long for what is supposed to be a quick background health check: an
-                // unreachable or badly congested remote would otherwise stall this
-                // probe for up to 5 minutes, and since WanBandwidthMoniton.
-                // RefreshIfDueAsync is awaited at the very start of every sync cycle,
-                // that stalls reconciliation for every other server and mapping too,
-                // not just the slow one. 20s is generous enough to still get an
-                // accurate reading down to roughly 2 Mbps (5MB / 2Mbps ≈ 20s) without
-                // risking that blast radius.
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            const int sampleCount = 3;
+            var samples = new List<double>(sampleCount);
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-                if (sampleItemId is { } itemId)
+            for (var attempt = 0; attempt < sampleCount && !linkedCts.IsCancellationRequested; attempt++)
+            {
+                try
                 {
-                    var onMedia = await MeasureOnMediaAsync(itemId, sampleBytes, linkedCts.Token).ConfigureAwait(false);
-                    if (onMedia != null)
+                    double? measured = null;
+                    if (sampleItemId is { } itemId)
                     {
-                        return onMedia;
+                        measured = await MeasureOnMediaAsync(itemId, sampleBytes, linkedCts.Token).ConfigureAwait(false);
+                    }
+
+                    measured ??= await MeasureBitrateTestAsync(sampleBytes, linkedCts.Token).ConfigureAwait(false);
+                    if (measured is > 0)
+                    {
+                        samples.Add(measured.Value);
                     }
                 }
-
-                // Prefer this plugin's own token-authenticated Peer/BitrateTest
-                // route. The native /Playback/BitrateTest endpoint requires real
-                // Jellyfin auth, which the scoped federation token this client
-                // sends cannot satisfy - so ever since the token rewrite the
-                // native call has 401'd, the probe always failed, and WAN bitrate
-                // caps silently stopped being applied (clients then tried to
-                // direct-play bitrates their link can't carry - buffering). The
-                // native endpoint stays as a fallback for remotes running plugin
-                // versions too old to have the peer route.
-                var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
-                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
                 {
-                    response.Dispose();
-                    response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
+                    break;
                 }
-
-                using (response)
+                catch (Exception ex)
                 {
-                    response.EnsureSuccessStatusCode();
-                    var body = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-                    var clock = System.Diagnostics.Stopwatch.StartNew();
-                    return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, linkedCts.Token).ConfigureAwait(false);
+                    _logger.LogDebug(ex, "Bandwidth sample {Attempt} failed for remote server {ServerName}", attempt + 1, _server.Name);
                 }
             }
-            catch (Exception ex)
+
+            if (samples.Count == 0)
             {
-                _logger.LogWarning(ex, "Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning("Bandwidth probe failed for remote server {ServerName}", _server.Name);
+                }
+
                 return null;
             }
+
+            return Median(samples);
+        }
+
+        private async Task<double?> MeasureBitrateTestAsync(int sampleBytes, CancellationToken cancellationToken)
+        {
+            var response = await _httpClient.GetAsync($"/Plugins/Federation/Peer/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                response.Dispose();
+                response = await _httpClient.GetAsync($"/Playback/BitrateTest?Size={sampleBytes}", HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            }
+
+            using (response)
+            {
+                response.EnsureSuccessStatusCode();
+                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                var clock = Stopwatch.StartNew();
+                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken, sampleBytes).ConfigureAwait(false);
+            }
+        }
+
+        internal static double Median(IEnumerable<double> values)
+        {
+            var ordered = values.OrderBy(value => value).ToArray();
+            var middle = ordered.Length / 2;
+            return ordered.Length % 2 == 0
+                ? (ordered[middle - 1] + ordered[middle]) / 2.0
+                : ordered[middle];
         }
 
         // Times a byte range of a real shared file through DirectStream (uncapped,
@@ -1938,14 +1951,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     $"{RemoteServerClientFactory.EffectiveUrl(_server)}/Plugins/Federation/DirectStream/{itemId:N}?token={Uri.EscapeDataString(token)}");
                 request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, sampleBytes - 1);
                 using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
+                if (response.StatusCode != System.Net.HttpStatusCode.PartialContent
+                    || response.Content.Headers.ContentLength != sampleBytes)
                 {
                     return null;
                 }
 
                 var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 var clock = Stopwatch.StartNew();
-                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken).ConfigureAwait(false);
+                return await MeasureSteadyThroughputMbpsAsync(body, () => clock.Elapsed.TotalSeconds, cancellationToken, sampleBytes).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -1968,8 +1982,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="body">The response body.</param>
         /// <param name="nowSeconds">Monotonic clock in seconds; a seam for tests.</param>
         /// <param name="cancellationToken">Cancellation.</param>
+        /// <param name="expectedBytes">Expected complete body size; an early EOF below this is rejected.</param>
         /// <returns>Megabits per second, or null.</returns>
-        internal static async Task<double?> MeasureSteadyThroughputMbpsAsync(Stream body, Func<double> nowSeconds, CancellationToken cancellationToken)
+        internal static async Task<double?> MeasureSteadyThroughputMbpsAsync(Stream body, Func<double> nowSeconds, CancellationToken cancellationToken, long? expectedBytes = null)
         {
             const int warmupBytes = 1_000_000;
             const int minMeasuredBytes = 256_000;
@@ -1991,6 +2006,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var start = nowSeconds();
             long measured = 0;
             double elapsed = 0;
+            var bodyEnded = false;
             while (elapsed < maxMeasureSeconds)
             {
                 int read;
@@ -2008,6 +2024,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (read == 0)
                 {
+                    bodyEnded = true;
                     break;
                 }
 
@@ -2015,7 +2032,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 elapsed = nowSeconds() - start;
             }
 
-            if (measured < minMeasuredBytes || elapsed <= 0)
+            if (measured < minMeasuredBytes || elapsed <= 0
+                || (bodyEnded && warmedUp + measured < expectedBytes))
             {
                 return null;
             }
@@ -2384,6 +2402,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 // Per request rather than on the shared client: the same client
                 // relays media, whose byte ranges must never be re-encoded.
+                request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("br"));
                 request.Headers.AcceptEncoding.Add(new System.Net.Http.Headers.StringWithQualityHeaderValue("gzip"));
             }
 

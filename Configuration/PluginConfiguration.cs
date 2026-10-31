@@ -33,15 +33,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public string InternalServerUrl { get; set; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets this server's own internal relay API key: a dedicated
-        /// Jellyfin ApiKey, auto-created on first use, that this server uses purely
-        /// server-side to fetch its own native <c>/Videos/{id}/stream</c> or
-        /// <c>/Audio/{id}/stream</c> endpoint over loopback when relaying a Direct-mode
-        /// federated stream on behalf of a friend server (see
-        /// <c>FederationController.DirectStream</c>). Never transmitted over the
-        /// network beyond localhost, never shown in any UI or API response - unlike
-        /// <see cref="ServerUrl"/>/<see cref="InternalServerUrl"/> above, this is a
-        /// secret and must be excluded from <c>FederationController.Sanitize</c>.
+        /// Legacy storage for the internal relay key. Current versions always clear
+        /// this value and keep the process-lifetime native key only in memory, so a
+        /// plugin-data backup never contains a Jellyfin admin-equivalent credential.
         /// </summary>
         public string InternalRelayApiKey { get; set; } = string.Empty;
 
@@ -160,12 +154,10 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// flag, deliberately kept as one opt-in rather than two: (1) this server will
         /// tell its own friends who its other friends are when asked (see
         /// <c>Friends/List</c>), and (2) this server will ask each of its own friends
-        /// for *their* friends list and automatically send friend requests to anyone
-        /// new it discovers that way. Off by default - exposing your friend list, and
-        /// reaching out to strangers on your friends' behalf, are both bigger trust
-        /// decisions than a single direct friendship. Consent is still preserved on
-        /// the discovered side either way: an auto-sent request still needs their
-        /// admin to accept it, same as a manually sent one.
+        /// for *their* friends list to show on the Discovery tab. Discovered servers
+        /// are never contacted automatically; an administrator chooses which one to
+        /// invite and its sharing scope. Off by default because exposing the friend
+        /// list is a bigger trust decision than a single direct friendship.
         /// </summary>
         public bool AllowFriendsOfFriends { get; set; } = false;
 
@@ -1654,7 +1646,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
 namespace Jellyfin.Plugin.Federation.Configuration
 {
-    /// <summary>A server that rejected our automatic friend request; not asked again until <see cref="UntilUtc"/>.</summary>
+    /// <summary>A server that rejected our friend request, retained for compatibility with older discovery state.</summary>
     public class DeclinedDiscoveryCandidate
     {
         /// <summary>Gets or sets the server's address, no trailing slash.</summary>

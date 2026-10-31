@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -172,15 +171,16 @@ namespace Jellyfin.Plugin.Federation.Services
         /// reports whether it can produce one and how fast. Null when no client could be
         /// built for the server.
         /// </summary>
-        public Task<PlexApiClient.TranscodeProbeResult?> ProbeTranscodeAsync(RemoteServer server, string nativeId, int maxVideoKbps, int sampleSeconds, CancellationToken cancellationToken)
+        public async Task<ExternalTranscodeProbeResult?> ProbeTranscodeAsync(RemoteServer server, string nativeId, int maxVideoKbps, int sampleSeconds, CancellationToken cancellationToken)
         {
             var client = CreateClient(server);
-            return client == null
-                ? Task.FromResult<PlexApiClient.TranscodeProbeResult?>(null)
-                : ProbeAsync(client);
+            if (client == null)
+            {
+                return null;
+            }
 
-            async Task<PlexApiClient.TranscodeProbeResult?> ProbeAsync(PlexApiClient c)
-                => await c.ProbeTranscodeAsync(nativeId, maxVideoKbps, sampleSeconds, cancellationToken).ConfigureAwait(false);
+            var result = await client.ProbeTranscodeAsync(nativeId, maxVideoKbps, sampleSeconds, cancellationToken).ConfigureAwait(false);
+            return new ExternalTranscodeProbeResult(result.HttpStatus, result.FirstByteMs, result.Bytes, result.SampleSeconds, result.Mbps, result.ContentType, result.Detail, result.PlexDecision, result.PlexMessage);
         }
 
         /// <inheritdoc />
@@ -252,44 +252,5 @@ namespace Jellyfin.Plugin.Federation.Services
             // responses, the config UI's write-only handling) covers it already.
             return new PlexApiClient(server.Url, server.ApiKey, HttpClientOverride ?? SharedHttpClient, _logger);
         }
-    }
-
-    /// <summary>
-    /// Resolves the <see cref="IExternalCatalogProvider"/> for a given
-    /// <see cref="ServerKind"/>, or null for <see cref="ServerKind.Jellyfin"/>,
-    /// which is handled natively rather than through a provider.
-    /// <para>
-    /// This is the single place that knows which products are supported: adding
-    /// one means registering it here and nowhere else.
-    /// </para>
-    /// </summary>
-    public class ExternalCatalogRegistry
-    {
-        private readonly ConcurrentDictionary<ServerKind, IExternalCatalogProvider> _providers = new();
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ExternalCatalogRegistry"/> class.
-        /// </summary>
-        public ExternalCatalogRegistry(IEnumerable<IExternalCatalogProvider> providers)
-        {
-            foreach (var provider in providers)
-            {
-                _providers[provider.Kind] = provider;
-            }
-        }
-
-        /// <summary>
-        /// Gets the provider handling <paramref name="kind"/>, or null when that
-        /// kind is handled natively (Jellyfin) or isn't supported.
-        /// </summary>
-        public IExternalCatalogProvider? Get(ServerKind kind)
-            => _providers.TryGetValue(kind, out var provider) ? provider : null;
-
-        /// <summary>
-        /// Convenience overload: the provider for a server, or null when it is an
-        /// ordinary Jellyfin federation peer.
-        /// </summary>
-        public IExternalCatalogProvider? For(RemoteServer? server)
-            => server == null ? null : Get(server.Kind);
     }
 }

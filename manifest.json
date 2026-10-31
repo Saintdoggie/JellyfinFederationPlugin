@@ -8,6 +8,70 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.207",
+        "changelog": "Playback compatibility and truthful diagnostics. Offers every compatible remote encoding, improves native Jellyfin app support including Android, shares measured capacity between sessions, and recovers web playback through fresh authorized sessions. Playback Info now reports the observed route, play method, conversion location and original/delivered formats instead of guessing Direct Play. Includes everything in 0.0.206.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-29T16:49:20Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.207/Jellyfin.Federation.zip",
+        "checksum": "a0629a429e06d88deeadff2e918dd2f2"
+      },
+      {
+        "version": "0.0.206",
+        "changelog": "Reliability and playback fixes. Sparse configuration saves no longer erase friends, mappings or sharing/privacy settings; friend limits and consent updates preserve omitted values. Rating ceilings now apply through series and seasons to unrated episodes. Capped playback retains audio and text-subtitle choices, universal audio works through the owner gateway, and read-ahead link failures fall back safely. Includes everything in 0.0.205.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-27T04:42:06Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.206/Jellyfin.Federation.zip",
+        "checksum": "13f77e0f88d7a62f4e7a81aaf4ddb617"
+      },
+      {
+        "version": "0.0.205",
+        "changelog": "Security and reliability. Discovery requires an explicit admin request and sharing choice; friend and pool callbacks are authenticated, and pending requests, pools, user rules, party snapshots, availability blobs and urgent sync notices are bounded. Session registration and streaming work again, zero-share friends cannot enumerate users, and administrator reporting is corrected. Upgrade both servers for authenticated friend accept/reject callbacks. Includes everything in 0.0.204.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T23:57:55Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.205/Jellyfin.Federation.zip",
+        "checksum": "1f3232cb72cf88e1d673063871330d86"
+      },
+      {
+        "version": "0.0.204",
+        "changelog": "Security hardening. Pool notices require authenticated membership and untrusted roster URLs no longer trigger automatic friend requests or sharing. Internal relay keys are memory-only; friend HTTP responses are bounded and redirects/proxies are disabled. Playback tokens are bounded and rate-limited, and disabling a friend revokes existing access. Pairing and direct links enforce exact peer/endpoint binding and replay protection; viewer reports, segment caches and playlist URLs are hardened. Pairing remains review-locked. Includes everything in 0.0.203.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T22:22:28Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.204/Jellyfin.Federation.zip",
+        "checksum": "425696ba2a7f6f286deea661d073a737"
+      },
+      {
+        "version": "0.0.203",
+        "changelog": "Measured adaptive playback. Android and other handheld apps no longer receive a blanket 1080p/13 Mbps conversion: compatible originals can stream at full quality, while necessary conversions use the client's limits and measured link capacity. Federation Auto now retains high-speed capacity, handles sub-10 Mbps links, and caps high-bitrate remuxes instead of disabling its limit above 50 Mbps. Peer speed tests combine three bounded steady-state media-route samples using the median, reject truncated bodies, and retain conservative behavior on failure. Includes everything in 0.0.202.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T16:51:41Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.203/Jellyfin.Federation.zip",
+        "checksum": "30194c5c293cae194a996d8bdac92762"
+      },
+      {
+        "version": "0.0.202",
+        "changelog": "App compatibility. Phone and tablet apps (Jellyfin for Android, Findroid, Swiftfin on iPhone and iPad, Streamyfin) now get a friend-converted stream held to 1080p and about 12 Mbps. Before, these apps sent no resolution limit, so a 4K HDR title became a 4K, 30+ Mbps conversion that a friend's server could make slower than real time, and the Android player gave up with a Source error before the first segment. TV apps and the web client are unchanged, and an app's own resolution limit is respected. Includes everything in 0.0.201.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T15:07:16Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.202/Jellyfin.Federation.zip",
+        "checksum": "7a4bf0f1803ab107550270ddccdac6b6"
+      },
+      {
+        "version": "0.0.201",
+        "changelog": "Optional Plex add-in and browser playback resilience. Plex catalogs, Companion connections, metadata/import and .strm export now require the matching optional Plex add-in installed beside the core DLL. Ordinary Jellyfin federation works without it; an absent add-in preserves Plex settings and cached titles without using the wrong protocol. Adaptive web playback tolerates slow HLS segments with bounded buffers, timeouts and retries, while diagnostics omit playback URLs and tokens. Includes everything in 0.0.200.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-26T14:02:30Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.201/Jellyfin.Federation.zip",
+        "checksum": "45d3683544d2e6060a704047228ddb4c"
+      },
+      {
+        "version": "0.0.200",
+        "changelog": "Security, reliability and bandwidth release. Android raw-file playback no longer enters its HLS-only direct-play path, preventing source errors while preserving original-quality streaming. Direct links become usable as soon as they authenticate while their speed test finishes; a slow or failed test keeps the existing Auto WAN cap instead of removing it. Link setup and forwarding are bounded, permissions and capacity are rechecked before a friend connects, and unexpected sources are refused before TLS. Playback recovers interrupted relays, retains slow converted segments, falls back after direct-link body failures, avoids duplicate bandwidth samples, and uses per-stream bitrates when ranking copies. Catalogs can use Brotli; posters are fetched at sharp display sizes rather than as originals. Also includes reviewed admin, credential, SSRF, response, transcode-admission and Companion-update hardening. Pairing codes remain disabled while under review. Includes everything in 0.0.199.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-25T13:54:03Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.200/Jellyfin.Federation.zip",
+        "checksum": "4bf2248b3a7f813b088deae26a200d77"
+      },
+      {
         "version": "0.0.199",
         "changelog": "Privacy: a friend's home internet address no longer appears in this server's logs or on the status page. Public addresses are shown as a short tag (for example \"public #3f9a2c:51876\") that stays the same for one address while the server runs, so log lines can still be matched up; private, LAN and Tailscale addresses are shown as before for troubleshooting. Error messages that mention an address are cleaned the same way. Your own server's public address is still shown to you on the Beta tab. Pairing codes are disabled in this build while the feature is under review; direct links are unchanged. Includes everything in 0.0.198.",
         "targetAbi": "12.0.0.0",
@@ -169,7 +233,7 @@
       },
       {
         "version": "0.0.178",
-        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"plexpal (primary)\") instead of the movie title, in every client.",
+        "changelog": "Plex can now be the source of cover art and descriptions for your own libraries. The new Plex tab signs in to Plex (no token pasting), lists your servers and libraries, and lets you choose what to pull: posters and backdrops, and titles, summaries, genres, ratings and studios, for your movies, shows, seasons and episodes, matched by TMDb/IMDb/TVDB id or title and year. What you share with friends carries the same art and details. Titles that several servers host now offer every server's cover art to choose from instead of only one server's, and the version picker names the item's own source after its server (for example \"plex-source (primary)\") instead of the movie title, in every client.",
         "targetAbi": "12.0.0.0",
         "timestamp": "2026-10-13T16:24:00Z",
         "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.178/Jellyfin.Federation.zip",

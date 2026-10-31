@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -158,6 +159,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 return externalUrl ?? throw new InvalidOperationException(
                     $"{server.Name} did not return a playable file for item {nativeId}.");
+            }
+
+            if (server.Kind != ServerKind.Jellyfin)
+            {
+                throw new InvalidOperationException($"{server.Name} needs the optional {server.Kind} add-in to stream this item. Existing titles and settings were kept.");
             }
 
             var client = _clientFactory.GetClient(server);
@@ -347,7 +353,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // their internal URL in BuildDirectStreamUrlAsync. Jellyfin
                     // peers need an explicit live PlaybackInfo preflight: token
                     // minting alone can succeed for a stale/deleted cache entry.
-                    if (_externalCatalogs.For(server) == null)
+                    if (server.Kind == ServerKind.Jellyfin)
                     {
                         var client = _clientFactory.GetClient(server);
                         var playback = await client.GetPlaybackInfoAsync(
@@ -531,18 +537,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 _logger.LogInformation("[Federation] Proxying item {ItemId} from server {Server}", activeItemId, server.Name);
+                FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), FederatedRoute.Relay);
 
-                // Audio is exempt for the same reason BuildPlaybackUrl exempts it for
-                // a Direct-mode Jellyfin peer: real-world audio bitrates are already
-                // far below anything worth throttling.
-                // Throttling the unchanged original file below its encoded
-                // bitrate only starves local ffmpeg. Direct-mode static paths
-                // serve raw bytes so their persisted media description stays
-                // accurate; Proxy/external relays retain their configured cap.
-                var capMbps = isAudio || server.StreamingMode == StreamingMode.Direct && server.Kind == ServerKind.Jellyfin
-                    ? null
-                    : _bandwidthMonitor.GetEffectiveCapMbps(server);
-                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
+                // Source selection and the native transcode request enforce the
+                // bitrate ceiling. Pacing the original bytes here only starves
+                // ffmpeg when the source needs conversion.
+                var upstreamStatus = await RelayAsync(url, request, response, cancellationToken, capMbps: null, observationServerId: activeServerId).ConfigureAwait(false);
 
                 // A rejected token is almost always the remote having restarted:
                 // both of its in-memory token stores were wiped, while this side
@@ -583,7 +583,7 @@ namespace Jellyfin.Plugin.Federation.Services
                         "[Federation] Remote rejected the streaming token for item {ItemId} on {Server}; re-minted and retrying once",
                         remoteItemId,
                         server.Name);
-                    await RelayAsync(url, request, response, cancellationToken, capMbps, observationServerId: activeServerId).ConfigureAwait(false);
+                    await RelayAsync(url, request, response, cancellationToken, capMbps: null, observationServerId: activeServerId).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -636,13 +636,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </para>
         /// </summary>
         /// <param name="capMbps">
-        /// When set, paces writes to <paramref name="response"/> so this relay
-        /// never sustains more than this many megabits per second - the only place
-        /// a WAN bandwidth cap can be enforced for a proxied source (Plex, or any
-        /// Jellyfin peer explicitly set to Proxy mode), since unlike a Direct-mode
-        /// Jellyfin peer there is no remote transcode endpoint to ask for a lower
-        /// bitrate instead. Null (the common case) relays at whatever rate the
-        /// remote and this connection can sustain, exactly as before this existed.
+        /// When set, paces writes to <paramref name="response"/>. Null (the normal
+        /// playback case) relays at the available rate; WAN limits are applied to
+        /// converted output, not by starving an original file being decoded.
         /// </param>
         // How long the friend's server took to answer, and to send the first byte, is the
         // first thing to check when a title is slow to start. Quiet unless it was slow:
@@ -805,6 +801,17 @@ namespace Jellyfin.Plugin.Federation.Services
                                     response.Headers["Content-Range"] = remoteResp.Content.Headers.ContentRange.ToString();
                             }
 
+                            // A retry cannot turn an already-started successful
+                            // response into an upstream error page or a normally
+                            // completed, truncated body. Before the first client
+                            // body byte, however, return the status so the caller
+                            // can still re-mint a rejected playback token.
+                            if (firstByteWritten || response.HasStarted)
+                            {
+                                response.HttpContext.Abort();
+                                return null;
+                            }
+
                             return (int)remoteResp.StatusCode;
                         }
 
@@ -877,6 +884,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         if (HttpMethods.IsHead(request.Method)) return null;
 
                         await using var remoteStream = await remoteResp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                        var expectedAttemptBytes = remoteResp.Content.Headers.ContentLength;
+                        long attemptBytesRead = 0;
                         buffer ??= ArrayPool<byte>.Shared.Rent(bufferSize);
                         while (true)
                         {
@@ -902,10 +911,21 @@ namespace Jellyfin.Plugin.Federation.Services
 
                             if (read == 0)
                             {
+                                if (expectedAttemptBytes.HasValue && attemptBytesRead < expectedAttemptBytes.Value)
+                                {
+                                    // A clean TCP/HTTP EOF is still a failed
+                                    // attempt when the declared body is short.
+                                    // Enter the same bounded resume path as a
+                                    // dropped connection instead of completing a
+                                    // truncated client response normally.
+                                    throw new IOException("Upstream response ended before its declared Content-Length");
+                                }
+
                                 if (observationServerId != null) _ranking.ObserveTransfer(observationServerId, observedBytes, observedReadTime);
                                 return null;
                             }
 
+                            attemptBytesRead += read;
                             observedBytes += read;
                             if (observedReadTime.TotalSeconds >= 5)
                             {

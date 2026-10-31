@@ -7,16 +7,18 @@
     <RootNamespace>Jellyfin.Plugin.Federation</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Nullable>enable</Nullable>
-    <Version>0.0.199</Version>
-    <AssemblyVersion>0.0.199.0</AssemblyVersion>
-    <FileVersion>0.0.199.0</FileVersion>
+    <Version>0.0.207</Version>
+    <AssemblyVersion>0.0.207.0</AssemblyVersion>
+    <FileVersion>0.0.207.0</FileVersion>
     <!-- Keep the catalog DLL reproducible when its archive/checksum are committed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <EnableSourceLink>false</EnableSourceLink>
+    <DefineConstants Condition="'$(FederationTestHooks)' == 'true'">$(DefineConstants);FEDERATION_TEST_HOOKS</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Web\admin\configPage.html" />
+    <EmbeddedResource Include="Web\admin\addinPage.html" />
     <EmbeddedResource Include="Web\client\federation-badge.js" />
     <EmbeddedResource Include="Web\client\federation-adaptive.js" />
     <EmbeddedResource Include="Web\vendor\hls.light.min.js" />
@@ -25,6 +27,8 @@
   <ItemGroup>
     <Compile Remove="Tests\**" />
     <None Remove="Tests\**" />
+    <Compile Remove="Plex\**" />
+    <None Remove="Plex\**" />
     <!-- Companion is a separate standalone app (its own .csproj) living in a
          subdirectory of this repo, not part of this plugin - without this
          exclusion the default SDK glob also sweeps up its source *and* its

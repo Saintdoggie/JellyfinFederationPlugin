@@ -90,6 +90,7 @@ namespace Jellyfin.Plugin.Federation.Services
             "duckdns.org", "ts.net", "trycloudflare.com", "no-ip.org", "no-ip.com", "ddns.net", "dyndns.org", "myftp.org", "hopto.org", "zapto.org",
             "sytes.net", "github.io", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "cloudfront.net", "azurewebsites.net",
             "ngrok.io", "ngrok-free.app", "ngrok.app", "loca.lt", "serveo.net", "tunnelto.dev", "pinggy.io", "playit.gg", "gg.gg", "nip.io", "sslip.io",
+            "fly.dev", "onrender.com", "web.app", "appspot.com", "firebaseapp.com", "azurecontainer.io", "run.app", "railway.app", "render.com",
         };
 
         private static string? RegistrableDomain(string host)

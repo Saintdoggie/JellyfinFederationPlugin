@@ -130,7 +130,7 @@ public class PairingCodeTests
     {
         using var key = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
         var (_, text) = Offer(key).Encode();
-        Assert.Null(PairingCode.TryDecode(text, PairingCodeKind.Offer, Now + PairingCode.Lifetime + PairingCode.ClockSkew).Error);
+        Assert.Contains("expired", PairingCode.TryDecode(text, PairingCodeKind.Offer, Now + PairingCode.Lifetime + PairingCode.ClockSkew).Error);
         Assert.Contains("expired", PairingCode.TryDecode(text, PairingCodeKind.Offer, Now + PairingCode.Lifetime + PairingCode.ClockSkew + TimeSpan.FromSeconds(1)).Error);
         Assert.Contains("clock", PairingCode.TryDecode(text, PairingCodeKind.Offer, Now - PairingCode.ClockSkew - TimeSpan.FromSeconds(1)).Error);
 

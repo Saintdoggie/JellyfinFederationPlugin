@@ -58,7 +58,7 @@ public sealed class AdaptivePlaybackController : ControllerBase
             || !_library.GetItemList(new InternalItemsQuery(user) { ItemIds = new[] { itemId }, Recursive = true, Limit = 1 }).Any()) return NotFound();
         var key = FederationLibraryManager.GetFederationKey(item);
         var entry = key == null ? null : _manager.Cache.GetEntryByKey(key);
-        if (entry == null || entry.ItemType != "Movie") return NotFound();
+        if (entry == null || entry.ItemType is not ("Movie" or "Episode")) return NotFound();
         var sources = entry.GetSourcesSnapshot()
             .Select(source => (Source: source, Server: _manager.GetServer(source.ServerId)))
             .Where(p => p.Server is { Enabled: true }
@@ -71,7 +71,9 @@ public sealed class AdaptivePlaybackController : ControllerBase
                 Name = p.Server!.Name,
                 TimelineName = p.Source.TimelineName,
                 RunTimeTicks = p.Source.RunTimeTicks,
-                Score = _ranking.Score(p.Server, p.Source.Bitrate.GetValueOrDefault(),
+                Score = _ranking.Score(p.Server, p.Source.Bitrate is > 0
+                        ? p.Source.Bitrate.Value
+                        : p.Source.MediaStreams?.Where(s => s.BitRate is > 0).Sum(s => (long)s.BitRate!.Value) ?? 0,
                     p.Source.MediaStreams?.Where(s => s.Type == MediaStreamType.Video).Select(s => s.Height.GetValueOrDefault()).DefaultIfEmpty(0).Max() ?? 0,
                     _manager.GetEffectiveWanCapMbps(p.Server)),
                 Streams = p.Source.MediaStreams?.Where(s => s.Type is MediaStreamType.Audio or MediaStreamType.Subtitle)

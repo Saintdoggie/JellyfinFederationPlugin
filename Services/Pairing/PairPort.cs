@@ -18,9 +18,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
     public sealed class PairPort : IDisposable
     {
         /// <summary>
-        /// Most packets carrying this pairing's tag handled per second from one address.
-        /// Packets without the tag are dropped at a glance and never use the budget, so a
-        /// stranger's junk can't crowd out the friend's probes.
+        /// Most authenticated packets handled per second from one address. All packets
+        /// use the global port budget; only valid packets consume a source bucket.
         /// </summary>
         public const int MaxPacketsPerSecond = 50;
 
@@ -35,7 +34,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         private readonly ReplayWindow _replay = new();
         private byte[]? _punchKey;
         private byte[]? _pairTag;
-        private readonly HashSet<UInt128> _expectedAcks = new();
+        private readonly Dictionary<UInt128, IPEndPoint> _expectedAcks = new();
         private readonly HashSet<IPAddress> _probed = new();
         private readonly Queue<UInt128> _expectedOrder = new();
 
@@ -121,9 +120,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             {
                 _socket.SendTo(DirectLink.StunClient.BuildRequest(out _), stunServer);
             }
-            catch (SocketException)
+            catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
             {
-                // No route right now; the next one may get through.
+                // No route right now, or the pending offer was disposed.
             }
         }
 
@@ -192,7 +191,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         }
 
                         var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
-                        Expect(AckNonce(nonce));
+                        Expect(AckNonce(nonce), target);
                         await SendAsync(PairPunchPacket.Build(PairPunchPacket.Probe, _ownRole, _pairTag, _punchKey, _now(), nonce), target, cancellationToken).ConfigureAwait(false);
                     }
                 }
@@ -208,6 +207,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var buffer = new byte[2048];
             var budgets = new Dictionary<IPAddress, int>();
             var window = Stopwatch.StartNew();
+            var globalUsed = 0;
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
@@ -228,26 +228,33 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                         continue;
                     }
 
+                    if (window.ElapsedMilliseconds >= 1000)
+                    {
+                        window.Restart();
+                        budgets.Clear();
+                        globalUsed = 0;
+                    }
+
+                    if (globalUsed >= MaxSourcesPerSecond * MaxPacketsPerSecond)
+                    {
+                        continue;
+                    }
+
+                    globalUsed++;
                     var packet = buffer.AsSpan(0, received.ReceivedBytes);
                     var key = _punchKey;
                     var tag = _pairTag;
                     if (key == null || tag == null || PairPunchPacket.PeekPairTag(packet) is not { } theirs || !theirs.AsSpan().SequenceEqual(tag))
                     {
-                        // Not ours, or the key isn't known yet: never answered, never counted.
                         continue;
                     }
 
-                    // Only someone who has seen this pairing's packets knows the tag; even
-                    // they get a budget per address, so the friend's own probes still count.
-                    if (window.ElapsedMilliseconds >= 1000)
+                    var type = PairPunchPacket.Verify(packet, _ownRole, key, _now(), _replay);
+                    if (type == 0)
                     {
-                        window.Restart();
-                        budgets.Clear();
+                        continue;
                     }
 
-                    // Per address, not per port (one host can use many ports), and the
-                    // addresses this port probes always get their own budget, so filling
-                    // the sources can't lock the friend out.
                     budgets.TryGetValue(from.Address, out var used);
                     bool probedThere;
                     lock (_probed)
@@ -261,15 +268,13 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     }
 
                     budgets[from.Address] = used + 1;
-
-                    var type = PairPunchPacket.Verify(packet, _ownRole, key, _now(), _replay);
                     if (type == PairPunchPacket.Probe)
                     {
                         // The ack carries a nonce made from the probe's, so it answers only that probe.
                         var answer = AckNonce(PairPunchPacket.Nonce(packet));
                         await SendAsync(PairPunchPacket.Build(PairPunchPacket.Ack, _ownRole, tag, key, _now(), answer), from, cancellationToken).ConfigureAwait(false);
                     }
-                    else if (type == PairPunchPacket.Ack && WasExpected(PairPunchPacket.Nonce(packet)))
+                    else if (type == PairPunchPacket.Ack && WasExpected(PairPunchPacket.Nonce(packet), from))
                     {
                         // An old ack replayed from elsewhere answers no probe sent from this port.
                         acked.TrySetResult(from);
@@ -296,16 +301,17 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             return System.Security.Cryptography.SHA256.HashData(input).AsSpan(0, 16).ToArray();
         }
 
-        private void Expect(byte[] ackNonce)
+        private void Expect(byte[] ackNonce, IPEndPoint target)
         {
             var key = System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(ackNonce);
             lock (_expectedAcks)
             {
-                if (_expectedAcks.Add(key))
+                if (!_expectedAcks.ContainsKey(key))
                 {
                     _expectedOrder.Enqueue(key);
                 }
 
+                _expectedAcks[key] = target;
                 while (_expectedOrder.Count > MaxSentNonces)
                 {
                     _expectedAcks.Remove(_expectedOrder.Dequeue());
@@ -313,12 +319,12 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
         }
 
-        private bool WasExpected(byte[] ackNonce)
+        private bool WasExpected(byte[] ackNonce, IPEndPoint from)
         {
             var key = System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(ackNonce);
             lock (_expectedAcks)
             {
-                return _expectedAcks.Contains(key);
+                return _expectedAcks.TryGetValue(key, out var target) && target.Equals(from);
             }
         }
 

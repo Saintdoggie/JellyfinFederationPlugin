@@ -83,7 +83,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         /// <summary>Gets or sets the plugin data folder (tests); defaults to the plugin's.</summary>
         internal string? DataFolder { get; set; }
 
-        private static bool AllowPrivateForTests => Environment.GetEnvironmentVariable("FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE") == "1";
+        private static bool AllowPrivateForTests => DirectLink.DirectLinkProtocol.TestMode;
 
         private static PluginConfiguration? Config => Plugin.Instance?.Configuration;
 
@@ -408,9 +408,9 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             }
         }
 
-        /// <summary>The admin compared the safety number with the friend and it matched.</summary>
+        /// <summary>The admin compared the displayed safety number with the friend and it matched.</summary>
         /// <returns>An error, or null.</returns>
-        public async Task<string?> ConfirmAsync(string friendId, CancellationToken cancellationToken)
+        public async Task<string?> ConfirmAsync(string friendId, string safetyNumber, CancellationToken cancellationToken)
         {
             // The number is only worth comparing once the link it describes is up.
             if (!_friends.TryGetValue(friendId, out var runtime) || runtime.Link is not { IsClosed: false })
@@ -418,15 +418,38 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 return "The link to this friend isn't up yet; confirm once it shows connected.";
             }
 
-            var updated = UpdateFriend(friendId, s => s.PairSafetyConfirmed = true);
+            var matched = false;
+            var updated = UpdateFriend(friendId, s =>
+            {
+                var changed = !s.PairSafetyConfirmed;
+                matched = TryConfirmSafetyNumber(s, safetyNumber);
+                return matched && changed;
+            });
             if (updated == null)
             {
                 return "No paired friend with that id.";
             }
 
+            if (!matched)
+            {
+                return "The safety number changed. Compare the number shown now before confirming.";
+            }
+
             _logger.LogInformation("[Federation] The safety number for paired friend {Name} was confirmed here", updated.Name);
             await SendConfirmedAndHelloAsync(friendId, sendConfirmed: true, cancellationToken).ConfigureAwait(false);
             return null;
+        }
+
+        internal static bool TryConfirmSafetyNumber(RemoteServer friend, string displayedSafetyNumber)
+        {
+            if (string.IsNullOrEmpty(friend.PairSafetyNumber)
+                || !string.Equals(friend.PairSafetyNumber, displayedSafetyNumber, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            friend.PairSafetyConfirmed = true;
+            return true;
         }
 
         /// <summary>Status for the admin page: pending codes and paired friends (no secrets).</summary>
@@ -468,13 +491,18 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         // ------------------------------------------------------------------ peer (over the link)
 
         /// <summary>The friend's admin confirmed the safety number on their side.</summary>
-        public async Task OnPeerConfirmedAsync(string friendId, CancellationToken cancellationToken)
+        public async Task<bool> OnPeerConfirmedAsync(string friendId, string safetyNumber, CancellationToken cancellationToken)
         {
-            // Acts once: a repeat changes nothing, saves nothing and sends nothing back
-            // (two servers echoing Confirmed would call each other until a limit cut in).
             var changed = false;
+            var accepted = false;
             UpdateFriend(friendId, s =>
             {
+                if (!s.PairSafetyConfirmed || !string.Equals(s.PairSafetyNumber, safetyNumber, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                accepted = true;
                 changed = !s.PairPeerConfirmed;
                 s.PairPeerConfirmed = true;
                 return changed;
@@ -483,6 +511,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             {
                 await SendConfirmedAndHelloAsync(friendId, sendConfirmed: false, cancellationToken).ConfigureAwait(false);
             }
+
+            return accepted;
         }
 
         /// <summary>
@@ -788,7 +818,8 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 using var client = new HttpClient(FederationHttp.Handler(allowAutoRedirect: false)) { Timeout = TimeSpan.FromSeconds(15), MaxResponseContentBufferSize = 16 * 1024 };
                 if (sendConfirmed)
                 {
-                    using var confirmed = await client.PostAsync(friend.Url + "/Plugins/Federation/Pairing/Peer/Confirmed", new StringContent("{}", Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false);
+                    var confirmation = JsonSerializer.Serialize(new PairingConfirmationBody { SafetyNumber = friend.PairSafetyNumber });
+                    using var confirmed = await client.PostAsync(friend.Url + "/Plugins/Federation/Pairing/Peer/Confirmed", new StringContent(confirmation, Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false);
                     _ = confirmed.StatusCode;
                 }
 
@@ -864,7 +895,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         }
 
         private bool AllowedByJellyfin(IPAddress address)
-            => _network == null || _network.ShouldAllowServerAccess(address) == RemoteAccessPolicyResult.Allow;
+            => _network != null && _network.ShouldAllowServerAccess(address) == RemoteAccessPolicyResult.Allow;
 
         // ------------------------------------------------------------------ helpers
 
@@ -873,7 +904,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var servers = await StunClient.ResolveAsync(Config?.DirectLinkStunServers ?? Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
             var (mapped, _) = await StunClient.DiscoverAsync(port.Socket, servers, cancellationToken).ConfigureAwait(false);
             var endpoints = new List<IPEndPoint>();
-            if (mapped != null)
+            if (mapped != null && PairingEndpoints.IsAcceptable(mapped, OwnSubnets(), AllowPrivateForTests))
             {
                 endpoints.Add(mapped);
             }

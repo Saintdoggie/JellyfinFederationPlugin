@@ -9,6 +9,7 @@ using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Configuration
@@ -31,6 +32,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 new RemoteServerClientFactory(sp.GetRequiredService<FederationCapturingLoggerFactory>()));
             serviceCollection.AddSingleton<FederationItemCache>();
             serviceCollection.AddSingleton<WanBandwidthMonitor>();
+            serviceCollection.AddSingleton<PlaybackRouteMetrics>();
+            serviceCollection.AddSingleton<FederationBandwidthAllocator>();
             serviceCollection.AddSingleton<AdaptiveSourceRanking>();
             serviceCollection.AddSingleton<AdaptivePreparationGate>();
             serviceCollection.AddSingleton<FederationLibraryManager>();
@@ -68,9 +71,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationRemoteViewerService>();
             serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederationRemoteViewerService>());
             serviceCollection.AddSingleton<FederationQualityAdvisorService>();
-            serviceCollection.AddSingleton<PlexStrmExportService>();
-            serviceCollection.AddSingleton<PlexMetadataSourceService>();
-            serviceCollection.AddSingleton<PlexLibraryImportService>();
+            serviceCollection.TryAddSingleton<IFederationPostSyncExport, NoopFederationPostSyncExport>();
+            serviceCollection.TryAddSingleton<IPlexCompanionIntegration, UnavailablePlexCompanionIntegration>();
             serviceCollection.AddSingleton<IProcessRunner, ProcessRunner>();
             serviceCollection.AddSingleton<TailscaleService>();
             serviceCollection.AddSingleton<Services.DirectLink.DirectLinkManager>();
@@ -79,11 +81,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddHostedService(sp => sp.GetRequiredService<Services.Pairing.PairingService>());
             serviceCollection.AddSingleton<FunFactService>();
 
-            // Catalog providers for non-Jellyfin servers. Registering another
-            // product means adding its IExternalCatalogProvider here and nowhere
-            // else - the registry is resolved by everything that dispatches on
-            // server kind. See IExternalCatalogProvider.
-            serviceCollection.AddSingleton<IExternalCatalogProvider, PlexCatalogProvider>();
+            // Optional assemblies add their own IExternalCatalogProvider registrations.
             serviceCollection.AddSingleton<ExternalCatalogRegistry>();
 
             // Scoped, not Singleton: needs IAuthenticationManager, which Jellyfin

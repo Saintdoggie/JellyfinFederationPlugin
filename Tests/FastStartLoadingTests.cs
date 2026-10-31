@@ -40,9 +40,9 @@ public class FastStartLoadingTests : IDisposable
     public void Estimate_SlowLink_MatchesWhatWasMeasuredOnTheLiveServer()
     {
         // 93.2 Mbps remux over a ~7.5 Mbps link took 75-86 s on the real server.
-        var e = StartEstimator.Estimate("plexpal", 93_243_000, 7.5);
+        var e = StartEstimator.Estimate("plex-source", 93_243_000, 7.5);
         Assert.InRange(e.Seconds!.Value, 75, 90);
-        Assert.Contains("plexpal", e.Reason);
+        Assert.Contains("plex-source", e.Reason);
         Assert.Contains("93", e.Reason);
         Assert.Contains("7.5", e.Reason);
     }
@@ -50,7 +50,7 @@ public class FastStartLoadingTests : IDisposable
     [Fact]
     public void Estimate_GigabitFriend_IsQuickAndSaysNothingAlarming()
     {
-        var e = StartEstimator.Estimate("friendflix", 93_243_000, 900);
+        var e = StartEstimator.Estimate("friend-a", 93_243_000, 900);
         Assert.InRange(e.Seconds!.Value, 3, StartEstimator.QuickSeconds);
         Assert.Contains("quickly", e.Reason);
     }
@@ -210,7 +210,7 @@ public class FastStartLoadingTests : IDisposable
 
     private static (WanBandwidthMonitor Monitor, Mock<IExternalCatalogProvider> Provider, RemoteServer Server) PlexMonitor(bool withImportedItem = true)
     {
-        var server = new RemoteServer { Id = "plex1", Name = "plexpal", Kind = ServerKind.Plex, Enabled = true, Url = "http://plex.example:32400" };
+        var server = new RemoteServer { Id = "plex1", Name = "plex-source", Kind = ServerKind.Plex, Enabled = true, Url = "http://plex.example:32400" };
         var provider = new Mock<IExternalCatalogProvider>();
         provider.SetupGet(p => p.Kind).Returns(ServerKind.Plex);
 
@@ -335,7 +335,7 @@ public class FastStartLoadingTests : IDisposable
 
     private (FederationLoadingController Controller, Movie Item, FederatedCacheEntry Entry) NewController(int bitrate, double? linkMbps)
     {
-        var server = new RemoteServer { Id = "serverA", Name = "plexpal", Url = "http://friend.example:8096", ApiKey = "k", Enabled = true };
+        var server = new RemoteServer { Id = "serverA", Name = "plex-source", Url = "http://friend.example:8096", ApiKey = "k", Enabled = true };
         _plugin.Configuration.RemoteServers.Add(server);
 
         var lm = new Mock<ILibraryManager>();
@@ -400,8 +400,8 @@ public class FastStartLoadingTests : IDisposable
 
         Assert.True(Body<bool>(result, "federated"));
         Assert.InRange(Body<int?>(result, "seconds")!.Value, 70, 90);
-        Assert.Contains("plexpal", Body<string>(result, "reason"));
-        Assert.Equal("plexpal", Body<string>(result, "serverName"));
+        Assert.Contains("plex-source", Body<string>(result, "reason"));
+        Assert.Equal("plex-source", Body<string>(result, "serverName"));
     }
 
     [Fact]

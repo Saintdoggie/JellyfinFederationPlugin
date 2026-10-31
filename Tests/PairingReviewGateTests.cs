@@ -1,5 +1,9 @@
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services.Pairing;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Jellyfin.Plugin.Federation.Tests;
@@ -23,5 +27,15 @@ public class PairingReviewGateTests
     {
         var config = new PluginConfiguration { PairingOptIn = true };
         Assert.False(PairingService.IsEnabled(config));
+    }
+
+    [Fact]
+    public async Task Confirm_MissingNullOrOversizedSafetyNumber_IsAValidationError()
+    {
+        await using var pairing = new PairingService(NullLogger<PairingService>.Instance);
+        var controller = new PairingController(pairing);
+        Assert.IsType<BadRequestObjectResult>(await controller.Confirm("friend", null, CancellationToken.None));
+        Assert.IsType<BadRequestObjectResult>(await controller.Confirm("friend", new PairingConfirmationBody { SafetyNumber = null! }, CancellationToken.None));
+        Assert.IsType<BadRequestObjectResult>(await controller.Confirm("friend", new PairingConfirmationBody { SafetyNumber = new string('1', 257) }, CancellationToken.None));
     }
 }

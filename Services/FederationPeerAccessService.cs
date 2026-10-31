@@ -181,8 +181,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // "all shared libraries" but block adult-rated titles.
             if (!string.IsNullOrWhiteSpace(rule.MaxAllowedRating))
             {
-                var item = _libraryManager.GetItemById(itemId);
-                var rating = item?.OfficialRating;
+                var rating = FederationRating.Resolve(_libraryManager, itemId);
                 if (!string.IsNullOrWhiteSpace(rating)
                     && !IncomingContentFilterService.IsWithinRatingCeiling(rating!, rule.MaxAllowedRating))
                 {

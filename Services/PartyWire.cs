@@ -140,4 +140,102 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Gets or sets who is watching on the friend's side.</summary>
         public List<string> Participants { get; set; } = new();
     }
+
+    public static class PartyWireValidation
+    {
+        public const int MaxSnapshotItems = 500;
+
+        public static bool ValidAnnouncement(PartyAnnouncement announcement)
+            => (announcement.Name == null || announcement.Name.Length <= 256)
+                && ValidParticipants(announcement.Participants)
+                && ValidSnapshot(announcement.Snapshot);
+
+        public static bool ValidEvent(PartyEvent e)
+            => ValidParticipants(e.Participants) && ValidSnapshot(e.Snapshot);
+
+        public static bool ValidMembership(PartyMembership membership)
+            => ValidParticipants(membership.Participants);
+
+        public static bool ValidSnapshot(PartySnapshot? snapshot)
+        {
+            if (snapshot == null)
+            {
+                return true;
+            }
+
+            if (snapshot.Items == null || snapshot.Items.Count > MaxSnapshotItems
+                || snapshot.Shuffle?.Length > 40 || snapshot.Repeat?.Length > 40)
+            {
+                return false;
+            }
+
+            foreach (var item in snapshot.Items)
+            {
+                if (item == null || item.Owners == null || item.Owners.Count > 10
+                    || item.Type?.Length > 40 || item.Name?.Length > 300
+                    || !ValidProviderIds(item.ProviderIds) || !ValidProviderIds(item.SeriesProviderIds))
+                {
+                    return false;
+                }
+
+                foreach (var owner in item.Owners)
+                {
+                    if (owner == null || string.IsNullOrWhiteSpace(owner.Fid) || owner.Fid.Length > 128
+                        || !Guid.TryParse(owner.Id, out _))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ValidParticipants(List<string>? participants)
+        {
+            if (participants == null)
+            {
+                return true;
+            }
+
+            if (participants.Count > 20)
+            {
+                return false;
+            }
+
+            foreach (var participant in participants)
+            {
+                if (participant == null || participant.Length > 200)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ValidProviderIds(Dictionary<string, string>? ids)
+        {
+            if (ids == null)
+            {
+                return true;
+            }
+
+            if (ids.Count > 20)
+            {
+                return false;
+            }
+
+            foreach (var pair in ids)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || pair.Key.Length > 64
+                    || pair.Value == null || pair.Value.Length > 256)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
 }

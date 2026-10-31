@@ -1,7 +1,9 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.Federation.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
@@ -62,7 +64,9 @@ namespace Jellyfin.Plugin.Federation.Services
             var server = _federationManager.GetServer(source.ServerId);
             var provider = server == null ? null : _externalCatalogs.For(server);
             var nativeId = entry.GetNativeId(source);
-            if (server == null || !server.Enabled || provider != null && string.IsNullOrWhiteSpace(nativeId))
+            if (server == null || !server.Enabled
+                || provider == null && server.Kind != ServerKind.Jellyfin
+                || provider != null && string.IsNullOrWhiteSpace(nativeId))
             {
                 return false;
             }
@@ -88,8 +92,35 @@ namespace Jellyfin.Plugin.Federation.Services
                     return false;
                 }
 
-                var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 var mimeType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+                if (!mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (response.Content.Headers.ContentLength > MaxPosterBytes)
+                {
+                    return false;
+                }
+
+                // Read at most the cap, so a friend can't stream an endless body into memory.
+                using var stream = new MemoryStream();
+                using (var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var buffer = new byte[81920];
+                    int read;
+                    while ((read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                    {
+                        if (stream.Length + read > MaxPosterBytes)
+                        {
+                            return false;
+                        }
+
+                        stream.Write(buffer, 0, read);
+                    }
+                }
+
+                stream.Position = 0;
                 // The Plex credential was sent as a server-side request header;
                 // only image bytes cross into Jellyfin's local image cache.
                 await _providerManager.SaveImage(
@@ -118,16 +149,27 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// Width an image is fetched at, or null for the friend's original. Episode
-        /// images are only ever shown small; a 640 px copy is a fraction of the
-        /// original, and a large first sync fetches one per episode. Jellyfin
-        /// cannot load a library item's image lazily: saving the item converts
-        /// any remote image address into a local file at once.
+        /// Width an image is fetched at, or null when the item has no useful
+        /// artwork size. Jellyfin cannot load a library item's image lazily:
+        /// saving the item fetches it into the local image store at once. Keep
+        /// posters sharp on high-DPI/TV layouts without downloading multi-thousand
+        /// pixel originals for every movie, series and season during a first sync.
         /// </summary>
         internal static int? MaxWidthFor(string? itemType)
-            => string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase) ? EpisodeImageMaxWidth : null;
+        {
+            if (string.Equals(itemType, "Episode", StringComparison.OrdinalIgnoreCase))
+            {
+                return EpisodeImageMaxWidth;
+            }
+
+            return itemType is "Movie" or "Series" or "Season" ? PrimaryImageMaxWidth : null;
+        }
 
         internal const int EpisodeImageMaxWidth = 640;
+        internal const int PrimaryImageMaxWidth = 1000;
+
+        /// <summary>Largest poster accepted from a friend's server.</summary>
+        internal const int MaxPosterBytes = 20 * 1024 * 1024;
 
         internal static string BuildPosterUrl(string serverUrl, Guid remoteItemId, string token, int? maxWidth)
             => $"{serverUrl.TrimEnd('/')}/Plugins/Federation/Peer/Images/{remoteItemId:N}/Primary?token={Uri.EscapeDataString(token)}"

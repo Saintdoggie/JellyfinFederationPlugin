@@ -83,9 +83,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 });
             }
 
-            // What Peer/Users and Friends/List give this friend.
+            // What Peer/Users and Friends/List give this friend (Peer/Users gives
+            // nobody to a friend that has no library shared).
             var users = new List<string>();
-            foreach (var u in EnumerateLocalUsers())
+            var sharesSomething = server.ShareAllLibraries || (server.SharedLibraryFolderIds?.Count ?? 0) > 0;
+            foreach (var u in sharesSomething ? EnumerateLocalUsers() : Enumerable.Empty<object>())
             {
                 if (u.GetType().GetProperty("Username")?.GetValue(u) is string name)
                 {
