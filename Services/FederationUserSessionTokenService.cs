@@ -32,7 +32,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// token is kept, in memory and in <c>federation-session-tokens.json</c>.
     /// </para>
     /// </summary>
-    public class FederationUserSessionTokenService
+    public class FederationUserSessionTokenService : IDisposable
     {
         private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(6);
 
@@ -112,6 +112,23 @@ namespace Jellyfin.Plugin.Federation.Services
             federationId = entry.FederationId;
             remoteUserId = entry.RemoteUserId;
             return true;
+        }
+
+        /// <summary>
+        /// Writes a pending save at shutdown: a token minted in the last moments
+        /// before a restart would otherwise be lost while the friend keeps using
+        /// it, and every direct play it starts is refused until the friend's
+        /// cached copy runs out.
+        /// </summary>
+        public void Dispose()
+        {
+            _saveTimer?.Dispose();
+            if (Volatile.Read(ref _saveScheduled) != 0)
+            {
+                Save();
+            }
+
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>Writes the outstanding tokens' hashes; internal for tests.</summary>

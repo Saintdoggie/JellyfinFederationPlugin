@@ -40,6 +40,34 @@ public class FederationUserSessionTokenPersistenceTests
     }
 
     [Fact]
+    public void TokensMintedJustBeforeShutdown_AreSavedWhenTheServiceIsDisposed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "fed-shutdown-tokens-" + Guid.NewGuid().ToString("N") + ".json");
+        var playbackPath = path + ".playback";
+        try
+        {
+            var sessions = new FederationUserSessionTokenService(path);
+            var session = sessions.Issue("friend-a", "viewer-1");
+            var playback = new FederationPlaybackTokenService(playbackPath);
+            var item = Guid.NewGuid().ToString("N");
+            var token = playback.Issue(item, "friend-a", FederationTokenPurpose.Playback, "viewer-1");
+
+            // No 2-second save timer has fired yet: shutdown must not lose them.
+            sessions.Dispose();
+            playback.Dispose();
+
+            Assert.True(new FederationUserSessionTokenService(path).TryValidate(session, out _, out _));
+            Assert.True(new FederationPlaybackTokenService(playbackPath).TryValidate(token, item, out var federationId));
+            Assert.Equal("friend-a", federationId);
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(playbackPath);
+        }
+    }
+
+    [Fact]
     public void WithoutAStore_TokensStillWork()
     {
         var service = new FederationUserSessionTokenService(null);
