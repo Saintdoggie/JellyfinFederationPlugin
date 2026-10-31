@@ -476,7 +476,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (report.Event != ViewerEvents.Stop && !await IsVerifiedViewer(caller, report).ConfigureAwait(false))
             {
-                return 403;
+                // A name this server can't check against the friend's roster (the
+                // friend keeps its names or its users to itself, or made one up)
+                // is never shown: the viewer appears as "Someone (friend)".
+                Anonymize(report);
             }
 
             var key = caller.Id + "|" + report.Key;
@@ -591,17 +594,22 @@ namespace Jellyfin.Plugin.Federation.Services
             var now = UtcNow();
             if (!_viewerRosters.TryGetValue(caller.Id, out var cached) || cached.ExpiresUtc <= now)
             {
+                // A friend that shows us none of its users answers with nothing (or a
+                // refusal) every time: remember that too, instead of asking again on
+                // every progress report.
                 var users = await _clientFactory.GetClient(caller).GetUsersAsync().ConfigureAwait(false);
-                if (users == null)
-                {
-                    return false;
-                }
-
-                cached = (now + TimeSpan.FromMinutes(5), users);
+                cached = (now + TimeSpan.FromMinutes(5), users ?? new List<UserDto>());
                 _viewerRosters[caller.Id] = cached;
             }
 
             return cached.Users.Any(u => Guid.TryParse(u.Id, out var id) && id == viewerId && string.Equals(u.Name, report.ViewerName, StringComparison.Ordinal));
+        }
+
+        /// <summary>Drops the names a report carries, so it shows as "Someone" on a generic device.</summary>
+        internal static void Anonymize(PeerViewerReport report)
+        {
+            report.ViewerName = null;
+            report.DeviceName = null;
         }
 
         /// <summary>How a friend's viewer is named on the dashboard: "bob (friend-a)".</summary>

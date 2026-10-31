@@ -303,6 +303,40 @@ public class DownloadsViewersHardwareTests
         Assert.False(await service.IsVerifiedViewer(Friend(), new PeerViewerReport { ViewerId = Guid.NewGuid().ToString(), ViewerName = "real-viewer" }));
     }
 
+    [Fact]
+    public async System.Threading.Tasks.Task FriendsViewers_FromAFriendHidingItsUsers_AreAnonymousAndTheRosterIsNotAskedEveryTime()
+    {
+        var handler = new RefusingHandler();
+        using var http = new System.Net.Http.HttpClient(handler) { BaseAddress = new Uri("http://friend.example") };
+        using var client = new RemoteServerClient(Friend(), Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, http);
+        var factory = new Moq.Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(Moq.It.IsAny<RemoteServer>())).Returns(client);
+        var service = new FederationRemoteViewerService(null!, null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<FederationRemoteViewerService>.Instance, factory.Object);
+        var report = new PeerViewerReport { ViewerId = Guid.NewGuid().ToString(), ViewerName = "bob", DeviceName = "Chrome", DeviceId = "dev-1" };
+
+        Assert.False(await service.IsVerifiedViewer(Friend(), report));
+        Assert.False(await service.IsVerifiedViewer(Friend(), report));
+        Assert.Equal(1, handler.Calls);
+
+        FederationRemoteViewerService.Anonymize(report);
+        Assert.Null(report.ViewerName);
+        Assert.Null(report.DeviceName);
+        Assert.Equal("dev-1", report.DeviceId);
+        Assert.Equal("Someone (friend-a)", FederationRemoteViewerService.Label(report.ViewerName, "friend-a"));
+        Assert.Equal("Device · via friend-a", FederationRemoteViewerService.DeviceLabel(report.DeviceName, "friend-a"));
+    }
+
+    private sealed class RefusingHandler : System.Net.Http.HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+
+        protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            Calls++;
+            return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.Forbidden));
+        }
+    }
+
     private sealed class StaticJsonHandler : System.Net.Http.HttpMessageHandler
     {
         private readonly string _json;
