@@ -87,8 +87,22 @@ namespace Jellyfin.Plugin.Federation.Services
         /// The absolute configured public base every gateway URL starts with.
         /// Request Host and scheme are deliberately not trusted for token URLs.
         /// </summary>
+        /// <summary>
+        /// Where playlist entries point: this server's configured public address,
+        /// or, when none is set (or it isn't a usable http(s) address), a path
+        /// without a host. Receivers put every gateway path on the address they
+        /// use for this server, and a player sent here resolves it against this
+        /// server, so playback never depends on that setting. The request's
+        /// Host header is never used.
+        /// </summary>
         public static string PublicGatewayBase(HttpRequest request)
-            => PublicGatewayBase(Plugin.Instance?.Configuration?.ServerUrl);
+        {
+            var configured = PublicGatewayBase(Plugin.Instance?.Configuration?.ServerUrl);
+            return configured.Length > 0 ? configured : HostlessGatewayBase(request.PathBase.Value);
+        }
+
+        internal static string HostlessGatewayBase(string? pathBase)
+            => (pathBase ?? string.Empty).TrimEnd('/') + "/Plugins/Federation/Peer/Play/";
 
         internal static string PublicGatewayBase(string? configured)
         {
@@ -251,16 +265,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     var text = await ReadLimitedAsync(upstream, cancellationToken).ConfigureAwait(false);
                     if (text == null)
                     {
+                        _logger.LogWarning("[Federation] Remote transcode: this server's {Kind} for a friend was too large to pass on", path.Kind);
                         response.StatusCode = StatusCodes.Status502BadGateway;
                         return;
                     }
 
                     var publicBase = PublicGatewayBase(request);
-                    if (string.IsNullOrEmpty(publicBase))
-                    {
-                        response.StatusCode = StatusCodes.Status502BadGateway;
-                        return;
-                    }
 
                     var gatewayBase = publicBase + Uri.EscapeDataString(token) + "/";
                     var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + path.ToNativePath(path.ItemId, path.MediaSourceId), (target, query) =>
