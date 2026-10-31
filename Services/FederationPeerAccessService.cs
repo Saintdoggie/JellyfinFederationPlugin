@@ -26,6 +26,28 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly ILibraryManager _libraryManager;
 
         /// <summary>
+        /// Whether <paramref name="caller"/> may see this server's local user
+        /// <paramref name="userId"/> in <c>Peer/Users</c>. Nobody is visible
+        /// unless shared through <see cref="RemoteServer.ShareAllUsers"/> or
+        /// <see cref="RemoteServer.SharedUserIds"/>.
+        /// </summary>
+        public static bool IsUserVisible(RemoteServer caller, Guid userId)
+        {
+            if (IsSharingExpired(caller))
+            {
+                return false;
+            }
+
+            if (caller.ShareAllUsers)
+            {
+                return true;
+            }
+
+            return (caller.SharedUserIds ?? new System.Collections.Generic.List<string>())
+                .Any(id => Guid.TryParse(id, out var shared) && shared == userId);
+        }
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="FederationPeerAccessService"/> class.
         /// </summary>
         public FederationPeerAccessService(ILibraryManager libraryManager)
@@ -41,6 +63,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool IsLibraryVisible(RemoteServer caller, string? remoteUserId, string libraryFolderId)
         {
+            if (IsSharingExpired(caller) || IsLibraryShareExpired(caller, libraryFolderId))
+            {
+                return false;
+            }
+
             if (!caller.ShareAllLibraries
                 && !(caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
                     .Any(id => FolderIdsEqual(id, libraryFolderId)))
@@ -133,9 +160,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 return false;
             }
 
+            if (IsSharingExpired(caller))
+            {
+                return false;
+            }
+
             if (!caller.ShareAllLibraries
-                && !libraryFolderIds.Value.Any(folderId => (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
-                    .Any(id => FolderIdsEqual(id, folderId))))
+                && !libraryFolderIds.Value.Any(folderId => !IsLibraryShareExpired(caller, folderId)
+                    && (caller.SharedLibraryFolderIds ?? new System.Collections.Generic.List<string>())
+                        .Any(id => FolderIdsEqual(id, folderId))))
+            {
+                return false;
+            }
+
+            // Sharing everything, but some libraries have run out: an item in
+            // an expired library is hidden. "Any", not "all": the resolved ids
+            // also hold the library's physical folder, which never expires.
+            if (caller.ShareAllLibraries
+                && caller.LibraryShareExpiries?.Count > 0
+                && libraryFolderIds.Value.Any(folderId => IsLibraryShareExpired(caller, folderId)))
             {
                 return false;
             }
@@ -216,6 +259,28 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return false;
         }
+
+        /// <summary>
+        /// Whether everything shared with <paramref name="caller"/> has run out
+        /// (<see cref="RemoteServer.SharingExpiresUtc"/>).
+        /// </summary>
+        public static bool IsSharingExpired(RemoteServer caller, DateTime? nowUtc = null)
+            => caller.SharingExpiresUtc is { } expires && (nowUtc ?? DateTime.UtcNow) >= AsUtc(expires);
+
+        /// <summary>
+        /// Whether sharing <paramref name="libraryFolderId"/> with
+        /// <paramref name="caller"/> has run out (<see cref="RemoteServer.LibraryShareExpiries"/>).
+        /// </summary>
+        public static bool IsLibraryShareExpired(RemoteServer caller, string? libraryFolderId, DateTime? nowUtc = null)
+        {
+            var now = nowUtc ?? DateTime.UtcNow;
+            return (caller.LibraryShareExpiries ?? new System.Collections.Generic.List<LibraryShareExpiry>())
+                .Any(e => FolderIdsEqual(e.FolderId, libraryFolderId) && now >= AsUtc(e.ExpiresUtc));
+        }
+
+        // End dates are stored as UTC; one read back without a kind is UTC too.
+        private static DateTime AsUtc(DateTime value)
+            => value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
         /// <summary>
         /// Whether a specific remote user may download (server-side fetch) items
@@ -310,7 +375,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// falling back to an ordinal, case-insensitive string compare only if
         /// either side fails to parse as a Guid at all.
         /// </summary>
-        private static bool FolderIdsEqual(string? a, string? b)
+        internal static bool FolderIdsEqual(string? a, string? b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
             {
@@ -323,6 +388,28 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="caller"/> may learn about this server's other
+        /// friend <paramref name="other"/> through <c>Friends/List</c>. Only
+        /// enabled Jellyfin friends with an address of their own can be
+        /// introduced: a Plex server or Companion cannot accept a friend request,
+        /// and a paired friend's address is only its link. Never the caller itself.
+        /// </summary>
+        public static bool IsFriendVisible(RemoteServer caller, RemoteServer other)
+        {
+            if (IsSharingExpired(caller)
+                || !other.Enabled
+                || other.Kind != ServerKind.Jellyfin
+                || other.Paired
+                || string.Equals(other.Id, caller.Id, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return caller.ShareAllFriends
+                || (caller.SharedFriendIds ?? new System.Collections.Generic.List<string>()).Contains(other.Id, StringComparer.Ordinal);
         }
 
         private static RemoteUserAccessRule? FindRule(RemoteServer caller, string? remoteUserId)

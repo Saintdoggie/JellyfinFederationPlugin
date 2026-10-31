@@ -120,6 +120,10 @@ namespace Jellyfin.Plugin.Federation.Services
             _logger = logger;
         }
 
+        /// <summary>Whether <paramref name="friend"/> is told what is popular here: its own choice, else the default.</summary>
+        public static bool SharesPopularWith(RemoteServer friend)
+            => friend.SharePopular ?? Plugin.Instance?.Configuration?.SharePopularWithFriends ?? false;
+
         /// <summary>
         /// Owner side: the titles this server's users played most in the last 30
         /// days that <paramref name="remoteUserId"/> on <paramref name="caller"/>
@@ -127,7 +131,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public PeerPopularBody GetSharedPopular(RemoteServer caller, string? remoteUserId)
         {
-            if (Plugin.Instance?.Configuration?.SharePopularWithFriends == false)
+            if (!SharesPopularWith(caller))
             {
                 return new PeerPopularBody { Shared = false, Items = new List<PeerPopular>() };
             }

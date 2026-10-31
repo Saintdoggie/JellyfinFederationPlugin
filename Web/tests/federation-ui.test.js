@@ -2455,6 +2455,62 @@ test("admin page has the popular switches saved with the favorites settings", ()
   assert.match(configPage, /SharePopularWithFriends: q\('#fedChkSharePopularWithFriends'\)\.checked/);
 });
 
+function friendSharingApi(config) {
+  const block = configPage.match(/\n {20}(\/\/ Other friends this friend could be told about[\s\S]*?)\n {20}function setSharingStatus/);
+  assert.ok(block, 'friend sharing script not found');
+  const posts = [];
+  const helpers = {
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    currentConfig: config,
+    fedFetch: (url, options) => {
+      posts.push({ url, body: JSON.parse(options.body) });
+      return Promise.resolve({ json: () => Promise.resolve({ success: true, message: 'Saved.' }) });
+    }
+  };
+  const api = new Function(...Object.keys(helpers),
+    'var pendingFriendSharing = {};\n' + block[1] + '\nreturn { renderFriendSharingBlock, saveFriendSharing, pending: () => pendingFriendSharing };')(...Object.values(helpers));
+  return { api, posts };
+}
+
+test('friends they can see: all by default, lists only friends that can be introduced', () => {
+  const servers = [
+    { Id: 'a', Name: 'Asker', Kind: 0 },
+    { Id: 'b', Name: 'Bea <i>', Kind: 0 },
+    { Id: 'c', Name: 'Off', Kind: 0, Enabled: false },
+    { Id: 'd', Name: 'Paired', Kind: 0, Paired: true },
+    { Id: 'p', Name: 'Plex', Kind: 1 },
+    { Id: 'm', Name: 'Companion', Kind: 2 }
+  ];
+  const { api } = friendSharingApi({ AllowFriendsOfFriends: true, RemoteServers: servers });
+  const host = new JSDOM('<div id="x"></div>').window.document.getElementById('x');
+  host.innerHTML = api.renderFriendSharingBlock(servers[0]);
+  assert.equal(host.querySelector('.fedFriendSharingAll').checked, true);
+  assert.equal(host.querySelector('.fedFriendSharingList').style.display, 'none');
+  assert.deepEqual([...host.querySelectorAll('.fedFriendSharingFriend')].map((c) => c.getAttribute('data-friend')), ['b']);
+  assert.equal(host.querySelector('i'), null);
+  assert.match(host.textContent, /Bea <i>/);
+  assert.doesNotMatch(host.textContent, /is off/);
+
+  host.innerHTML = api.renderFriendSharingBlock({ Id: 'b', ShareAllFriends: false, SharedFriendIds: ['a'] });
+  assert.equal(host.querySelector('.fedFriendSharingAll').checked, false);
+  assert.deepEqual([...host.querySelectorAll('.fedFriendSharingFriend:checked')].map((c) => c.getAttribute('data-friend')), ['a']);
+});
+
+test('friends they can see says when friends-of-friends is off, and saves the selection', async () => {
+  const { api, posts } = friendSharingApi({ AllowFriendsOfFriends: false, RemoteServers: [{ Id: 'a', Kind: 0 }] });
+  const html = api.renderFriendSharingBlock({ Id: 'a', ShareAllFriends: false, SharedFriendIds: [] });
+  assert.match(html, /Friends-of-friends is off/);
+  assert.match(html, /no other friends to show/);
+  api.saveFriendSharing('a');
+  await settle();
+  assert.equal(posts[0].url, '/Plugins/Federation/Friends/a/FriendSharing');
+  assert.deepEqual(posts[0].body, { ShareAll: false, FriendIds: [] });
+  assert.equal(api.pending().a, undefined);
+});
+
 test('Beta tab sits before Advanced and holds the pairing card, off by default', () => {
   assert.ok(configPage.indexOf('id="fedTabBeta"') > 0);
   assert.ok(configPage.indexOf('id="fedTabBeta"') < configPage.indexOf('id="fedTabAdvanced"'));
@@ -2469,6 +2525,98 @@ test('Beta tab sits before Advanced and holds the pairing card, off by default',
   assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedChkAdaptivePlayback')));
   assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortFirst')));
   assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortLast')));
+});
+
+function shareDatesApi(responses) {
+  const helpersSrc = configPage.match(/\n {20}(\/\/ Date inputs hold local days[\s\S]*?)\n {20}function showRemoteTranscodeStatus/);
+  const saveSrc = configPage.match(/\n {20}(function saveSharing\(serverId\) \{[\s\S]*?)\n {20}\/\/ Date inputs hold local days/);
+  assert.ok(helpersSrc && saveSrc, 'end date / preview script not found');
+  const posts = [];
+  const statuses = [];
+  const helpers = {
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    renderFriends: () => {},
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    setSharingStatus: (id, msg, kind) => statuses.push([msg, kind]),
+    fedFetch: (url, options) => {
+      posts.push({ url, body: options && options.body ? JSON.parse(options.body) : null });
+      const key = Object.keys(responses || {}).find((k) => url.endsWith(k));
+      return Promise.resolve({ json: () => Promise.resolve(key ? responses[key] : { success: true, message: 'Sharing saved.' }) });
+    }
+  };
+  const api = new Function(...Object.keys(helpers),
+    'var pendingSharing = {}; var friendPreviews = {};\n' + saveSrc[1] + '\n' + helpersSrc[1]
+    + '\nreturn { saveSharing, isoToDateInput, dateInputToIso, renderFriendPreview, togglePreview, pendingSharing, friendPreviews };')(...Object.values(helpers));
+  return { api, posts, statuses };
+}
+
+test('share-until dates: a picked day ends at its last second, and reads back as the same day', () => {
+  const { api } = shareDatesApi();
+  const iso = api.dateInputToIso('2030-05-01');
+  const d = new Date(iso);
+  assert.equal(d.getFullYear(), 2030);
+  assert.equal(d.getMonth(), 4);
+  assert.equal(d.getDate(), 1);
+  assert.equal(d.getHours(), 23);
+  assert.equal(d.getMinutes(), 59);
+  assert.equal(api.isoToDateInput(iso), '2030-05-01');
+  assert.equal(api.dateInputToIso(''), null);
+  assert.equal(api.isoToDateInput(null), '');
+  assert.equal(api.isoToDateInput('garbage'), '');
+});
+
+test('saving sharing also saves the end dates, and a refused end date is reported', async () => {
+  const { api, posts, statuses } = shareDatesApi();
+  api.pendingSharing.f1 = { ShareAll: false, FolderIds: ['m'], ExcludedItems: [], Until: '2030-05-01', LibraryUntil: { m: '2030-04-01', t: '' } };
+  api.friendPreviews.f1 = { success: true };
+  api.saveSharing('f1');
+  await settle(); await settle();
+  assert.deepEqual(posts.map((p) => p.url), ['/Plugins/Federation/Friends/f1/Sharing', '/Plugins/Federation/Friends/f1/Expiry']);
+  assert.equal(posts[1].body.ExpiresUtc, api.dateInputToIso('2030-05-01'));
+  assert.deepEqual(posts[1].body.LibraryExpiries, [{ FolderId: 'm', ExpiresUtc: api.dateInputToIso('2030-04-01') }]);
+  assert.deepEqual(statuses.at(-1), ['Sharing saved.', 'ok']);
+  assert.equal(api.friendPreviews.f1, undefined, 'a stale preview is dropped after saving');
+
+  const refused = shareDatesApi({ '/Expiry': { success: false, message: 'Friend not found.' } });
+  refused.api.pendingSharing.f1 = { ShareAll: true, FolderIds: [], ExcludedItems: [], Until: '', LibraryUntil: {} };
+  refused.api.saveSharing('f1');
+  await settle(); await settle();
+  assert.deepEqual(refused.posts[1].body, { ExpiresUtc: null, LibraryExpiries: [] });
+  assert.deepEqual(refused.statuses.at(-1), ['Friend not found.', 'err']);
+});
+
+test('preview shows what a friend gets, escaped, and says when sharing ended', () => {
+  const { api } = shareDatesApi();
+  const host = new JSDOM('<div id="x"></div>').window.document.getElementById('x');
+  host.innerHTML = api.renderFriendPreview({
+    success: true, name: 'Pal <b>', expired: false, expiresUtc: '2030-05-01T21:59:59Z',
+    libraries: [{ name: 'Movies <i>', visible: true, titles: 3, expiresUtc: null }, { name: 'Kids', visible: false, expired: true, expiresUtc: '2020-01-01T00:00:00Z' }, { name: 'Music', visible: false }],
+    excludedTitles: ['Secret (2001)'], globallyExcludedCount: 2,
+    users: ['anna', 'ben'], friendsOfFriendsEnabled: false, friends: [],
+    userRules: [{ name: 'Kid', mode: 'Blocked', maxRating: null, allowDownload: false }],
+    allowDownloads: true, allowBulkDownloads: false, allowRemoteTranscode: true, maxConcurrentStreams: 2, monthlyDataCapGb: 0
+  });
+  assert.equal(host.querySelector('b'), null);
+  assert.equal(host.querySelector('i'), null);
+  const text = host.textContent;
+  assert.match(text, /What Pal <b> sees right now/);
+  assert.match(text, /Libraries \(1 of 3\)/);
+  assert.match(text, /Movies <i> — 3 titles/);
+  assert.match(text, /Kids — ended/);
+  assert.match(text, /Music — not shared/);
+  assert.match(text, /Secret \(2001\); 2 hidden from every friend/);
+  assert.match(text, /anna, ben/);
+  assert.match(text, /None \(friends-of-friends is off\)/);
+  assert.match(text, /Kid — blocked, no downloads/);
+  assert.match(text, /Single downloads allowed · you convert video for them · up to 2 streams at once · no data limit/);
+  assert.match(text, /stay shared until/);
+
+  const ended = api.renderFriendPreview({ success: true, name: 'Pal', expired: true, expiresUtc: '2020-01-01T00:00:00Z', libraries: [] });
+  assert.match(ended, /Sharing ended on .*: they see none of your libraries/);
+  assert.match(api.renderFriendPreview({ loading: true }), /Checking what they see/);
+  assert.match(api.renderFriendPreview({ error: '<x>' }), /Could not build the preview: &lt;x&gt;/);
 });
 
 test('pairing actions and routes are wired', () => {
@@ -2490,6 +2638,42 @@ test('pairing actions and routes are wired', () => {
   assert.ok(configPage.includes('escapeHtml(f.SafetyNumber)'));
   assert.equal(/gradient/i.test(configPage.slice(configPage.indexOf('fed-pair-code'), configPage.indexOf('fed-pair-code') + 600)), false);
   assert.equal(/gradient/i.test(configPage), false);
+});
+
+test('popular titles and viewer names: a default plus a choice per friend', () => {
+  const src = configPage.match(/\n {20}(\/\/ Per-friend choice for a sharing setting[\s\S]*?)\n {20}function loadFavoritesSettings/);
+  assert.ok(src, 'friend choice script not found');
+  const dom = new JSDOM('<div id="fedPopularFriendChoices"></div><div id="fedViewerNameFriendChoices"></div>');
+  const doc = dom.window.document;
+  const helpers = {
+    q: (sel) => doc.querySelector(sel),
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'))
+  };
+  const api = new Function(...Object.keys(helpers), src[1] + '\nreturn { renderFriendChoices, readFriendChoices };')(...Object.values(helpers));
+  const friends = [{ Id: 'a', Name: 'Ann <b>', SharePopular: null }, { Id: 'b', Name: 'Bo', SharePopular: true }, { Id: 'c', Name: 'Cy', SharePopular: false }];
+  api.renderFriendChoices('fedPopularFriendChoices', friends, 'SharePopular', false, 'Share', "Don't share");
+  const host = doc.getElementById('fedPopularFriendChoices');
+  assert.equal(host.querySelector('b'), null);
+  assert.match(host.textContent, /Ann <b>/);
+  const selects = [...host.querySelectorAll('select')];
+  assert.deepEqual(selects.map((sel) => sel.value), ['default', 'on', 'off']);
+  assert.equal(selects[0].options[0].textContent, "Default (Don't share)");
+  assert.deepEqual(api.readFriendChoices('fedPopularFriendChoices'), [{ Id: 'a', Share: null }, { Id: 'b', Share: true }, { Id: 'c', Share: false }]);
+  selects[2].value = 'default';
+  assert.deepEqual(api.readFriendChoices('fedPopularFriendChoices')[2], { Id: 'c', Share: null });
+
+  api.renderFriendChoices('fedViewerNameFriendChoices', [{ Id: 'a', Name: 'Ann', ShareViewerNames: null }], 'ShareViewerNames', true, 'With names', 'Without names');
+  assert.equal(doc.querySelector('#fedViewerNameFriendChoices option').textContent, 'Default (With names)');
+  api.renderFriendChoices('fedViewerNameFriendChoices', [], 'ShareViewerNames', true, 'With names', 'Without names');
+  assert.equal(doc.getElementById('fedViewerNameFriendChoices').innerHTML, '');
+});
+
+test('popular and viewer-name defaults are on the page and saved with their cards', () => {
+  assert.match(configPage, /id="fedChkSharePopularWithFriends"[^>]*\/> Share what's popular here with friends \(default for each friend\)/);
+  assert.match(configPage, /id="fedChkShareViewerNames"[^>]*\/> Include my viewers' names and devices \(default for each friend\)/);
+  assert.match(configPage, /PopularFriends: readFriendChoices\('fedPopularFriendChoices'\)/);
+  assert.match(configPage, /ShareViewerNamesWithFriends: q\('#fedChkShareViewerNames'\)\.checked,\s*ViewerNameFriends: readFriendChoices\('fedViewerNameFriendChoices'\)/);
+  assert.match(configPage, /q\('#fedChkSharePopularWithFriends'\)\.checked = res\.SharePopularWithFriends === true;/);
 });
 
 test('pairing status renders untrusted text safely and gates the confirm button', () => {
@@ -2528,6 +2712,80 @@ test('pairing status renders untrusted text safely and gates the confirm button'
   assert.match(list.textContent, /Ready\. Choose what to share/);
   api.renderPairingStatus({ Available: false, Reason: 'no UDP', Friends: [] });
   assert.match(doc.getElementById('fedPairingSummary').textContent, /Pairing isn't available on this server: no UDP/);
+});
+
+function userSharingApi(extra) {
+  const block = configPage.match(/\n {20}(function loadLocalUsers\(\) \{[\s\S]*?)\n {20}function renderSharingBlock/);
+  assert.ok(block, 'user sharing script not found');
+  const posts = [];
+  const helpers = Object.assign({
+    q: () => null,
+    escapeHtml: (v) => (v === null || v === undefined ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')),
+    renderFriends: () => {},
+    loadConfiguration: () => Promise.resolve(),
+    readJson: (r) => r.json(),
+    fedFetch: (url, options) => {
+      posts.push({ url, body: options && options.body ? JSON.parse(options.body) : null });
+      return Promise.resolve({ json: () => Promise.resolve(url.endsWith('/LocalUsers') ? [{ id: 'u1', name: 'Anna <b>', isAdministrator: true }, { id: 'u2', name: 'Ben', isAdministrator: false }] : { success: true, message: 'Saved.' }) });
+    }
+  }, extra || {});
+  const api = new Function(...Object.keys(helpers),
+    'var localUsersCache = null; var pendingUserSharing = {};\n' + block[1]
+    + '\nreturn { loadLocalUsers, renderUserSharingBlock, saveUserSharing, pending: () => pendingUserSharing };')(...Object.values(helpers));
+  return { api, posts };
+}
+
+test('friends see none of my users unless I pick them, and names are escaped', async () => {
+  const { api } = userSharingApi();
+  await api.loadLocalUsers();
+  const dom = new JSDOM('<div id="x"></div>');
+  const host = dom.window.document.getElementById('x');
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f1', Name: 'Pal' });
+  assert.equal(host.querySelector('.fedUserSharingAll').checked, false);
+  assert.equal(host.querySelectorAll('.fedUserSharingUser').length, 2);
+  assert.equal(host.querySelectorAll('.fedUserSharingUser:checked').length, 0);
+  assert.equal(host.querySelector('b'), null);
+  assert.match(host.textContent, /Anna <b>/);
+  assert.ok(host.querySelector('[data-fed-action="save-user-sharing"][data-id="f1"]'));
+
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f2', ShareAllUsers: false, SharedUserIds: ['u2'] });
+  assert.deepEqual([...host.querySelectorAll('.fedUserSharingUser:checked')].map((c) => c.getAttribute('data-user')), ['u2']);
+  host.innerHTML = api.renderUserSharingBlock({ Id: 'f3', ShareAllUsers: true });
+  assert.equal(host.querySelector('.fedUserSharingAll').checked, true);
+  assert.equal(host.querySelector('.fedUserSharingList').style.display, 'none');
+});
+
+test('saving user sharing posts the selection to the friend endpoint', async () => {
+  const { api, posts } = userSharingApi();
+  api.renderUserSharingBlock({ Id: 'f 1', SharedUserIds: ['u1'] });
+  api.saveUserSharing('f 1');
+  await settle();
+  const post = posts.find((p) => p.url.includes('/UserSharing'));
+  assert.equal(post.url, '/Plugins/Federation/Friends/f%201/UserSharing');
+  assert.deepEqual(post.body, { ShareAll: false, UserIds: ['u1'] });
+  assert.equal(api.pending()['f 1'], undefined, 'pending selection is dropped once saved');
+});
+
+test('their people: rules stay listed when the friend stops showing that user', () => {
+  const block = configPage.match(/\n {20}(function renderRemoteUserAccessBlock\(server\) \{[\s\S]*?)\n {20}function renderUserRuleEditor/);
+  assert.ok(block, 'remote user block not found');
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const make = (users) => new Function('remoteUsersCache', 'loadRemoteUsersFor', 'escapeHtml', 'ruleKey', 'existingUserRule', 'expandedUserRuleEditors', 'ruleStatusLabel', 'renderUserRuleEditor',
+    block[1] + '\nreturn renderRemoteUserAccessBlock;')(
+    { f1: { loading: false, users } }, () => {}, esc, (s, u) => s + '::' + u,
+    (server, id) => (server.RemoteUserAccessRules || []).filter((r) => r.RemoteUserId === id)[0] || null,
+    {}, (rule) => (rule ? 'Blocked' : 'Everything shared'), () => '');
+  const server = { Id: 'f1', Name: 'Pal', RemoteUserAccessRules: [{ RemoteUserId: 'gone', RemoteUserName: 'Carla', Mode: 3 }] };
+
+  const withRule = make([])(server);
+  assert.match(withRule, /Carla \(no longer shown by them\)/);
+  assert.match(withRule, /data-key="f1::gone"/);
+
+  const none = make([])({ Id: 'f1', Name: 'Pal' });
+  assert.match(none, /haven't shown you any of their users/);
+  const shown = make([{ id: 'u', name: 'Dora' }])(server);
+  assert.match(shown, /Dora/);
+  assert.match(shown, /Carla \(no longer shown by them\)/);
 });
 
 test('dynamic CSS selectors safely match hostile quote and backslash IDs', () => {
