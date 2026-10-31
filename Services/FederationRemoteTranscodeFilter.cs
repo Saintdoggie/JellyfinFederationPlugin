@@ -415,7 +415,7 @@ namespace Jellyfin.Plugin.Federation.Services
             cap = _routeMetrics?.GetCapMbps(user.Id, info.DeviceId, server.Id, viaLink ? "direct-link" : FederatedRoute.FriendConverts, cap) ?? cap;
             if (path.StartsWork && _bandwidth != null)
             {
-                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity);
+                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity, user.Id.ToString("N") + "|" + info.DeviceId);
                 if (!allocation.Accepted)
                 {
                     throw new FederationBandwidthExceededException();
@@ -446,7 +446,7 @@ namespace Jellyfin.Plugin.Federation.Services
             cap = _routeMetrics?.GetCapMbps(userId, info.DeviceId, server.Id, FederatedRoute.Relay, cap) ?? cap;
             if (path.StartsWork && _bandwidth != null)
             {
-                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity);
+                var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity, userId.ToString("N") + "|" + info.DeviceId);
                 if (!allocation.Accepted)
                 {
                     throw new FederationBandwidthExceededException();

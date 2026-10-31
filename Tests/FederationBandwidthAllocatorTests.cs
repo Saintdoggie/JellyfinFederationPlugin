@@ -22,8 +22,39 @@ public class FederationBandwidthAllocatorTests
         Assert.Equal(20, first.CapMbps);
         Assert.Equal(20, duplicate.CapMbps);
         Assert.Equal(10, second.CapMbps);
-        Assert.False(third.Accepted);
+
+        // Capacity used up: the third play still plays, on an equal share.
+        Assert.True(third.Accepted);
+        Assert.Equal(5, third.CapMbps);
+        Assert.Equal(35, _allocator.ReservedMbps("friend"));
+    }
+
+    [Fact]
+    public void UsedUpCapacity_GivesAnEqualShareInsteadOfARefusal()
+    {
+        _allocator.Allocate("friend", "play-1", 30, 30);
+
+        var next = _allocator.Allocate("friend", "play-2", 30, 30);
+
+        Assert.True(next.Accepted);
+        Assert.Equal(15, next.CapMbps);
+    }
+
+    [Fact]
+    public void ANewPlayFromTheSameDevice_ReplacesItsEarlierReservation()
+    {
+        // jellyfin-web retrying a failed start, or the next episode: a new play
+        // session from the same viewer and device must not compete with the old one.
+        Assert.Equal(30, _allocator.Allocate("friend", "play-1", 30, 30, "user|device").CapMbps);
+
+        var retry = _allocator.Allocate("friend", "play-2", 30, 30, "user|device");
+
+        Assert.True(retry.Accepted);
+        Assert.Equal(30, retry.CapMbps);
         Assert.Equal(30, _allocator.ReservedMbps("friend"));
+
+        // Another device of the same user is a second viewer and shares.
+        Assert.Equal(15, _allocator.Allocate("friend", "play-3", 30, 30, "user|tv").CapMbps);
     }
 
     [Fact]
