@@ -5126,12 +5126,13 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             // The users this server chose to show this friend are the sharing scope
-            // here: none chosen, nothing to list (whatever libraries are shared), and
+            // here: none chosen, an empty list (whatever libraries are shared; the
+            // friend's admin page then says so instead of reporting an error), and
             // chosen ones are listed even to a friend we share no library with - it
             // needs them to show its viewers' names on our dashboard.
             if (!caller.ShareAllUsers && (caller.SharedUserIds == null || caller.SharedUserIds.Count == 0))
             {
-                return StatusCode(StatusCodes.Status403Forbidden, new { error = "No users are shared with this friend." });
+                return Ok(Array.Empty<object>());
             }
 
             var users = new List<object>();
