@@ -460,19 +460,20 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var index = Math.Clamp(snapshot.Index, 0, mappedQueue.Count - 1);
             var sameQueue = LocalQueue().SequenceEqual(mappedQueue);
+            var position = SnapshotPosition(e, snapshot, now, out var timelyForCorrection);
             Synced.SetQueue(mappedQueue, index);
             if (snapshot.IsPlaying)
             {
-                Synced.Unpause(snapshot.PositionTicks, now);
+                Synced.Unpause(position, now);
             }
             else
             {
-                Synced.Pause(snapshot.PositionTicks, now);
+                Synced.Pause(position, now);
             }
 
             if (!sameQueue)
             {
-                actions.Add(new PartyAction(PartyActionKind.SetQueue, mappedQueue, index, snapshot.PositionTicks));
+                actions.Add(new PartyAction(PartyActionKind.SetQueue, mappedQueue, index, position));
             }
             else if (Local.Index != index && index < Local.Playlist.Count)
             {
@@ -481,20 +482,27 @@ namespace Jellyfin.Plugin.Federation.Services
             else if (first)
             {
                 // Already on the right title (the joiner was watching it): line up the position.
-                if (Math.Abs(Local.PositionAt(now) - snapshot.PositionTicks) > SeekTolerance)
+                if (Math.Abs(Local.PositionAt(now) - position) > SeekTolerance)
                 {
-                    actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: snapshot.PositionTicks));
+                    actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: position));
                 }
             }
             else if (e.Kind == PartyEventKind.Heartbeat)
             {
+                if (!timelyForCorrection)
+                {
+                    // A delayed heartbeat describes where the host used to be. Never
+                    // seek back to it or let it override a newer local state change.
+                    return;
+                }
+
                 if (snapshot.Stable && !WaitSent)
                 {
                     // The host has settled, so any pause it asked for is over.
                     PausedForHost = false;
                 }
 
-                PlanCorrection(snapshot, now, actions);
+                PlanCorrection(snapshot, position, now, actions);
                 return;
             }
 
@@ -509,7 +517,25 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        private void PlanCorrection(PartySnapshot snapshot, DateTime now, List<PartyAction> actions)
+        private static long SnapshotPosition(PartyEvent e, PartySnapshot snapshot, DateTime now, out bool timelyForCorrection)
+        {
+            timelyForCorrection = true;
+            if (e.SentAtUtc is not { } sentAt)
+            {
+                return snapshot.PositionTicks;
+            }
+
+            var age = now - sentAt;
+            timelyForCorrection = age >= TimeSpan.FromSeconds(-1) && age <= TimeSpan.FromSeconds(3);
+            if (!snapshot.IsPlaying || age < TimeSpan.Zero || age > TimeSpan.FromSeconds(30))
+            {
+                return snapshot.PositionTicks;
+            }
+
+            return snapshot.PositionTicks + age.Ticks;
+        }
+
+        private void PlanCorrection(PartySnapshot snapshot, long positionTicks, DateTime now, List<PartyAction> actions)
         {
             if (!snapshot.Stable
                 || PausedForHost
@@ -521,9 +547,9 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var playing = Local.State == GroupStateType.Playing;
-            if (Math.Abs(Local.PositionAt(now) - snapshot.PositionTicks) > (snapshot.IsPlaying ? PlayingDrift : PausedDrift))
+            if (Math.Abs(Local.PositionAt(now) - positionTicks) > (snapshot.IsPlaying ? PlayingDrift : PausedDrift))
             {
-                actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: snapshot.PositionTicks));
+                actions.Add(new PartyAction(PartyActionKind.Seek, PositionTicks: positionTicks));
             }
 
             if (snapshot.IsPlaying != playing)

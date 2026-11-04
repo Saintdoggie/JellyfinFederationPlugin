@@ -45,9 +45,13 @@ HTTP, UI, and browser injection:
   changed route; anonymous Plex offers are the intentional exception.
   `Configuration/FederationAddInPageController.cs` serves only named, elevated
   add-in page resources through the core loader in `Web/admin/addinPage.html`.
+  `Configuration/IntegrationCatalogController.cs` and
+  `Services/IntegrationCatalogService.cs` expose compatible entries from
+  `integrations/catalog.json`. That catalog is discovery-only: no package download,
+  remote HTML/JavaScript, or third-party executable installation is permitted.
 - `Web/admin/configPage.html` — embedded core admin UI. It is currently a large
   single-file page with Friends, Pools, Discovery, Libraries, Browse/Downloads,
-  Catalog, Storage, and Advanced tabs, plus links to the optional add-in.
+  Catalog, Storage, Beta, Integrations, and Advanced tabs, plus links to the optional add-in.
   `Plex/Web/admin/plexPage.html` owns Plex/Companion setup, import and export UI.
 - `Web/client/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
@@ -87,7 +91,9 @@ Playback, authorization, and downloads:
   retries, cancellation, and external-source streaming.
 - `Services/FederationPlaybackTokenService.cs` — item-scoped, purpose-scoped
   remote playback/download tokens and the ordinary-download throttle.
-- `Services/FederationUserSessionTokenService.cs` — per-user session tokens.
+- `Services/FederationUserSessionTokenService.cs` — per-user session tokens. Both
+  this service and playback tokens persist only SHA-256 hashes, flush on shutdown,
+  and serialize file writes so a restart does not invalidate cached direct plays.
 - `Services/FederationTokenAuth.cs` — federation peer authentication.
 - `Services/FederationPeerAccessService.cs` — authoritative outgoing sharing
   rules on the content-owning peer.
@@ -108,6 +114,9 @@ Playback, authorization, and downloads:
   (title matching across servers), `PartyWire.cs`, `FederatedPartyFilters.cs`
   (adds friends' parties to `/SyncPlay/List`, answers `/SyncPlay/Join`). E2E:
   `scripts/federation_party_smoke.py` with `scripts/syncplay_player.py`.
+  Party wire v2 adds `PartyPeerGate.cs`: negotiated connection IDs, ordered
+  sequences, heartbeat send timing, bounded queues and stale-heartbeat rejection.
+  Keep version-1 fallback for older friends and never apply events across links.
 - `Services/FederationFriendFavoritesService.cs` — friends' favorites: owner
   `Peer/Favorites`, viewer `FriendFavorites`; rows in `Web/client/federation-badge.js`. The old quality replacement endpoint is retired; Storage
   cleanup is delete-only and revalidates every exact local item immediately.
@@ -123,7 +132,8 @@ Playback, authorization, and downloads:
 - `Services/PlaybackRouteMetrics.cs` — bounded per-user/device/route browser
   telemetry (numeric only, never media URLs); native clients without telemetry keep
   declared/server-route limits. `Services/FederationBandwidthAllocator.cs` shares
-  measured capacity between PlaySessionIds and releases on stop/idle expiry.
+  measured capacity between PlaySessionIds, replaces same-device retries, and
+  rebalances estimated capacity instead of refusing new plays when the estimate fills.
 - Provider playback enumerates every Jellyfin remote media source. Exact remote
   `mediaSourceId` values must stay bound through local source IDs, DirectStream,
   `PeerPlaybackGrants`, HLS/progressive/subtitle paths, and native loopback URLs.

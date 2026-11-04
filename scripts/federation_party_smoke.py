@@ -74,6 +74,11 @@ def smoke():
             qa.request(base, '/Plugins/Federation/Configuration', admin, settings)
             servers.append({'base': base, 'admin': admin, 'password': password, 'login': login, 'name': name})
         source, friend = servers
+        catalog = qa.request(source['base'], '/Plugins/Federation/Integrations', source['admin'])
+        qa.check(any(i.get('id') == 'org.jellyfin.federation.plex' for i in catalog.get('integrations', [])), f'Plex catalog entry missing: {catalog}')
+        plex_entry = next(i for i in catalog['integrations'] if i['id'] == 'org.jellyfin.federation.plex')
+        qa.check(plex_entry['installed'] is False, 'Core-only fixture should not report the Plex add-in installed')
+        print('INTEGRATION PASS: compatible Plex entry appears from the bundled discovery-only catalog without downloading code', flush=True)
         qa.request(source['base'], '/Library/VirtualFolders?name=QA%20Native&collectionType=movies&refreshLibrary=true', source['admin'],
             {'LibraryOptions':{'PathInfos':[{'Path':'/media'}],'EnableRealtimeMonitor':False,'EnableInternetProviders':False}}, expected=204)
         def movies(base, headers):

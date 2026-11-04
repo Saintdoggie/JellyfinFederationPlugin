@@ -66,7 +66,9 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clients;
         private readonly ILogger<FederatedPartyService> _logger;
 
-        private readonly Channel<Func<Task>> _work = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
+        private const int MaxQueuedWork = 1024;
+        private const int MaxQueuedMessagesPerPeer = 256;
+        private readonly Channel<Func<Task>> _work = Channel.CreateBounded<Func<Task>>(new BoundedChannelOptions(MaxQueuedWork) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
         private readonly ConcurrentDictionary<string, Channel<Func<Task>>> _outboxes = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Guid, HostParty> _hosted = new();
         private readonly Dictionary<Guid, RemoteParty> _remote = new();
@@ -315,11 +317,13 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 var group = _syncPlay.NewGroup(session, new NewGroupRequest(party.Name + " · " + host.Name), CancellationToken.None);
-                var link = await CreateLinkAsync(party.PartyId, PartyLinkRole.RemoteSide, host, user, LinkLabel(party.Participants, host.Name), group.GroupId).ConfigureAwait(false);
+                var protocolVersion = party.HostProtocolVersion >= PartyProtocol.CurrentVersion ? PartyProtocol.CurrentVersion : 1;
+                var connectionId = protocolVersion >= PartyProtocol.CurrentVersion ? Guid.NewGuid() : Guid.Empty;
+                var link = await CreateLinkAsync(party.PartyId, PartyLinkRole.RemoteSide, host, user, LinkLabel(party.Participants, host.Name), group.GroupId, protocolVersion, connectionId).ConfigureAwait(false);
                 party.Mirror = link;
                 Execute(link, new IgnoreWaitGroupRequest(true));
                 _logger.LogInformation("[Federation] {User} joined {Host}'s watch party {Party}", user.Username, host.Name, party.Name);
-                Send(link, party.PartyId.ToString("N") + "/Join", new PartyMembership { Participants = RealParticipants(link.GroupId, user.Id) }, status =>
+                Send(link, party.PartyId.ToString("N") + "/Join", new PartyMembership { Participants = RealParticipants(link.GroupId, user.Id), ProtocolVersion = protocolVersion, ConnectionId = connectionId }, status =>
                 {
                     if (status != 200)
                     {
@@ -377,6 +381,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 existing.Name = Clean(announcement.Name, 80) ?? "Watch party";
                 existing.Participants = (announcement.Participants ?? new List<string>()).Select(n => Clean(n, 60)).OfType<string>().Take(20).ToList();
                 existing.Snapshot = announcement.Snapshot;
+                existing.HostProtocolVersion = announcement.ProtocolVersion;
                 existing.LastHeard = DateTime.UtcNow;
                 if (existing.Mirror is { } mirror)
                 {
@@ -411,8 +416,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     party.Links.Remove(caller.Id);
                 }
 
+                if (membership.ProtocolVersion >= PartyProtocol.CurrentVersion && membership.ConnectionId == Guid.Empty)
+                {
+                    return 400;
+                }
+
+                var protocolVersion = membership.ProtocolVersion >= PartyProtocol.CurrentVersion ? PartyProtocol.CurrentVersion : 1;
+                var connectionId = protocolVersion >= PartyProtocol.CurrentVersion ? membership.ConnectionId : Guid.Empty;
                 var creator = party.Creator;
-                var link = await CreateLinkAsync(partyId, PartyLinkRole.HostSide, caller, creator, LinkLabel(membership?.Participants, caller.Name), party.GroupId).ConfigureAwait(false);
+                var link = await CreateLinkAsync(partyId, PartyLinkRole.HostSide, caller, creator, LinkLabel(membership?.Participants, caller.Name), party.GroupId, protocolVersion, connectionId).ConfigureAwait(false);
                 link.Logic.Holding = true;
                 link.Logic.HoldingSince = DateTime.UtcNow;
                 party.Links[caller.Id] = link;
@@ -462,29 +474,45 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 LinkHandle? link = null;
+                RemoteParty? remoteParty = null;
                 if (_hosted.TryGetValue(partyId, out var hosted))
                 {
                     hosted.Links.TryGetValue(caller.Id, out link);
                 }
                 else if (_remote.TryGetValue(partyId, out var remote) && string.Equals(remote.HostServerId, caller.Id, StringComparison.Ordinal))
                 {
-                    remote.LastHeard = DateTime.UtcNow;
-                    if (e.Participants != null)
-                    {
-                        remote.Participants = e.Participants.Select(n => Clean(n, 60)).OfType<string>().Take(20).ToList();
-                    }
-
-                    if (e.Snapshot != null)
-                    {
-                        remote.Snapshot = e.Snapshot;
-                    }
-
+                    remoteParty = remote;
                     link = remote.Mirror;
                 }
 
                 if (link == null || link.Closed)
                 {
                     return Task.FromResult(404);
+                }
+
+                var acceptance = link.Gate.Accept(e);
+                if (acceptance == PartyEventAcceptance.WrongLink)
+                {
+                    return Task.FromResult(409);
+                }
+
+                if (acceptance == PartyEventAcceptance.Stale)
+                {
+                    return Task.FromResult(200);
+                }
+
+                if (remoteParty != null)
+                {
+                    remoteParty.LastHeard = DateTime.UtcNow;
+                    if (e.Participants != null)
+                    {
+                        remoteParty.Participants = e.Participants.Select(n => Clean(n, 60)).OfType<string>().Take(20).ToList();
+                    }
+
+                    if (e.Snapshot != null)
+                    {
+                        remoteParty.Snapshot = e.Snapshot;
+                    }
                 }
 
                 if (e.Participants != null)
@@ -548,6 +576,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var announcement = new PartyAnnouncement
                 {
+                    ProtocolVersion = PartyProtocol.CurrentVersion,
                     PartyId = party.PartyId,
                     Name = party.Name,
                     Participants = participants,
@@ -590,7 +619,7 @@ namespace Jellyfin.Plugin.Federation.Services
             => _hosted.Values.SelectMany(p => p.Links.Values.Concat(p.Observer == null ? Enumerable.Empty<LinkHandle>() : new[] { p.Observer }))
                 .Concat(_remote.Values.Where(p => p.Mirror != null).Select(p => p.Mirror!));
 
-        private async Task<LinkHandle> CreateLinkAsync(Guid partyId, PartyLinkRole role, RemoteServer? peer, User user, string label, Guid groupId)
+        private async Task<LinkHandle> CreateLinkAsync(Guid partyId, PartyLinkRole role, RemoteServer? peer, User user, string label, Guid groupId, int protocolVersion = 1, Guid connectionId = default)
         {
             var deviceId = "federation-party-" + partyId.ToString("N") + "-" + (peer == null ? "observer" : Safe(peer.Id));
             var session = await _sessions.LogSessionActivity(
@@ -601,7 +630,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 "127.0.0.1",
                 user).ConfigureAwait(false);
             session.UserName = label;
-            var link = new LinkHandle(partyId, new PartyLink(role, DateTime.UtcNow), session, groupId, peer);
+            var link = new LinkHandle(partyId, new PartyLink(role, DateTime.UtcNow), session, groupId, peer, new PartyPeerGate(protocolVersion, connectionId));
             link.Controller = new PartyBridgeController(message => Post(() => OnLinkMessageAsync(link, message)));
             session.SessionControllers = new ISessionController[] { link.Controller };
             _syncPlay.JoinGroup(session, new JoinGroupRequest(groupId), CancellationToken.None);
@@ -729,7 +758,11 @@ namespace Jellyfin.Plugin.Federation.Services
                             Stable = e.Snapshot.Stable,
                             Shuffle = e.Snapshot.Shuffle,
                             Repeat = e.Snapshot.Repeat
-                        }
+                        },
+                        ProtocolVersion = e.ProtocolVersion,
+                        ConnectionId = e.ConnectionId,
+                        Sequence = e.Sequence,
+                        SentAtUtc = e.SentAtUtc
                     };
                 }
             }
@@ -925,16 +958,43 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         private void SendEvent(LinkHandle link, PartyEvent e)
-            => Send(link, link.PartyId.ToString("N") + "/Event", e, status =>
+        {
+            if (link.Peer == null || link.Closed)
             {
+                return;
+            }
+
+            var heartbeat = e.Kind == PartyEventKind.Heartbeat;
+            if (link.Gate.ProtocolVersion >= PartyProtocol.CurrentVersion && !e.SentAtUtc.HasValue)
+            {
+                // Capture when the position was built, not when a potentially queued
+                // HTTP send eventually starts. Otherwise an old position looks fresh.
+                e.SentAtUtc = DateTime.UtcNow;
+            }
+
+            if (heartbeat && Interlocked.CompareExchange(ref link.HeartbeatPending, 1, 0) != 0)
+            {
+                // One pending/in-flight heartbeat per link is enough. The next tick
+                // builds a fresh position instead of accumulating stale corrections.
+                return;
+            }
+
+            Send(link, link.PartyId.ToString("N") + "/Event", e, status =>
+            {
+                if (heartbeat)
+                {
+                    Interlocked.Exchange(ref link.HeartbeatPending, 0);
+                }
+
                 if (status is 404 or 410)
                 {
                     // The other side no longer has this link.
                     Post(() => OnLinkLeftAsync(link));
                 }
-            });
+            }, () => link.Gate.Prepare(e, DateTime.UtcNow));
+        }
 
-        private void Send(LinkHandle link, string path, object body, Action<int>? done = null)
+        private void Send(LinkHandle link, string path, object body, Action<int>? done = null, Action? beforeSend = null)
         {
             if (link.Peer == null || link.Closed)
             {
@@ -949,14 +1009,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 done?.Invoke(status);
-            });
+            }, beforeSend);
         }
 
-        private void SendTo(RemoteServer peer, string path, object body, Action<int>? done)
+        private void SendTo(RemoteServer peer, string path, object body, Action<int>? done, Action? beforeSend = null)
         {
             var outbox = _outboxes.GetOrAdd(peer.Id, id =>
             {
-                var channel = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
+                var channel = Channel.CreateBounded<Func<Task>>(new BoundedChannelOptions(MaxQueuedMessagesPerPeer) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
                 _ = Task.Run(async () =>
                 {
                     await foreach (var send in channel.Reader.ReadAllAsync(_stopping.Token).ConfigureAwait(false))
@@ -974,8 +1034,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return channel;
             });
 
-            outbox.Writer.TryWrite(async () =>
+            var written = outbox.Writer.TryWrite(async () =>
             {
+                beforeSend?.Invoke();
                 var client = _clients.GetClient(peer);
                 var status = 0;
                 if (client != null)
@@ -988,6 +1049,11 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
                     catch (OperationCanceledException) when (!_stopping.IsCancellationRequested)
                     {
+                        status = 0;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogDebug(ex, "[Federation] Watch party request failed");
                         status = 0;
                     }
                 }
@@ -1010,6 +1076,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     });
                 }
             });
+            if (!written && done != null)
+            {
+                _logger.LogWarning("[Federation] Watch party outbox for {Friend} is full; dropping a message", peer.Name);
+                Post(() =>
+                {
+                    done(0);
+                    return Task.CompletedTask;
+                });
+            }
         }
 
         private async Task TickAsync()
@@ -1192,12 +1267,12 @@ namespace Jellyfin.Plugin.Federation.Services
             return cleaned.Length == 0 ? null : cleaned.Length > max ? cleaned[..max] : cleaned;
         }
 
-        private void Post(Func<Task> work) => _work.Writer.TryWrite(work);
+        private bool Post(Func<Task> work) => _work.Writer.TryWrite(work);
 
         private Task<T> RunAsync<T>(Func<Task<T>> work)
         {
             var done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-            Post(async () =>
+            if (!Post(async () =>
             {
                 try
                 {
@@ -1207,7 +1282,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     done.SetException(ex);
                 }
-            });
+            }))
+            {
+                done.SetException(new InvalidOperationException("The watch-party work queue is full."));
+            }
+
             return done.Task;
         }
 
@@ -1236,13 +1315,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>One link's live pieces.</summary>
         internal sealed class LinkHandle
         {
-            public LinkHandle(Guid partyId, PartyLink logic, SessionInfo bridge, Guid groupId, RemoteServer? peer)
+            public LinkHandle(Guid partyId, PartyLink logic, SessionInfo bridge, Guid groupId, RemoteServer? peer, PartyPeerGate gate)
             {
                 PartyId = partyId;
                 Logic = logic;
                 Bridge = bridge;
                 GroupId = groupId;
                 Peer = peer;
+                Gate = gate;
             }
 
             public Guid PartyId { get; }
@@ -1255,7 +1335,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             public RemoteServer? Peer { get; }
 
+            public PartyPeerGate Gate { get; }
+
             public PartyBridgeController? Controller { get; set; }
+
+            public int HeartbeatPending;
 
             public DateTime LastPeerSuccess { get; set; } = DateTime.UtcNow;
 
@@ -1302,6 +1386,8 @@ namespace Jellyfin.Plugin.Federation.Services
             public Guid PartyId { get; }
 
             public string HostServerId { get; }
+
+            public int HostProtocolVersion { get; set; }
 
             public string Name { get; set; } = string.Empty;
 

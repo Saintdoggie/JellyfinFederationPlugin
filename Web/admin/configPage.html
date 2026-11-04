@@ -500,6 +500,7 @@
                 <button id="fedTabBrowse" aria-controls="fedPanelBrowse" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="browse" role="tab" aria-selected="false">Downloads</button>
                 <button id="fedTabStorage" aria-controls="fedPanelStorage" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="storage" role="tab" aria-selected="false">Storage</button>
                 <button id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="beta" role="tab" aria-selected="false">Beta</button>
+                <button id="fedTabIntegrations" aria-controls="fedPanelIntegrations" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="integrations" role="tab" aria-selected="false">Integrations</button>
                 <button id="fedTabAdvanced" aria-controls="fedPanelAdvanced" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="advanced" role="tab" aria-selected="false">Advanced</button>
                 <button id="fedTabLog" aria-controls="fedPanelLog" tabindex="-1" is="emby-button" type="button" class="fed-tab-btn" data-fed-action="switch-tab" data-tab="log" role="tab" aria-selected="false">Log <span id="fedLogBadge" class="fed-log-badge"></span></button>
             </div>
@@ -915,6 +916,18 @@
                             <span class="fed-savemsg" id="fedSaveMsgBeta"></span>
                         </div>
                     </div>
+                </div>
+
+                <div id="fedPanelIntegrations" aria-labelledby="fedTabIntegrations" class="fed-tabpanel" data-tab-panel="integrations" role="tabpanel">
+                    <details class="fed-details" open>
+                        <summary>Integrations</summary>
+                        <div class="fed-details-body">
+                            <p class="fieldDescription">Compatible entries from the reviewed GitHub catalog. This page is discovery-only: it never downloads code or runs catalog scripts. Plex installation still requires the version-matched add-in and a restart.</p>
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="load-integrations">Refresh catalog</button>
+                            <div id="fedIntegrationStatus" class="fed-srvstatus" role="status"></div>
+                            <div id="fedIntegrationList"></div>
+                        </div>
+                    </details>
                 </div>
 
                 <div id="fedPanelAdvanced" aria-labelledby="fedTabAdvanced" class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
@@ -6966,9 +6979,44 @@
                             .catch(function () { /* keep the last snapshot */ });
                     }
 
+                    /* ---------------- Integrations ---------------- */
+
+                    function loadIntegrations(refresh) {
+                        var status = q('#fedIntegrationStatus');
+                        var list = q('#fedIntegrationList');
+                        status.textContent = refresh ? 'Refreshing the reviewed catalog…' : 'Loading compatible integrations…';
+                        status.className = 'fed-srvstatus fed-srvstatus-info';
+                        list.innerHTML = '';
+                        return fedFetch('/Plugins/Federation/Integrations' + (refresh ? '?refresh=true' : ''))
+                            .then(function (r) { return readJson(r); })
+                            .then(function (d) {
+                                var entries = (d && d.integrations) || [];
+                                status.textContent = d.warning || (entries.length ? 'Only compatible entries are shown. No packages were downloaded.' : 'No compatible integrations are currently listed.');
+                                status.className = 'fed-srvstatus ' + (d.warning ? 'fed-srvstatus-err' : 'fed-srvstatus-info');
+                                list.innerHTML = entries.map(function (entry) {
+                                    var html = '<div class="fed-server"><div class="fed-server-head"><strong>' + escapeHtml(entry.name) + '</strong>'
+                                        + '<span class="fed-pill">' + escapeHtml(entry.installed ? 'Installed' : entry.type) + '</span></div>'
+                                        + '<p class="fieldDescription">' + escapeHtml(entry.summary) + '</p>'
+                                        + '<p class="fed-hint">Publisher: ' + escapeHtml(entry.publisher) + '</p>'
+                                        + '<p class="fed-hint">Capabilities: ' + escapeHtml((entry.capabilities || []).join(', ')) + '</p><p>';
+                                    if (entry.installed && entry.builtinProviderId === 'Plex') {
+                                        html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="open-plex-addin">Open Plex add-in</button> ';
+                                    }
+                                    if (entry.installGuideUrl) {
+                                        html += '<a class="emby-button button-flat" href="' + escapeHtml(entry.installGuideUrl) + '" target="_blank" rel="noopener noreferrer nofollow">Installation guide</a>';
+                                    }
+                                    return html + '</p></div>';
+                                }).join('');
+                            })
+                            .catch(function (e) {
+                                status.textContent = 'Could not load the integration catalog: ' + e.message;
+                                status.className = 'fed-srvstatus fed-srvstatus-err';
+                            });
+                    }
+
                     /* ---------------- Tabs ---------------- */
 
-                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'beta', 'advanced', 'log'];
+                    var TAB_NAMES = ['friends', 'pools', 'discovery', 'libraries', 'catalog', 'browse', 'storage', 'beta', 'integrations', 'advanced', 'log'];
                     var TAB_STORAGE_KEY = 'federationConfigActiveTab';
                     var activeTab = 'friends';
 
@@ -7030,6 +7078,10 @@
                         armBrowseSentinel(browseState.lastBatchFull);
                         if (tab === 'storage') {
                             loadQualityUpgrades();
+                        }
+
+                        if (tab === 'integrations') {
+                            loadIntegrations(false);
                         }
 
                         if (tab === 'log') {
@@ -7166,6 +7218,9 @@
                                     break;
                                 case 'open-plex-addin':
                                     openPlexAddIn();
+                                    break;
+                                case 'load-integrations':
+                                    loadIntegrations(true);
                                     break;
                                 case 'onboard-save':
                                     finishOnboarding(true);

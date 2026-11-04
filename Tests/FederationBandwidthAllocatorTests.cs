@@ -21,8 +21,38 @@ public class FederationBandwidthAllocatorTests
 
         Assert.Equal(20, first.CapMbps);
         Assert.Equal(20, duplicate.CapMbps);
-        Assert.Equal(10, second.CapMbps);
-        Assert.False(third.Accepted);
+        Assert.Equal(15, second.CapMbps);
+
+        // Capacity is rebalanced rather than refusing the next play. The smaller
+        // request is satisfied first and the remaining capacity is shared again.
+        Assert.True(third.Accepted);
+        Assert.Equal(5, third.CapMbps);
+        Assert.Equal(29, _allocator.ReservedMbps("friend"));
+        Assert.Equal(12, _allocator.Allocate("friend", "play-1", 20, 30).CapMbps);
+        Assert.Equal(12, _allocator.Allocate("friend", "play-2", 20, 30).CapMbps);
+        Assert.Equal(29, _allocator.ReservedMbps("friend"));
+    }
+
+    [Fact]
+    public void UsedUpCapacity_RebalancesEverySessionInsteadOfRefusing()
+    {
+        Assert.Equal(30, _allocator.Allocate("friend", "play-1", 30, 30).CapMbps);
+        Assert.Equal(15, _allocator.Allocate("friend", "play-2", 30, 30).CapMbps);
+        Assert.Equal(10, _allocator.Allocate("friend", "play-3", 30, 30).CapMbps);
+
+        Assert.Equal(10, _allocator.Allocate("friend", "play-1", 30, 30).CapMbps);
+        Assert.Equal(10, _allocator.Allocate("friend", "play-2", 30, 30).CapMbps);
+        Assert.Equal(30, _allocator.ReservedMbps("friend"));
+    }
+
+    [Fact]
+    public void ANewPlayFromTheSameDevice_ReplacesItsEarlierReservation()
+    {
+        Assert.Equal(30, _allocator.Allocate("friend", "play-1", 30, 30, "user|device").CapMbps);
+        Assert.Equal(30, _allocator.Allocate("friend", "play-2", 30, 30, "user|device").CapMbps);
+        Assert.Equal(30, _allocator.ReservedMbps("friend"));
+
+        Assert.Equal(15, _allocator.Allocate("friend", "play-3", 30, 30, "user|tv").CapMbps);
         Assert.Equal(30, _allocator.ReservedMbps("friend"));
     }
 

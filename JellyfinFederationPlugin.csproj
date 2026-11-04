@@ -19,6 +19,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Web\admin\configPage.html" />
     <EmbeddedResource Include="Web\admin\addinPage.html" />
+    <EmbeddedResource Include="integrations\catalog.json" />
     <EmbeddedResource Include="Web\client\federation-badge.js" />
     <EmbeddedResource Include="Web\client\federation-adaptive.js" />
     <EmbeddedResource Include="Web\vendor\hls.light.min.js" />

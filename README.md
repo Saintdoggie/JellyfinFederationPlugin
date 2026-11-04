@@ -111,6 +111,13 @@ choose **Add friend** and a sharing scope yourself.
   table above.
 - More detail is in the plugin's **Log** tab and in Jellyfin's server logs.
 
+## Integrations
+
+Dashboard → Federation → **Integrations** shows compatible entries from the reviewed
+[integration catalog](integrations/catalog.json). The catalog is discovery-only: it does not
+download code, run scripts, or install third-party DLLs. Plex shows as installed when its
+version-matched add-in is present; otherwise use the linked installation guide.
+
 ## Plex Companion
 
 Plex owners use the separate [Federation Companion](Companion/README.md). Its setup guide covers

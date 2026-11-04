@@ -1,5 +1,19 @@
 # Jellyfin Federation — remaining work
 
+## Unreleased watch-party, integration and playback review branch
+
+- [x] Add negotiated party wire v2: per-link connection IDs and sequences, send-time-aware heartbeats, bounded work/outbox queues, one pending heartbeat per link, and version-1 compatibility for older friends.
+- [x] Reject stale heartbeat corrections and provider-id fallback to a demonstrably different runtime. Full multi-edition/timeline mapping and automatic reconnect are not claimed.
+- [x] Let converted HLS work without a configured public address without trusting request Host/forwarded headers.
+- [x] Replace same-device stale bandwidth reservations and water-fill estimated capacity across active plays instead of returning a routine second-play 429. Physical fluctuating-WAN validation remains separate.
+- [x] Persist viewer/playback token hashes across restarts, flush on shutdown, and serialize token-file writes. No user-visibility/privacy defaults were changed.
+- [x] Add a discovery-only Integrations tab and GitHub `integrations/catalog.json`; compatible Plex support appears with its install state and guide. No package downloader, unsigned installer, remote HTML/JavaScript, or third-party executable loading was added.
+- [x] Align the Plex add-in and installation guide with core 0.0.207.
+- [x] Focused regression suites, full 1,806-test plugin suite, 227 Companion tests, 154 web tests, and the two-server eight-stage party smoke pass. The smoke also verifies the bundled integration catalog without downloading code.
+- [x] Repeat the complete automated suites on the final files twice: 1,806 plugin + 227 Companion + 154 web tests per pass, plus catalog validation and the live two-server party/catalog smoke.
+- [ ] Run real web/Android/TV party clients and fluctuating-WAN/concurrent-viewer checks before release.
+- [ ] Deferred to later reviewed phases: automatic party reconnect, a host-sequenced control revision model, signed package installation/rollback, and an out-of-process add-in sandbox. This branch does not claim those features.
+
 ## 0.0.207 — playback compatibility, capacity and truthful diagnostics
 
 - [x] Report play method, observed transport, conversion location, original/delivered formats and conversion reasons independently. Unknown play methods/routes are no longer presented as Direct Play, and alternate sources use the same capability flags as provider sources.

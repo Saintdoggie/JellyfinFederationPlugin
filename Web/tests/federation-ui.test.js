@@ -2455,6 +2455,17 @@ test("admin page has the popular switches saved with the favorites settings", ()
   assert.match(configPage, /SharePopularWithFriends: q\('#fedChkSharePopularWithFriends'\)\.checked/);
 });
 
+test('Integrations tab is routable, discovery-only, and escapes catalog metadata', () => {
+  assert.match(configPage, /id="fedTabIntegrations"[^>]*data-tab="integrations"/);
+  assert.match(configPage, /id="fedPanelIntegrations"[^>]*data-tab-panel="integrations"/);
+  assert.match(configPage, /var TAB_NAMES = \[[^\]]*'integrations'[^\]]*\]/);
+  assert.match(configPage, /case 'load-integrations':/);
+  assert.match(configPage, /escapeHtml\(entry\.summary\)/);
+  assert.match(configPage, /escapeHtml\(entry\.publisher\)/);
+  assert.match(configPage, /rel="noopener noreferrer nofollow"/);
+  assert.doesNotMatch(configPage, /fetch\(entry\.(package|script|html)/);
+});
+
 test('Beta tab sits before Advanced and holds the pairing card, off by default', () => {
   assert.ok(configPage.indexOf('id="fedTabBeta"') > 0);
   assert.ok(configPage.indexOf('id="fedTabBeta"') < configPage.indexOf('id="fedTabAdvanced"'));

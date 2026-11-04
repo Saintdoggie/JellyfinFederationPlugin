@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "id": "org.jellyfin.federation.plex",
+      "type": "addin",
+      "name": "Plex",
+      "summary": "Connect Plex catalogs and Federation Companion. Installation currently requires a restart and a version-matched DLL.",
+      "publisher": "Jellyfin Federation maintainers",
+      "builtinProviderId": "Plex",
+      "installGuideUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/blob/master/Plex/INSTALL.md",
+      "minHostVersion": "0.0.201",
+      "maxHostVersion": "0.0.207",
+      "jellyfinAbi": "12.0.0.0",
+      "platforms": [
+        "all"
+      ],
+      "capabilities": [
+        "catalog.read",
+        "network.outbound",
+        "credentials.server",
+        "filesystem.media",
+        "library.write",
+        "ui.dashboard"
+      ]
+    }
+  ]
+}

@@ -30,6 +30,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets the title, for messages only.</summary>
         public string? Name { get; set; }
+
+        /// <summary>Gets or sets the running time, used to reject a different cut on provider-id fallback.</summary>
+        public long? RunTimeTicks { get; set; }
     }
 
     /// <summary>One server that owns a party title, and its id there.</summary>
@@ -113,11 +116,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Gets or sets who is in the sender's group, for the other side's labels.</summary>
         public List<string>? Participants { get; set; }
+
+        /// <summary>Gets or sets the party wire version. Zero means a pre-versioned peer.</summary>
+        public int ProtocolVersion { get; set; }
+
+        /// <summary>Gets or sets the connection shared by both ends of one link.</summary>
+        public Guid ConnectionId { get; set; }
+
+        /// <summary>Gets or sets the sender's strictly increasing sequence within this link.</summary>
+        public long Sequence { get; set; }
+
+        /// <summary>Gets or sets when the event left the sender, used to age heartbeat positions.</summary>
+        public DateTime? SentAtUtc { get; set; }
     }
 
     /// <summary>A host telling a friend about a party its viewers may join.</summary>
     public sealed class PartyAnnouncement
     {
+        /// <summary>Gets or sets the newest party wire version the host supports.</summary>
+        public int ProtocolVersion { get; set; }
+
         /// <summary>Gets or sets the party id.</summary>
         public Guid PartyId { get; set; }
 
@@ -139,6 +157,19 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         /// <summary>Gets or sets who is watching on the friend's side.</summary>
         public List<string> Participants { get; set; } = new();
+
+        /// <summary>Gets or sets the newest party wire version the joining server supports.</summary>
+        public int ProtocolVersion { get; set; }
+
+        /// <summary>Gets or sets the fresh connection id for a versioned link.</summary>
+        public Guid ConnectionId { get; set; }
+    }
+
+    /// <summary>Party wire capabilities understood by this build.</summary>
+    public static class PartyProtocol
+    {
+        /// <summary>The current version. Version 2 adds link identity, ordering and send timing.</summary>
+        public const int CurrentVersion = 2;
     }
 
     public static class PartyWireValidation

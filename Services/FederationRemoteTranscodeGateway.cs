@@ -84,11 +84,18 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// The absolute configured public base every gateway URL starts with.
-        /// Request Host and scheme are deliberately not trusted for token URLs.
+        /// The configured public base, or a hostless path when no public address is
+        /// configured. Receivers put gateway paths on the friend's known address;
+        /// request Host and forwarded headers are deliberately never trusted.
         /// </summary>
         public static string PublicGatewayBase(HttpRequest request)
-            => PublicGatewayBase(Plugin.Instance?.Configuration?.ServerUrl);
+        {
+            var configured = PublicGatewayBase(Plugin.Instance?.Configuration?.ServerUrl);
+            return configured.Length > 0 ? configured : HostlessGatewayBase(request.PathBase.Value);
+        }
+
+        internal static string HostlessGatewayBase(string? pathBase)
+            => (pathBase ?? string.Empty).TrimEnd('/') + "/Plugins/Federation/Peer/Play/";
 
         internal static string PublicGatewayBase(string? configured)
         {
@@ -251,17 +258,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     var text = await ReadLimitedAsync(upstream, cancellationToken).ConfigureAwait(false);
                     if (text == null)
                     {
+                        _logger.LogWarning("[Federation] Remote transcode: this server's {Kind} for a friend was too large to pass on", path.Kind);
                         response.StatusCode = StatusCodes.Status502BadGateway;
                         return;
                     }
 
                     var publicBase = PublicGatewayBase(request);
-                    if (string.IsNullOrEmpty(publicBase))
-                    {
-                        response.StatusCode = StatusCodes.Status502BadGateway;
-                        return;
-                    }
-
                     var gatewayBase = publicBase + Uri.EscapeDataString(token) + "/";
                     var rewritten = HlsPlaylistRewriter.Rewrite(text, "/" + path.ToNativePath(path.ItemId, path.MediaSourceId), (target, query) =>
                         target.ItemId == path.ItemId

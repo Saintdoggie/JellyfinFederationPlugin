@@ -40,7 +40,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// nothing that could be used as a token.
     /// </para>
     /// </summary>
-    public class FederationPlaybackTokenService
+    public class FederationPlaybackTokenService : IDisposable
     {
         private static readonly TimeSpan PlaybackTokenLifetime = TimeSpan.FromHours(24);
         private static readonly TimeSpan DownloadTokenLifetime = TimeSpan.FromMinutes(15);
@@ -72,6 +72,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private int _globalMintCount;
         private readonly string? _storePath;
         private readonly Timer? _saveTimer;
+        private readonly object _saveGate = new();
         private int _saveScheduled;
 
         /// <summary>
@@ -373,7 +374,7 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>
         /// Opportunistically drops expired entries. Called on every Issue/TryValidate
         /// rather than on a timer - deliberately simple, since this store is already
-        /// bounded by normal usage volume and a server restart clears it anyway.
+        /// bounded by normal usage volume and expired entries are also ignored on load.
         /// </summary>
         private void Prune()
         {
@@ -428,38 +429,53 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>Flushes a token minted just before shutdown.</summary>
+        public void Dispose()
+        {
+            _saveTimer?.Dispose();
+            if (Volatile.Read(ref _saveScheduled) != 0)
+            {
+                Save();
+            }
+
+            GC.SuppressFinalize(this);
+        }
+
         /// <summary>Writes the outstanding tokens' hashes; internal for tests.</summary>
         internal void Save()
         {
-            Interlocked.Exchange(ref _saveScheduled, 0);
-            if (_storePath == null)
+            lock (_saveGate)
             {
-                return;
-            }
+                Interlocked.Exchange(ref _saveScheduled, 0);
+                if (_storePath == null)
+                {
+                    return;
+                }
 
-            try
-            {
-                Prune();
-                var list = _tokens
-                    .OrderByDescending(kv => kv.Value.ExpiresUtc)
-                    .Take(MaxStoredTokens)
-                    .Select(kv => new StoredToken
-                    {
-                        Key = kv.Key,
-                        RemoteItemId = kv.Value.RemoteItemId,
-                        FederationId = kv.Value.FederationId,
-                        Purpose = kv.Value.Purpose,
-                        RemoteUserId = kv.Value.RemoteUserId,
-                        ExpiresUtc = kv.Value.ExpiresUtc
-                    })
-                    .ToList();
-                var temp = _storePath + ".tmp";
-                File.WriteAllText(temp, JsonSerializer.Serialize(list));
-                File.Move(temp, _storePath, overwrite: true);
-            }
-            catch (Exception)
-            {
-                // Best effort, see Load.
+                try
+                {
+                    Prune();
+                    var list = _tokens
+                        .OrderByDescending(kv => kv.Value.ExpiresUtc)
+                        .Take(MaxStoredTokens)
+                        .Select(kv => new StoredToken
+                        {
+                            Key = kv.Key,
+                            RemoteItemId = kv.Value.RemoteItemId,
+                            FederationId = kv.Value.FederationId,
+                            Purpose = kv.Value.Purpose,
+                            RemoteUserId = kv.Value.RemoteUserId,
+                            ExpiresUtc = kv.Value.ExpiresUtc
+                        })
+                        .ToList();
+                    var temp = _storePath + ".tmp";
+                    File.WriteAllText(temp, JsonSerializer.Serialize(list));
+                    File.Move(temp, _storePath, overwrite: true);
+                }
+                catch (Exception)
+                {
+                    // Best effort, see Load.
+                }
             }
         }
 

@@ -83,6 +83,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             // Optional assemblies add their own IExternalCatalogProvider registrations.
             serviceCollection.AddSingleton<ExternalCatalogRegistry>();
+            serviceCollection.AddSingleton<IntegrationCatalogService>();
 
             // Scoped, not Singleton: needs IAuthenticationManager, which Jellyfin
             // registers scoped. FederationSyncService (a singleton) resolves it

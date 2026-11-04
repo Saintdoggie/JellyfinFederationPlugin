@@ -75,6 +75,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             reference.Name = item.Name;
+            reference.RunTimeTicks = item.RunTimeTicks;
             reference.ProviderIds = Providers(item.ProviderIds);
             if (item is Episode episode)
             {
@@ -173,8 +174,8 @@ namespace Jellyfin.Plugin.Federation.Services
                         ParentIndexNumber = reference.Season,
                         IndexNumber = reference.Episode,
                         Recursive = true,
-                        Limit = 1
-                    }).FirstOrDefault();
+                        Limit = 20
+                    }).FirstOrDefault(e => TimelineCompatible(reference.RunTimeTicks, e.RunTimeTicks));
                     if (episode != null)
                     {
                         return episode.Id;
@@ -196,8 +197,24 @@ namespace Jellyfin.Plugin.Federation.Services
                 IncludeItemTypes = new[] { kind },
                 HasAnyProviderId = reference.ProviderIds,
                 Recursive = true,
-                Limit = 1
-            }).FirstOrDefault()?.Id;
+                Limit = 20
+            }).FirstOrDefault(i => TimelineCompatible(reference.RunTimeTicks, i.RunTimeTicks))?.Id;
+        }
+
+        /// <summary>
+        /// Provider ids identify a work, not necessarily the same edit of it. A
+        /// provider-id fallback is usable only when both runtimes are unknown or
+        /// close enough that party seeks still address the same timeline.
+        /// </summary>
+        internal static bool TimelineCompatible(long? expected, long? candidate)
+        {
+            if (expected is not > 0 || candidate is not > 0)
+            {
+                return true;
+            }
+
+            var tolerance = Math.Max(TimeSpan.FromSeconds(10).Ticks, expected.Value / 50);
+            return Math.Abs(expected.Value - candidate.Value) <= tolerance;
         }
     }
 }

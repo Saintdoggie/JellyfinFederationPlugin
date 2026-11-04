@@ -299,6 +299,85 @@ public class WatchPartyTests
     }
 
     [Fact]
+    public void DelayedHeartbeat_DoesNotRewindOrPauseTheParty()
+    {
+        var link = Playing(PartyLinkRole.RemoteSide);
+        var delayed = new PartyEvent
+        {
+            Kind = PartyEventKind.Heartbeat,
+            SentAtUtc = T0.AddSeconds(6),
+            Snapshot = new PartySnapshot { Items = { new PartyItemRef() }, PositionTicks = 25 * S, IsPlaying = false, Stable = true }
+        };
+
+        // Four seconds in flight: the snapshot is history, not a correction to make now.
+        Assert.Empty(link.Plan(delayed, new[] { Item }, T0.AddSeconds(10)));
+    }
+
+    [Fact]
+    public void Heartbeat_ProjectsAPlayingPositionToItsExpectedArrivalPosition()
+    {
+        var link = Playing(PartyLinkRole.RemoteSide);
+        var heartbeat = new PartyEvent
+        {
+            Kind = PartyEventKind.Heartbeat,
+            SentAtUtc = T0.AddSeconds(8),
+            Snapshot = new PartySnapshot { Items = { new PartyItemRef() }, PositionTicks = 16 * S, IsPlaying = true, Stable = true }
+        };
+
+        // 16 seconds at send + 2 seconds in flight = 18 now. The local copy is at
+        // 20, within tolerance; correcting to the raw 16 would have been a stale seek.
+        Assert.Empty(link.Plan(heartbeat, new[] { Item }, T0.AddSeconds(10)));
+    }
+
+    [Fact]
+    public void VersionedPeerGate_RejectsOldConnectionsAndDuplicateSequences()
+    {
+        var connection = Guid.NewGuid();
+        var gate = new PartyPeerGate(PartyProtocol.CurrentVersion, connection);
+        var first = new PartyEvent { Kind = PartyEventKind.Pause };
+        gate.Prepare(first, T0);
+
+        Assert.Equal(PartyProtocol.CurrentVersion, first.ProtocolVersion);
+        Assert.Equal(connection, first.ConnectionId);
+        Assert.Equal(1, first.Sequence);
+        Assert.Equal(T0, first.SentAtUtc);
+        Assert.Equal(PartyEventAcceptance.Accept, gate.Accept(first));
+        Assert.Equal(PartyEventAcceptance.Stale, gate.Accept(first));
+        Assert.Equal(PartyEventAcceptance.WrongLink, gate.Accept(new PartyEvent
+        {
+            ProtocolVersion = PartyProtocol.CurrentVersion,
+            ConnectionId = Guid.NewGuid(),
+            Sequence = 2
+        }));
+        Assert.Equal(PartyEventAcceptance.Stale, gate.Accept(new PartyEvent
+        {
+            ProtocolVersion = PartyProtocol.CurrentVersion,
+            ConnectionId = connection,
+            Sequence = 1
+        }));
+
+        var captured = new PartyEvent { SentAtUtc = T0.AddSeconds(-4) };
+        gate.Prepare(captured, T0);
+        Assert.Equal(T0.AddSeconds(-4), captured.SentAtUtc);
+    }
+
+    [Fact]
+    public void LegacyPeerGate_KeepsMixedVersionPartiesCompatible()
+    {
+        var gate = new PartyPeerGate(1, Guid.Empty);
+        var legacy = new PartyEvent { Kind = PartyEventKind.Pause };
+        gate.Prepare(legacy, T0);
+
+        Assert.Equal(0, legacy.ProtocolVersion);
+        Assert.Equal(Guid.Empty, legacy.ConnectionId);
+        Assert.Equal(0, legacy.Sequence);
+        Assert.Null(legacy.SentAtUtc);
+        Assert.Equal(PartyEventAcceptance.Accept, gate.Accept(legacy));
+        Assert.Equal(PartyEventAcceptance.Accept, gate.Accept(legacy));
+        Assert.Throws<ArgumentException>(() => new PartyPeerGate(PartyProtocol.CurrentVersion, Guid.Empty));
+    }
+
+    [Fact]
     public void LeavingTheGroup_IsNoticed()
     {
         var link = Playing(PartyLinkRole.RemoteSide);
@@ -320,6 +399,16 @@ public class WatchPartyTests
         var ids = PartyItemMapper.Providers(new Dictionary<string, string> { ["imdb"] = "tt1", ["Tmdb"] = " 2 ", ["FederationKey"] = "secret", ["Tvdb"] = "" });
         Assert.Equal(new Dictionary<string, string> { ["Imdb"] = "tt1", ["Tmdb"] = "2" }, ids);
         Assert.Null(PartyItemMapper.Providers(new Dictionary<string, string> { ["FederationKey"] = "x" }));
+    }
+
+    [Fact]
+    public void ProviderFallback_RejectsADifferentCutButAllowsMetadataRounding()
+    {
+        var film = TimeSpan.FromMinutes(100).Ticks;
+        Assert.True(PartyItemMapper.TimelineCompatible(film, film + TimeSpan.FromSeconds(5).Ticks));
+        Assert.False(PartyItemMapper.TimelineCompatible(film, film + TimeSpan.FromMinutes(4).Ticks));
+        Assert.True(PartyItemMapper.TimelineCompatible(film, null));
+        Assert.True(PartyItemMapper.TimelineCompatible(null, film));
     }
 
     [Fact]
