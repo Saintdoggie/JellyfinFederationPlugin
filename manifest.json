@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.208",
+        "changelog": "Smarter playback, all opt-in or cosmetic by default. Shows which server a title is playing from and why that copy was chosen. New switches: smart copy selection (scores each copy on start speed, sustained speed and quality), an adaptive quality ladder for converted streams (lower levels the player can drop to, one conversion at a time), and a limit on how much this server converts (none / not for friends / never). Faster starts through parallel probes. Advanced settings are grouped into six sections with a filter. Relayed plays now report their route in Playback Info. Watch parties gain a more reliable link protocol (compatible with older friends), and an Integrations tab lists optional add-ins. Includes everything in 0.0.207.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-10T14:30:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.208/Jellyfin.Federation.zip",
+        "checksum": "26559e2b5b9875f1bd72f37b4bca825d"
+      },
+      {
         "version": "0.0.207",
         "changelog": "Playback compatibility and truthful diagnostics. Offers every compatible remote encoding, improves native Jellyfin app support including Android, shares measured capacity between sessions, and recovers web playback through fresh authorized sessions. Playback Info now reports the observed route, play method, conversion location and original/delivered formats instead of guessing Direct Play. Includes everything in 0.0.206.",
         "targetAbi": "12.0.0.0",

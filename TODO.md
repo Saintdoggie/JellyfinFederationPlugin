@@ -14,6 +14,18 @@
 - [ ] Run real web/Android/TV party clients and fluctuating-WAN/concurrent-viewer checks before release.
 - [ ] Deferred to later reviewed phases: automatic party reconnect, a host-sequenced control revision model, signed package installation/rollback, and an out-of-process add-in sandbox. This branch does not claim those features.
 
+## 0.0.208 — smart playback, quality ladder and settings grouping
+
+- [x] "Playing from <server>" label and "Why this copy" in Playback Info; relayed static plays record their observed route.
+- [x] `LocalTranscodeRestriction` (None / BlockFriends / BlockAll) enforced at token mint, gateway and local conversion.
+- [x] Opt-in smart source selection (`SmartSourceSelection`, default off): pure scorer with dwell, memory and failure back-off. A per-device default copy is not claimed; Jellyfin plays the source whose id equals the item id.
+- [x] Opt-in adaptive quality ladder (`AdaptiveQualityLadder`, default off) for converted streams on owner hand-off and local conversion. Abandoned level files wait for Jellyfin's own cleanup.
+- [x] Advanced settings grouped into six sections with a filter.
+- [x] Standalone Plex plugin project and container smoke. It is not published in the catalog yet; the copied add-in DLL remains the documented install.
+- [x] Gate on the final files, twice: clean Release build with 0 warnings, 1,911 plugin and 163 web tests; Companion 224 pass with 3 `RcloneBootstrapperTests` failures that predate this work; integration catalog check; disposable two-server handoff (including both ladder stages), peer and Plex plugin smokes.
+- [ ] Physical players on a throttled link for the ladder, and two servers holding the same title for smart selection.
+- [ ] Web-reported screen size/HDR for selection, and a per-viewer pinned copy.
+
 ## 0.0.207 — playback compatibility, capacity and truthful diagnostics
 
 - [x] Report play method, observed transport, conversion location, original/delivered formats and conversion reasons independently. Unknown play methods/routes are no longer presented as Direct Play, and alternate sources use the same capability flags as provider sources.
