@@ -45,6 +45,20 @@ public class FederationDirectStreamRedirectFilterTests
         => Assert.Equal(PeerUrl, FederationDirectStreamRedirectFilter.RedirectTarget(Direct(), "https"));
 
     [Fact]
+    public void ObservedRoute_RedirectIsDirect_UnredirectedOriginalIsRelay_OtherwiseUnknown()
+    {
+        Assert.Equal(FederatedRoute.Direct, FederationDirectStreamRedirectFilter.ObservedRoute(Direct(), PeerUrl));
+        var loopback = new MediaSourceInfo { Path = "http://127.0.0.1:8096/Plugins/Federation/Stream?x", Protocol = MediaProtocol.Http, IsRemote = false };
+        Assert.Equal(FederatedRoute.Relay, FederationDirectStreamRedirectFilter.ObservedRoute(loopback, null));
+        // A gateway the player could not be redirected to (scheme differs) is fetched by this server.
+        Assert.Equal(FederatedRoute.Relay, FederationDirectStreamRedirectFilter.ObservedRoute(Direct(), null));
+        Assert.Null(FederationDirectStreamRedirectFilter.ObservedRoute(null, null));
+        var file = Direct();
+        file.Protocol = MediaProtocol.File;
+        Assert.Null(FederationDirectStreamRedirectFilter.ObservedRoute(file, null));
+    }
+
+    [Fact]
     public void RedirectTarget_NeverForLoopbackProxyOrOtherSources()
     {
         Assert.Null(FederationDirectStreamRedirectFilter.RedirectTarget(null, "https"));

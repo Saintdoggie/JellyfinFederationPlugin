@@ -92,6 +92,33 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool LoadingFunFacts { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets a value indicating whether the injected web client briefly
+        /// shows which server a federated title is playing from when playback
+        /// starts and whenever the player controls are used (mouse move, touch).
+        /// Cosmetic only, like the content-rating card streaming services show.
+        /// </summary>
+        public bool ShowPlaybackServerLabel { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the copy of a title that plays by
+        /// default is chosen by <c>SourceSelectionScorer</c>: quick, reliable start
+        /// first, then steady playback on the measured connection, then the best
+        /// picture that connection can carry. Off (default) keeps the previous rule:
+        /// friend priority order unless the first copy would take over 30 seconds to
+        /// start. Friend priority still decides between copies that score the same.
+        /// </summary>
+        public bool SmartSourceSelection { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether a converted federated title is
+        /// offered at several quality levels (an HLS ladder), so players lower the
+        /// quality instead of buffering when the connection slows and raise it again
+        /// when it recovers. Each level is a separate conversion started only when a
+        /// player asks for it. Off by default.
+        /// </summary>
+        public bool AdaptiveQualityLadder { get; set; }
+
+        /// <summary>
         /// Gets or sets the provider id keys used for dedup (e.g. imdb, tmdb, tvdb).
         /// </summary>
         public List<string> DedupProviderIds { get; set; } = new List<string> { "imdb", "tmdb", "tvdb" };
@@ -475,6 +502,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool EnableRemoteTranscodeForFriends { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets how much conversion this server itself may do, for servers
+        /// whose hardware should not transcode at all (a small VPS, for example).
+        /// <see cref="LocalTranscodeRestriction.None"/> keeps current behaviour;
+        /// <see cref="LocalTranscodeRestriction.BlockFriends"/> refuses friends'
+        /// conversions here (same effect as turning
+        /// <see cref="EnableRemoteTranscodeForFriends"/> off) but this server's own
+        /// viewers may still convert; <see cref="LocalTranscodeRestriction.BlockAll"/>
+        /// never converts federated video here for anyone - viewers direct play or
+        /// use another copy, and a friend may still convert for them. A friend that
+        /// converts for this server's viewers is unaffected in every mode.
+        /// Managed by <c>Settings/RemoteTranscode</c>, preserved by the main Save.
+        /// </summary>
+        public LocalTranscodeRestriction LocalTranscodeRestriction { get; set; } = LocalTranscodeRestriction.None;
+
+        /// <summary>
         /// Gets or sets whether this server opens direct links with friends: an
         /// encrypted UDP connection straight between the two servers, punched
         /// through both home routers, so a friend's video doesn't have to go
@@ -630,6 +672,23 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
         /// <summary>Gets or sets the CPU thread count that counts as a hardware encoder (0 = never).</summary>
         public int PlacementCpuThreadsCountAsEncode { get; set; } = 16;
+    }
+
+    /// <summary>
+    /// How much conversion this server itself may do for federated playback.
+    /// Stored as an enum rather than a pair of booleans so the two "do not
+    /// transcode on my server" meanings cannot contradict each other.
+    /// </summary>
+    public enum LocalTranscodeRestriction
+    {
+        /// <summary>No extra restriction (default; existing behaviour).</summary>
+        None = 0,
+
+        /// <summary>Friends' viewers may not convert here; my own viewers still may.</summary>
+        BlockFriends = 1,
+
+        /// <summary>Nobody converts federated video here: direct play or another copy only.</summary>
+        BlockAll = 2
     }
 
     /// <summary>

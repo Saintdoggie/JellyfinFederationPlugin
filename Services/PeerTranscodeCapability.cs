@@ -20,6 +20,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly ConcurrentDictionary<string, bool> SharedSegments = new(StringComparer.OrdinalIgnoreCase);
 
+        private static readonly ConcurrentDictionary<string, bool> QualityLadders = new(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>Clock, replaceable in tests.</summary>
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
@@ -73,11 +75,29 @@ namespace Jellyfin.Plugin.Federation.Services
         public static bool HasSharedSegments(string? serverId)
             => !string.IsNullOrEmpty(serverId) && SharedSegments.TryGetValue(serverId, out var shared) && shared;
 
+        /// <summary>Records whether the friend keeps quality levels apart (see <see cref="PlaybackTokenResponse.QualityLadder"/>).</summary>
+        public static void RecordQualityLadder(string? serverId, bool supported)
+        {
+            if (!string.IsNullOrEmpty(serverId))
+            {
+                QualityLadders[serverId] = supported;
+            }
+        }
+
+        /// <summary>
+        /// True when lower quality levels may be offered for this friend's
+        /// conversions: it runs each level as its own conversion. Without that a
+        /// level change would keep serving the old quality under the new address.
+        /// </summary>
+        public static bool HasQualityLadder(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && QualityLadders.TryGetValue(serverId, out var supported) && supported;
+
         /// <summary>Test hook.</summary>
         internal static void Reset()
         {
             State.Clear();
             SharedSegments.Clear();
+            QualityLadders.Clear();
         }
     }
 }

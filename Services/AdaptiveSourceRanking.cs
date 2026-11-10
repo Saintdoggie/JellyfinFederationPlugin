@@ -42,6 +42,20 @@ public sealed class AdaptiveSourceRanking
         }
     }
 
+    /// <summary>The recent share of successful probes (0..1), or null when nothing recent is known.</summary>
+    public double? Reliability(string serverId)
+    {
+        if (!_observations.TryGetValue(serverId, out var observation))
+        {
+            return null;
+        }
+
+        lock (observation)
+        {
+            return Fresh(observation.HealthAt, _clock.GetUtcNow()) ? observation.Reliability : null;
+        }
+    }
+
     // Count at most one relay stall per server per 10 seconds. Many viewers
     // experiencing the same outage must not multiply the penalty indefinitely.
     public void ObserveStall(string serverId)

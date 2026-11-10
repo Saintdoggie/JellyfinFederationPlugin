@@ -30,6 +30,8 @@
     <None Remove="Tests\**" />
     <Compile Remove="Plex\**" />
     <None Remove="Plex\**" />
+    <Compile Remove="PlexPlugin\**" />
+    <None Remove="PlexPlugin\**" />
     <!-- Companion is a separate standalone app (its own .csproj) living in a
          subdirectory of this repo, not part of this plugin - without this
          exclusion the default SDK glob also sweeps up its source *and* its

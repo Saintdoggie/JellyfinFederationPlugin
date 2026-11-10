@@ -37,6 +37,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly RemoteAccessControlService _accessControl;
         private readonly ExternalCatalogRegistry _externalCatalogs;
         private readonly TranscodePlacementService? _placement;
+        private readonly PlaybackRouteMetrics? _routeMetrics;
+        private readonly AdaptiveSourceRanking? _ranking;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceProvider"/> class.
@@ -48,9 +50,13 @@ namespace Jellyfin.Plugin.Federation.Services
             IAuthorizationContext authorizationContext,
             RemoteAccessControlService accessControl,
             ExternalCatalogRegistry? externalCatalogs = null,
-            TranscodePlacementService? placement = null)
+            TranscodePlacementService? placement = null,
+            PlaybackRouteMetrics? routeMetrics = null,
+            AdaptiveSourceRanking? ranking = null)
         {
             _placement = placement;
+            _routeMetrics = routeMetrics;
+            _ranking = ranking;
             _logger = logger;
             _federationManager = federationManager;
             _httpContextAccessor = httpContextAccessor;
@@ -292,6 +298,41 @@ namespace Jellyfin.Plugin.Federation.Services
                 var remoteResults = fetchWhenAll.Result;
                 var paths = pathWhenAll.Result;
 
+                // Proxy mode otherwise pays for this sequentially before the first
+                // upstream byte (FederationStreamHandler.BuildDirectStreamUrlAsync).
+                // Register the per-user session now, in the background, while the
+                // player is still negotiating; the cached token is then already
+                // there. Failures are irrelevant - the stream path registers again.
+                if (localUserId.HasValue)
+                {
+                    var userId = localUserId.Value.ToString("N");
+                    foreach (var server in candidates.Select(c => c.Server))
+                    {
+                        if (server.Kind != ServerKind.Jellyfin || server.StreamingMode != StreamingMode.Proxy)
+                        {
+                            continue;
+                        }
+
+                        var client = _federationManager.GetClient(server.Id);
+                        if (client == null)
+                        {
+                            continue;
+                        }
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await client.GetOrRegisterUserSessionTokenAsync(userId, null, CancellationToken.None).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "[Federation] Early Proxy session registration with {Server} failed; the stream request registers again", server.Name);
+                            }
+                        });
+                    }
+                }
+
                 var playable = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName, MediaSourceInfo Remote, string Path, string? RemoteMediaSourceId, bool Distinguish)>();
                 for (int c = 0; c < candidates.Count; c++)
                 {
@@ -384,7 +425,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Sources that would take longer than the start budget to begin go after
                 // those that would not (and, when every source is slow, the quickest
                 // goes first). A source whose speed is not measured yet is never demoted.
-                var ordered = playable
+                var smart = Plugin.Instance?.Configuration?.SmartSourceSelection == true && playable.Count > 1
+                    ? RankForViewer(
+                        playable.Select(p => (p.Server, p.Src.Priority, p.Remote)).ToList(),
+                        localUserId,
+                        authorization?.DeviceId,
+                        SourceCandidateFactory.Device(nativeIdentity.Client, nativeIdentity.Device, IsBrowserRequest()))
+                    : null;
+                if (smart != null)
+                {
+                    _logger.LogInformation("[Federation] Source order for {Name}: {Reason}", item.Name, smart.Reason);
+                }
+
+                var ordered = smart != null
+                    ? smart.Ranked.Select(r => playable[int.Parse(r.Candidate.Key, System.Globalization.CultureInfo.InvariantCulture)]).ToList()
+                    : playable
                     .OrderBy(p => ProjectedStart(p.Server, p.Remote) is > StartEstimator.StartBudgetSeconds ? 1 : 0)
                     .ThenBy(p => ProjectedStart(p.Server, p.Remote) is > StartEstimator.StartBudgetSeconds and var slow ? slow : 0)
                     .ThenBy(p => SourceFitGroup(p.Server, p.Remote))
@@ -476,8 +531,10 @@ namespace Jellyfin.Plugin.Federation.Services
                         // container still has a path: this server pulls the remote HTTP
                         // stream and transcodes it. That costs local bandwidth and CPU
                         // per federated stream, but with it false any incompatible
-                        // container is simply unplayable.
-                        SupportsTranscoding = true,
+                        // container is simply unplayable. Under BlockAll this server
+                        // only offers conversion when the friend is the one converting;
+                        // otherwise the client direct-plays or picks another copy.
+                        SupportsTranscoding = handoff || TranscodePolicy.MayConvertForOwnViewers(Plugin.Instance?.Configuration),
 
                         // Lets the transcoder/StreamBuilder verify details omitted by an
                         // otherwise-live remote source. Sources whose live lookup failed
@@ -618,6 +675,60 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>True for a Jellyfin peer whose bytes go straight from it to the viewer.</summary>
         private static bool IsPeerDirect(RemoteServer? server)
             => server is { StreamingMode: StreamingMode.Direct, Kind: ServerKind.Jellyfin };
+
+        private bool IsBrowserRequest()
+            => _httpContextAccessor.HttpContext?.Request is { } request && FederationRemoteTranscodeFilter.IsBrowser(request);
+
+        /// <summary>
+        /// Ranks live sources for the viewer who asked: the same scorer as the
+        /// default-copy choice, plus what is known about this device (phone or TV,
+        /// its own measured route to each friend, recent stalls). Candidate keys are
+        /// the positions in <paramref name="sources"/>.
+        /// </summary>
+        internal SourceSelection RankForViewer(
+            IReadOnlyList<(RemoteServer Server, int Priority, MediaSourceInfo Remote)> sources,
+            Guid? userId,
+            string? deviceId,
+            ViewerDevice device)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var monitor = FederationItemPersistenceService.BandwidthOverride;
+            var candidates = new List<SourceCandidate>(sources.Count);
+            for (var n = 0; n < sources.Count; n++)
+            {
+                var (server, priority, remote) = sources[n];
+                var candidate = SourceCandidateFactory.FromLive(
+                    n.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    server,
+                    priority,
+                    SourceBitrate(remote),
+                    remote.MediaStreams,
+                    monitor,
+                    config);
+
+                PlaybackRouteSnapshot? route = null;
+                if (_routeMetrics != null && userId.HasValue)
+                {
+                    foreach (var name in new[] { FederatedRoute.Direct, FederatedRoute.FriendConverts, "direct-link", FederatedRoute.Relay })
+                    {
+                        var snapshot = _routeMetrics.Snapshot(userId.Value, deviceId, server.Id, name);
+                        if (snapshot != null && (route == null || (route.MeasuredMbps == null && snapshot.MeasuredMbps != null)))
+                        {
+                            route = snapshot;
+                        }
+                    }
+                }
+
+                candidates.Add(candidate with
+                {
+                    RouteMbps = route?.MeasuredMbps,
+                    RecentlyStalled = route?.RecentlyStalled == true,
+                    Reliability = _ranking?.Reliability(server.Id)
+                });
+            }
+
+            return SourceSelectionScorer.Rank(candidates, device);
+        }
 
         private double? ProjectedStart(RemoteServer server, MediaSourceInfo source)
             => _federationManager.ProjectedStartSeconds(server, SourceBitrate(source) is > 0 and var bitrate ? bitrate : null);

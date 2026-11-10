@@ -226,6 +226,52 @@ def smoke():
         qa.check(not re.search(r'(?i)(token|api_?key)=(?!REDACTED)[0-9a-z]{16,}', text), 'A credential reached the copied log')
         print(f'HANDOFF PASS: owner conversion log copied into the receiver logs ({copied[-1].name}), credentials blanked', flush=True)
 
+        stage = 'quality ladder: lower levels are offered and each is its own conversion'
+        settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
+        settings['AdaptiveQualityLadder'] = True
+        qa.request(base, '/Plugins/Federation/Configuration', admin, settings)
+        qa.check(qa.request(base, '/Plugins/Federation/Configuration', admin)['AdaptiveQualityLadder'] is True, 'Ladder switch was not saved')
+        owner_before = len(transcode_logs(source_config))
+        before = len(transcode_logs(config))
+        ladder_session, ladder_source = negotiate(viewer, bitrate=6000000)
+        _, ladder_master = qa.request(base, ladder_source['TranscodingUrl'], viewer, raw=True)
+        ladder_master = ladder_master.decode()
+        qa.check(viewer_token not in ladder_master and 'ApiKey' not in ladder_master and 'api_key' not in ladder_master, 'A credential reached the ladder playlist')
+        level_infs = [l for l in ladder_master.splitlines() if l.startswith('#EXT-X-STREAM-INF:')]
+        levels = [l for l in ladder_master.splitlines() if l and not l.startswith('#')]
+        qa.check(len(levels) >= 2 and len(levels) == len(level_infs), f'Expected several quality levels, got {len(levels)}')
+        bandwidths = [int(re.search(r'[:,]BANDWIDTH=(\d+)', l).group(1)) for l in level_infs]
+        qa.check(all(a > b for a, b in zip(bandwidths, bandwidths[1:])), f'Levels are not in descending bitrate order: {bandwidths}')
+        qa.check('FedRung=' not in urllib.parse.unquote(levels[0]), 'The top level was altered')
+        qa.check(all(l.startswith(relay) and 'FedRung=' in urllib.parse.unquote(l) for l in levels[1:]), 'A lower level is not a marked, relayed owner playlist')
+        def level_segment(level_url, index=0):
+            _, body = qa.request(base, level_url, None, raw=True)
+            url = [l for l in body.decode().splitlines() if l and not l.startswith('#')][index]
+            _, data = qa.request(on_source(url), '', None, raw=True)
+            qa.check(len(data) > 2000 and data[0] == 0x47, 'A level segment is not MPEG-TS video')
+            return url, data
+        def owner_ffmpeg():
+            out = subprocess.run(['podman', 'exec', names[0], 'sh', '-c', 'grep -l ffmpeg /proc/[0-9]*/comm 2>/dev/null | wc -l'],
+                                 capture_output=True, text=True).stdout.strip()
+            return int(out or 0)
+        _, top_data = level_segment(levels[0])
+        starts_top = len(transcode_logs(source_config)) - owner_before
+        low_url, low_data = level_segment(levels[-1])
+        qa.check('FedRung=' in low_url, 'Segments of a lower level lost their level marker')
+        starts_low = len(transcode_logs(source_config)) - owner_before
+        qa.check(starts_low == starts_top + 1, f'The lower level did not start its own conversion ({starts_top} -> {starts_low} starts)')
+        qa.check(len(low_data) < len(top_data) * 0.8, f'The lower level is not smaller ({len(low_data)} vs {len(top_data)} bytes): it served the top level\'s video')
+        qa.wait_for(lambda: owner_ffmpeg() <= 1 or None, 'More than one conversion kept running for one play', seconds=15)
+        # Stepping back up, further into the title: the top level converts again from there.
+        _, up_data = level_segment(levels[0], 4)
+        qa.check(len(up_data) > len(low_data), 'Stepping back up did not return the higher quality')
+        qa.wait_for(lambda: owner_ffmpeg() <= 1 or None, 'More than one conversion kept running after stepping back up', seconds=15)
+        qa.check(len(transcode_logs(config)) == before, 'The receiving server converted a level itself')
+        qa.request(base, '/Sessions/Playing', viewer, {'ItemId': item_id, 'PlaySessionId': ladder_session, 'MediaSourceId': ladder_source['Id'], 'PlayMethod': 'Transcode'}, expected=204)
+        qa.request(base, '/Sessions/Playing/Stopped', viewer, {'ItemId': item_id, 'PlaySessionId': ladder_session, 'MediaSourceId': ladder_source['Id'], 'PositionTicks': 100000000}, expected=204)
+        qa.wait_for(lambda: owner_ffmpeg() == 0 or None, 'Stopping the play left a level converting on the owner', seconds=30)
+        print(f'HANDOFF PASS: {len(levels)} quality levels {bandwidths}; lowest first segment {len(low_data)} bytes vs top {len(top_data)}; one owner conversion at a time; stop ends it', flush=True)
+
         stage = 'revoking the viewer cuts the owner stream'
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
             {'RemoteUserId': viewer_id, 'RemoteUserName': 'qa-viewer', 'Mode': 'Blocked'})['success'], 'Block failed')
@@ -250,6 +296,21 @@ def smoke():
         qa.check(len(data) > 10000 and data[0] == 0x47, 'Fallback segment is not MPEG-TS video')
         qa.check(len(transcode_logs(config)) > before, 'Fallback did not transcode on the receiver')
         print('HANDOFF PASS: owner opt-out falls back to the receiver converting, playback still works', flush=True)
+
+        stage = 'quality ladder when the receiver converts'
+        local_levels = [l for l in master.splitlines() if l and not l.startswith('#')]
+        qa.check(len(local_levels) >= 2 and all('FedRung=' in l for l in local_levels[1:]) and 'FedRung=' not in local_levels[0],
+                 f'The receiver\'s own playlist has no lower levels ({len(local_levels)} variant(s))')
+        before = len(transcode_logs(config))
+        low_path = urllib.parse.urljoin(source['TranscodingUrl'], local_levels[-1])
+        _, low_playlist = qa.request(base, low_path, viewer, raw=True)
+        low_segment = next(l for l in low_playlist.decode().splitlines() if l and not l.startswith('#'))
+        qa.check('FedRung=' in low_segment, 'Local level segments lost their level marker')
+        _, low_local = qa.request(base, urllib.parse.urljoin(low_path, low_segment), viewer, raw=True)
+        qa.check(len(low_local) > 2000 and low_local[0] == 0x47, 'Local lower-level segment is not MPEG-TS video')
+        qa.check(len(transcode_logs(config)) == before + 1, 'The local lower level did not start its own conversion')
+        qa.check(len(low_local) < len(data) * 0.8, f'The local lower level is not smaller ({len(low_local)} vs {len(data)} bytes)')
+        print(f'HANDOFF PASS: receiver-converted play offers {len(local_levels)} levels; lowest first segment {len(low_local)} bytes vs top {len(data)}', flush=True)
 
         stage = 'owner limit: a session over it is refused and converts on the receiver'
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteTranscode', source_admin, {'Allow': True})['success'], 'Switch on failed')

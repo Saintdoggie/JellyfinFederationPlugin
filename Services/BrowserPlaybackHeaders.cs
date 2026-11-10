@@ -241,10 +241,20 @@ namespace Jellyfin.Plugin.Federation.Services
             // The gateway answers even a bad token with Jellyfin-plugin CORS headers,
             // so whatever else arrives was added on the way. A 200 page catches proxies
             // that only add headers to successful answers (nginx without "always").
-            using var gatewayGet = await HeadersAsync(HttpMethod.Get, gateway, playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
-            using var publicInfo = await HeadersAsync(HttpMethod.Get, peerBase + "/System/Info/Public", playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
-            using var preflight = await HeadersAsync(HttpMethod.Options, gateway, playerOrigin, preflight: true, cancellationToken).ConfigureAwait(false);
-            using var directStream = await HeadersAsync(HttpMethod.Get, $"{peerBase}/Plugins/Federation/DirectStream/{ProbeItem}?token=header-check", playerOrigin, preflight: false, cancellationToken).ConfigureAwait(false);
+            // The four probes are independent, so run them together: sequentially a
+            // slow friend made the first converted playlist wait for four 5-second
+            // timeouts one after another. The shared cancellation token still bounds
+            // the whole probe, and a failure in any of them keeps the old
+            // "report nothing" behaviour of the caller.
+            var gatewayGetTask = HeadersAsync(HttpMethod.Get, gateway, playerOrigin, preflight: false, cancellationToken);
+            var publicInfoTask = HeadersAsync(HttpMethod.Get, peerBase + "/System/Info/Public", playerOrigin, preflight: false, cancellationToken);
+            var preflightTask = HeadersAsync(HttpMethod.Options, gateway, playerOrigin, preflight: true, cancellationToken);
+            var directStreamTask = HeadersAsync(HttpMethod.Get, $"{peerBase}/Plugins/Federation/DirectStream/{ProbeItem}?token=header-check", playerOrigin, preflight: false, cancellationToken);
+            await Task.WhenAll(gatewayGetTask, publicInfoTask, preflightTask, directStreamTask).ConfigureAwait(false);
+            using var gatewayGet = await gatewayGetTask.ConfigureAwait(false);
+            using var publicInfo = await publicInfoTask.ConfigureAwait(false);
+            using var preflight = await preflightTask.ConfigureAwait(false);
+            using var directStream = await directStreamTask.ConfigureAwait(false);
 
             // The plugin's own refusal always carries Allow-Methods with its Allow-Origin:
             // one without the other means something on the way removed it.

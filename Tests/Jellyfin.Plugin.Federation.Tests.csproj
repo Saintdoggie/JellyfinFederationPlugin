@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\JellyfinFederationPlugin.csproj" />
     <ProjectReference Include="..\Plex\Jellyfin.Plugin.Federation.Plex.csproj" />
+    <ProjectReference Include="..\PlexPlugin\Jellyfin.Plugin.FederationPlex.csproj" />
   </ItemGroup>
 
 </Project>

@@ -223,6 +223,23 @@
   // "Loading bar" section below). Switchable by the server's LoadingOverlay setting.
   var loadingOverlayEnabled = true;
 
+  // "Playing from <server>" chip (see the section below). Switchable by the
+  // server's ShowPlaybackServerLabel setting; a viewer can also opt out in this
+  // browser with localStorage.federationServerLabelDisabled = '1'.
+  var playbackServerLabelEnabled = true;
+
+  function serverLabelAllowed() {
+    if (!playbackServerLabelEnabled) {
+      return false;
+    }
+
+    try {
+      return window.localStorage.getItem('federationServerLabelDisabled') !== '1';
+    } catch (e) {
+      return true;
+    }
+  }
+
   function refreshClientSettings() {
     return federationFetch('/Plugins/Federation/ClientSettings', { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : {}; })
@@ -231,6 +248,11 @@
         var previousValue = showFederatedCloudBadges;
         showFederatedCloudBadges = settings.showFederatedCloudBadges === true;
         loadingOverlayEnabled = settings.loadingOverlay !== false;
+        playbackServerLabelEnabled = settings.playbackServerLabel !== false;
+        if (!playbackServerLabelEnabled) {
+          hideServerLabel();
+        }
+
         clientSettingsLoaded = true;
 
         // Cards are deliberately marked as processed even when the cloud is
@@ -1731,6 +1753,7 @@
     if (data.friendHardware) { rows.push([data.friend + ' converts with', data.friendHardware]); }
     if (data.thisServerHardware) { rows.push(['This server converts with', data.thisServerHardware]); }
     if (data.alsoOn && data.alsoOn.length) { rows.push(['Also on', data.alsoOn.join(', ')]); }
+    if (data.selection) { rows.push(['Why this copy', data.selection]); }
     return rows;
   }
 
@@ -2402,7 +2425,165 @@
       .catch(function () { /* the bar still shows, just without a projection */ });
   }
 
+  // ---------------------------------------------------------------------
+  // "Playing from <server>" chip
+  //
+  // Streaming services briefly show a content rating when a title starts and
+  // whenever the controls come up; this is the same idea, but it names the
+  // server the title is actually playing from. The name comes from the catalog
+  // map first (no request) and is then confirmed against Playback/Connection,
+  // so a title available on several servers names the one really in use.
+  // ---------------------------------------------------------------------
+  var SERVER_LABEL_ID = 'federation-server-label';
+  var SERVER_LABEL_STYLE_ID = 'federation-server-label-style';
+  var SERVER_LABEL_VISIBLE_MS = 4000;
+  var SERVER_LABEL_THROTTLE_MS = 900;
+  var serverLabelState = { itemId: null, name: '', hideTimer: null, lastTrigger: 0, nameRequestedFor: null };
+
+  function injectServerLabelStyle() {
+    if (document.getElementById(SERVER_LABEL_STYLE_ID)) {
+      return;
+    }
+
+    var style = document.createElement('style');
+    style.id = SERVER_LABEL_STYLE_ID;
+    style.textContent = [
+      '#' + SERVER_LABEL_ID + '{position:fixed;top:4.5em;right:1.2em;z-index:100000;box-sizing:border-box;',
+      'max-width:70vw;padding:.35em .8em;border-radius:.4em;background:rgba(0,0,0,.68);color:#fff;',
+      'font-size:clamp(12px,1vw,15px);line-height:1.4;pointer-events:none;text-align:right;}'
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  function hideServerLabel() {
+    if (serverLabelState.hideTimer) {
+      clearTimeout(serverLabelState.hideTimer);
+      serverLabelState.hideTimer = null;
+    }
+
+    var node = document.getElementById(SERVER_LABEL_ID);
+    if (node && node.parentNode) {
+      node.parentNode.removeChild(node);
+    }
+  }
+
+  function notePlaybackItem(rawId) {
+    var id = normalizeId(rawId);
+    if (!id || !federatedIds.has(id)) {
+      if (serverLabelState.itemId) {
+        serverLabelState.itemId = null;
+        serverLabelState.name = '';
+        hideServerLabel();
+      }
+
+      return;
+    }
+
+    if (serverLabelState.itemId === id) {
+      return;
+    }
+
+    serverLabelState.itemId = id;
+    serverLabelState.name = federatedIds.get(id) || '';
+    serverLabelState.nameRequestedFor = null;
+    hideServerLabel();
+  }
+
+  // The catalog name can be any of the servers holding the title; the live
+  // connection report knows which one this session really uses.
+  function requestServerLabelName() {
+    var id = serverLabelState.itemId;
+    if (!id || serverLabelState.nameRequestedFor === id) {
+      return;
+    }
+
+    serverLabelState.nameRequestedFor = id;
+    federationFetch('/Plugins/Federation/Playback/Connection', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || data.federated === false || serverLabelState.itemId !== id) {
+          return;
+        }
+
+        var reportedItem = normalizeId(data.itemId || '');
+        if (reportedItem && reportedItem !== id) {
+          return;
+        }
+
+        if (typeof data.friend === 'string' && data.friend) {
+          serverLabelState.name = data.friend;
+          var node = document.getElementById(SERVER_LABEL_ID);
+          if (node) {
+            node.textContent = 'Playing from ' + data.friend;
+          }
+        }
+      })
+      .catch(function () { /* keep the catalog name */ });
+  }
+
+  function triggerServerLabel() {
+    if (!serverLabelAllowed() || !serverLabelState.itemId) {
+      return;
+    }
+
+    if (!document.querySelector('video')) {
+      hideServerLabel();
+      return;
+    }
+
+    var now = Date.now();
+    if (now - serverLabelState.lastTrigger < SERVER_LABEL_THROTTLE_MS) {
+      return;
+    }
+
+    serverLabelState.lastTrigger = now;
+    var name = serverLabelState.name || federatedIds.get(serverLabelState.itemId) || '';
+    if (!name) {
+      return;
+    }
+
+    injectServerLabelStyle();
+    var node = document.getElementById(SERVER_LABEL_ID);
+    if (!node) {
+      node = document.createElement('div');
+      node.id = SERVER_LABEL_ID;
+      node.setAttribute('role', 'status');
+      document.body.appendChild(node);
+    }
+
+    node.textContent = 'Playing from ' + name;
+    if (serverLabelState.hideTimer) {
+      clearTimeout(serverLabelState.hideTimer);
+    }
+
+    serverLabelState.hideTimer = setTimeout(hideServerLabel, SERVER_LABEL_VISIBLE_MS);
+  }
+
+  function hookServerLabel() {
+    if (document.__federationServerLabelBound) {
+      return;
+    }
+
+    document.__federationServerLabelBound = true;
+    // `playing` and `emptied` do not bubble, so listen in the capture phase.
+    document.addEventListener('playing', function (event) {
+      if (event.target && event.target.tagName === 'VIDEO') {
+        requestServerLabelName();
+        triggerServerLabel();
+      }
+    }, true);
+    document.addEventListener('emptied', function (event) {
+      if (event.target && event.target.tagName === 'VIDEO') {
+        hideServerLabel();
+      }
+    }, true);
+    ['mousemove', 'pointermove', 'touchstart', 'keydown'].forEach(function (name) {
+      document.addEventListener(name, triggerServerLabel, true);
+    });
+  }
+
   function hookPlaybackOverlay() {
+    hookServerLabel();
     if (!document.__federationLoadingBound) {
       document.__federationLoadingBound = true;
       // `playing` does not bubble, so listen in the capture phase.
@@ -2426,6 +2607,7 @@
     if (typeof window.ApiClient.getPlaybackInfo === 'function') {
       var origGetPlaybackInfo = window.ApiClient.getPlaybackInfo.bind(window.ApiClient);
       window.ApiClient.getPlaybackInfo = function (itemId) {
+        try { notePlaybackItem(itemId); } catch (e) { /* never get in the way of playback */ }
         try { startLoadingOverlay(itemId); } catch (e) { /* never get in the way of playback */ }
         return origGetPlaybackInfo.apply(window.ApiClient, arguments);
       };

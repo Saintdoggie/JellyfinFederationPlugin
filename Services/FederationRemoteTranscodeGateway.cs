@@ -164,12 +164,16 @@ namespace Jellyfin.Plugin.Federation.Services
             var url = NativeUrl(loopbackBase, path, RemoteMediaPath.FilterQuery(request.Query), internalUserId);
             var isHead = HttpMethods.IsHead(request.Method);
 
+            // A lower quality level: Jellyfin hashes the User-Agent into the
+            // conversion's output path, so this keeps each level in its own files.
+            var rungAgent = HlsQualityLadder.RungOf(request.Query) is { } rung ? HlsQualityLadder.RungUserAgent(null, rung) : null;
+
             if (path.Kind == RemoteMediaKind.HlsSegment && !isHead && !request.Headers.ContainsKey("Range"))
             {
                 SharedSegment? shared;
                 try
                 {
-                    shared = await GetSharedSegmentAsync(url, internalRelayKey).WaitAsync(cancellationToken).ConfigureAwait(false);
+                    shared = await GetSharedSegmentAsync(url, internalRelayKey, rungAgent).WaitAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -207,6 +211,11 @@ namespace Jellyfin.Plugin.Federation.Services
             using var upstreamRequest = new HttpRequestMessage(isHead ? HttpMethod.Head : HttpMethod.Get, url);
             upstreamRequest.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
             upstreamRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+            if (rungAgent != null)
+            {
+                upstreamRequest.Headers.TryAddWithoutValidation("User-Agent", rungAgent);
+            }
+
             foreach (var header in PassedRequestHeaders)
             {
                 if (request.Headers.TryGetValue(header, out var value))
@@ -317,8 +326,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// running request instead, and a player giving up does not cancel it.
         /// Null when the segment is too large to hold in memory.
         /// </summary>
-        private Task<SharedSegment?> GetSharedSegmentAsync(string url, string internalRelayKey)
-            => GetSharedSegmentAsync(url, () => FetchSegmentAsync(url, internalRelayKey));
+        private Task<SharedSegment?> GetSharedSegmentAsync(string url, string internalRelayKey, string? userAgent)
+            => GetSharedSegmentAsync(url, () => FetchSegmentAsync(url, internalRelayKey, userAgent));
 
         internal Task<SharedSegment?> GetSharedSegmentAsync(string url, Func<Task<SharedSegment?>> fetch)
         {
@@ -380,7 +389,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 ? entry.Fetch.Value.Result?.Body.LongLength ?? 0
                 : 0;
 
-        private async Task<SharedSegment?> FetchSegmentAsync(string url, string internalRelayKey)
+        private async Task<SharedSegment?> FetchSegmentAsync(string url, string internalRelayKey, string? userAgent)
         {
             await Task.Yield();
             try
@@ -389,6 +398,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 using var upstreamRequest = new HttpRequestMessage(HttpMethod.Get, url);
                 upstreamRequest.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
                 upstreamRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+                if (userAgent != null)
+                {
+                    upstreamRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+                }
+
                 using var upstream = await Loopback.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
                 var contentType = upstream.Content.Headers.ContentType?.ToString();
                 if (!upstream.IsSuccessStatusCode)

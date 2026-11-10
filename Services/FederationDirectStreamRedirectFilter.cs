@@ -64,10 +64,17 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 try
                 {
-                    var target = await ResolveRedirectAsync(context).ConfigureAwait(false);
+                    var (target, route) = await ResolveRedirectAsync(context).ConfigureAwait(false);
+                    if (route != null)
+                    {
+                        // Jellyfin fetches a relayed original itself, without the
+                        // player's play session, so the relay cannot name the
+                        // session; this request can.
+                        FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId"), route);
+                    }
+
                     if (target != null)
                     {
-                        FederationPlaybackRoutes.Record(RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId"), FederatedRoute.Direct);
                         // The URL carries an item-scoped token; never log it.
                         _logger.LogInformation("[Federation] Direct-play request for federated item {ItemId} sent straight to the friend's server", context.ActionArguments["itemId"]);
                         context.HttpContext.Response.Headers.CacheControl = "private, no-store";
@@ -106,6 +113,24 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
+        /// The route an unconverted (static) request for a friend's title takes:
+        /// straight to the friend when redirected, otherwise through this server
+        /// unchanged (Jellyfin fetches the original itself, whether from this plugin's
+        /// loopback relay or a gateway it could not redirect to). Null for anything else.
+        /// </summary>
+        internal static string? ObservedRoute(MediaSourceInfo? source, string? redirectTarget)
+        {
+            if (redirectTarget != null)
+            {
+                return FederatedRoute.Direct;
+            }
+
+            return source is { Protocol: MediaProtocol.Http } && !string.IsNullOrEmpty(source.Path)
+                ? FederatedRoute.Relay
+                : null;
+        }
+
+        /// <summary>
         /// The client scheme after Jellyfin's trusted-proxy middleware has processed
         /// any forwarding headers.
         /// </summary>
@@ -128,25 +153,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 && context.ActionArguments.TryGetValue("itemId", out var id) && id is Guid;
         }
 
-        private async Task<string?> ResolveRedirectAsync(ActionExecutingContext context)
+        private async Task<(string? Target, string? Route)> ResolveRedirectAsync(ActionExecutingContext context)
         {
             var itemId = (Guid)context.ActionArguments["itemId"]!;
             var item = _library.GetItemById(itemId);
             if (item == null || FederationLibraryManager.GetFederationKey(item) == null)
             {
-                return null;
+                return (null, null);
             }
 
             var info = await _authorization.GetAuthorizationInfo(context.HttpContext).ConfigureAwait(false);
             if (info == null || !info.IsAuthenticated)
             {
-                return null;
+                return (null, null);
             }
 
             var user = info.User ?? (info.UserId != Guid.Empty ? _users.GetUserById(info.UserId) : null);
             if (user == null || _library.GetItemById<BaseItem>(itemId, user) == null)
             {
-                return null;
+                return (null, null);
             }
 
             var sources = await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
@@ -154,7 +179,8 @@ namespace Jellyfin.Plugin.Federation.Services
             var source = string.IsNullOrEmpty(requested)
                 ? sources.FirstOrDefault()
                 : sources.FirstOrDefault(s => string.Equals(s.Id, requested, StringComparison.OrdinalIgnoreCase));
-            return RedirectTarget(source, RequestScheme(context.HttpContext.Request));
+            var target = RedirectTarget(source, RequestScheme(context.HttpContext.Request));
+            return (target, ObservedRoute(source, target));
         }
     }
 }

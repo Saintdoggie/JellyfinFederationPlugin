@@ -489,6 +489,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     // config save - enforced in FederationPeerAccessService.IsItemVisible.
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
+                    config.LocalTranscodeRestriction = existing.LocalTranscodeRestriction;
                     config.DirectLinkOptIn = existing.DirectLinkOptIn;
                     config.PairingOptIn = existing.PairingOptIn;
                     config.PairingPortFirst = existing.PairingPortFirst;
@@ -755,7 +756,8 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new
             {
                 showFederatedCloudBadges = config?.ShowFederatedCloudBadges == true,
-                loadingOverlay = config?.LoadingOverlay != false
+                loadingOverlay = config?.LoadingOverlay != false,
+                playbackServerLabel = config?.ShowPlaybackServerLabel != false
             });
         }
 
@@ -1593,6 +1595,7 @@ namespace Jellyfin.Plugin.Federation.Api
             return Ok(new
             {
                 config.EnableRemoteTranscodeForFriends,
+                config.LocalTranscodeRestriction,
                 config.MaxRemoteTranscodesPerFriend,
                 config.UseFriendsTranscoders,
                 config.ShareConversionLogsWithFriends,
@@ -1628,6 +1631,16 @@ namespace Jellyfin.Plugin.Federation.Api
             if (body.MaxRemoteTranscodesPerFriend.HasValue)
             {
                 config.MaxRemoteTranscodesPerFriend = Math.Clamp(body.MaxRemoteTranscodesPerFriend.Value, 0, 100);
+            }
+
+            if (body.LocalTranscodeRestriction.HasValue)
+            {
+                if (!Enum.IsDefined(body.LocalTranscodeRestriction.Value))
+                {
+                    return BadRequest(new { success = false, message = "Unknown conversion restriction." });
+                }
+
+                config.LocalTranscodeRestriction = body.LocalTranscodeRestriction.Value;
             }
 
             if (body.UseFriendsTranscoders.HasValue)
@@ -1906,7 +1919,7 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var key = FederationLibraryManager.GetFederationKey(item);
             var entry = key == null ? null : _cache.GetEntryByKey(key);
-            var source = entry == null ? null : FederationViewerReporter.PlayedSource(entry, item.Id, mediaSourceId);
+            var source = entry == null ? null : FederationViewerReporter.PlayedSource(entry, item.Id, mediaSourceId, _federationManager.GetPlaybackSource(entry));
             var server = source == null ? null : _federationManager.GetServer(source.ServerId);
             if (entry == null || source == null || server == null)
             {
@@ -2000,7 +2013,15 @@ namespace Jellyfin.Plugin.Federation.Api
                 directLink = DirectLinkNote(server.Id),
                 friendHardware = friendHardware?.Describe(),
                 thisServerHardware = route == FederatedRoute.ConvertedHere ? _placement?.Local().Describe() : null,
-                alsoOn = others
+                alsoOn = others,
+                selection = Services.SourceCandidateFactory.ExplainPlayed(
+                    entry,
+                    source,
+                    id => _federationManager.GetServer(id),
+                    id => FederationItemPersistenceService.AvailabilityOverride?.IsOffline(id) == true,
+                    _bandwidthMonitor,
+                    Plugin.Instance?.Configuration,
+                    Services.SourceCandidateFactory.Device(activeSession?.Client, activeSession?.DeviceName, FederationRemoteTranscodeFilter.IsBrowser(Request)))
             });
         }
 
@@ -3634,13 +3655,18 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Tells the friend this token also opens Peer/Play (remote
                 // transcode) for this item. Older friends ignore it.
                 remoteTranscode = purpose == FederationTokenPurpose.Playback
-                    && Plugin.Instance?.Configuration?.EnableRemoteTranscodeForFriends == true
-                    && caller.AllowRemoteTranscode,
+                    && caller.AllowRemoteTranscode
+                    && Services.TranscodePolicy.FriendsMayConvertHere(Plugin.Instance?.Configuration),
 
                 // Tells the friend a repeated segment request joins the running
                 // one here instead of restarting the conversion, so it may ask
                 // for the first segment early to start conversion sooner.
-                sharedSegments = purpose == FederationTokenPurpose.Playback
+                sharedSegments = purpose == FederationTokenPurpose.Playback,
+
+                // Tells the friend this gateway gives each quality level its own
+                // conversion (Services.HlsQualityLadder), so it may add lower levels
+                // to the playlist. Older friends ignore it.
+                qualityLadder = purpose == FederationTokenPurpose.Playback
             });
         }
 
@@ -4172,7 +4198,7 @@ namespace Jellyfin.Plugin.Federation.Api
         {
             remoteUserId = null;
             var config = Plugin.Instance?.Configuration;
-            if (config?.EnableRemoteTranscodeForFriends != true
+            if (!Services.TranscodePolicy.FriendsMayConvertHere(config)
                 || !_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var federationId, out var purpose, out remoteUserId)
                 || purpose != FederationTokenPurpose.Playback)
             {
@@ -7058,7 +7084,7 @@ namespace Jellyfin.Plugin.Federation.Api
             to.PairClaimedName = from.PairClaimedName;
         }
 
-        private static object Sanitize(PluginConfiguration config, FriendDataLimits? limits = null)
+        internal static object Sanitize(PluginConfiguration config, FriendDataLimits? limits = null)
         {
             return new
             {
@@ -7070,6 +7096,9 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.ShowFederatedCloudBadges,
                 config.LoadingOverlay,
                 config.LoadingFunFacts,
+                config.ShowPlaybackServerLabel,
+                config.SmartSourceSelection,
+                config.AdaptiveQualityLadder,
                 config.FastStartProbing,
                 config.EnableAdaptivePlayback,
                 config.PreferHigherQualityRemotes,
@@ -7250,6 +7279,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets the per-friend concurrent session limit (0 = none).</summary>
         public int? MaxRemoteTranscodesPerFriend { get; set; }
+
+        /// <summary>Gets or sets how much conversion this server itself may do (null = unchanged).</summary>
+        public LocalTranscodeRestriction? LocalTranscodeRestriction { get; set; }
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool? UseFriendsTranscoders { get; set; }

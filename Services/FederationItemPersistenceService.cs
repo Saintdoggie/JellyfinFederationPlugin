@@ -913,7 +913,50 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
+            if (config?.SmartSourceSelection == true && playable.Count > 1)
+            {
+                return SmartChoice(entry, playable, config) ?? playable[0].Source;
+            }
+
             return PreferFasterStart(playable) ?? playable[0].Source;
+        }
+
+        /// <summary>
+        /// Remembers which copy each title last played from by default, so the smart
+        /// choice needs a clear improvement before it changes (no flipping between
+        /// servers on every speed sample). In memory only.
+        /// </summary>
+        internal static SourceSelectionMemory SmartSelectionMemory { get; } = new();
+
+        /// <summary>
+        /// The copy <see cref="SourceSelectionScorer"/> ranks first for an unknown
+        /// device, using measured link speed, the link's cap and who may convert.
+        /// Every caller of <see cref="FirstEnabledSource"/> gets this same answer, so
+        /// the stored path, playback, labels and estimates cannot disagree.
+        /// </summary>
+        private static FederatedSource? SmartChoice(FederatedCacheEntry entry, List<(FederatedSource Source, RemoteServer Server)> playable, PluginConfiguration config)
+        {
+            var candidates = new List<SourceCandidate>(playable.Count);
+            var byKey = new Dictionary<string, FederatedSource>(StringComparer.Ordinal);
+            foreach (var (source, server) in playable)
+            {
+                var candidate = SourceCandidateFactory.FromCached(source, server, BandwidthOverride, config);
+                if (byKey.TryAdd(candidate.Key, source))
+                {
+                    candidates.Add(candidate);
+                }
+            }
+
+            var scope = "entry|" + entry.Key;
+            var (currentKey, mayLeave) = SmartSelectionMemory.Current(scope);
+            var selection = SourceSelectionScorer.Rank(candidates, ViewerDevice.Unknown, currentKey, mayLeave);
+            if (selection.Chosen == null)
+            {
+                return null;
+            }
+
+            SmartSelectionMemory.Remember(scope, selection.Chosen.Candidate.Key, selection.Reason);
+            return byKey[selection.Chosen.Candidate.Key];
         }
 
         /// <summary>

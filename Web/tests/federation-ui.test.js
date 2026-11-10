@@ -1438,6 +1438,8 @@ function makeLoadingWindow(options = {}) {
     overlay: true,
     estimate: { federated: true, seconds: 70, reason: 'This file is 93 Mbps but the connection to Friend runs at about 8 Mbps.', serverName: 'Friend' },
     fact: { text: 'Peter Falk had a glass eye.' },
+    serverLabel: true,
+    connection: null,
     federatedIds: { [itemId]: 'Friend' }
   }, options);
   const dom = new JSDOM(
@@ -1468,7 +1470,8 @@ function makeLoadingWindow(options = {}) {
     fetched.push(u);
     let data = {};
     if (u.includes('ClientCatalog')) data = { items: opts.federatedIds, unavailableIds: [] };
-    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false, loadingOverlay: opts.overlay };
+    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: false, loadingOverlay: opts.overlay, playbackServerLabel: opts.serverLabel };
+    if (u.includes('Playback/Connection')) data = opts.connection || { federated: true, friend: 'Friend', itemId: itemId };
     if (u.includes('StartEstimate')) data = opts.estimate;
     if (u.includes('FunFact')) data = opts.fact;
     if (u.includes('DisabledIds') || u.endsWith('/Downloads')) data = [];
@@ -1498,6 +1501,10 @@ function makeLoadingWindow(options = {}) {
     playbackInfoCalls,
     advance,
     overlay: () => w.document.getElementById('federation-loading-overlay'),
+    label: () => w.document.getElementById('federation-server-label'),
+    play: (video) => video.dispatchEvent(new w.Event('playing')),
+    move: () => w.document.dispatchEvent(new w.Event('mousemove')),
+    closePlayer: (video) => { video.dispatchEvent(new w.Event('emptied')); video.remove(); },
     text: (selector) => { const n = w.document.querySelector('#federation-loading-overlay ' + selector); return n ? n.textContent : null; },
     press: (id = itemId) => w.ApiClient.getPlaybackInfo(id, { UserId: 'u' }),
     addVideo: (state = {}) => {
@@ -2569,4 +2576,218 @@ test('HTML helper escapes quoted attribute breakouts and pool icons are escaped'
   assert.match(configPage, /data:image\/png;base64,' \+ escapeHtml\(p\.IconBase64\)/);
   dom.window.close();
   rendered.window.close();
+});
+
+// ---------------------------------------------------------------------------
+// "Playing from <server>" chip
+// ---------------------------------------------------------------------------
+
+test('server label names the server on playing and hides itself again', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  await settle(); await settle();
+  const video = h.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  h.play(video);
+  await settle(); await settle();
+
+  assert.ok(h.label());
+  assert.equal(h.label().textContent, 'Playing from Friend');
+
+  h.advance(4100);
+  assert.equal(h.label(), null);
+});
+
+test('server label comes back when the viewer moves the mouse, without duplicating', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  await settle(); await settle();
+  const video = h.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  h.play(video);
+  await settle(); await settle();
+  h.advance(4100);
+  assert.equal(h.label(), null);
+
+  h.move();
+  assert.ok(h.label());
+  h.move();
+  h.play(video);
+  assert.equal(h.dom.window.document.querySelectorAll('#federation-server-label').length, 1);
+});
+
+test('server label uses the live connection server when a title is on several servers', async () => {
+  const h = await ready(makeLoadingWindow({
+    connection: { federated: true, friend: 'VPS', itemId: itemId }
+  }));
+  h.press();
+  await settle(); await settle();
+  const video = h.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  h.play(video);
+  await settle(); await settle(); await settle();
+
+  assert.equal(h.label().textContent, 'Playing from VPS');
+});
+
+test('server label stays away when the admin turns it off, for local titles, and after the player closes', async () => {
+  const off = await ready(makeLoadingWindow({ serverLabel: false }));
+  off.press();
+  await settle(); await settle();
+  const offVideo = off.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  off.play(offVideo);
+  await settle(); await settle();
+  assert.equal(off.label(), null);
+
+  const local = await ready(makeLoadingWindow());
+  local.press('33333333333333333333333333333333');
+  await settle(); await settle();
+  const localVideo = local.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  local.play(localVideo);
+  await settle(); await settle();
+  assert.equal(local.label(), null);
+
+  const h = await ready(makeLoadingWindow());
+  h.press();
+  await settle(); await settle();
+  const video = h.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  h.play(video);
+  await settle(); await settle();
+  assert.ok(h.label());
+  h.closePlayer(video);
+  assert.equal(h.label(), null);
+});
+
+test('server label honours the viewer opt-out and the settings page exposes the new controls', async () => {
+  const h = await ready(makeLoadingWindow());
+  h.dom.window.localStorage.setItem('federationServerLabelDisabled', '1');
+  h.press();
+  await settle(); await settle();
+  const video = h.addVideo({ paused: false, currentTime: 5, readyState: 4 });
+  h.play(video);
+  await settle(); await settle();
+  assert.equal(h.label(), null);
+
+  assert.match(configPage, /id="fedChkPlaybackServerLabel" class="emby-checkbox fed-check"/);
+  assert.match(configPage, /ShowPlaybackServerLabel: q\('#fedChkPlaybackServerLabel'\)\.checked/);
+  assert.match(configPage, /id="fedSelLocalTranscodeRestriction" class="emby-select"/);
+  assert.match(configPage, /LocalTranscodeRestriction: parseInt\(q\('#fedSelLocalTranscodeRestriction'\)\.value, 10\) \|\| 0/);
+});
+
+function settingsFilterFunctions() {
+  const block = configPage.match(/\/\* settings-filter:start \*\/([\s\S]*?)\/\* settings-filter:end \*\//);
+  assert.ok(block, 'settings filter block not found');
+  const dom = new JSDOM(configPage);
+  const panel = dom.window.document.querySelector('#fedPanelAdvanced');
+  const api = new Function(block[1] + '\nreturn { settingsFilterUnits, applySettingsFilter, settingsFilterMessage };')();
+  const visible = (sel) => {
+    const el = panel.querySelector(sel);
+    assert.ok(el, sel + ' exists');
+    return !el.closest('.fed-filter-hide');
+  };
+  return { dom, panel, visible, ...api };
+}
+
+test('Advanced settings are grouped into labelled sections with only the first open', () => {
+  const { dom, panel } = settingsFilterFunctions();
+  const groups = Array.from(panel.querySelectorAll(':scope > details.fed-settings-group'));
+  assert.deepEqual(groups.map((g) => g.getAttribute('data-fed-group')),
+    ['playback', 'conversion', 'friends', 'network', 'sync', 'maintenance']);
+  assert.deepEqual(groups.map((g) => g.open), [true, false, false, false, false, false]);
+  groups.forEach((g) => assert.ok(g.querySelector(':scope > summary').textContent.trim().length > 5));
+  // Every control that was on the tab is still there, exactly once, inside a section.
+  ['fedTxtServerUrl', 'fedTxtInternalUrl', 'fedTxtCachePath', 'fedChkAutoProvision', 'fedChkDedup', 'fedChkLoadingOverlay',
+    'fedChkLoadingFunFacts', 'fedChkPlaybackServerLabel', 'fedChkFastStart', 'fedChkUseFriendsTranscoders',
+    'fedChkEnableRemoteTranscodeForFriends', 'fedSelLocalTranscodeRestriction', 'fedNumMaxRemoteTranscodes',
+    'fedChkShareConversionLogs', 'fedChkShowFriendsFavorites', 'fedChkShareFavoritesWithFriends', 'fedChkShowFriendsPopular',
+    'fedChkSharePopularWithFriends', 'fedChkHostWatchParties', 'fedChkJoinWatchParties', 'fedChkShowFriendsViewers',
+    'fedChkShareViewersWithFriends', 'fedChkShareHardware', 'fedSelHardwareMode', 'fedChkSmartPlacement', 'fedSelMin4k',
+    'fedSelMinHd', 'fedNumCpuCountsAsEncode', 'fedCloudBadgeToggle', 'fedChkFriendsOfFriends', 'fedTxtDedupIds',
+    'fedTxtRefreshHours', 'fedDiagnostics', 'fedAdvancedStatus'].forEach((id) => {
+    const el = panel.querySelector('#' + id);
+    assert.ok(el, id + ' is still on the Advanced tab');
+    assert.ok(el.closest('details.fed-settings-group'), id + ' sits inside a section');
+  });
+  // The main save button and hidden items stay outside the collapsible sections.
+  assert.equal(panel.querySelector('#fedBtnSaveAdvanced').closest('details'), null);
+  assert.ok(panel.querySelector('#fedSettingsFilter').closest('form'), 'filter box is inside the form, so Enter must be guarded');
+  assert.match(configPage, /e\.target\.id === 'fedSettingsFilter'[\s\S]{0,200}e\.key === 'Enter'[\s\S]{0,60}preventDefault/);
+  dom.window.close();
+});
+
+test('settings filter shows only matching settings, opens their section, and restores everything when cleared', () => {
+  const { dom, panel, visible, applySettingsFilter, settingsFilterMessage } = settingsFilterFunctions();
+  const group = (key) => panel.querySelector('details[data-fed-group="' + key + '"]');
+
+  assert.equal(applySettingsFilter(panel, ''), -1);
+  assert.equal(panel.querySelectorAll('.fed-filter-hide').length, 0);
+
+  const count = applySettingsFilter(panel, 'watch part');
+  assert.ok(count >= 2);
+  assert.ok(visible('#fedChkHostWatchParties') && visible('#fedChkJoinWatchParties'));
+  assert.ok(visible('[data-fed-action="save-watch-parties"]'), 'the card keeps its own save button');
+  assert.ok(!visible('#fedChkShowFriendsFavorites'), 'other cards in the same section are hidden');
+  assert.ok(!visible('#fedTxtServerUrl'));
+  assert.equal(group('friends').open, true);
+  assert.ok(group('network').classList.contains('fed-filter-hide'));
+  assert.ok(visible('#fedBtnSaveAdvanced'), 'the main save button is never filtered away');
+
+  // One switch inside a card: its neighbours go, its help text and the card heading stay.
+  applySettingsFilter(panel, 'fun facts');
+  assert.ok(visible('#fedChkLoadingFunFacts'));
+  assert.ok(!visible('#fedChkFastStart'));
+  applySettingsFilter(panel, 'conversion log');
+  assert.ok(visible('#fedChkShareConversionLogs'));
+  assert.ok(!visible('#fedNumMaxRemoteTranscodes'));
+  assert.ok(!visible('#fedHardwareCard'));
+
+  // Words may match in any order, in help text hidden behind "more", and in section titles.
+  applySettingsFilter(panel, 'namespace');
+  assert.ok(visible('#fedTxtInternalUrl') && !visible('#fedTxtCachePath'));
+  applySettingsFilter(panel, 'DIAGNOSTICS');
+  assert.ok(visible('[data-fed-action="provision"]') && visible('[data-fed-action="test-all"]'));
+  applySettingsFilter(panel, 'cache addresses');
+  assert.ok(visible('#fedTxtServerUrl') && visible('#fedTxtCachePath'), 'a section title match shows the whole section');
+
+  // The filter never touches inline display styles other code owns.
+  assert.equal(panel.querySelector('#fedHardwareManual').style.display, 'none');
+
+  assert.equal(applySettingsFilter(panel, 'zzz-no-such-setting'), 0);
+  assert.equal(panel.querySelectorAll('details.fed-settings-group:not(.fed-filter-hide)').length, 0);
+  assert.match(settingsFilterMessage(0, ' zzz '), /^No advanced setting matches "zzz"/);
+  assert.equal(settingsFilterMessage(1, 'x'), '1 match');
+  assert.equal(settingsFilterMessage(4, 'x'), '4 matches');
+  assert.equal(settingsFilterMessage(-1, ''), '');
+
+  assert.equal(applySettingsFilter(panel, '   '), -1);
+  assert.equal(panel.querySelectorAll('.fed-filter-hide').length, 0);
+  assert.deepEqual(Array.from(panel.querySelectorAll('details.fed-settings-group')).map((g) => g.open),
+    [true, false, false, false, false, false], 'sections return to how they were before filtering');
+  assert.equal(panel.querySelectorAll('[data-fed-open-before]').length, 0);
+  dom.window.close();
+});
+
+test('long help text is a one-line summary with the detail behind a native disclosure', () => {
+  const { dom, panel } = settingsFilterFunctions();
+  const more = Array.from(panel.querySelectorAll('details.fed-more'));
+  assert.ok(more.length >= 4);
+  more.forEach((d) => {
+    assert.equal(d.open, false);
+    assert.ok(d.querySelector(':scope > summary').textContent.trim());
+    assert.ok(d.previousElementSibling && d.previousElementSibling.matches('p.fieldDescription'), 'follows its summary line');
+    assert.ok(d.previousElementSibling.textContent.length < 240, 'summary line stays short');
+  });
+  assert.ok(panel.querySelector('#fedRequestUrlHint'));
+  dom.window.close();
+});
+
+test('smart copy choice and quality ladder switches load, save, default off, and Playback Info explains the choice', () => {
+  for (const [id, key] of [['fedChkSmartSourceSelection', 'SmartSourceSelection'], ['fedChkAdaptiveLadder', 'AdaptiveQualityLadder']]) {
+    assert.match(configPage, new RegExp('<input type="checkbox" id="' + id + '" class="emby-checkbox fed-check" />'));
+    assert.ok(configPage.includes("q('#" + id + "').checked = currentConfig." + key + ' === true;'), key + ' loads as off unless saved on');
+    assert.ok(configPage.includes(key + ": q('#" + id + "').checked,"), key + ' is saved with the main form');
+  }
+  const dom = new JSDOM(configPage);
+  const group = dom.window.document.querySelector('#fedChkSmartSourceSelection').closest('details.fed-settings-group');
+  assert.equal(group.getAttribute('data-fed-group'), 'playback');
+  assert.equal(dom.window.document.querySelector('#fedChkAdaptiveLadder').closest('details.fed-settings-group'), group);
+  dom.window.close();
+  assert.ok(badgeScript.includes("if (data.selection) { rows.push(['Why this copy', data.selection]); }"));
 });

@@ -1152,6 +1152,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     PeerTranscodeCapability.Record(_server.Id, result.RemoteTranscode == true);
                     PeerTranscodeCapability.RecordSharedSegments(_server.Id, result.SharedSegments == true);
+                    PeerTranscodeCapability.RecordQualityLadder(_server.Id, result.QualityLadder == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -2544,6 +2545,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// running one (0.0.193+), so starting its conversion early is safe.
         /// </summary>
         public bool? SharedSegments { get; set; }
+
+        /// <summary>
+        /// Whether the friend's gateway keeps each quality level of a converted
+        /// title in its own conversion (0.0.208+), so this server may offer lower
+        /// levels in the playlist. Older friends leave it unset: no levels are added.
+        /// </summary>
+        public bool? QualityLadder { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

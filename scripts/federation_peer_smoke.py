@@ -348,6 +348,11 @@ def smoke():
             qa.request(base, '/Sessions/Playing/Progress', viewer, {**play, 'PositionTicks': 95 * ticks, 'IsPaused': True}, expected=204)
             qa.wait_for(lambda: (owner_view() or {}).get('PlayState', {}).get('IsPaused') or None, 'Pause not shown on the owner\'s dashboard')
             qa.check(abs(owner_view()['PlayState']['PositionTicks'] - 95 * ticks) < 2 * ticks, 'Seek not shown on the owner\'s dashboard')
+            # The route is reported only once it has been observed, so fetch a
+            # piece of the stream the way a player does, naming the play session.
+            status, _, _ = no_redirect(base, f'/Videos/{item_id}/stream?static=true&mediaSourceId={item_id}&PlaySessionId=qa-play-1',
+                {**viewer, 'Range': 'bytes=0-1023'})
+            qa.check(status in (200, 206, 302), f'Player stream request answered {status}')
             connection = qa.request(base, '/Plugins/Federation/Playback/Connection', viewer)
             qa.check(connection.get('federated') and connection.get('friend') == settings['RemoteServers'][0]['Name'], f'Playback Info connection wrong: {connection}')
             qa.check(connection.get('route') in ('direct', 'relay') and connection.get('routeText'), 'Playback Info has no route')

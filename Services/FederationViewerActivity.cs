@@ -287,7 +287,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var key = FederationLibraryManager.GetFederationKey(item);
             var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
-            return entry == null ? null : PlayedSource(entry, item.Id, mediaSourceId);
+            return entry == null ? null : PlayedSource(entry, item.Id, mediaSourceId, _federationManager.GetPlaybackSource(entry));
         }
 
         /// <summary>
@@ -295,7 +295,15 @@ namespace Jellyfin.Plugin.Federation.Services
         /// own id for the primary copy, or a hash of friend and remote id for the
         /// others (see <see cref="FederationMediaSourceProvider.BuildSourceId"/>).
         /// </summary>
-        internal static FederatedSource? PlayedSource(FederatedCacheEntry entry, Guid itemId, string? mediaSourceId)
+        /// <param name="entry">The catalog entry of the title.</param>
+        /// <param name="itemId">The local item id.</param>
+        /// <param name="mediaSourceId">The media source the player reported.</param>
+        /// <param name="defaultSource">
+        /// The copy the item's own id plays right now (the shared selector's answer).
+        /// It is not always the first by priority: a faster or better copy can be
+        /// the default, and the label must name the server actually playing.
+        /// </param>
+        internal static FederatedSource? PlayedSource(FederatedCacheEntry entry, Guid itemId, string? mediaSourceId, FederatedSource? defaultSource = null)
         {
             var sources = entry.GetSourcesSnapshot();
             if (!string.IsNullOrEmpty(mediaSourceId) && !string.Equals(mediaSourceId, itemId.ToString("N"), StringComparison.OrdinalIgnoreCase))
@@ -307,7 +315,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            return entry.GetPrimarySource();
+            return defaultSource ?? entry.GetPrimarySource();
         }
 
         private PeerViewerReport Build(string kind, string key, Guid itemId, SessionInfo session, string? playSessionId, long? positionTicks, bool isPaused, string route, RemoteServer server)

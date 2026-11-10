@@ -382,6 +382,17 @@
                 #federationConfigPage details.fed-details > summary:hover { opacity: 0.85; }
                 #federationConfigPage .fed-details-body { padding-top: 0.7em; }
 
+                /* Settings filter and grouped Advanced sections. The filter only
+                   toggles .fed-filter-hide, so inline display styles set by other
+                   code (manual hardware fields, status lines) are never clobbered. */
+                #federationConfigPage .fed-settings-filter { margin: 0 0 1em; }
+                #federationConfigPage .fed-settings-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
+                #federationConfigPage .fed-settings-filter-row > input { flex: 1 1 14em; min-width: 0; }
+                #federationConfigPage .fed-filter-hide { display: none !important; }
+                #federationConfigPage details.fed-more { margin: 0 0 0.9em; }
+                #federationConfigPage details.fed-more > summary { cursor: pointer; font-size: 0.87em; opacity: 0.8; user-select: none; }
+                #federationConfigPage details.fed-more > .fieldDescription { margin-top: 0.4em; }
+
                 /* Premium pass: a restrained surface hierarchy, compact status
                    cards and a stable scrollable tab rail. Motion only reinforces
                    navigation/selection and is disabled when the OS requests it. */
@@ -931,37 +942,74 @@
                 </div>
 
                 <div id="fedPanelAdvanced" aria-labelledby="fedTabAdvanced" class="fed-tabpanel" data-tab-panel="advanced" role="tabpanel">
-                    <details class="fed-details" id="fedAdvancedSettings">
-                        <summary>Advanced settings</summary>
+                    <div class="fed-settings-filter" id="fedSettingsFilterBar">
+                        <label class="inputLabel" for="fedSettingsFilter">Find a setting</label>
+                        <div class="fed-settings-filter-row">
+                            <input type="search" id="fedSettingsFilter" class="emby-input" placeholder="Type a word, e.g. convert, favorites, URL" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="fedSettingsFilterStatus" />
+                            <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="settings-filter-clear">Clear</button>
+                            <button is="emby-button" type="button" class="emby-button button-flat" id="fedSettingsGroupsToggle" data-fed-action="settings-groups-toggle" aria-expanded="false">Open all sections</button>
+                        </div>
+                        <div id="fedSettingsFilterStatus" class="fed-hint" role="status" aria-live="polite"></div>
+                    </div>
+                    <details class="fed-details fed-settings-group" id="fedAdvancedSettings" open data-fed-group="playback">
+                        <summary>Player and playback</summary>
                         <div class="fed-details-body">
-                            <div class="inputContainer">
-                                <label class="inputLabel" for="fedTxtServerUrl">This server's public URL (optional override)</label>
-                                <input type="text" id="fedTxtServerUrl" class="emby-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                <p class="fieldDescription" id="fedRequestUrlHint">Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode:</strong> syncing runs in the background with no incoming request to auto-detect from, so without it the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all. This is what friends and clients connect to — it's not used for this server's own Proxy streams, see below.</p>
-                            </div>
-                            <div class="inputContainer">
-                                <label class="inputLabel" for="fedTxtInternalUrl">This server's local address (optional override)</label>
-                                <input type="text" id="fedTxtInternalUrl" class="emby-input" placeholder="http://127.0.0.1:8096 (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                                <p class="fieldDescription">Where this server's own transcoder fetches a Proxy-mode stream from — never the public URL above, since that would send every byte of a stream out through a reverse proxy/VPS/tunnel and back in just to reach itself. Leave blank; loopback is correct for virtually every setup. Only set this if 127.0.0.1 genuinely isn't reachable from where ffmpeg runs (e.g. Jellyfin split across containers without a shared network namespace) or Jellyfin listens on a non-default port.</p>
-                            </div>
-                            <div class="inputContainer">
-                                <label class="inputLabel" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
-                                <input type="text" id="fedTxtCachePath" class="emby-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
-                            </div>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
-                            <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingOverlay" class="emby-checkbox fed-check" /> Show a loading bar while a federated title starts</label>
                             <p class="fieldDescription">When a federated title is still a black screen 1.5 seconds after pressing play, a simple bar at the bottom shows a projected countdown, why it is taking a while, and a fun fact. It never covers the player controls and disappears as soon as video plays.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkLoadingFunFacts" class="emby-checkbox fed-check" /> Fetch fun facts for the loading bar from a public API</label>
                             <p class="fieldDescription">This server (never the viewer's browser) asks a free public fun-fact service for one short sentence at a time, at most once every few seconds. It sends nothing about you or your media. Turn off to use only a short built-in list.</p>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkPlaybackServerLabel" class="emby-checkbox fed-check" /> Show which server a title is playing from</label>
+                            <p class="fieldDescription">A small chip in the top corner of the player names the server when a federated title starts and whenever the viewer moves the mouse or touches the screen, like the content-rating card on streaming services. Viewers can turn it off in their own browser; nothing about the server address is shown, only its name.</p>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkFastStart" class="emby-checkbox fed-check" /> Bound how much of a remote file is analysed before playback starts</label>
                             <p class="fieldDescription">Stops ffmpeg reading up to a gigabyte of a friend's file before the first frame. Only the analysis window changes; the picture and sound delivered are identical. Leave on unless a particular title fails to play.</p>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkSmartSourceSelection" class="emby-checkbox fed-check" /> Pick the best copy automatically when a title is on several servers</label>
+                            <p class="fieldDescription">Plays the copy that starts quickly and keeps playing without buffering on the measured connection, then the best picture that connection can carry. Friend priority still decides between equal copies.</p>
+                            <details class="fed-more">
+                                <summary>What changes</summary>
+                                <p class="fieldDescription">Off (default): copies are tried in friend priority order, and another copy is used only when the first would take more than 30 seconds to start. On: a 4K copy is preferred when the link can carry it or its owner can convert it, and a smaller copy that plays as-is wins when the link is slow. The choice needs a clear improvement before it changes, so it does not flip between servers. Playback Info shows why a copy was chosen.</p>
+                            </details>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkAdaptiveLadder" class="emby-checkbox fed-check" /> Lower the quality instead of buffering (converted titles)</label>
+                            <p class="fieldDescription">Offers a converted title at several quality levels, so the player steps down when the connection slows and back up when it recovers. Works in the web player and in apps.</p>
+                            <details class="fed-more">
+                                <summary>What it costs</summary>
+                                <p class="fieldDescription">Each quality level is a separate conversion on whichever server converts the title, started only when the player asks for it; a change of level can briefly run two. Titles that play as the original file are not affected, and no level is ever above what the connection's limit already allows. Off by default.</p>
+                            </details>
+                            <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
+                                <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
+                                <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
+                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeAdd" data-fed-action="toggle-cloud-badge" data-value="true">Add</button>
+                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeRemove" data-fed-action="toggle-cloud-badge" data-value="false">Remove</button>
+                                </div>
+                            </div>
+                            <p class="fieldDescription">Off by default. Add the badge when you want an at-a-glance source marker on movie, show, and list artwork; remove it any time. This does not change playback or sharing.</p>
+                        </div>
+                    </details>
+                    <details class="fed-details fed-settings-group" data-fed-group="conversion">
+                        <summary>Who converts video</summary>
+                        <div class="fed-details-body">
                             <div class="fed-subcard" id="fedRemoteTranscodeCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Who converts friends' video</h4>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkUseFriendsTranscoders" class="emby-checkbox fed-check" /> Let a friend's server convert its own titles for my viewers</label>
-                                <p class="fieldDescription">When one of your viewers plays a friend's title that has to be converted for their device, the friend's server converts its own copy and sends it straight to the player. Your viewer stays signed in here and their progress is saved here, but the video never passes through this server. A play stays with the friend from start to end. If the friend has converting switched off or runs an older version, this server converts it instead; if the friend is busy or has a problem, the player shows that. The friend's conversion log of the play is copied to this server's logs (Dashboard → Logs) when the friend shares it.</p>
+                                <p class="fieldDescription">When a friend's title has to be converted for a viewer's device, the friend's server converts its own copy and sends it straight to the player. The video never passes through this server.</p>
+                                <details class="fed-more">
+                                    <summary>How this works</summary>
+                                    <p class="fieldDescription">Your viewer stays signed in here and their progress is saved here. A play stays with the friend from start to end. If the friend has converting switched off or runs an older version, this server converts it instead; if the friend is busy or has a problem, the player shows that. The friend's conversion log of the play is copied to this server's logs (Dashboard → Logs) when the friend shares it.</p>
+                                </details>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkEnableRemoteTranscodeForFriends" class="emby-checkbox fed-check" /> Convert my titles on this server for friends' viewers</label>
                                 <p class="fieldDescription">Uses this server's transcoder (GPU) and upload for friends who play your titles. Each friend can also be switched off on the Friends tab.</p>
+                                <div class="inputContainer">
+                                    <label class="inputLabel" for="fedSelLocalTranscodeRestriction">How much may this server itself convert?</label>
+                                    <select id="fedSelLocalTranscodeRestriction" class="emby-select">
+                                        <option value="0">Everything (default)</option>
+                                        <option value="1">Not for friends' viewers — my own viewers only</option>
+                                        <option value="2">Nothing — never convert video on this server</option>
+                                    </select>
+                                    <p class="fieldDescription">Choose "Nothing" on a server that should never transcode, such as a small VPS. A conversion already running is not interrupted.</p>
+                                    <details class="fed-more">
+                                        <summary>What each choice does</summary>
+                                        <p class="fieldDescription">With "Nothing", friends' viewers are refused, your own viewers direct play or use another server's copy, and a friend can still convert for your viewers. "Not for friends' viewers" has the same effect as turning off "Convert my titles on this server for friends' viewers" above.</p>
+                                    </details>
+                                </div>
                                 <div class="inputContainer">
                                     <label class="inputLabel" for="fedNumMaxRemoteTranscodes">Most conversions per friend at once (0 = no limit)</label>
                                     <input type="number" id="fedNumMaxRemoteTranscodes" class="emby-input" min="0" max="100" step="1" />
@@ -971,38 +1019,6 @@
                                 <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-remote-transcode">Save conversion settings</button>
                                 <div class="fed-srvstatus" id="fedRemoteTranscodeStatus" style="display:none;"></div>
                                 <div id="fedRemoteTranscodeFriends" class="fed-hint" style="margin-top:.6em;"></div>
-                            </div>
-                            <div class="fed-subcard" id="fedFavoritesCard" style="margin:1em 0;">
-                                <h4 class="fed-subhead">Friends' favorites</h4>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsFavorites" class="emby-checkbox fed-check" /> Show friends' favorites on my Favorites tab</label>
-                                <p class="fieldDescription">Adds a "Favorites on (friend)" row per friend under your viewers' own favorites, with the titles that friend's users favorited. Each viewer only sees titles they can already open here.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareFavoritesWithFriends" class="emby-checkbox fed-check" /> Share which of my titles my users favorited</label>
-                                <p class="fieldDescription">Friends see the titles only, never who favorited them, and only titles you already share with that viewer. Titles you get from other friends are never included.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsPopular" class="emby-checkbox fed-check" /> Show what's popular on friends' servers on my Home tab</label>
-                                <p class="fieldDescription">Adds a "Popular on (friend)" row per friend, with the titles most played there in the last 30 days. Each viewer only sees titles they can already open here.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkSharePopularWithFriends" class="emby-checkbox fed-check" /> Share what's popular here with friends</label>
-                                <p class="fieldDescription">Friends see which of your titles your users played most in the last 30 days, as counts only, never who played them, and only titles you already share with that viewer. Taken from Jellyfin's own watch history; nothing extra is recorded.</p>
-                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-favorites">Save favorites settings</button>
-                                <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
-                                <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
-                            </div>
-                            <div class="fed-subcard" id="fedWatchPartyCard" style="margin:1em 0;">
-                                <h4 class="fed-subhead">Watch parties with friends</h4>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkHostWatchParties" class="emby-checkbox fed-check" /> Let my viewers start watch parties with friends</label>
-                                <p class="fieldDescription">Adds "New group with friends" and "Invite friends" to the group (SyncPlay) menu. Friends' viewers join from their own group list and watch their own server's copy in step with yours. Play, pause and seeking are shared; anyone buffering pauses everyone.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkJoinWatchParties" class="emby-checkbox fed-check" /> Show friends' watch parties in my group list</label>
-                                <p class="fieldDescription">Each viewer only sees a party when they can open what it's playing here. Viewers need Jellyfin's SyncPlay permission, as for any group.</p>
-                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-watch-parties">Save watch party settings</button>
-                                <div class="fed-srvstatus" id="fedWatchPartyStatus" style="display:none;"></div>
-                            </div>
-                            <div class="fed-subcard" id="fedViewersCard" style="margin:1em 0;">
-                                <h4 class="fed-subhead">Who is watching across friends</h4>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsViewers" class="emby-checkbox fed-check" /> Show friends' viewers on my dashboard</label>
-                                <p class="fieldDescription">When someone on a friend's server watches one of your titles, it shows under Active devices like a viewer connected to you: the title, how far in, paused or playing, and how it plays. They appear as "name (friend)" and nothing is added to your users' watch history.</p>
-                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareViewersWithFriends" class="emby-checkbox fed-check" /> Tell friends what my viewers watch of theirs</label>
-                                <p class="fieldDescription">Sends the viewer's name, device, position and pause state to the friend whose title it is, so it shows on their dashboard. Nothing is sent about your own titles.</p>
-                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-viewers">Save viewer settings</button>
-                                <div class="fed-srvstatus" id="fedViewersStatus" style="display:none;"></div>
                             </div>
                             <div class="fed-subcard" id="fedHardwareCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Conversion hardware</h4>
@@ -1069,14 +1085,43 @@
                                 <div class="fed-srvstatus" id="fedHardwareStatus" style="display:none;"></div>
                                 <div id="fedHardwareFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
-                            <div class="fed-toggle-row" id="fedCloudBadgeToggle" data-enabled="false">
-                                <span class="inputLabel fed-toggle-label">Cloud badge on federated media artwork</span>
-                                <div class="fed-btn-group" role="group" aria-label="Cloud badge on federated media artwork">
-                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeAdd" data-fed-action="toggle-cloud-badge" data-value="true">Add</button>
-                                    <button is="emby-button" type="button" class="emby-button button-flat fed-toggle-btn" id="fedBtnCloudBadgeRemove" data-fed-action="toggle-cloud-badge" data-value="false">Remove</button>
-                                </div>
+                        </div>
+                    </details>
+                    <details class="fed-details fed-settings-group" data-fed-group="friends">
+                        <summary>Shared with friends: favorites, watch parties, viewers</summary>
+                        <div class="fed-details-body">
+                            <div class="fed-subcard" id="fedFavoritesCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Friends' favorites</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsFavorites" class="emby-checkbox fed-check" /> Show friends' favorites on my Favorites tab</label>
+                                <p class="fieldDescription">Adds a "Favorites on (friend)" row per friend under your viewers' own favorites, with the titles that friend's users favorited. Each viewer only sees titles they can already open here.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareFavoritesWithFriends" class="emby-checkbox fed-check" /> Share which of my titles my users favorited</label>
+                                <p class="fieldDescription">Friends see the titles only, never who favorited them, and only titles you already share with that viewer. Titles you get from other friends are never included.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsPopular" class="emby-checkbox fed-check" /> Show what's popular on friends' servers on my Home tab</label>
+                                <p class="fieldDescription">Adds a "Popular on (friend)" row per friend, with the titles most played there in the last 30 days. Each viewer only sees titles they can already open here.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkSharePopularWithFriends" class="emby-checkbox fed-check" /> Share what's popular here with friends</label>
+                                <p class="fieldDescription">Friends see which of your titles your users played most in the last 30 days, as counts only, never who played them, and only titles you already share with that viewer. Taken from Jellyfin's own watch history; nothing extra is recorded.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-favorites">Save favorites settings</button>
+                                <div class="fed-srvstatus" id="fedFavoritesStatus" style="display:none;"></div>
+                                <div id="fedFavoritesFriends" class="fed-hint" style="margin-top:.6em;"></div>
                             </div>
-                            <p class="fieldDescription">Off by default. Add the badge when you want an at-a-glance source marker on movie, show, and list artwork; remove it any time. This does not change playback or sharing.</p>
+                            <div class="fed-subcard" id="fedWatchPartyCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Watch parties with friends</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkHostWatchParties" class="emby-checkbox fed-check" /> Let my viewers start watch parties with friends</label>
+                                <p class="fieldDescription">Adds "New group with friends" and "Invite friends" to the group (SyncPlay) menu. Friends' viewers join from their own group list and watch their own server's copy in step with yours. Play, pause and seeking are shared; anyone buffering pauses everyone.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkJoinWatchParties" class="emby-checkbox fed-check" /> Show friends' watch parties in my group list</label>
+                                <p class="fieldDescription">Each viewer only sees a party when they can open what it's playing here. Viewers need Jellyfin's SyncPlay permission, as for any group.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-watch-parties">Save watch party settings</button>
+                                <div class="fed-srvstatus" id="fedWatchPartyStatus" style="display:none;"></div>
+                            </div>
+                            <div class="fed-subcard" id="fedViewersCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">Who is watching across friends</h4>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShowFriendsViewers" class="emby-checkbox fed-check" /> Show friends' viewers on my dashboard</label>
+                                <p class="fieldDescription">When someone on a friend's server watches one of your titles, it shows under Active devices like a viewer connected to you: the title, how far in, paused or playing, and how it plays. They appear as "name (friend)" and nothing is added to your users' watch history.</p>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkShareViewersWithFriends" class="emby-checkbox fed-check" /> Tell friends what my viewers watch of theirs</label>
+                                <p class="fieldDescription">Sends the viewer's name, device, position and pause state to the friend whose title it is, so it shows on their dashboard. Nothing is sent about your own titles.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="save-viewers">Save viewer settings</button>
+                                <div class="fed-srvstatus" id="fedViewersStatus" style="display:none;"></div>
+                            </div>
                             <label class="fed-check-label"><input type="checkbox" id="fedChkFriendsOfFriends" class="emby-checkbox fed-check" /> Allow friends-of-friends</label>
                             <p class="fieldDescription">
                                 When on: your friends can see who your other friends are, and you can review those servers on the Discovery tab.
@@ -1084,6 +1129,40 @@
                                 Off by default. Either way, a server only ever shares its own library, never
                                 content that was itself federated into it from somewhere else.
                             </p>
+                        </div>
+                    </details>
+                    <details class="fed-details fed-settings-group" data-fed-group="network">
+                        <summary>Server addresses and cache</summary>
+                        <div class="fed-details-body">
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtServerUrl">This server's public URL (optional override)</label>
+                                <input type="text" id="fedTxtServerUrl" class="emby-input" placeholder="Auto-detect (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fieldDescription" id="fedRequestUrlHint">The address friends and clients connect to. Leave blank to auto-detect from whoever is asking. <strong>Set it if any server uses Proxy mode.</strong></p>
+                                <details class="fed-more">
+                                    <summary>Why Proxy mode needs it</summary>
+                                    <p class="fieldDescription">Syncing runs in the background with no incoming request to auto-detect from, so without this address the relay URL cannot be written onto items and they keep streaming directly instead — Proxy appears to do nothing at all. It is not used for this server's own Proxy streams; that is the local address below.</p>
+                                </details>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtInternalUrl">This server's local address (optional override)</label>
+                                <input type="text" id="fedTxtInternalUrl" class="emby-input" placeholder="http://127.0.0.1:8096 (recommended)" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                                <p class="fieldDescription">Where this server's own transcoder fetches a Proxy-mode stream from. Leave blank; loopback is correct for virtually every setup.</p>
+                                <details class="fed-more">
+                                    <summary>When to set it</summary>
+                                    <p class="fieldDescription">Never use the public URL above here, since that would send every byte of a stream out through a reverse proxy/VPS/tunnel and back in just to reach itself. Only set this if 127.0.0.1 genuinely isn't reachable from where ffmpeg runs (e.g. Jellyfin split across containers without a shared network namespace) or Jellyfin listens on a non-default port.</p>
+                                </details>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel" for="fedTxtCachePath">Cache path (blank = plugin data dir)</label>
+                                <input type="text" id="fedTxtCachePath" class="emby-input" placeholder="Default" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                            </div>
+                        </div>
+                    </details>
+                    <details class="fed-details fed-settings-group" data-fed-group="sync">
+                        <summary>Libraries and sync</summary>
+                        <div class="fed-details-body">
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkAutoProvision" class="emby-checkbox fed-check" /> Auto-provision virtual libraries</label>
+                            <label class="fed-check-label"><input type="checkbox" id="fedChkDedup" class="emby-checkbox fed-check" /> Merge duplicate items across servers (by provider ID)</label>
                             <div class="inputContainer">
                                 <label class="inputLabel" for="fedTxtDedupIds">Provider IDs used for merging</label>
                                 <input type="text" id="fedTxtDedupIds" class="emby-input" placeholder="imdb,tmdb,tvdb" autocapitalize="off" autocorrect="off" spellcheck="false" />
@@ -1093,7 +1172,11 @@
                                 <input type="number" id="fedTxtRefreshHours" class="emby-input" min="1" max="168" />
                             </div>
                             <p class="fieldDescription">To keep a permanent local copy of a federated item, use the Downloads tab. Selective transfers and their progress are kept together there.</p>
-
+                        </div>
+                    </details>
+                    <details class="fed-details fed-settings-group" data-fed-group="maintenance">
+                        <summary>Diagnostics and maintenance</summary>
+                        <div class="fed-details-body">
                             <h3 class="fed-subhead">Diagnostics</h3>
                             <div id="fedDiagnostics" class="fed-diagnostic"></div>
                             <div>
@@ -1105,7 +1188,7 @@
                     </details>
 
                     <div class="verticalSection">
-                        <p class="fieldDescription">Saves the advanced settings above and your library selections on the Libraries tab together - it's the same save action either tab's button triggers.</p>
+                        <p class="fieldDescription">Saves the settings above and your library selections on the Libraries tab together. Sections with their own Save button (conversion, favorites, watch parties, viewers, hardware) are saved by that button instead.</p>
                         <div class="fed-savebar">
                             <button is="emby-button" type="submit" id="fedBtnSaveAdvanced" class="raised button-submit emby-button"><span>Save advanced settings</span></button>
                             <span class="fed-savemsg" id="fedSaveMsgAdvanced"></span>
@@ -1707,6 +1790,7 @@
                             if (!res) { return; }
                             q('#fedChkUseFriendsTranscoders').checked = res.UseFriendsTranscoders !== false;
                             q('#fedChkEnableRemoteTranscodeForFriends').checked = res.EnableRemoteTranscodeForFriends !== false;
+                            q('#fedSelLocalTranscodeRestriction').value = String(res.LocalTranscodeRestriction || 0);
                             q('#fedChkShareConversionLogs').checked = res.ShareConversionLogsWithFriends !== false;
                             q('#fedNumMaxRemoteTranscodes').value = res.MaxRemoteTranscodesPerFriend || 0;
                             var lines = (res.Friends || []).map(function (f) {
@@ -1728,6 +1812,7 @@
                             body: JSON.stringify({
                                 UseFriendsTranscoders: q('#fedChkUseFriendsTranscoders').checked,
                                 EnableRemoteTranscodeForFriends: q('#fedChkEnableRemoteTranscodeForFriends').checked,
+                                LocalTranscodeRestriction: parseInt(q('#fedSelLocalTranscodeRestriction').value, 10) || 0,
                                 ShareConversionLogsWithFriends: q('#fedChkShareConversionLogs').checked,
                                 MaxRemoteTranscodesPerFriend: isNaN(max) || max < 0 ? 0 : Math.min(max, 100)
                             })
@@ -6509,6 +6594,166 @@
                     }
                     /* sync-status:end */
 
+                    /* settings-filter:start */
+                    // Splits a settings container into filterable units: a control
+                    // plus the help text that follows it. Nested cards are filtered
+                    // on their own so one matching switch does not show a whole card.
+                    function settingsFilterUnits(container) {
+                        var units = [];
+                        var current = null;
+                        Array.prototype.forEach.call(container.children, function (el) {
+                            if (el.tagName === 'SUMMARY') {
+                                return;
+                            }
+
+                            var trailing = current && !current.nested
+                                && el.matches('p.fieldDescription, details.fed-more, .fed-srvstatus, .fed-hint');
+                            if (!trailing) {
+                                current = { els: [], nested: el.classList.contains('fed-subcard') ? el : null };
+                                units.push(current);
+                            }
+
+                            current.els.push(el);
+                        });
+                        return units;
+                    }
+
+                    // Returns how many settings match, or -1 when the filter is empty.
+                    function applySettingsFilter(panel, query) {
+                        var words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+                        var groups = Array.prototype.slice.call(panel.querySelectorAll('details.fed-settings-group'));
+
+                        function matches(text) {
+                            var lower = String(text || '').toLowerCase();
+                            return words.every(function (w) { return lower.indexOf(w) !== -1; });
+                        }
+
+                        function setHidden(els, hidden) {
+                            els.forEach(function (el) { el.classList.toggle('fed-filter-hide', hidden); });
+                        }
+
+                        function hasField(el) {
+                            return el.matches('input, select, textarea') || !!el.querySelector('input, select, textarea');
+                        }
+
+                        function filterContainer(container, showAll) {
+                            var count = 0;
+                            var chrome = [];
+                            settingsFilterUnits(container).forEach(function (unit) {
+                                if (unit.nested) {
+                                    var head = unit.nested.querySelector('.fed-subhead');
+                                    var inner = filterContainer(unit.nested, showAll);
+                                    if (inner === 0 && head && matches(head.textContent)) {
+                                        // Only the card's title matched: show the whole card.
+                                        inner = filterContainer(unit.nested, true);
+                                    }
+
+                                    setHidden(unit.els, inner === 0);
+                                    count += inner;
+                                    return;
+                                }
+
+                                var hit = showAll || matches(unit.els.map(function (el) { return el.textContent; }).join(' '));
+                                if (!hit && !unit.els.some(hasField)) {
+                                    // Headings, buttons and status lines follow their container.
+                                    chrome.push(unit);
+                                    return;
+                                }
+
+                                setHidden(unit.els, !hit);
+                                if (hit) {
+                                    count++;
+                                }
+                            });
+                            chrome.forEach(function (unit) { setHidden(unit.els, count === 0); });
+                            return count;
+                        }
+
+                        if (!words.length) {
+                            Array.prototype.forEach.call(panel.querySelectorAll('.fed-filter-hide'), function (el) {
+                                el.classList.remove('fed-filter-hide');
+                            });
+                            groups.forEach(function (group) {
+                                var before = group.getAttribute('data-fed-open-before');
+                                if (before !== null) {
+                                    group.open = before === '1';
+                                    group.removeAttribute('data-fed-open-before');
+                                }
+                            });
+                            return -1;
+                        }
+
+                        var total = 0;
+                        groups.forEach(function (group) {
+                            var summary = group.querySelector('summary');
+                            var body = group.querySelector('.fed-details-body');
+                            var count = body ? filterContainer(body, false) : 0;
+                            if (body && count === 0 && summary && matches(summary.textContent)) {
+                                // Only the section's title matched: show the whole section.
+                                count = filterContainer(body, true);
+                            }
+
+                            if (group.getAttribute('data-fed-open-before') === null) {
+                                group.setAttribute('data-fed-open-before', group.open ? '1' : '0');
+                            }
+
+                            group.classList.toggle('fed-filter-hide', count === 0);
+                            group.open = count > 0;
+                            total += count;
+                        });
+                        return total;
+                    }
+
+                    function settingsFilterMessage(count, query) {
+                        if (count < 0) {
+                            return '';
+                        }
+
+                        if (count === 0) {
+                            return 'No advanced setting matches "' + String(query).trim() + '". Other tabs are not searched.';
+                        }
+
+                        return count === 1 ? '1 match' : count + ' matches';
+                    }
+                    /* settings-filter:end */
+
+                    function runSettingsFilter() {
+                        var panel = q('#fedPanelAdvanced');
+                        var input = q('#fedSettingsFilter');
+                        if (!panel || !input) {
+                            return;
+                        }
+
+                        var count = applySettingsFilter(panel, input.value);
+                        q('#fedSettingsFilterStatus').textContent = settingsFilterMessage(count, input.value);
+                        syncSettingsGroupsToggle();
+                    }
+
+                    function syncSettingsGroupsToggle() {
+                        var btn = q('#fedSettingsGroupsToggle');
+                        var groups = qa('#fedPanelAdvanced details.fed-settings-group');
+                        if (!btn || !groups.length) {
+                            return;
+                        }
+
+                        var allOpen = groups.every(function (g) { return g.open; });
+                        btn.textContent = allOpen ? 'Close all sections' : 'Open all sections';
+                        btn.setAttribute('aria-expanded', allOpen ? 'true' : 'false');
+                    }
+
+                    function toggleSettingsGroups() {
+                        var groups = qa('#fedPanelAdvanced details.fed-settings-group');
+                        var open = !groups.every(function (g) { return g.open; });
+                        groups.forEach(function (g) {
+                            g.open = open;
+                            // An explicit choice replaces whatever the filter would restore.
+                            if (g.getAttribute('data-fed-open-before') !== null) {
+                                g.setAttribute('data-fed-open-before', open ? '1' : '0');
+                            }
+                        });
+                        syncSettingsGroupsToggle();
+                    }
+
                     var syncStatusRunning = false;
                     var syncStatusTick = 0;
 
@@ -6809,6 +7054,9 @@
                             q('#fedChkDedup').checked = currentConfig.EnableDedup !== false;
                             q('#fedChkLoadingOverlay').checked = currentConfig.LoadingOverlay !== false;
                             q('#fedChkLoadingFunFacts').checked = currentConfig.LoadingFunFacts !== false;
+                            q('#fedChkPlaybackServerLabel').checked = currentConfig.ShowPlaybackServerLabel !== false;
+                            q('#fedChkSmartSourceSelection').checked = currentConfig.SmartSourceSelection === true;
+                            q('#fedChkAdaptiveLadder').checked = currentConfig.AdaptiveQualityLadder === true;
                             q('#fedChkFastStart').checked = currentConfig.FastStartProbing !== false;
                             setCloudBadgeToggle(currentConfig.ShowFederatedCloudBadges === true);
                             q('#fedChkFriendsOfFriends').checked = currentConfig.AllowFriendsOfFriends === true;
@@ -6865,6 +7113,9 @@
                             EnableDedup: q('#fedChkDedup').checked,
                             LoadingOverlay: q('#fedChkLoadingOverlay').checked,
                             LoadingFunFacts: q('#fedChkLoadingFunFacts').checked,
+                            ShowPlaybackServerLabel: q('#fedChkPlaybackServerLabel').checked,
+                            SmartSourceSelection: q('#fedChkSmartSourceSelection').checked,
+                            AdaptiveQualityLadder: q('#fedChkAdaptiveLadder').checked,
                             FastStartProbing: q('#fedChkFastStart').checked,
                             ShowFederatedCloudBadges: q('#fedCloudBadgeToggle').getAttribute('data-enabled') === 'true',
                             DedupProviderIds: q('#fedTxtDedupIds').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
@@ -7122,7 +7373,31 @@
                             requestAnimationFrame(function () { details.open = wasOpen; });
                         }, true);
 
+                        page.addEventListener('input', function (e) {
+                            if (e.target && e.target.id === 'fedSettingsFilter') {
+                                runSettingsFilter();
+                            }
+                        });
+
+                        // <details> toggle events do not bubble, so listen in capture.
+                        page.addEventListener('toggle', function (e) {
+                            if (e.target && e.target.classList && e.target.classList.contains('fed-settings-group')) {
+                                syncSettingsGroupsToggle();
+                            }
+                        }, true);
+
                         page.addEventListener('keydown', function (e) {
+                            if (e.target && e.target.id === 'fedSettingsFilter') {
+                                // The box sits inside the settings form: Enter must not save it.
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                } else if (e.key === 'Escape' && e.target.value) {
+                                    e.target.value = '';
+                                    runSettingsFilter();
+                                }
+                                return;
+                            }
+
                             if (e.key === 'Escape' && q('#fedInfoModalRoot').innerHTML) {
                                 closeItemInfoModal();
                             } else if (e.key === 'Escape' && q('#fedOnboardRoot').innerHTML) {
@@ -7570,6 +7845,14 @@
                                         .then(function () { loadDownloads(); })
                                         .catch(function () { loadDownloads(); });
                                     }
+                                    break;
+                                case 'settings-filter-clear':
+                                    q('#fedSettingsFilter').value = '';
+                                    runSettingsFilter();
+                                    q('#fedSettingsFilter').focus();
+                                    break;
+                                case 'settings-groups-toggle':
+                                    toggleSettingsGroups();
                                     break;
                                 case 'provision':
                                     setAdvancedStatus('Provisioning…', 'info');

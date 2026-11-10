@@ -138,6 +138,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // A segment of a play this server's own transcoder started (its
                 // playlist came from here): one play never mixes two transcoders.
                 // Decided before ResolveAsync, which can hit the friend over the network.
+                HlsQualityLadder.ApplyRungUserAgent(context.HttpContext.Request);
                 await next().ConfigureAwait(false);
                 return;
             }
@@ -163,11 +164,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (handoff == null)
             {
-                await next().ConfigureAwait(false);
+                if (LocalConversionBlocked(path))
+                {
+                    context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                    context.Result = LocalConversionRefused();
+                    return;
+                }
+
+                await ConvertHereAsync(context, next, path).ConfigureAwait(false);
                 return;
             }
 
             FederationPlaybackRoutes.Record(playSessionId, FederatedRoute.FriendConverts);
+            if (path.Kind == RemoteMediaKind.HlsMaster)
+            {
+                FirstSegmentTiming.RecordPlaylist(playSessionId);
+            }
+            else if (path.Kind == RemoteMediaKind.HlsSegment && FirstSegmentTiming.CompleteSegment(playSessionId) is { } firstSegmentMs)
+            {
+                _logger.LogInformation("[Federation][timing] First handed-off segment for {ItemId} answered {Ms} ms after the master playlist", path.ItemId, firstSegmentMs);
+            }
             if (!path.FetchedByReceiver)
             {
                 if (path.StartsWork)
@@ -205,8 +221,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 else
                 {
                     // The fresh token says the friend no longer converts for us.
+                    if (LocalConversionBlocked(path))
+                    {
+                        context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                        context.Result = LocalConversionRefused();
+                        return;
+                    }
+
                     _logger.LogInformation("[Federation] {Server} no longer converts for us; converting {ItemId} here", handoff.ServerName, path.ItemId);
-                    await next().ConfigureAwait(false);
+                    await ConvertHereAsync(context, next, path).ConfigureAwait(false);
                     return;
                 }
             }
@@ -239,8 +262,15 @@ namespace Jellyfin.Plugin.Federation.Services
                 // at a time - this is the playlist every play starts with.
                 PeerTranscodeCapability.Record(handoff.ServerId, false);
                 PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
+                if (LocalConversionBlocked(path))
+                {
+                    context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                    context.Result = LocalConversionRefused();
+                    return;
+                }
+
                 _logger.LogInformation("[Federation] {Server} no longer converts for us; converting {ItemId} here", handoff.ServerName, path.ItemId);
-                await next().ConfigureAwait(false);
+                await ConvertHereAsync(context, next, path).ConfigureAwait(false);
                 return;
             }
 
@@ -251,6 +281,76 @@ namespace Jellyfin.Plugin.Federation.Services
             context.HttpContext.Response.Headers.CacheControl = "private, no-store";
             context.Result = new StatusCodeResult(status);
         }
+
+        /// <summary>
+        /// Lets this server's Jellyfin handle a federated title's request, with the
+        /// quality ladder applied when it is on: a lower level's request is stamped
+        /// so Jellyfin keeps its files apart, and the master playlist Jellyfin
+        /// returns gets the lower levels added. Ordinary local titles never reach
+        /// this (only federated items), and with the switch off nothing changes.
+        /// </summary>
+        private async Task ConvertHereAsync(ActionExecutingContext context, ActionExecutionDelegate next, RemoteMediaPath path)
+        {
+            HlsQualityLadder.ApplyRungUserAgent(context.HttpContext.Request);
+            var executed = await next().ConfigureAwait(false);
+            if (path.Kind != RemoteMediaKind.HlsMaster
+                || executed.Exception != null
+                || executed.Result is not FileContentResult { FileContents.Length: > 0 and <= MaxPlaylistBytes } playlist
+                || Plugin.Instance?.Configuration?.AdaptiveQualityLadder != true)
+            {
+                return;
+            }
+
+            try
+            {
+                var item = _library.GetItemById(path.ItemId);
+                var key = item == null ? null : FederationLibraryManager.GetFederationKey(item);
+                var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
+                if (entry == null)
+                {
+                    return;
+                }
+
+                var sourceId = path.MediaSourceId?.ToString("N") ?? RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "MediaSourceId");
+                var source = SelectSource(entry, path.ItemId, sourceId);
+                var text = HandoffPlaylistLinks.Decode(playlist.FileContents);
+                var withLevels = HlsQualityLadder.Expand(text, source?.Bitrate is > 0 ? source.Bitrate : null);
+                if (!ReferenceEquals(withLevels, text))
+                {
+                    executed.Result = new FileContentResult(System.Text.Encoding.UTF8.GetBytes(withLevels), playlist.ContentType);
+                    _logger.LogInformation("[Federation] Offering lower quality levels for {ItemId}, converted here, so the player can step down instead of buffering", path.ItemId);
+                }
+            }
+            catch (Exception ex)
+            {
+                // The playlist Jellyfin wrote is still valid on its own.
+                _logger.LogDebug(ex, "[Federation] Could not add quality levels to a playlist; leaving it as Jellyfin wrote it");
+            }
+        }
+
+        /// <summary>
+        /// True when this request would start conversion on this server for a
+        /// federated item while <see cref="LocalTranscodeRestriction.BlockAll"/>
+        /// is set. Only requests that start work are refused: an already-running
+        /// local conversion is left to finish, and ordinary local items are never
+        /// affected. A handoff to the friend is decided before this is consulted.
+        /// </summary>
+        private bool LocalConversionBlocked(RemoteMediaPath path)
+        {
+            if (TranscodePolicy.MayConvertForOwnViewers(Plugin.Instance?.Configuration) || !path.StartsWork)
+            {
+                return false;
+            }
+
+            var item = _library.GetItemById(path.ItemId);
+            return item != null && FederationLibraryManager.GetFederationKey(item) != null;
+        }
+
+        private static ObjectResult LocalConversionRefused()
+            => new(new { error = "local-transcoding-disabled", message = "This server is set never to convert video, and the server owning this title cannot convert it either. Choose a copy this device can play directly." })
+            {
+                StatusCode = StatusCodes.Status409Conflict
+            };
 
         /// <summary>
         /// Some players keep a paused transcode alive with <c>Sessions/Playing/Ping</c>
@@ -433,7 +533,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? remoteMediaSourceId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
-            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink);
+            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink, source.Bitrate is > 0 ? source.Bitrate : null);
         }
 
         private void ApplyLocalConversionCap(ActionExecutingContext context, RemoteMediaPath path, RemoteServer server, FederatedSource source, Guid userId, AuthorizationInfo info)
@@ -623,9 +723,20 @@ namespace Jellyfin.Plugin.Federation.Services
                             // The friend's addresses can be http behind its proxy; put
                             // them on the address this server uses for it.
                             var text = HandoffPlaylistLinks.Decode(bytes);
-                            bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(text, handoff.PlayerBase, handoff.ViaLink ? null : relayPrefix));
+                            var withLevels = handoff.Kind == RemoteMediaKind.HlsMaster
+                                && Plugin.Instance?.Configuration?.AdaptiveQualityLadder == true
+                                && PeerTranscodeCapability.HasQualityLadder(handoff.ServerId)
+                                    ? HlsQualityLadder.Expand(text, handoff.SourceBitrate)
+                                    : text;
+                            if (!ReferenceEquals(withLevels, text))
+                            {
+                                _logger.LogInformation("[Federation] Offering lower quality levels for a title {Server} converts, so the player can step down instead of buffering", handoff.ServerName);
+                            }
+
+                            bytes = System.Text.Encoding.UTF8.GetBytes(HandoffPlaylistLinks.Rewrite(withLevels, handoff.PlayerBase, handoff.ViaLink ? null : relayPrefix));
                             if (handoff.Kind == RemoteMediaKind.HlsMaster && !handoff.ViaLink)
                             {
+                                // Warm only the top level: the others start when a player asks.
                                 HandoffPlaylistLinks.WarmUp(text, handoff.PeerBase, PeerTranscodeCapability.HasSharedSegments(handoff.ServerId), _logger);
                             }
                         }
@@ -649,7 +760,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        internal sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind, string PlayerBase, bool ViaLink)
+        internal sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind, string PlayerBase, bool ViaLink, long? SourceBitrate = null)
         {
             /// <summary>Gets where the player is sent: the friend, or this server's direct link relay.</summary>
             public string PlayerUrl => ViaLink ? HandoffPlaylistLinks.ToPeer(Url, PlayerBase) ?? Url : Url;

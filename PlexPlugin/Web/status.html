@@ -1,0 +1,49 @@
+<div id="federationPlexStatusPage" data-role="page" class="page type-interior pluginConfigurationPage">
+    <div data-role="content">
+        <div class="content-primary">
+            <style>
+                #federationPlexStatusPage .fpx-card { border: 1px solid rgba(128,128,128,.35); border-radius: .7em; padding: 1.1em 1.3em; margin: 1em 0; max-width: 52em; }
+                #federationPlexStatusPage .fpx-state { font-weight: 600; font-size: 1.1em; margin: 0 0 .5em; }
+                #federationPlexStatusPage .fpx-ok { color: #2e9d55; }
+                #federationPlexStatusPage .fpx-warn { color: #d08a1e; }
+                #federationPlexStatusPage dl { display: grid; grid-template-columns: max-content 1fr; gap: .3em 1em; margin: .8em 0 0; }
+                #federationPlexStatusPage dt { opacity: .75; }
+                #federationPlexStatusPage dd { margin: 0; }
+            </style>
+            <div class="sectionTitleContainer"><h2 class="sectionTitle">Jellyfin Federation Plex</h2></div>
+            <p class="fieldDescription">Adds Plex libraries, Companion connections and Plex metadata to Jellyfin Federation. This plugin has no settings of its own: everything is on the Federation Plex page once it is running.</p>
+            <div class="fpx-card" role="status" aria-live="polite">
+                <p class="fpx-state" id="fpxState">Checking…</p>
+                <p class="fieldDescription" id="fpxMessage"></p>
+                <dl>
+                    <dt>This plugin</dt><dd id="fpxOwn">…</dd>
+                    <dt>Jellyfin Federation</dt><dd id="fpxCore">…</dd>
+                </dl>
+            </div>
+            <p><a is="emby-linkbutton" class="raised emby-button" id="fpxOpen" href="#/configurationpage?name=FederationPlex" style="display:none;"><span>Open the Federation Plex page</span></a></p>
+            <script type="text/javascript">
+                (function () {
+                    var page = document.querySelector('#federationPlexStatusPage');
+                    if (!page) { return; }
+                    function set(id, text) { var el = page.querySelector(id); if (el) { el.textContent = text; } }
+                    function load() {
+                        ApiClient.fetch({ url: ApiClient.getUrl('Plugins/FederationPlex/Status'), type: 'GET', dataType: 'json' }).then(function (status) {
+                            var state = page.querySelector('#fpxState');
+                            state.textContent = status.running ? 'Running' : 'Not running';
+                            state.className = 'fpx-state ' + (status.running ? 'fpx-ok' : 'fpx-warn');
+                            set('#fpxMessage', status.message || '');
+                            set('#fpxOwn', status.version || 'unknown');
+                            set('#fpxCore', status.federationVersion || 'not found');
+                            page.querySelector('#fpxOpen').style.display = status.running ? '' : 'none';
+                        }).catch(function () {
+                            set('#fpxState', 'Could not read the status');
+                            set('#fpxMessage', 'Reload this page. If it keeps failing, check the Jellyfin log for "Jellyfin Federation Plex".');
+                        });
+                    }
+                    page.addEventListener('pageshow', load);
+                    load();
+                })();
+            </script>
+        </div>
+    </div>
+</div>

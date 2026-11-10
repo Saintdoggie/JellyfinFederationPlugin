@@ -246,6 +246,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return new PlacementDecision(true, "Friend converts (hardware-based choice is off)");
             }
 
+            if (!TranscodePolicy.MayConvertForOwnViewers(config))
+            {
+                return new PlacementDecision(true, "Friend converts (this server is set never to convert video)");
+            }
+
             if (friend == null)
             {
                 return new PlacementDecision(true, "Friend converts (it hasn't shared its hardware)");
