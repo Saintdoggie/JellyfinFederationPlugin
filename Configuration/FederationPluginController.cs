@@ -1596,6 +1596,7 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 config.EnableRemoteTranscodeForFriends,
                 config.LocalTranscodeRestriction,
+                ConversionBlockedByHardware = TranscodePolicy.BlockedByHardware(config),
                 config.MaxRemoteTranscodesPerFriend,
                 config.UseFriendsTranscoders,
                 config.ShareConversionLogsWithFriends,
@@ -1919,7 +1920,12 @@ namespace Jellyfin.Plugin.Federation.Api
 
             var key = FederationLibraryManager.GetFederationKey(item);
             var entry = key == null ? null : _cache.GetEntryByKey(key);
-            var source = entry == null ? null : FederationViewerReporter.PlayedSource(entry, item.Id, mediaSourceId, _federationManager.GetPlaybackSource(entry));
+            var connectionDeviceId = activeSession?.DeviceId ?? (await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false))?.DeviceId;
+            var source = entry == null ? null : FederationViewerReporter.PlayedSource(
+                entry,
+                item.Id,
+                mediaSourceId,
+                FederationViewerReporter.BoundSource(entry, item.Id, user.Id, connectionDeviceId) ?? _federationManager.GetPlaybackSource(entry));
             var server = source == null ? null : _federationManager.GetServer(source.ServerId);
             if (entry == null || source == null || server == null)
             {

@@ -435,7 +435,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var request = context.HttpContext.Request;
             var sourceId = path.MediaSourceId?.ToString("N")
                 ?? RemoteMediaPath.QueryValue(request.Query, "MediaSourceId");
-            var source = SelectSource(entry, item.Id, sourceId);
+            var source = SelectSource(entry, item.Id, sourceId, user.Id, info.DeviceId);
             var server = source == null ? null : _federationManager.GetServer(source.ServerId);
             if (source == null
                 || server == null
@@ -592,12 +592,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// The source a request addresses: the item's own id is the primary source
         /// (what the details page plays); any other id is a hashed alternate.
         /// </summary>
-        internal FederatedSource? SelectSource(FederatedCacheEntry entry, Guid itemId, string? sourceId)
+        internal FederatedSource? SelectSource(FederatedCacheEntry entry, Guid itemId, string? sourceId, Guid? userId = null, string? deviceId = null)
         {
             if (string.IsNullOrEmpty(sourceId)
                 || (Guid.TryParse(sourceId, out var asGuid) && asGuid == itemId))
             {
-                return _federationManager.GetPlaybackSource(entry);
+                return FederationViewerReporter.BoundSource(entry, itemId, userId, deviceId)
+                    ?? _federationManager.GetPlaybackSource(entry);
             }
 
             return entry.GetSourcesSnapshot().FirstOrDefault(s =>

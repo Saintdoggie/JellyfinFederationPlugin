@@ -65,6 +65,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly IRemoteServerClientFactory _clientFactory;
         private readonly ExternalCatalogRegistry? _externalCatalogs;
         private readonly FederationItemCache? _itemCache;
+        private readonly LinkSpeedHistory? _history;
         private readonly ConcurrentDictionary<string, ServerNetworkInfo> _cache = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
@@ -74,8 +75,10 @@ namespace Jellyfin.Plugin.Federation.Services
             ILogger<WanBandwidthMonitor> logger,
             IRemoteServerClientFactory clientFactory,
             ExternalCatalogRegistry? externalCatalogs = null,
-            FederationItemCache? itemCache = null)
+            FederationItemCache? itemCache = null,
+            LinkSpeedHistory? history = null)
         {
+            _history = history;
             _logger = logger;
             _clientFactory = clientFactory;
             _externalCatalogs = externalCatalogs;
@@ -83,13 +86,26 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>
-        /// The most recent measured download speed from a server in Mbps, or null when
-        /// it has not been measured yet. Fast, synchronous and network-free.
+        /// The measured download speed from a server in Mbps: the average of the
+        /// remembered hourly/daily readings when there are any, otherwise the latest
+        /// single reading, or null when it has not been measured yet. Fast,
+        /// synchronous and network-free.
         /// </summary>
         /// <param name="serverId">The server's configured id.</param>
         /// <returns>Megabits per second, or null.</returns>
         public double? GetMeasuredLinkMbps(string serverId)
-            => _cache.TryGetValue(serverId, out var info) ? info.LinkMbps : null;
+            => _history?.AverageMbps(serverId, DateTime.UtcNow)
+                ?? (_cache.TryGetValue(serverId, out var info) ? info.LinkMbps : null);
+
+        /// <summary>Loads the remembered readings from the plugin's data folder.</summary>
+        /// <param name="path">The sidecar file to read and keep up to date.</param>
+        public void InitializeHistory(string path) => _history?.Initialize(path);
+
+        /// <summary>How many remembered readings back <see cref="GetMeasuredLinkMbps"/>; 0 without history.</summary>
+        /// <param name="serverId">The server's configured id.</param>
+        /// <returns>The number of recent samples.</returns>
+        public int GetLinkSampleCount(string serverId)
+            => _history?.SampleCount(serverId, DateTime.UtcNow) ?? 0;
 
         /// <summary>
         /// The bitrate that will actually cross the link for a source: the file's own, or
@@ -190,7 +206,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     info.LinkMbps = measured;
                     info.LinkSampledUtc = DateTime.UtcNow;
-                    info.LinkNextDueUtc = DateTime.UtcNow + LinkMeasurementInterval;
+                    _history?.Record(server.Id, measured.Value, info.LinkSampledUtc);
+
+                    // Hourly until a day of readings exists, then daily.
+                    info.LinkNextDueUtc = DateTime.UtcNow + (_history?.NextDelay(server.Id, DateTime.UtcNow) ?? LinkMeasurementInterval);
                     _logger.LogInformation("[Federation] Link speed to {ServerName} measured at {Mbps:F1} Mbps", server.Name, measured.Value);
                 }
                 else
@@ -513,6 +532,7 @@ namespace Jellyfin.Plugin.Federation.Services
         public void RemoveServer(string serverId)
         {
             _cache.TryRemove(serverId, out _);
+            _history?.Remove(serverId);
         }
 
         /// <summary>

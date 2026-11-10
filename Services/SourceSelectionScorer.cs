@@ -75,6 +75,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// the link. False means the original crosses the link and is converted here.
         /// </summary>
         public bool ConvertsAtSource { get; init; }
+
+        /// <summary>Whether this device plays the copy as stored; Unknown when the device did not say.</summary>
+        public PlayFit Fit { get; init; }
+
+        /// <summary>Whether the copy has sound in the viewer's language; null when unknown.</summary>
+        public bool? HasPreferredLanguage { get; init; }
     }
 
     /// <summary>How one candidate scored, with the numbers a person can check.</summary>
@@ -123,6 +129,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
         /// <summary>Extra seconds a conversion needs before its first segment exists.</summary>
         internal const double ConversionStartSeconds = 3.0;
+
+        /// <summary>What is left of the score of a copy the device cannot play and nobody may convert.</summary>
+        internal const double UnplayableShare = 0.05;
 
         private const double StartWeight = 40;
         private const double SustainWeight = 35;
@@ -179,10 +188,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // The copy has to shrink when it is known to be bigger than what the
             // connection or the device can take.
-            var needsConversion = bitrateMbps.HasValue && usable.HasValue && bitrateMbps.Value > usable.Value;
-            var converted = needsConversion && c.ConversionAvailable;
+            var tooBig = bitrateMbps.HasValue && usable.HasValue && bitrateMbps.Value > usable.Value;
 
-            var deliveredMbps = converted ? usable!.Value : bitrateMbps;
+            // The device cannot show this picture format, or only the sound or
+            // wrapper has to change. Either way somebody has to do work first.
+            var wrongFormat = c.Fit == PlayFit.Convert;
+            var lightWork = c.Fit == PlayFit.AudioOnly && !tooBig;
+            var needsConversion = tooBig || wrongFormat;
+            var converted = needsConversion && c.ConversionAvailable;
+            var unplayable = (wrongFormat || lightWork) && !c.ConversionAvailable;
+
+            var deliveredMbps = converted && tooBig ? usable!.Value : bitrateMbps;
             var deliveredHeight = DeliveredHeight(c.Height, converted ? deliveredMbps : null);
 
             // What actually crosses the link from the server holding the file.
@@ -192,15 +208,15 @@ namespace Jellyfin.Plugin.Federation.Services
             var struggle = false;
             if (!crossingMbps.HasValue || !linkOnly.HasValue)
             {
-                sustain = needsConversion && !c.ConversionAvailable ? Math.Clamp(usable!.Value / bitrateMbps!.Value, 0, 1) : NeutralScore;
-                struggle = needsConversion && !c.ConversionAvailable;
+                sustain = tooBig && !c.ConversionAvailable ? Math.Clamp(usable!.Value / bitrateMbps!.Value, 0, 1) : NeutralScore;
+                struggle = tooBig && !c.ConversionAvailable;
             }
             else
             {
                 var room = linkOnly.Value * UsableShare;
                 sustain = Math.Clamp(room / crossingMbps.Value, 0, 1);
                 struggle = sustain < 1;
-                if (needsConversion && !c.ConversionAvailable)
+                if (tooBig && !c.ConversionAvailable)
                 {
                     // Over the device's or the cap's limit with nobody to shrink it.
                     sustain = Math.Min(sustain, Math.Clamp(usable!.Value / bitrateMbps!.Value, 0, 1));
@@ -227,7 +243,26 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var start = StartScore(startSeconds) * (0.5 + (0.5 * reliability));
             var quality = QualityScore(c, device, deliveredMbps, deliveredHeight, converted);
+            if (lightWork && c.ConversionAvailable)
+            {
+                // Changing only the sound or wrapper is cheap but not free.
+                quality = Math.Max(0, quality - 0.04);
+            }
+
+            if (c.HasPreferredLanguage == false)
+            {
+                // Sound in another language is a worse experience than a lower picture.
+                quality = Math.Max(0, quality - 0.5);
+            }
+
             var total = Math.Round((StartWeight * start) + (SustainWeight * sustain) + (QualityWeight * quality), 3);
+            if (unplayable)
+            {
+                // Nobody may convert it and the device cannot play it: any copy
+                // that plays at all must rank above this one.
+                total = Math.Round(total * UnplayableShare, 3);
+                struggle = true;
+            }
 
             return new SourceScore(
                 c,
@@ -388,6 +423,18 @@ namespace Jellyfin.Plugin.Federation.Services
             var rivalWhat = Describe(rival.Candidate);
             var rivalBetterPicture = rival.Candidate.Height > chosen.Candidate.Height
                 || (rival.Candidate.Height == chosen.Candidate.Height && rival.Candidate.BitrateBps > chosen.Candidate.BitrateBps);
+
+            if (rivalBetterPicture && rival.Candidate.Fit == PlayFit.Convert && chosen.Candidate.Fit is PlayFit.Direct or PlayFit.AudioOnly)
+            {
+                return rival.Candidate.ConversionAvailable
+                    ? $"{Sentence(what)} from {name} plays on this device as it is; {rivalWhat} on {rivalName} would have to be converted first."
+                    : $"This device cannot play {rivalWhat} on {rivalName} and no server may convert it, so {what} from {name} plays instead.";
+            }
+
+            if (rival.Candidate.HasPreferredLanguage == false && chosen.Candidate.HasPreferredLanguage == true)
+            {
+                return $"{Sentence(what)} from {name} has sound in your language; {rivalWhat} on {rivalName} does not.";
+            }
 
             if (rivalBetterPicture && rival.Candidate.BitrateBps > 0 && rival.UsableMbps.HasValue
                 && rival.Candidate.BitrateBps / 1_000_000.0 > rival.UsableMbps.Value)

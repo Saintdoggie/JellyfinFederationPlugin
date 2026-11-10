@@ -14,6 +14,28 @@
 - [ ] Run real web/Android/TV party clients and fluctuating-WAN/concurrent-viewer checks before release.
 - [ ] Deferred to later reviewed phases: automatic party reconnect, a host-sequenced control revision model, signed package installation/rollback, and an out-of-process add-in sandbox. This branch does not claim those features.
 
+## In progress — automatic copy and server switching (0.0.209 holds steps 3a, 4 and 5)
+
+Owner's goal: pressing play always ends in video without the owner or viewer choosing anything, and without new settings. Work order is hardest first.
+
+Agreed rules:
+
+- A copy on the viewer's own server wins whenever it can play. If it would need converting, a friend's copy that plays as-is is tried first, then conversion.
+- Friends' servers are ranked on measured delivery speed; a server whose upload cannot carry the copy is not picked.
+- Audio language follows the user's Jellyfin preference, English when unset.
+- A server with no adequate GPU or CPU behaves as "never convert" automatically; the existing setting stays only as an override.
+- Converting on the receiving server for light work (HDR to SDR, audio only) is wanted later, not now.
+
+Steps:
+
+- [ ] 1. Mid-play switch between friends' servers for converted (HLS) plays: a second friend's levels listed in the master playlist as redundant variants so the player moves at a segment boundary when the first server stalls. Needs: equal runtime check, matching `CODECS`, stop/ping relayed to every server used, no bandwidth reservation for the standby. Design read through `FederationRemoteTranscodeFilter.FetchAsync`/`ResolveAsync`, `HlsQualityLadder.Expand`, `RemoteTranscodeHandoffs`; no code yet. A direct-played file cannot be switched without a reload and is not claimed.
+- [ ] 2. Start watchdog: when the first video data has not arrived within the cooldown, move the play session to the next compatible copy (needs a play-session-to-copy override, since requests carry the first copy's source id).
+- [x] 3a. Codec- and language-aware copy choice (0.0.209): `DevicePlayFit` compares each copy with the device profile the player sends; `SourceSelectionScorer` ranks an as-stored copy above one needing conversion, treats "device cannot play it and nobody may convert" as last resort, and prefers sound in the user's language (English when unset). `ViewerCopyBinding` makes the title's own media source id mean the chosen copy per user and device for the whole play. Active with smart selection on, and always on a server set never to convert. Provider-level test covers browser, TV, explicit pick and follow-up requests.
+- [ ] 3b. Own-copy rule: confirm how a title this server owns and a friend's copy of it are deduplicated at sync, then make the local file win unless it cannot play.
+- [x] 4. Automatic "can this server convert" (0.0.209): `TranscodeHardware.TooWeakToConvert` (no hardware encoder and fewer than 4 CPU threads) makes the default `LocalTranscodeRestriction.None` act as `BlockAll` through `TranscodePolicy.Effective`; `AlwaysAllow` overrides. The settings page says when the automatic check is the reason.
+- [x] 5. Link-speed history (0.0.209): `LinkSpeedHistory` keeps up to 24 readings per friend in `federation-link-speeds.json`; sampled each sync (hourly) until a day is covered, then daily; `GetMeasuredLinkMbps` returns the average. Only the friend-to-here direction is timed; an upload-direction reading is not done.
+- [ ] Gate before any release: clean build, full suites twice, handoff/peer smokes, and physical players for steps 1 and 2.
+
 ## 0.0.208 — smart playback, quality ladder and settings grouping
 
 - [x] "Playing from <server>" label and "Why this copy" in Playback Info; relayed static plays record their observed route.

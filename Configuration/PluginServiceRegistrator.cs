@@ -31,6 +31,7 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<IRemoteServerClientFactory>(sp =>
                 new RemoteServerClientFactory(sp.GetRequiredService<FederationCapturingLoggerFactory>()));
             serviceCollection.AddSingleton<FederationItemCache>();
+            serviceCollection.AddSingleton<LinkSpeedHistory>();
             serviceCollection.AddSingleton<WanBandwidthMonitor>();
             serviceCollection.AddSingleton<PlaybackRouteMetrics>();
             serviceCollection.AddSingleton<FederationBandwidthAllocator>();
@@ -91,6 +92,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             // dependency - see DiscoverFriendsOfFriendsAsync there.
             serviceCollection.AddScoped<FederationFriendService>();
             serviceCollection.AddSingleton<FederationImageProvider>();
+            serviceCollection.AddSingleton<FederationPlaybackProfileFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationPlaybackProfileFilter>());
             serviceCollection.AddTransient<FederationMediaSourceNameFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationMediaSourceNameFilter>());
             serviceCollection.AddTransient<FederationDirectStreamRedirectFilter>();

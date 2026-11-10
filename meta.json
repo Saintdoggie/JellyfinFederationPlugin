@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.208",
-  "changelog": "Smarter playback, all opt-in or cosmetic by default. Shows which server a title is playing from and why that copy was chosen. New switches: smart copy selection (scores each copy on start speed, sustained speed and quality), an adaptive quality ladder for converted streams (lower levels the player can drop to, one conversion at a time), and a limit on how much this server converts (none / not for friends / never). Faster starts through parallel probes. Advanced settings are grouped into six sections with a filter. Relayed plays now report their route in Playback Info. Watch parties gain a more reliable link protocol (compatible with older friends), and an Integrations tab lists optional add-ins. Includes everything in 0.0.207.",
+  "version": "0.0.209",
+  "changelog": "Automatic copy choice and weak-server protection. A server with no hardware encoder and fewer than 4 CPU threads now converts nothing on its own (the conversion setting's default is Automatic; choose \"Everything, even if this server looks too weak\" to override). When a title has several copies, the copy a device can play as stored now ranks above one that would need converting, sound in the user's Jellyfin language is preferred (English when unset), and the choice is per device: active with \"pick the best copy automatically\" on, and always on a server that may not convert. Friends' link speeds are now averaged from hourly samples over the first day, then daily. Not yet verified on physical TV or phone players.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-10T14:30:00Z",
+  "timestamp": "2026-11-10T20:00:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

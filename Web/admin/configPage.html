@@ -1000,11 +1000,13 @@
                                 <div class="inputContainer">
                                     <label class="inputLabel" for="fedSelLocalTranscodeRestriction">How much may this server itself convert?</label>
                                     <select id="fedSelLocalTranscodeRestriction" class="emby-select">
-                                        <option value="0">Everything (default)</option>
+                                        <option value="0">Automatic (default)</option>
                                         <option value="1">Not for friends' viewers — my own viewers only</option>
                                         <option value="2">Nothing — never convert video on this server</option>
+                                        <option value="3">Everything, even if this server looks too weak</option>
                                     </select>
-                                    <p class="fieldDescription">Choose "Nothing" on a server that should never transcode, such as a small VPS. A conversion already running is not interrupted.</p>
+                                    <p id="fedTranscodeAutoNote" class="fieldDescription" hidden>Automatic is currently converting nothing here: this server has no hardware encoder and fewer than 4 CPU threads.</p>
+                                    <p class="fieldDescription">Automatic converts everything on a server that can, and nothing on one with no hardware encoder and fewer than 4 CPU threads, such as a small VPS. A conversion already running is not interrupted.</p>
                                     <details class="fed-more">
                                         <summary>What each choice does</summary>
                                         <p class="fieldDescription">With "Nothing", friends' viewers are refused, your own viewers direct play or use another server's copy, and a friend can still convert for your viewers. "Not for friends' viewers" has the same effect as turning off "Convert my titles on this server for friends' viewers" above.</p>
@@ -1791,6 +1793,7 @@
                             q('#fedChkUseFriendsTranscoders').checked = res.UseFriendsTranscoders !== false;
                             q('#fedChkEnableRemoteTranscodeForFriends').checked = res.EnableRemoteTranscodeForFriends !== false;
                             q('#fedSelLocalTranscodeRestriction').value = String(res.LocalTranscodeRestriction || 0);
+                            q('#fedTranscodeAutoNote').hidden = !res.ConversionBlockedByHardware;
                             q('#fedChkShareConversionLogs').checked = res.ShareConversionLogsWithFriends !== false;
                             q('#fedNumMaxRemoteTranscodes').value = res.MaxRemoteTranscodesPerFriend || 0;
                             var lines = (res.Friends || []).map(function (f) {

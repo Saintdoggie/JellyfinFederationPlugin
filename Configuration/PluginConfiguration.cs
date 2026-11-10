@@ -681,14 +681,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
     /// </summary>
     public enum LocalTranscodeRestriction
     {
-        /// <summary>No extra restriction (default; existing behaviour).</summary>
+        /// <summary>
+        /// Automatic (default): no restriction on a server that can convert, and
+        /// the same as <see cref="BlockAll"/> on one with no hardware encoder and
+        /// too few CPU threads to convert in real time.
+        /// </summary>
         None = 0,
 
         /// <summary>Friends' viewers may not convert here; my own viewers still may.</summary>
         BlockFriends = 1,
 
         /// <summary>Nobody converts federated video here: direct play or another copy only.</summary>
-        BlockAll = 2
+        BlockAll = 2,
+
+        /// <summary>Convert even when this server looks too weak (overrides the automatic check).</summary>
+        AlwaysAllow = 3
     }
 
     /// <summary>

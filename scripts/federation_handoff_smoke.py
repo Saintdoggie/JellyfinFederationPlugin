@@ -279,6 +279,16 @@ def smoke():
         qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
             {'RemoteUserId': viewer_id, 'Mode': 'AllLibraries'})['success'], 'Unblock failed')
         qa.wait_for(lambda: movies(base, viewer) or None, 'Viewer did not get the title back')
+
+        # The block and the unblock reach the receiver milliseconds apart and are
+        # applied in order. The list above can answer before the block lands, so
+        # also wait until the title really plays again before the next stage.
+        def plays_again():
+            try:
+                return negotiate(viewer, bitrate=2500000)
+            except Exception:
+                return None
+        qa.wait_for(plays_again, 'Viewer could not play the title after the unblock')
         print('HANDOFF PASS: owner refuses the viewer\'s in-flight stream URLs immediately after a block', flush=True)
 
         stage = 'owner switches the handoff off: receiver converts, nothing breaks'

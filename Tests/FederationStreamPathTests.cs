@@ -1762,6 +1762,102 @@ public class FederationStreamPathTests : IDisposable
             };
     }
 
+    [Fact]
+    public async Task GetMediaSources_ServerMayNotConvert_ItemIdPlaysTheCopyThisDevicePlaysAsStored()
+    {
+        ViewerCopyBinding.Shared.Reset();
+        _plugin.Configuration.LocalTranscodeRestriction = LocalTranscodeRestriction.BlockAll;
+        var bigId = Guid.NewGuid();
+        var smallId = Guid.NewGuid();
+        var big = new RemoteServer { Id = "big-friend", Name = "Big", Url = "http://big.example", ApiKey = "big-key", Enabled = true, StreamingMode = StreamingMode.Proxy, WanCapMode = WanCapMode.Off };
+        var small = new RemoteServer { Id = "small-friend", Name = "Small", Url = "http://small.example", ApiKey = "small-key", Enabled = true, StreamingMode = StreamingMode.Proxy, WanCapMode = WanCapMode.Off };
+        _plugin.Configuration.RemoteServers.Add(big);
+        _plugin.Configuration.RemoteServers.Add(small);
+
+        var entry = _cache.UpsertByProviderId("Movies", "imdb", "tt0133093", new BaseItemDto { Id = bigId, Name = "The Matrix", Container = "mkv" }, big.Id, bigId, 0, "Movie");
+        _cache.UpsertByProviderId("Movies", "imdb", "tt0133093", new BaseItemDto { Id = smallId, Name = "The Matrix", Container = "mp4" }, small.Id, smallId, 1, "Movie");
+        var item = _manager.MaterializeItem(entry);
+        item.Path = "stale-so-both-copies-are-offered";
+
+        const string BigBody = "{\"MediaSources\":[{\"Id\":\"b\",\"Container\":\"mkv\",\"Bitrate\":40000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Height\":2160,\"BitRate\":40000000},{\"Type\":\"Audio\",\"Codec\":\"dts\",\"Language\":\"eng\",\"Channels\":6}]}]}";
+        const string SmallBody = "{\"MediaSources\":[{\"Id\":\"s\",\"Container\":\"mp4\",\"Bitrate\":6000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"h264\",\"Height\":1080,\"BitRate\":6000000},{\"Type\":\"Audio\",\"Codec\":\"aac\",\"Language\":\"eng\",\"Channels\":2}]}]}";
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(big.Id)).Returns(new RemoteServerClient(big, NullLogger.Instance, new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK, BigBody)) { BaseAddress = new Uri(big.Url) }));
+        factory.Setup(f => f.GetClient(small.Id)).Returns(new RemoteServerClient(small, NullLogger.Instance, new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK, SmallBody)) { BaseAddress = new Uri(small.Url) }));
+        var manager = new FederationLibraryManager(Mock.Of<ILibraryManager>(), NullLogger<FederationLibraryManager>.Instance, factory.Object, _cache, _bandwidthMonitor, _mediaStreamRepository.Object);
+
+        var userId = Guid.NewGuid();
+        var deviceId = "browser-1";
+        HttpContext? context = null;
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(() => context);
+        var authorization = new Mock<IAuthorizationContext>();
+        authorization.Setup(a => a.GetAuthorizationInfo(It.IsAny<HttpContext>())).ReturnsAsync(() =>
+        {
+            var info = new AuthorizationInfo { Client = "Jellyfin Web", Device = "Firefox", DeviceId = deviceId };
+            var userType = typeof(AuthorizationInfo).GetProperty("User")!.PropertyType;
+            var user = Activator.CreateInstance(userType, "alice", "auth", "reset")!;
+            userType.GetProperty("Id")!.SetValue(user, userId);
+            typeof(AuthorizationInfo).GetProperty("User")!.SetValue(info, user);
+            return info;
+        });
+        var provider = new FederationMediaSourceProvider(NullLogger<FederationMediaSourceProvider>.Instance, manager, accessor.Object, authorization.Object, new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance));
+
+        static MediaBrowser.Model.Dlna.DeviceProfile Plays(string videoCodecs, string audioCodecs) => new()
+        {
+            DirectPlayProfiles = new[]
+            {
+                new MediaBrowser.Model.Dlna.DirectPlayProfile { Type = MediaBrowser.Model.Dlna.DlnaProfileType.Video, Container = "mp4,mkv", VideoCodec = videoCodecs, AudioCodec = audioCodecs }
+            }
+        };
+
+        var itemId = item.Id.ToString("N");
+        try
+        {
+            // The browser says what it plays: H.264 with AAC. The 4K HEVC copy is first by
+            // priority, but nobody may convert it here, so the title's own id plays the other.
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264", "aac,mp3"));
+            var asked = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+            Assert.Equal(2, asked.Count);
+            var own = Assert.Single(asked, s => s.Id == itemId);
+            Assert.Contains($"itemId={smallId:N}", own.Path);
+            Assert.Same(own, asked[0]);
+            var bigHash = Assert.Single(asked, s => s.Id != itemId).Id;
+
+            // The stream request that follows carries no capabilities: same copy.
+            context = new DefaultHttpContext();
+            var streaming = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+            Assert.Contains($"itemId={smallId:N}", Assert.Single(streaming, s => s.Id == itemId).Path);
+            Assert.Equal(bigHash, Assert.Single(streaming, s => s.Id != itemId).Id);
+
+            // A copy picked by name keeps its own id, and the pick does not change the device's default.
+            context = new DefaultHttpContext();
+            context.Request.QueryString = new QueryString("?MediaSourceId=" + bigHash);
+            FederationPlaybackProfileFilter.Set(context, Plays("h264", "aac,mp3"));
+            var picked = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+            Assert.Contains($"itemId={bigId:N}", Assert.Single(picked, s => s.Id == bigHash).Path);
+            Assert.Contains($"itemId={smallId:N}", Assert.Single(picked, s => s.Id == itemId).Path);
+
+            // A TV that plays HEVC and DTS gets the 4K copy under the same id.
+            deviceId = "tv-1";
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264,hevc", "aac,dts"));
+            var tv = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+            Assert.Contains($"itemId={bigId:N}", Assert.Single(tv, s => s.Id == itemId).Path);
+
+            // ... while the browser's own choice is untouched.
+            deviceId = "browser-1";
+            context = new DefaultHttpContext();
+            var again = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+            Assert.Contains($"itemId={smallId:N}", Assert.Single(again, s => s.Id == itemId).Path);
+        }
+        finally
+        {
+            ViewerCopyBinding.Shared.Reset();
+        }
+    }
+
     private sealed class PlaybackPreflightHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _status;

@@ -176,13 +176,16 @@ public sealed class FederationChangeNotifierTests : IDisposable
         var calls = 0;
         var first = new TaskCompletionSource();
         var second = new TaskCompletionSource();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         sync.NotifiedSyncOverride = async (_, ct) =>
         {
             var call = Interlocked.Increment(ref calls);
             if (call == 1)
             {
-                await Task.Delay(100, ct);
+                // Stay "running" until every notice below has been posted; a
+                // fixed delay let late notices land after this run and start a third.
                 first.TrySetResult();
+                await release.Task.WaitAsync(ct);
             }
             else if (call == 2)
             {
@@ -199,6 +202,7 @@ public sealed class FederationChangeNotifierTests : IDisposable
             sync.OnFriendCatalogChanged("friend", stopping.Token, urgent: true);
         }
 
+        release.TrySetResult();
         await second.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(100);
         Assert.Equal(2, Volatile.Read(ref calls));

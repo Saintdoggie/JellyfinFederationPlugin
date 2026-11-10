@@ -303,6 +303,20 @@ namespace Jellyfin.Plugin.Federation.Services
         /// It is not always the first by priority: a faster or better copy can be
         /// the default, and the label must name the server actually playing.
         /// </param>
+        /// <summary>
+        /// The copy the title's own id plays for this viewer's device, when the
+        /// device-aware choice bound one (see <see cref="ViewerCopyBinding"/>); null otherwise.
+        /// </summary>
+        internal static FederatedSource? BoundSource(FederatedCacheEntry entry, Guid itemId, Guid? userId, string? deviceId)
+        {
+            if (userId is not { } user || ViewerCopyBinding.Shared.Find(user, deviceId, itemId) is not { } bound)
+            {
+                return null;
+            }
+
+            return entry.GetSourcesSnapshot().FirstOrDefault(s => string.Equals(SourceCandidateFactory.Key(s), bound.CopyKey, StringComparison.Ordinal));
+        }
+
         internal static FederatedSource? PlayedSource(FederatedCacheEntry entry, Guid itemId, string? mediaSourceId, FederatedSource? defaultSource = null)
         {
             var sources = entry.GetSourcesSnapshot();

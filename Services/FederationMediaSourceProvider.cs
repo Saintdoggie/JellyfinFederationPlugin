@@ -190,10 +190,17 @@ namespace Jellyfin.Plugin.Federation.Services
                 // otherwise be several serial round trips per play into roughly one
                 // round trip's worth - the slowest of them, not the sum of all.
                 var adaptive = Plugin.Instance?.Configuration.EnableAdaptivePlayback == true;
+
+                // Which copy the title's own id plays can differ per device when the
+                // smart choice is on, and always on a server that may not convert:
+                // there, a copy the device cannot play as stored cannot play at all.
+                var selectionConfig = Plugin.Instance?.Configuration;
+                var deviceAwareWanted = !adaptive && entrySources.Length > 1 && localUserId.HasValue
+                    && (selectionConfig?.SmartSourceSelection == true || !TranscodePolicy.MayConvertForOwnViewers(selectionConfig));
                 var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
-                    if (staticSourceCoversPrimary && i == primaryIndex && !adaptive && !IsPeerDirect(_federationManager.GetServer(entrySources[i].ServerId)))
+                    if (staticSourceCoversPrimary && i == primaryIndex && !adaptive && !deviceAwareWanted && !IsPeerDirect(_federationManager.GetServer(entrySources[i].ServerId)))
                     {
                         // The item's own Path already IS this source (stamped once
                         // at materialization time, outside any request context - see
@@ -425,12 +432,18 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Sources that would take longer than the start budget to begin go after
                 // those that would not (and, when every source is slow, the quickest
                 // goes first). A source whose speed is not measured yet is never demoted.
-                var smart = Plugin.Instance?.Configuration?.SmartSourceSelection == true && playable.Count > 1
+                var deviceAware = deviceAwareWanted && playable.Count > 1;
+                var deviceProfile = deviceAware ? FederationPlaybackProfileFilter.Get(_httpContextAccessor.HttpContext) : null;
+                var fits = deviceProfile == null
+                    ? null
+                    : playable.Select(p => DevicePlayFit.Evaluate(deviceProfile, p.Remote.Container, p.Remote.MediaStreams, authorization?.User?.AudioLanguagePreference)).ToList();
+                var smart = (selectionConfig?.SmartSourceSelection == true || fits != null) && playable.Count > 1
                     ? RankForViewer(
                         playable.Select(p => (p.Server, p.Src.Priority, p.Remote)).ToList(),
                         localUserId,
                         authorization?.DeviceId,
-                        SourceCandidateFactory.Device(nativeIdentity.Client, nativeIdentity.Device, IsBrowserRequest()))
+                        SourceCandidateFactory.Device(nativeIdentity.Client, nativeIdentity.Device, IsBrowserRequest()),
+                        fits)
                     : null;
                 if (smart != null)
                 {
@@ -449,6 +462,36 @@ namespace Jellyfin.Plugin.Federation.Services
                     .ThenBy(p => p.Src.Priority)
                     .ToList();
 
+                // The copy that answers to the title's own id for this viewer's device.
+                // Chosen when the player sends its capabilities; every later request
+                // of the play (which arrives without them) gets the same copy back.
+                // A copy the viewer picked by name keeps its own id.
+                var itemIdPosition = -1;
+                if (deviceAware && localUserId.HasValue)
+                {
+                    var requestedId = RequestedMediaSourceId();
+                    var explicitPick = !string.IsNullOrEmpty(requestedId) && !(Guid.TryParse(requestedId, out var requestedGuid) && requestedGuid == item.Id);
+                    if (fits == null && ViewerCopyBinding.Shared.Find(localUserId.Value, authorization?.DeviceId, item.Id) is { } bound)
+                    {
+                        var at = ordered.FindIndex(p => string.Equals(SourceCandidateFactory.Key(p.Src), bound.CopyKey, StringComparison.Ordinal)
+                            && (bound.RemoteMediaSourceId == null || string.Equals(p.RemoteMediaSourceId, bound.RemoteMediaSourceId, StringComparison.OrdinalIgnoreCase)));
+                        if (at > 0)
+                        {
+                            var kept = ordered[at];
+                            ordered.RemoveAt(at);
+                            ordered.Insert(0, kept);
+                        }
+                    }
+
+                    itemIdPosition = explicitPick
+                        ? ordered.FindIndex(p => !string.Equals(BuildSourceId(p.Src, p.Distinguish ? p.RemoteMediaSourceId : null), requestedId, StringComparison.OrdinalIgnoreCase))
+                        : 0;
+                    if (fits != null && !explicitPick && itemIdPosition == 0)
+                    {
+                        ViewerCopyBinding.Shared.Bind(localUserId.Value, authorization?.DeviceId, item.Id, SourceCandidateFactory.Key(ordered[0].Src), ordered[0].Distinguish ? ordered[0].RemoteMediaSourceId : null);
+                    }
+                }
+
                 var sources = new List<MediaSourceInfo>(ordered.Count);
                 var replacedStatic = false;
                 for (int position = 0; position < ordered.Count; position++)
@@ -459,7 +502,8 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     // Only one representation can take the item's own id; additional
                     // encodings on that same friend need distinct deterministic ids.
-                    var replacesStatic = !adaptive && candidate.Index == primaryIndex && !replacedStatic;
+                    var replacesStatic = !adaptive && !replacedStatic
+                        && (itemIdPosition >= 0 ? position == itemIdPosition : candidate.Index == primaryIndex);
                     replacedStatic |= replacesStatic;
                     var sourceId = replacesStatic
                         ? item.Id.ToString("N")
@@ -689,7 +733,8 @@ namespace Jellyfin.Plugin.Federation.Services
             IReadOnlyList<(RemoteServer Server, int Priority, MediaSourceInfo Remote)> sources,
             Guid? userId,
             string? deviceId,
-            ViewerDevice device)
+            ViewerDevice device,
+            IReadOnlyList<DevicePlayFitResult>? fits = null)
         {
             var config = Plugin.Instance?.Configuration;
             var monitor = FederationItemPersistenceService.BandwidthOverride;
@@ -723,11 +768,43 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     RouteMbps = route?.MeasuredMbps,
                     RecentlyStalled = route?.RecentlyStalled == true,
-                    Reliability = _ranking?.Reliability(server.Id)
+                    Reliability = _ranking?.Reliability(server.Id),
+                    Fit = fits?[n].Fit ?? PlayFit.Unknown,
+                    HasPreferredLanguage = fits?[n].HasPreferredLanguage,
+
+                    // With the device's answer in hand, "somebody may convert it"
+                    // has to be exact: this friend really converts, or this server may.
+                    ConversionAvailable = fits == null
+                        ? candidate.ConversionAvailable
+                        : UsesRemoteTranscode(server) || TranscodePolicy.MayConvertForOwnViewers(config)
                 });
             }
 
             return SourceSelectionScorer.Rank(candidates, device);
+        }
+
+        // The media source a request names: in its query, its route, or (a play
+        // request) its body, which the profile filter kept.
+        private string? RequestedMediaSourceId()
+        {
+            var context = _httpContextAccessor.HttpContext;
+            if (context == null)
+            {
+                return null;
+            }
+
+            var fromQuery = RemoteMediaPath.QueryValue(context.Request.Query, "MediaSourceId");
+            if (!string.IsNullOrEmpty(fromQuery))
+            {
+                return fromQuery;
+            }
+
+            if (context.Request.RouteValues.TryGetValue("mediaSourceId", out var routed) && routed is string fromRoute && fromRoute.Length > 0)
+            {
+                return fromRoute;
+            }
+
+            return FederationPlaybackProfileFilter.GetRequestedMediaSourceId(context);
         }
 
         private double? ProjectedStart(RemoteServer server, MediaSourceInfo source)

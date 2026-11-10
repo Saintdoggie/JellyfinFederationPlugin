@@ -55,8 +55,12 @@ namespace Jellyfin.Plugin.Federation
             WanBandwidthMonitor bandwidthMonitor,
             FederationLogBuffer logBuffer,
             AvailabilityScheduleStore availabilitySchedule,
-            FederationChangeNotifier changeNotifier)
+            FederationChangeNotifier changeNotifier,
+            TranscodePlacementService? placement = null)
         {
+            // Taking the service is what matters: creating it arms the automatic
+            // "this server cannot convert" check before the first play.
+            _ = placement;
             _changeNotifier = changeNotifier;
             _logger = logger;
             _federationManager = federationManager;
@@ -143,6 +147,7 @@ namespace Jellyfin.Plugin.Federation
                 _federationManager.Initialize(cachePath);
                 var schedulePath = Path.Combine(Plugin.Instance?.DataFolderPath ?? Path.GetDirectoryName(cachePath) ?? Path.GetTempPath(), "federation-availability.json");
                 _availabilitySchedule.Initialize(schedulePath);
+                _bandwidthMonitor.InitializeHistory(Path.Combine(Path.GetDirectoryName(schedulePath) ?? Path.GetTempPath(), "federation-link-speeds.json"));
                 _availability.RestorePersistedReachability();
 
                 try

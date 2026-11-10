@@ -189,6 +189,22 @@ namespace Jellyfin.Plugin.Federation.Services
             return info;
         }
 
+        /// <summary>Fewer CPU threads than this, with no hardware encoder, cannot convert video in real time.</summary>
+        public const int MinimumCpuThreadsToConvert = 4;
+
+        /// <summary>
+        /// True when this hardware cannot be expected to convert video while it
+        /// plays: no hardware encoder and a CPU with fewer than
+        /// <see cref="MinimumCpuThreadsToConvert"/> threads (a small VPS). Unknown
+        /// hardware and conversions offloaded to another machine are never "too weak".
+        /// </summary>
+        public static bool TooWeakToConvert(TranscodeHardwareInfo? info)
+            => info != null
+                && !info.Offloaded
+                && info.HardwareEncode.Count == 0
+                && info.CpuThreads > 0
+                && info.CpuThreads < MinimumCpuThreadsToConvert;
+
         /// <summary>
         /// How well <paramref name="info"/> converts a source in
         /// <paramref name="codec"/> (10-bit when <paramref name="tenBit"/>) to H.264,
@@ -487,6 +503,7 @@ namespace Jellyfin.Plugin.Federation.Services
             _config = config;
             _sessions = sessions;
             _friends = friends;
+            TranscodePolicy.WeakHardwareProbe = () => TranscodeHardware.TooWeakToConvert(Local());
         }
 
         /// <summary>Gets the friends' hardware cache.</summary>

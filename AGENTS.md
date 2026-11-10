@@ -277,6 +277,11 @@ Tests and project history:
 - Companion uses the separate `companion-latest` rolling workflow and should
   only be triggered by intentional, validated changes under `Companion/`.
 
+## Work in progress
+
+- Automatic copy and server switching is being built on branch `work/smart-playback`; the agreed rules, step order and the exact stopping point are the first section of `TODO.md`. Read it before touching playback, source selection or `WanBandwidthMonitor`.
+- That work deliberately revisits "plays never switch between the two servers" in `FederationRemoteTranscodeFilter`: switching between friends' servers is wanted; falling back to converting on the receiving server is still not.
+
 ## Local environment notes
 
 - This workspace may not expose `dotnet` directly. Previous work used a .NET 9
