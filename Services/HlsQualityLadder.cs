@@ -250,6 +250,20 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>
+        /// The same test on a parsed request query: whether the video is certainly
+        /// being converted (false when no video bitrate was requested).
+        /// </summary>
+        internal static bool VideoIsConverted(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceVideoBitrate)
+        {
+            var parameters = query
+                .Select(p => new KeyValuePair<string, string?>(p.Key, p.Value.FirstOrDefault()))
+                .ToList();
+            return long.TryParse(Value(parameters, "VideoBitrate"), NumberStyles.None, CultureInfo.InvariantCulture, out var requested)
+                && requested > 0
+                && VideoIsConverted(parameters, requested, sourceVideoBitrate);
+        }
+
         private static bool VideoIsConverted(List<KeyValuePair<string, string?>> parameters, long requestedVideoBitrate, long? sourceVideoBitrate)
         {
             var codec = Value(parameters, "VideoCodec");

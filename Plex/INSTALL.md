@@ -2,7 +2,7 @@
 
 This optional add-in adds Plex catalogs, Companion connections, Plex metadata and guided imports, and `.strm` export to Jellyfin Federation. Ordinary Jellyfin friends do not need it.
 
-The add-in and core plugin must have the same version. This package is for Federation **0.0.209** on Jellyfin 12.
+The add-in and core plugin must have the same version. This package is for Federation **0.0.210** on Jellyfin 12.
 
 ## Install or upgrade
 

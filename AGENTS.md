@@ -280,7 +280,7 @@ Tests and project history:
 ## Work in progress
 
 - Automatic copy and server switching is being built on branch `work/smart-playback`; the agreed rules, step order and the exact stopping point are the first section of `TODO.md`. Read it before touching playback, source selection or `WanBandwidthMonitor`.
-- That work deliberately revisits "plays never switch between the two servers" in `FederationRemoteTranscodeFilter`: switching between friends' servers is wanted; falling back to converting on the receiving server is still not.
+- Since 0.0.210 a converted play can move between friends' servers (`Services/HandoffStandby.cs`, wired in `FederationRemoteTranscodeFilter`, tracked in `RemoteTranscodeHandoffs`, E2E `scripts/federation_standby_smoke.py`). Falling back to converting on the receiving server is still not wanted. The standby must never reserve bandwidth or start a conversion before a player asks it.
 
 ## Local environment notes
 

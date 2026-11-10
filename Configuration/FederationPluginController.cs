@@ -1843,6 +1843,13 @@ namespace Jellyfin.Plugin.Federation.Api
 
             Response.Headers.CacheControl = "private, no-store";
             Response.Headers["X-Content-Type-Options"] = "nosniff";
+            if (_handoffs?.Activate(HandoffStandby.PlaySessionOf(u), friend.Id) == true)
+            {
+                // The player asked the standby friend for its playlist: it is
+                // moving there, so that friend now gets this play's pause pings.
+                _logger.LogInformation("[Federation] A player moved a running play to {Friend}, its standby server", friend.Name);
+            }
+
             var relayPrefix = HandoffPlaylistLinks.RelayPrefix(Request.PathBase.Value);
             if (HandoffPlaylistLinks.TakePrefetched(u!) is { } ready)
             {
@@ -1926,6 +1933,15 @@ namespace Jellyfin.Plugin.Federation.Api
                 item.Id,
                 mediaSourceId,
                 FederationViewerReporter.BoundSource(entry, item.Id, user.Id, connectionDeviceId) ?? _federationManager.GetPlaybackSource(entry));
+            if (entry != null && source != null
+                && _handoffs?.HandedOffTo(playSessionId) is { } convertingServer
+                && !string.Equals(source.ServerId, convertingServer, StringComparison.OrdinalIgnoreCase))
+            {
+                // The play started on, or moved to, another friend than the copy
+                // the request names: report the server actually converting it.
+                source = entry.GetSourcesSnapshot().FirstOrDefault(s => string.Equals(s.ServerId, convertingServer, StringComparison.OrdinalIgnoreCase)) ?? source;
+            }
+
             var server = source == null ? null : _federationManager.GetServer(source.ServerId);
             if (entry == null || source == null || server == null)
             {

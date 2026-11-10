@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.210",
+        "changelog": "A second friend's server for converted plays. When two friends hold the same title and one converts it for a viewer, the other is now listed in the playlist as a standby: a player that stops getting video from the first server moves to the other at a segment boundary and plays on from its buffer. The standby converts nothing until a player asks it, and stopping the play frees both servers. A new play whose chosen friend does not answer within 8 seconds starts on the next friend holding the title instead of failing. Both are active with \"pick the best copy automatically\" on, and always on a server that may not convert; this server never steps in to convert a friend's title itself. The standby is offered only for converted H.264 (MPEG-TS) plays of copies with the same length and sound language and no subtitle track selected. Checked with a real hls.js player in headless Chromium and three-server container runs; not yet verified on physical TV or phone players.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-10T20:30:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.210/Jellyfin.Federation.zip",
+        "checksum": "a413febd5f147b0510f2287f0cde58f6"
+      },
+      {
         "version": "0.0.209",
         "changelog": "Automatic copy choice and weak-server protection. A server with no hardware encoder and fewer than 4 CPU threads now converts nothing on its own (the conversion setting's default is Automatic; choose \"Everything, even if this server looks too weak\" to override). When a title has several copies, the copy a device can play as stored now ranks above one that would need converting, sound in the user's Jellyfin language is preferred (English when unset), and the choice is per device: active with \"pick the best copy automatically\" on, and always on a server that may not convert. Friends' link speeds are now averaged from hourly samples over the first day, then daily. Not yet verified on physical TV or phone players.",
         "targetAbi": "12.0.0.0",

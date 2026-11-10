@@ -35,8 +35,12 @@ namespace Jellyfin.Plugin.Federation.Services
     /// allowed, an https page that would be handed an http address - falls through
     /// to Jellyfin, which converts here exactly as before.</item>
     /// <item>A friend that offers to convert but fails (at its limit, an error)
-    /// gives the player its answer: a friend's title plays only from the friend,
-    /// and one play is never split between two transcoders.</item>
+    /// gives the player its answer: a friend's title plays only from friends,
+    /// and this server never steps in to convert a play a friend started.</item>
+    /// <item>With automatic copy choice on (or when this server may not convert),
+    /// another friend holding the same title can take a play: at start when the
+    /// first friend does not answer, and mid-play as a redundant variant in the
+    /// master playlist (see <see cref="HandoffStandby"/>).</item>
     /// <item>This server's own credentials (<c>ApiKey</c> on the URL) are never
     /// forwarded; the friend's item-scoped token carries the authorization and the
     /// friend re-checks sharing on every request.</item>
@@ -199,7 +203,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var playlist = path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.SubtitlePlaylist;
             string? relayPrefix = HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value);
-            var (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted).ConfigureAwait(false);
+            // A new play with another friend able to take it does not wait the
+            // full half minute on a friend that is not answering.
+            TimeSpan? startDeadline = path.Kind == RemoteMediaKind.HlsMaster
+                && HandoffStandby.Wanted(Plugin.Instance?.Configuration)
+                && HandoffStandby.AllowsAnotherCopy(context.HttpContext.Request.Query)
+                && OtherServers(handoff).Count > 0
+                    ? HandoffStandby.StartCooldown
+                    : null;
+            var (fetched, status) = await FetchAsync(handoff, playlist, relayPrefix, context.HttpContext.RequestAborted, startDeadline).ConfigureAwait(false);
             if (status == StatusCodes.Status403Forbidden)
             {
                 // Most often a token the friend no longer knows (it restarted).
@@ -234,6 +246,12 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            if (fetched == null && status != StatusCodes.Status403Forbidden
+                && await StartOnAnotherServerAsync(context, path, handoff with { FailedStatus = status }, relayPrefix, playSessionId).ConfigureAwait(false) is { } moved)
+            {
+                (fetched, handoff) = (moved.Result, moved.Handoff);
+            }
+
             if (fetched != null)
             {
                 if (path.StartsWork)
@@ -241,6 +259,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     _handoffs.Record(playSessionId, handoff.ServerId);
                 }
 
+                fetched = await WithStandbyAsync(context, path, handoff, fetched, relayPrefix, playSessionId).ConfigureAwait(false);
                 if (handoff.ViaLink)
                 {
                     _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts, and the video comes over the direct link to this home viewer", path.Kind, path.ItemId, handoff.ServerName);
@@ -274,9 +293,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
-            // A friend's title plays from the friend. When the friend offers to
-            // convert but fails, the player gets the friend's answer; this server
-            // does not step in, so plays never switch between the two servers.
+            // A friend's title plays from friends. When the friend offers to
+            // convert but fails and no other friend could start it, the player
+            // gets the friend's answer; this server does not step in.
             _logger.LogWarning("[Federation] {Server} could not play {ItemId} ({Kind}, HTTP {Status}); the title plays only from its own server", handoff.ServerName, path.ItemId, path.Kind, status);
             context.HttpContext.Response.Headers.CacheControl = "private, no-store";
             context.Result = new StatusCodeResult(status);
@@ -405,7 +424,12 @@ namespace Jellyfin.Plugin.Federation.Services
             return true;
         }
 
-        private async Task<Handoff?> ResolveAsync(ActionExecutingContext context, RemoteMediaPath path)
+        /// <param name="context">The player's request.</param>
+        /// <param name="path">What is asked for (for a standby: the variant playlist).</param>
+        /// <param name="forced">Another copy to resolve instead of the one the request addresses.</param>
+        /// <param name="reserve">False for a standby, which must not take bandwidth until a player uses it.</param>
+        /// <param name="audioIndex">The sound track number on <paramref name="forced"/>, replacing the request's.</param>
+        private async Task<Handoff?> ResolveAsync(ActionExecutingContext context, RemoteMediaPath path, FederatedSource? forced = null, bool reserve = true, int? audioIndex = null)
         {
             var item = _library.GetItemById(path.ItemId);
             var key = FederationLibraryManager.GetFederationKey(item);
@@ -435,7 +459,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var request = context.HttpContext.Request;
             var sourceId = path.MediaSourceId?.ToString("N")
                 ?? RemoteMediaPath.QueryValue(request.Query, "MediaSourceId");
-            var source = SelectSource(entry, item.Id, sourceId, user.Id, info.DeviceId);
+            var source = forced ?? SelectSource(entry, item.Id, sourceId, user.Id, info.DeviceId);
             var server = source == null ? null : _federationManager.GetServer(source.ServerId);
             if (source == null
                 || server == null
@@ -448,18 +472,37 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
             {
-                ApplyLocalConversionCap(context, path, server, source, user.Id, info);
+                if (forced == null)
+                {
+                    ApplyLocalConversionCap(context, path, server, source, user.Id, info);
+                }
+
                 return null;
             }
 
             var normalizedSourceId = string.IsNullOrEmpty(sourceId) ? item.Id.ToString("N") : sourceId;
-            var grant = PeerPlaybackGrants.Find(user.Id, item.Id, normalizedSourceId);
-            if (grant == null)
+            PeerPlaybackGrants.Grant? grant;
+            if (forced != null)
             {
-                // The provider records a grant for every source it offers this
-                // viewer; asking it again (warm caches, cached token) fills it.
-                await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
+                // Another copy than the request names: its grant is under that
+                // copy's own id, or under the item's id when it is the default copy.
+                (grant, normalizedSourceId) = GrantFor(user.Id, item.Id, forced);
+                if (grant == null)
+                {
+                    await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
+                    (grant, normalizedSourceId) = GrantFor(user.Id, item.Id, forced);
+                }
+            }
+            else
+            {
                 grant = PeerPlaybackGrants.Find(user.Id, item.Id, normalizedSourceId);
+                if (grant == null)
+                {
+                    // The provider records a grant for every source it offers this
+                    // viewer; asking it again (warm caches, cached token) fills it.
+                    await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
+                    grant = PeerPlaybackGrants.Find(user.Id, item.Id, normalizedSourceId);
+                }
             }
 
             if (grant == null
@@ -513,7 +556,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var handheld = HandheldClientLimits.IsHandheld(identity.Client, identity.Device);
             cap = HandheldClientLimits.Cap(cap, handheld);
             cap = _routeMetrics?.GetCapMbps(user.Id, info.DeviceId, server.Id, viaLink ? "direct-link" : FederatedRoute.FriendConverts, cap) ?? cap;
-            if (path.StartsWork && _bandwidth != null)
+            if (reserve && path.StartsWork && _bandwidth != null)
             {
                 var allocation = _bandwidth.Allocate(server.Id, RemoteMediaPath.QueryValue(request.Query, "PlaySessionId"), cap, sharedCapacity, user.Id.ToString("N") + "|" + info.DeviceId);
                 if (!allocation.Accepted)
@@ -525,7 +568,10 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var remoteMediaSourceId = Guid.TryParse(grant.RemoteMediaSourceId, out var grantedSourceId) ? grantedSourceId : source.RemoteItemId;
-            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => RewriteQueryValue(name, value, remoteMediaSourceId, cap, request.Query));
+            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) =>
+                audioIndex.HasValue && string.Equals(name, "AudioStreamIndex", StringComparison.OrdinalIgnoreCase)
+                    ? audioIndex.Value.ToString(CultureInfo.InvariantCulture)
+                    : RewriteQueryValue(name, value, remoteMediaSourceId, cap, request.Query));
             if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
             {
                 query = HandheldClientLimits.WithResolution(query, request.Query, handheld);
@@ -533,7 +579,181 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var nativePath = path.ToNativePath(source.RemoteItemId, path.MediaSourceId.HasValue ? remoteMediaSourceId : null);
             var url = $"{peerBase}/Plugins/Federation/Peer/Play/{Uri.EscapeDataString(grant.Token)}/{nativePath}{query}";
-            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink, source.Bitrate is > 0 ? source.Bitrate : null);
+            return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink, source.Bitrate is > 0 ? source.Bitrate : null)
+            {
+                Source = source,
+                Entry = entry
+            };
+        }
+
+        /// <summary>
+        /// The grant the provider recorded for <paramref name="source"/> and the
+        /// local source id it is under: the copy's own id, or the item's id when
+        /// this copy is the one the item id stands for.
+        /// </summary>
+        internal static (PeerPlaybackGrants.Grant? Grant, string SourceId) GrantFor(Guid userId, Guid itemId, FederatedSource source)
+        {
+            foreach (var id in new[] { FederationMediaSourceProvider.BuildSourceId(source), itemId.ToString("N") })
+            {
+                var grant = PeerPlaybackGrants.Find(userId, itemId, id);
+                if (grant != null
+                    && string.Equals(grant.ServerId, source.ServerId, StringComparison.OrdinalIgnoreCase)
+                    && grant.RemoteItemId == source.RemoteItemId)
+                {
+                    return (grant, id);
+                }
+            }
+
+            return (null, FederationMediaSourceProvider.BuildSourceId(source));
+        }
+
+        /// <summary>
+        /// The other friends' copies that could take over this play, in the cached
+        /// order: enabled, reachable, converting for us, and allowed for the viewer
+        /// (re-checked in full by <see cref="ResolveAsync"/>).
+        /// </summary>
+        private List<FederatedSource> OtherServers(Handoff handoff)
+        {
+            if (handoff.Entry == null || handoff.Source == null)
+            {
+                return new List<FederatedSource>();
+            }
+
+            return handoff.Entry.GetSourcesSnapshot()
+                .Where(s => !string.Equals(s.ServerId, handoff.ServerId, StringComparison.OrdinalIgnoreCase)
+                    && FederationMediaSourceProvider.UsesRemoteTranscode(_federationManager.GetServer(s.ServerId)))
+                .GroupBy(s => s.ServerId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
+        }
+
+        /// <summary>
+        /// Lists a second friend's copy in the master playlist as a redundant
+        /// variant, so the player can move there when the first server stops
+        /// delivering (see <see cref="HandoffStandby"/>). Returns the result
+        /// unchanged whenever no like-for-like standby exists. Never throws.
+        /// </summary>
+        private async Task<IActionResult> WithStandbyAsync(ActionExecutingContext context, RemoteMediaPath path, Handoff handoff, IActionResult fetched, string? relayPrefix, string? playSessionId)
+        {
+            try
+            {
+                var request = context.HttpContext.Request;
+                if (path.Kind != RemoteMediaKind.HlsMaster
+                    || fetched is not FileContentResult { FileContents.Length: > 0 } file
+                    || string.IsNullOrWhiteSpace(playSessionId)
+                    || handoff.Source == null
+                    || !HandoffStandby.Wanted(Plugin.Instance?.Configuration)
+                    || !HandoffStandby.AllowsMidPlaySwitch(request.Query, handoff.SourceBitrate))
+                {
+                    return fetched;
+                }
+
+                var variantPath = path with { Kind = RemoteMediaKind.HlsVariant, Suffix = "main.m3u8" };
+                foreach (var other in OtherServers(handoff))
+                {
+                    if (!HandoffStandby.SameCut(handoff.Source, other))
+                    {
+                        continue;
+                    }
+
+                    var (audioOk, audioIndex) = HandoffStandby.MapAudio(handoff.Source, other, RemoteMediaPath.QueryLong(request.Query, "AudioStreamIndex"));
+                    if (!audioOk)
+                    {
+                        continue;
+                    }
+
+                    var standby = await ResolveAsync(context, variantPath, other, reserve: false, audioIndex).ConfigureAwait(false);
+                    if (standby == null || HandoffStandby.IsReduced(handoff.Url, standby.Url))
+                    {
+                        // Not converting for this viewer, or its link cannot carry
+                        // this play at full quality.
+                        continue;
+                    }
+
+                    var friendUrl = HandoffPlaylistLinks.ToPeer(standby.Url, standby.PlayerBase);
+                    if (friendUrl == null)
+                    {
+                        continue;
+                    }
+
+                    var uri = standby.ViaLink || relayPrefix == null ? friendUrl : relayPrefix + Uri.EscapeDataString(friendUrl);
+                    var text = HandoffPlaylistLinks.Decode(file.FileContents);
+                    var withStandby = HandoffStandby.AddVariant(text, uri);
+                    if (ReferenceEquals(withStandby, text))
+                    {
+                        return fetched;
+                    }
+
+                    _handoffs.AddStandby(playSessionId, standby.ServerId);
+                    _logger.LogInformation("[Federation] {Standby} stands by for {ItemId}: the player can move there if {Server} stops delivering", standby.ServerName, path.ItemId, handoff.ServerName);
+                    return new FileContentResult(System.Text.Encoding.UTF8.GetBytes(withStandby), file.ContentType);
+                }
+            }
+            catch (OperationCanceledException) when (context.HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not add a standby server to a playlist; leaving it as it was");
+            }
+
+            return fetched;
+        }
+
+        /// <summary>
+        /// The friend picked for a new play did not answer its master playlist:
+        /// starts the play on the next friend holding the title instead. Null when
+        /// nobody else can, and the first friend's answer goes to the player.
+        /// </summary>
+        private async Task<(IActionResult Result, Handoff Handoff)?> StartOnAnotherServerAsync(ActionExecutingContext context, RemoteMediaPath path, Handoff failed, string? relayPrefix, string? playSessionId)
+        {
+            var request = context.HttpContext.Request;
+            if (path.Kind != RemoteMediaKind.HlsMaster
+                || failed.Source == null
+                || !HandoffStandby.Wanted(Plugin.Instance?.Configuration)
+                || !HandoffStandby.AllowsAnotherCopy(request.Query))
+            {
+                return null;
+            }
+
+            FederationItemPersistenceService.SmartSelectionMemory.NoteFailure(failed.ServerId);
+            foreach (var other in OtherServers(failed))
+            {
+                try
+                {
+                    var (audioOk, audioIndex) = HandoffStandby.MapAudio(failed.Source, other, RemoteMediaPath.QueryLong(request.Query, "AudioStreamIndex"));
+                    if (!audioOk)
+                    {
+                        continue;
+                    }
+
+                    // The failed friend carries nothing: its share goes back first.
+                    _bandwidth?.Release(failed.ServerId, playSessionId);
+                    var next = await ResolveAsync(context, path, other, reserve: true, audioIndex).ConfigureAwait(false);
+                    if (next == null)
+                    {
+                        continue;
+                    }
+
+                    var (fetched, status) = await FetchAsync(next, true, relayPrefix, context.HttpContext.RequestAborted, HandoffStandby.StartCooldown).ConfigureAwait(false);
+                    if (fetched != null)
+                    {
+                        _logger.LogInformation("[Federation] {Failed} did not start {ItemId} (HTTP {Status}); starting it on {Server} instead", failed.ServerName, path.ItemId, failed.FailedStatus, next.ServerName);
+                        return (fetched, next);
+                    }
+
+                    FederationItemPersistenceService.SmartSelectionMemory.NoteFailure(next.ServerId);
+                    _bandwidth?.Release(next.ServerId, playSessionId);
+                    _logger.LogInformation("[Federation] {Server} could not start {ItemId} either (HTTP {Status})", next.ServerName, path.ItemId, status);
+                }
+                catch (FederationBandwidthExceededException)
+                {
+                    // That friend's link is full; try the next one.
+                }
+            }
+
+            return null;
         }
 
         private void ApplyLocalConversionCap(ActionExecutingContext context, RemoteMediaPath path, RemoteServer server, FederatedSource source, Guid userId, AuthorizationInfo info)
@@ -653,8 +873,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// Fetches a playlist/subtitle from the friend: the result, or null and
         /// the status to give the player (502 when the friend can't be reached).
         /// </summary>
-        internal async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, bool playlist, string? relayPrefix, CancellationToken cancellationToken)
+        internal async Task<(IActionResult? Result, int Status)> FetchAsync(Handoff handoff, bool playlist, string? relayPrefix, CancellationToken cancellationToken, TimeSpan? deadline = null)
         {
+            var wait = deadline ?? TimeSpan.FromSeconds(30);
             try
             {
                 // Over the direct link when it's up (faster for this server's own
@@ -673,7 +894,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     using var linkRequest = Make(true);
                     using var linkTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    linkTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                    linkTimeout.CancelAfter(wait);
                     try
                     {
                         viaLinkResponse = await link.SendAsync(linkRequest, HttpCompletionOption.ResponseHeadersRead, linkTimeout.Token).ConfigureAwait(false);
@@ -697,7 +918,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
 
                 using var peerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                peerTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                peerTimeout.CancelAfter(wait);
                 for (var attempt = 0; ; attempt++)
                 {
                     using var request = Make(false);
@@ -763,6 +984,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
         internal sealed record Handoff(string Url, string ServerId, string ServerName, Guid UserId, string SourceId, string PeerBase, RemoteMediaKind Kind, string PlayerBase, bool ViaLink, long? SourceBitrate = null)
         {
+            /// <summary>Gets the copy this handoff plays.</summary>
+            public FederatedSource? Source { get; init; }
+
+            /// <summary>Gets the title's cache entry (its other copies).</summary>
+            public FederatedCacheEntry? Entry { get; init; }
+
+            /// <summary>Gets the status this friend answered with when it failed to start.</summary>
+            public int FailedStatus { get; init; }
+
             /// <summary>Gets where the player is sent: the friend, or this server's direct link relay.</summary>
             public string PlayerUrl => ViaLink ? HandoffPlaylistLinks.ToPeer(Url, PlayerBase) ?? Url : Url;
         }

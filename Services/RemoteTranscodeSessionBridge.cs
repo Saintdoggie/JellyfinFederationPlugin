@@ -82,11 +82,16 @@ namespace Jellyfin.Plugin.Federation.Services
         private void OnStopped(object? sender, PlaybackStopEventArgs e)
         {
             _bandwidth?.ReleaseEverywhere(e.PlaySessionId);
-            var serverId = _handoffs.TakeStop(e.PlaySessionId);
-            if (serverId != null)
+            var servers = _handoffs.TakeStopAll(e.PlaySessionId);
+            for (var i = 0; i < servers.Count; i++)
             {
-                Send(serverId, e.PlaySessionId, "stop", null);
-                SaveLog(serverId, e.PlaySessionId, e.Item?.Id ?? Guid.Empty, final: true);
+                // Every friend this play used or kept as a standby is told; one
+                // that never started it ignores the stop.
+                Send(servers[i], e.PlaySessionId, "stop", null);
+                if (i == 0)
+                {
+                    SaveLog(servers[i], e.PlaySessionId, e.Item?.Id ?? Guid.Empty, final: true);
+                }
             }
         }
 
