@@ -102,11 +102,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (!_federationManager.IsFederatedItem(item))
             {
-                _logger.LogDebug(
-                    "[Federation] GetMediaSources: {Name} ({Type}) has no FederationKey - not treated as federated",
-                    item.Name,
-                    item.GetType().Name);
-                return Enumerable.Empty<MediaSourceInfo>();
+                // A title this server owns: nothing, unless the device cannot play
+                // the own file as stored and a friend holds a copy it can.
+                return await FriendCopiesForOwnedTitleAsync(item, cancellationToken).ConfigureAwait(false);
             }
 
             var preparationTimer = Stopwatch.StartNew();
@@ -616,6 +614,211 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 _logger.LogDebug("[Federation] Playback source preparation finished in {ElapsedMs} ms", preparationTimer.Elapsed.TotalMilliseconds);
             }
+        }
+
+        /// <summary>Test seam: the own file's tracks (Jellyfin reads them from its database).</summary>
+        internal Func<BaseItem, IReadOnlyList<MediaStream>> OwnStreams { get; set; } = item => item.GetMediaStreams();
+
+        /// <summary>
+        /// Friends' copies of a title this server owns, offered beside the own file
+        /// only when the device cannot play the own file as stored and can play the
+        /// friend's copy as stored (see <see cref="OwnedTitleFriendCopies"/>). Never
+        /// offered for conversion: converting stays with the own file. Costs nothing
+        /// for a play whose device plays the own file, and nothing at all when the
+        /// automatic choice is off.
+        /// </summary>
+        private async Task<IEnumerable<MediaSourceInfo>> FriendCopiesForOwnedTitleAsync(BaseItem item, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var context = _httpContextAccessor.HttpContext;
+            if (!OwnedTitleFriendCopies.Wanted(config)
+                || context == null
+                || item is not Video
+                || item.ProviderIds == null
+                || item.ProviderIds.Count == 0)
+            {
+                return Enumerable.Empty<MediaSourceInfo>();
+            }
+
+            var profile = FederationPlaybackProfileFilter.Get(context);
+            if (profile == null && OwnedTitleFriendCopies.Shared.IsEmpty)
+            {
+                return Enumerable.Empty<MediaSourceInfo>();
+            }
+
+            try
+            {
+                var authorization = await ResolveAuthorizationInfo().ConfigureAwait(false);
+                if (authorization == null || authorization.UserId == Guid.Empty)
+                {
+                    return Enumerable.Empty<MediaSourceInfo>();
+                }
+
+                var userId = authorization.UserId;
+                var deviceId = authorization.DeviceId;
+                var language = authorization.User?.AudioLanguagePreference;
+                IReadOnlySet<string>? offered = null;
+                if (profile != null)
+                {
+                    var own = DevicePlayFit.Evaluate(profile, item.Container, OwnStreams(item), language);
+                    if (!OwnedTitleFriendCopies.OwnFileNeedsHelp(own))
+                    {
+                        OwnedTitleFriendCopies.Shared.Forget(userId, deviceId, item.Id);
+                        return Enumerable.Empty<MediaSourceInfo>();
+                    }
+                }
+                else
+                {
+                    offered = OwnedTitleFriendCopies.Shared.Offered(userId, deviceId, item.Id);
+                    if (offered == null || offered.Count == 0)
+                    {
+                        return Enumerable.Empty<MediaSourceInfo>();
+                    }
+                }
+
+                var entry = FindFriendEntryForOwnedTitle(item, config!);
+                if (entry == null)
+                {
+                    return Enumerable.Empty<MediaSourceInfo>();
+                }
+
+                var candidates = new List<(FederatedSource Src, RemoteServer Server)>();
+                foreach (var src in entry.GetSourcesSnapshot())
+                {
+                    var server = _federationManager.GetServer(src.ServerId);
+                    if (server is { Enabled: true, Kind: ServerKind.Jellyfin }
+                        && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(src.ServerId) != true
+                        && _accessControl.IsAllowed(server, userId, entry.MappingName, src.RemoteItemId))
+                    {
+                        candidates.Add((src, server));
+                    }
+                }
+
+                if (candidates.Count == 0)
+                {
+                    return Enumerable.Empty<MediaSourceInfo>();
+                }
+
+                // The own file can always still be converted, so a slow friend is
+                // not worth holding up the play for.
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(6));
+                var fetches = candidates.Select(c => FetchRemoteSourceAsync(c.Server, c.Src, userId, timeout.Token)).ToArray();
+                var paths = candidates.Select(c => BuildPlaybackPathAsync(c.Server, c.Src, entry.ItemType, userId, timeout.Token)).ToArray();
+                await Task.WhenAll(Task.WhenAll(fetches), Task.WhenAll(paths)).ConfigureAwait(false);
+
+                var nativeIdentity = NativeClientCapabilities.Identify(context.Request, authorization);
+                var sources = new List<MediaSourceInfo>();
+                for (var c = 0; c < candidates.Count; c++)
+                {
+                    var (src, server) = candidates[c];
+                    var path = paths[c].Result;
+                    var remotes = fetches[c].Result;
+                    if (path == null || remotes.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var direct = server.StreamingMode == StreamingMode.Direct;
+                    foreach (var remote in direct ? remotes : remotes.Take(1))
+                    {
+                        var sourceId = BuildSourceId(src, direct && remotes.Count > 1 ? remote.Id : null);
+                        var wanted = profile != null
+                            ? DevicePlayFit.Evaluate(profile, remote.Container, remote.MediaStreams, language).Fit == PlayFit.Direct
+                            : offered!.Contains(sourceId);
+                        if (!wanted || SourceOverageBitrate(server, remote) > 0)
+                        {
+                            // Would itself need converting, or the friend's link cannot carry it.
+                            continue;
+                        }
+
+                        var sourcePath = direct ? WithRemoteMediaSourceId(path, remote.Id) : path;
+                        var advertised = DescribeDeliveredSource(server, sourcePath, remote, entry.ItemType);
+                        sources.Add(new MediaSourceInfo
+                        {
+                            Id = sourceId,
+                            Name = server.Name,
+                            Path = sourcePath,
+                            Protocol = MediaProtocol.Http,
+                            IsRemote = direct,
+                            Container = advertised.Container,
+                            Size = advertised.Size,
+                            Bitrate = advertised.Bitrate,
+                            MediaStreams = advertised.MediaStreams,
+                            SupportsDirectPlay = NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, nativeIdentity.Client, nativeIdentity.Device),
+                            SupportsDirectStream = true,
+                            SupportsTranscoding = false,
+                            SupportsProbing = false,
+                            RequiresOpening = false,
+                            RequiresClosing = false,
+                            RunTimeTicks = FirstPositiveRuntime(remote.RunTimeTicks, src.RunTimeTicks, entry.Metadata.RunTimeTicks, item.RunTimeTicks),
+                            Type = MediaSourceType.Grouping
+                        });
+                    }
+                }
+
+                if (profile != null)
+                {
+                    if (sources.Count == 0)
+                    {
+                        OwnedTitleFriendCopies.Shared.Forget(userId, deviceId, item.Id);
+                    }
+                    else
+                    {
+                        OwnedTitleFriendCopies.Shared.Remember(userId, deviceId, item.Id, sources.Select(s => s.Id));
+                        context.Items[OwnedTitleFriendCopies.OfferKey] = sources.Select(s => s.Id).ToList();
+                        _logger.LogInformation(
+                            "[Federation] {Name} is owned here but this device cannot play the own file as stored; offering {Count} friend copy(ies) it can ({Servers})",
+                            item.Name,
+                            sources.Count,
+                            string.Join(", ", sources.Select(s => s.Name).Distinct()));
+                    }
+                }
+
+                return sources;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // The own file plays regardless.
+                _logger.LogDebug(ex, "[Federation] Could not look for a friend's copy of {Name}", item.Name);
+                return Enumerable.Empty<MediaSourceInfo>();
+            }
+        }
+
+        /// <summary>
+        /// The cache entry for friends' copies of a title this server owns: the
+        /// same provider-id key the sync merges copies on, in any enabled library.
+        /// </summary>
+        private FederatedCacheEntry? FindFriendEntryForOwnedTitle(BaseItem item, PluginConfiguration config)
+        {
+            var kind = item.GetBaseItemKind().ToString();
+            foreach (var providerName in config.DedupProviderIds ?? new List<string>())
+            {
+                if (!FederationLibraryManager.TryGetProviderId(item.ProviderIds, providerName, out var value) || string.IsNullOrEmpty(value))
+                {
+                    continue;
+                }
+
+                foreach (var mapping in config.LibraryMappings ?? new List<LibraryMapping>())
+                {
+                    if (!mapping.Enabled || string.IsNullOrEmpty(mapping.LocalLibraryName))
+                    {
+                        continue;
+                    }
+
+                    var entry = _federationManager.Cache.GetEntryByKey(FederationItemCache.BuildProviderKey(mapping.LocalLibraryName, providerName, value));
+                    if (entry != null && string.Equals(entry.ItemType, kind, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return entry;
+                    }
+                }
+            }
+
+            return null;
         }
 
         /// <summary>

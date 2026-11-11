@@ -157,8 +157,20 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var itemId = (Guid)context.ActionArguments["itemId"]!;
             var item = _library.GetItemById(itemId);
-            if (item == null || FederationLibraryManager.GetFederationKey(item) == null)
+            var requestedSource = context.ActionArguments.TryGetValue("mediaSourceId", out var requestedId) ? requestedId as string : null;
+            if (item == null)
             {
+                return (null, null);
+            }
+
+            if (FederationLibraryManager.GetFederationKey(item) == null
+                && (OwnedTitleFriendCopies.Shared.IsEmpty
+                    || string.IsNullOrEmpty(requestedSource)
+                    || (Guid.TryParse(requestedSource, out var asGuid) && asGuid == itemId)))
+            {
+                // A title this server owns, playing its own file. Only a request
+                // naming another source can be a friend's copy offered beside it
+                // (see OwnedTitleFriendCopies); the provider decides whether it is.
                 return (null, null);
             }
 

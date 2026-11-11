@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
 using MediaBrowser.Model.Dlna;
@@ -144,6 +145,23 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <inheritdoc />
         public void OnActionExecuted(ActionExecutedContext context)
         {
+            // A title this server owns, with a friend's copy offered beside the own
+            // file (see OwnedTitleFriendCopies): Jellyfin lists the own file first
+            // even when it has to be converted, and many players take the first.
+            try
+            {
+                if (context.HttpContext.Items.TryGetValue(OwnedTitleFriendCopies.OfferKey, out var marker)
+                    && marker is IReadOnlyCollection<string> offered
+                    && context.Result is Microsoft.AspNetCore.Mvc.ObjectResult { Value: MediaBrowser.Model.MediaInfo.PlaybackInfoResponse response }
+                    && response.MediaSources is { Count: > 1 } sources)
+                {
+                    response.MediaSources = OwnedTitleFriendCopies.Order(sources, offered);
+                }
+            }
+            catch (Exception)
+            {
+                // The response Jellyfin built is still a valid one.
+            }
         }
     }
 }

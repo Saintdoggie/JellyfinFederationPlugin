@@ -280,6 +280,7 @@ Tests and project history:
 ## Work in progress
 
 - Automatic copy and server switching is being built on branch `work/smart-playback`; the agreed rules, step order and the exact stopping point are the first section of `TODO.md`. Read it before touching playback, source selection or `WanBandwidthMonitor`.
+- Since 0.0.211 a title this server owns can carry a friend's copy as an extra media source, only for a device that cannot play the own file as stored (`Services/OwnedTitleFriendCopies.cs`, `FederationMediaSourceProvider.FriendCopiesForOwnedTitleAsync`, E2E `scripts/federation_owned_title_smoke.py`). That path must stay free for every other play of a local title: no remote call unless the device's profile says the own file needs converting.
 - Since 0.0.210 a converted play can move between friends' servers (`Services/HandoffStandby.cs`, wired in `FederationRemoteTranscodeFilter`, tracked in `RemoteTranscodeHandoffs`, E2E `scripts/federation_standby_smoke.py`). Falling back to converting on the receiving server is still not wanted. The standby must never reserve bandwidth or start a conversion before a player asks it.
 
 ## Local environment notes

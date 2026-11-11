@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.210",
-  "changelog": "A second friend's server for converted plays. When two friends hold the same title and one converts it for a viewer, the other is now listed in the playlist as a standby: a player that stops getting video from the first server moves to the other at a segment boundary and plays on from its buffer. The standby converts nothing until a player asks it, and stopping the play frees both servers. A new play whose chosen friend does not answer within 8 seconds starts on the next friend holding the title instead of failing. Both are active with \"pick the best copy automatically\" on, and always on a server that may not convert; this server never steps in to convert a friend's title itself. The standby is offered only for converted H.264 (MPEG-TS) plays of copies with the same length and sound language and no subtitle track selected. Checked with a real hls.js player in headless Chromium and three-server container runs; not yet verified on physical TV or phone players.",
+  "version": "0.0.211",
+  "changelog": "Titles you own and a friend also holds. Your own file always plays when the device can play it as stored (a friend's copy of a title you own is still never added to the library). New: when a device cannot play your own file as stored, a friend's copy that the same device plays as stored is offered first, straight from the friend, and your own file stays as the copy to convert. A friend's copy of an owned title is never converted, and devices that play your file are not affected at all. Active with \"pick the best copy automatically\" on, and always on a server that may not convert. Checked with unit tests and two-server container runs; not yet verified on physical TV or phone players.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-10T20:30:00Z",
+  "timestamp": "2026-11-11T02:55:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

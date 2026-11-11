@@ -1858,6 +1858,119 @@ public class FederationStreamPathTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task GetMediaSources_OwnedTitle_OffersAFriendCopyOnlyWhenTheOwnFileNeedsConverting()
+    {
+        OwnedTitleFriendCopies.Shared.Reset();
+        _plugin.Configuration.LocalTranscodeRestriction = LocalTranscodeRestriction.BlockAll;
+        _plugin.Configuration.LibraryMappings.Add(new Configuration.LibraryMapping { LocalLibraryName = "Owned Check", MediaType = "Movie", Enabled = true });
+        var compatibleId = Guid.NewGuid();
+        var heavyId = Guid.NewGuid();
+        var compatible = new RemoteServer { Id = "compatible-friend", Name = "Compatible", Url = "http://compatible.example", ApiKey = "c-key", Enabled = true, StreamingMode = StreamingMode.Proxy, WanCapMode = WanCapMode.Off };
+        var heavy = new RemoteServer { Id = "heavy-friend", Name = "Heavy", Url = "http://heavy.example", ApiKey = "h-key", Enabled = true, StreamingMode = StreamingMode.Proxy, WanCapMode = WanCapMode.Off };
+        _plugin.Configuration.RemoteServers.Add(compatible);
+        _plugin.Configuration.RemoteServers.Add(heavy);
+        _cache.UpsertByProviderId("Owned Check", "imdb", "tt7700001", new BaseItemDto { Id = heavyId, Name = "Owned", Container = "mkv" }, heavy.Id, heavyId, 0, "Movie");
+        _cache.UpsertByProviderId("Owned Check", "imdb", "tt7700001", new BaseItemDto { Id = compatibleId, Name = "Owned", Container = "mp4" }, compatible.Id, compatibleId, 1, "Movie");
+
+        const string HeavyBody = "{\"MediaSources\":[{\"Id\":\"b\",\"Container\":\"mkv\",\"Bitrate\":40000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Height\":2160,\"BitRate\":40000000},{\"Type\":\"Audio\",\"Codec\":\"dts\",\"Language\":\"eng\",\"Channels\":6}]}]}";
+        const string CompatibleBody = "{\"MediaSources\":[{\"Id\":\"s\",\"Container\":\"mp4\",\"Bitrate\":6000000,\"MediaStreams\":[{\"Type\":\"Video\",\"Codec\":\"h264\",\"Height\":1080,\"BitRate\":6000000},{\"Type\":\"Audio\",\"Codec\":\"aac\",\"Language\":\"eng\",\"Channels\":2}]}]}";
+        var factory = new Mock<IRemoteServerClientFactory>();
+        factory.Setup(f => f.GetClient(heavy.Id)).Returns(new RemoteServerClient(heavy, NullLogger.Instance, new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK, HeavyBody)) { BaseAddress = new Uri(heavy.Url) }));
+        factory.Setup(f => f.GetClient(compatible.Id)).Returns(new RemoteServerClient(compatible, NullLogger.Instance, new HttpClient(new PlaybackPreflightHandler(HttpStatusCode.OK, CompatibleBody)) { BaseAddress = new Uri(compatible.Url) }));
+        var manager = new FederationLibraryManager(Mock.Of<ILibraryManager>(), NullLogger<FederationLibraryManager>.Instance, factory.Object, _cache, _bandwidthMonitor, _mediaStreamRepository.Object);
+
+        var userId = Guid.NewGuid();
+        var deviceId = "browser-1";
+        HttpContext? context = null;
+        var accessor = new Mock<IHttpContextAccessor>();
+        accessor.SetupGet(a => a.HttpContext).Returns(() => context);
+        var authorization = new Mock<IAuthorizationContext>();
+        authorization.Setup(a => a.GetAuthorizationInfo(It.IsAny<HttpContext>())).ReturnsAsync(() =>
+        {
+            var info = new AuthorizationInfo { Client = "Jellyfin Web", Device = "Firefox", DeviceId = deviceId };
+            var userType = typeof(AuthorizationInfo).GetProperty("User")!.PropertyType;
+            var user = Activator.CreateInstance(userType, "alice", "auth", "reset")!;
+            userType.GetProperty("Id")!.SetValue(user, userId);
+            typeof(AuthorizationInfo).GetProperty("User")!.SetValue(info, user);
+            return info;
+        });
+        var ownStreams = new List<MediaStream>
+        {
+            new() { Type = MediaStreamType.Video, Codec = "hevc", Height = 2160 },
+            new() { Type = MediaStreamType.Audio, Codec = "aac", Language = "eng", Channels = 2 }
+        };
+        var provider = new FederationMediaSourceProvider(NullLogger<FederationMediaSourceProvider>.Instance, manager, accessor.Object, authorization.Object, new RemoteAccessControlService(NullLogger<RemoteAccessControlService>.Instance))
+        {
+            OwnStreams = _ => ownStreams
+        };
+        var owned = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid(), Name = "Owned", Container = "mkv" };
+        owned.ProviderIds["Imdb"] = "tt7700001";
+
+        static MediaBrowser.Model.Dlna.DeviceProfile Plays(string videoCodecs, string audioCodecs) => new()
+        {
+            DirectPlayProfiles = new[]
+            {
+                new MediaBrowser.Model.Dlna.DirectPlayProfile { Type = MediaBrowser.Model.Dlna.DlnaProfileType.Video, Container = "mp4,mkv", VideoCodec = videoCodecs, AudioCodec = audioCodecs }
+            }
+        };
+
+        try
+        {
+            // Nothing offered yet and no capabilities sent: an ordinary request for an owned title.
+            context = new DefaultHttpContext();
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+
+            // A TV that plays the own HEVC file: the own file plays, no friend is asked.
+            deviceId = "tv-1";
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264,hevc", "aac,dts"));
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+
+            // A browser that only plays H.264: the friend's H.264 copy is offered, the
+            // friend's own HEVC copy is not, and it is never offered for conversion.
+            deviceId = "browser-1";
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264", "aac,mp3"));
+            var offered = Assert.Single(await provider.GetMediaSources(owned, CancellationToken.None));
+            Assert.Contains($"itemId={compatibleId:N}", offered.Path);
+            Assert.NotEqual(owned.Id.ToString("N"), offered.Id);
+            Assert.True(offered.SupportsDirectStream);
+            Assert.False(offered.SupportsTranscoding);
+            Assert.Equal("Compatible", offered.Name);
+
+            // The stream request that follows carries no capabilities: same copy, same id.
+            context = new DefaultHttpContext();
+            var streaming = Assert.Single(await provider.GetMediaSources(owned, CancellationToken.None));
+            Assert.Equal(offered.Id, streaming.Id);
+
+            // Another device of the same viewer was offered nothing.
+            deviceId = "tv-1";
+            context = new DefaultHttpContext();
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+
+            // Once the browser plays the own file as stored (say, the file was replaced), the offer ends.
+            deviceId = "browser-1";
+            ownStreams[0] = new MediaStream { Type = MediaStreamType.Video, Codec = "h264", Height = 1080 };
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264", "aac,mp3"));
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+            context = new DefaultHttpContext();
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+
+            // With the automatic choice off and conversion allowed, owned titles are never touched.
+            ownStreams[0] = new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Height = 2160 };
+            _plugin.Configuration.LocalTranscodeRestriction = LocalTranscodeRestriction.AlwaysAllow;
+            context = new DefaultHttpContext();
+            FederationPlaybackProfileFilter.Set(context, Plays("h264", "aac,mp3"));
+            Assert.Empty(await provider.GetMediaSources(owned, CancellationToken.None));
+        }
+        finally
+        {
+            OwnedTitleFriendCopies.Shared.Reset();
+        }
+    }
+
     private sealed class PlaybackPreflightHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _status;
