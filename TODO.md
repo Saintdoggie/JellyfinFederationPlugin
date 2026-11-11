@@ -36,17 +36,18 @@ Steps:
 - [x] 5. Link-speed history (0.0.209): `LinkSpeedHistory` keeps up to 24 readings per friend in `federation-link-speeds.json`; sampled each sync (hourly) until a day is covered, then daily; `GetMeasuredLinkMbps` returns the average. Only the friend-to-here direction is timed; an upload-direction reading is not done.
 - [x] Gate for 0.0.210: clean Release build with 0 warnings, 1,959 plugin and 163 web tests three times on the final files, catalog check, Companion 224 pass with the same 3 `RcloneBootstrapperTests` failures, and the standby (5 stages, with hls.js in headless Chromium), handoff (12 stages) and peer (10 stages) container runs.
 - [x] Gate for 0.0.211: see the release commit; same suites plus the owned-title container run (5 stages).
-- [ ] Still open from the agreed rules: an upload-direction speed reading; light conversion on the receiving server (HDR to SDR, audio only) was deferred by the owner.
+- [x] Upload-direction speed reading: dropped by the owner on 2026-11-10. Each server times the direction it receives, which is the only number the choices use.
+- [ ] Light conversion on the receiving server (HDR to SDR, audio only): deferred by the owner; the audio half is now part of "Requested next".
 - [ ] Physical players for steps 1 and 2 (TV, phone, Apple): not done. Released on the owner's release-per-phase instruction with that stated in the release notes.
 
 ## Requested next (owner, 2026-11-10) — not started
 
 Order given by the owner: finish the list above first, then the settings page.
 
-- [ ] Settings page redesign. Start from the friend's existing UI branch if there is one in the repository (look before building; keep that branch untouched, keep its theme, add to a copy). Go through every button and setting and decide whether it is needed.
+- [ ] Settings page redesign, from scratch: no UI commits by the other maintainer exist from late October or November 2026 (checked every branch and GitHub on 2026-11-10; their last commits, the `Web/` module move and the logo, are in master), and the owner said to start fresh in that case. No CSS gradients (owner preference). Go through every button and setting and decide whether it is needed.
 - [ ] Linked servers: two servers of the same owner that share one friends list (not settings). Both must already be friends, an admin must choose "link server" on both, and both enter a short rotating code (authenticator style) before the link is made. Security review needed before any code: what a linked server may do on behalf of the other.
 - [ ] Audio-only conversion on a linked server: when a device cannot play a file only because of its sound, the linked server that can convert turns the sound into a playable format and sends it back; video is never sent for conversion. Quality selectable. The converted sound is kept and shows up in Jellyfin for later plays; conversions are queued.
-- [ ] "Check support" button for a server with conversion off: go through the library and report which files play as stored on which players (Chrome, Firefox, TVs and so on).
+- [x] "Check support" (0.0.212): Advanced → Who converts video. `Services/PlaySupportReport.cs` (player tables, same test as the per-device copy choice), `PlaySupportReportService` (background, one run at a time, 60,000-file cap, kept in memory), `GET/POST Plugins/Federation/PlaySupport`. Player lists are typical capabilities, not measured devices; hardware-dependent support counts as not playing. Not shown in a page section of its own until the redesign.
 
 ## 0.0.208 — smart playback, quality ladder and settings grouping
 

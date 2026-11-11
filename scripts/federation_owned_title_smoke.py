@@ -150,6 +150,21 @@ def smoke():
         status, _, _ = no_redirect(base, f'/Videos/{own["Id"]}/stream.mkv?static=true&mediaSourceId={own["Id"]}', viewer)
         qa.check(status == 200, f'The own file did not play from this server (HTTP {status})')
         print('OWNED PASS: HEVC-capable device: own file only, served by this server', flush=True)
+
+        stage = 'the support report counts the own file and the friend copy, and names what each player needs'
+        qa.check(qa.request(base, '/Plugins/Federation/PlaySupport/Start', admin, {})['success'], 'The support check did not start')
+        support = qa.wait_for(lambda: (lambda r: r if not r['running'] and r.get('report') else None)(
+            qa.request(base, '/Plugins/Federation/PlaySupport', admin)), 'The support check did not finish', 60)
+        report = support['report']
+        labels = {f['label']: f for f in report['formats']}
+        qa.check(report['filesChecked'] == 2 and report['undescribed'] == 0, f'The support check saw {report["filesChecked"]} files, expected the own file and the friend copy')
+        qa.check(set(labels) == {'HEVC, AAC, in MKV', 'H.264, AAC, in MKV'}, f'Unexpected file types: {sorted(labels)}')
+        origins = {e.split(':', 1)[0] for f in report['formats'] for e in f['examples']}
+        qa.check('This server' in origins and len(origins) == 2, f'The friend copy was not attributed to the friend: {sorted(origins)}')
+        chrome = [p['id'] for p in report['players']].index('chrome')
+        qa.check(labels['HEVC, AAC, in MKV']['players'][chrome] == 'no', 'Chrome was not flagged for the HEVC file')
+        qa.check(labels['H.264, AAC, in MKV']['players'][chrome] == 'plays', 'Chrome was flagged for the H.264 MKV')
+        print('OWNED PASS: support report: own HEVC file and friend H.264 copy, both checked against each player', flush=True)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError, StopIteration)) else f'{type(e).__name__}: {e}'
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None

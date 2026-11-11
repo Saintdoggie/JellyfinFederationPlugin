@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.212",
+        "changelog": "0.0.212: \"Check support\" on the Advanced tab (Who converts video). It compares every movie and episode on this server and in friends' libraries with what common players (browsers, Android TV, phones, Apple, Roku, Samsung/LG, desktop apps) play as stored, and lists which file types need converting on which players. Read-only. Also fixes the Advanced tab's \"Open all sections\" button, which did nothing.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-11T03:30:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.212/Jellyfin.Federation.zip",
+        "checksum": "17445486bb0ee5d7e59d6f909267b80a"
+      },
+      {
         "version": "0.0.211",
         "changelog": "Titles you own and a friend also holds. Your own file always plays when the device can play it as stored (a friend's copy of a title you own is still never added to the library). New: when a device cannot play your own file as stored, a friend's copy that the same device plays as stored is offered first, straight from the friend, and your own file stays as the copy to convert. A friend's copy of an owned title is never converted, and devices that play your file are not affected at all. Active with \"pick the best copy automatically\" on, and always on a server that may not convert. Checked with unit tests and two-server container runs; not yet verified on physical TV or phone players.",
         "targetAbi": "12.0.0.0",

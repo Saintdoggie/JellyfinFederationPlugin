@@ -2791,3 +2791,52 @@ test('smart copy choice and quality ladder switches load, save, default off, and
   dom.window.close();
   assert.ok(badgeScript.includes("if (data.selection) { rows.push(['Why this copy', data.selection]); }"));
 });
+
+test('"Open all sections" works on the real NodeList the page helper returns', () => {
+  const dom = new JSDOM(configPage);
+  const doc = dom.window.document;
+  const source = ['syncSettingsGroupsToggle', 'toggleSettingsGroups'].map((name) => extractConfigFunction(name)).join('\n');
+  const q = (sel) => doc.querySelector(sel);
+  const qa = (sel) => doc.querySelectorAll(sel);
+  const api = new Function('q', 'qa', source + '\nreturn { syncSettingsGroupsToggle, toggleSettingsGroups };')(q, qa);
+  const groups = Array.from(doc.querySelectorAll('#fedPanelAdvanced details.fed-settings-group'));
+  const button = q('#fedSettingsGroupsToggle');
+  assert.ok(button, 'the toggle button exists');
+
+  api.syncSettingsGroupsToggle();
+  assert.equal(button.textContent, 'Open all sections');
+  api.toggleSettingsGroups();
+  assert.ok(groups.every((g) => g.open));
+  assert.equal(button.textContent, 'Close all sections');
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  api.toggleSettingsGroups();
+  assert.ok(groups.every((g) => !g.open));
+  dom.window.close();
+});
+
+test('Check support button is on the Advanced tab and renders the report safely', () => {
+  const dom = new JSDOM(configPage);
+  const doc = dom.window.document;
+  const button = doc.querySelector('#fedPanelAdvanced [data-fed-action="check-support"]');
+  assert.ok(button && button.closest('details[data-fed-group="conversion"]'), 'the button sits in "Who converts video"');
+  assert.match(configPage, /case 'check-support':\s*checkSupport\(\);/);
+  assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/PlaySupport\/Start', \{ method: 'POST' \}\)/);
+
+  const source = extractConfigFunction('renderSupport') + '\n' + extractConfigFunction('escapeHtml');
+  const render = new Function('q', 'document', source + '\nreturn renderSupport;')((sel) => doc.querySelector(sel), doc);
+  render({
+    thisServerConverts: false,
+    report: {
+      filesChecked: 3, undescribed: 1, truncated: false,
+      players: [{ name: '<b>Chrome</b>', note: null, playsAsStored: 1, soundOrWrapperOnly: 0, needsConverting: 1, topReasons: [{ reason: 'the device does not play HEVC video like this', count: 1 }] }],
+      formats: [{ label: 'HEVC 10-bit, DTS, in MKV', count: 1, players: ['no'], examples: ['Friend: <img src=x onerror=alert(1)>'] }]
+    }
+  });
+  const result = doc.querySelector('#fedSupportResult');
+  assert.equal(result.querySelectorAll('img').length, 0, 'titles from friends are escaped');
+  assert.equal(result.querySelectorAll('b').length, 0);
+  assert.match(result.textContent, /3 files checked \(1 have no known format/);
+  assert.match(result.textContent, /plays only if a friend converts it/);
+  assert.match(result.textContent, /1 \(50%\)/, 'percentages are of the judged files');
+  dom.window.close();
+});

@@ -149,6 +149,16 @@
                 #federationConfigPage button:focus-visible, #federationConfigPage input:focus-visible, #federationConfigPage select:focus-visible, #federationConfigPage summary:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
                 #federationConfigPage .fed-offnote { margin-top: 0.5em; font-size: 0.9em; color: var(--fed-warn-text); }
                 #federationConfigPage .fed-pill { font-size: 0.85em; line-height: 1.4; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
+                #federationConfigPage .fed-support-scroll { overflow-x: auto; margin: .8em 0; }
+                #federationConfigPage .fed-support-table { border-collapse: collapse; width: 100%; font-size: .93em; min-width: 46em; }
+                #federationConfigPage .fed-support-table td:first-child { min-width: 12em; }
+                #federationConfigPage .fed-support-table .fed-hint { font-size: .85em; opacity: .7; margin-top: .2em; }
+                #federationConfigPage .fed-support-table th, #federationConfigPage .fed-support-table td { text-align: left; vertical-align: top; padding: .45em .8em .45em 0; border-bottom: 1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-support-table th { font-weight: 600; opacity: .75; white-space: nowrap; }
+                #federationConfigPage .fed-support-table td.fed-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+                #federationConfigPage .fed-support-ok { color: var(--fed-ok-text); }
+                #federationConfigPage .fed-support-warn { color: var(--fed-warn-text); }
+                #federationConfigPage .fed-support-bad { color: var(--fed-err-text); }
                 #federationConfigPage .fed-pill-off { color: var(--fed-warn-text); opacity: 1; }
                 #federationConfigPage .fed-pill-pool { margin: 0 0.7em 0.3em 0; display: inline-block; }
 
@@ -987,6 +997,13 @@
                     <details class="fed-details fed-settings-group" data-fed-group="conversion">
                         <summary>Who converts video</summary>
                         <div class="fed-details-body">
+                            <div class="fed-subcard" id="fedSupportCard" style="margin:1em 0;">
+                                <h4 class="fed-subhead">What plays without converting</h4>
+                                <p class="fieldDescription">Compares every movie and episode on this server and in your friends' libraries with what common players play as stored. Only reads; nothing is changed or sent anywhere.</p>
+                                <button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="check-support">Check support</button>
+                                <div class="fed-srvstatus" id="fedSupportStatus" style="display:none;"></div>
+                                <div id="fedSupportResult"></div>
+                            </div>
                             <div class="fed-subcard" id="fedRemoteTranscodeCard" style="margin:1em 0;">
                                 <h4 class="fed-subhead">Who converts friends' video</h4>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkUseFriendsTranscoders" class="emby-checkbox fed-check" /> Let a friend's server convert its own titles for my viewers</label>
@@ -2155,6 +2172,87 @@
                         return Array.prototype.slice.call(qa(selector))
                             .filter(function (box) { return box.checked; })
                             .map(function (box) { return box.value; });
+                    }
+
+                    function setSupportStatus(text, isError) {
+                        var el = q('#fedSupportStatus');
+                        if (!el) { return; }
+                        el.style.display = text ? '' : 'none';
+                        el.textContent = text || '';
+                        el.style.color = isError ? 'var(--fed-err-text)' : '';
+                    }
+
+                    function checkSupport() {
+                        setSupportStatus('Starting…', false);
+                        fedFetch('/Plugins/Federation/PlaySupport/Start', { method: 'POST' })
+                        .then(function (r) { return readJson(r); })
+                        .then(function () { pollSupport(); })
+                        .catch(function () { setSupportStatus('The check could not be started.', true); });
+                    }
+
+                    function pollSupport() {
+                        if (!q('#fedSupportResult')) { return; }
+                        fedFetch('/Plugins/Federation/PlaySupport')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            if (!res) { setSupportStatus('The check could not be read.', true); return; }
+                            if (res.running) {
+                                setSupportStatus('Checking… ' + (res.checkedCount || 0) + ' files so far', false);
+                                setTimeout(pollSupport, 1000);
+                                return;
+                            }
+                            if (res.error) { setSupportStatus(res.error, true); return; }
+                            setSupportStatus('', false);
+                            renderSupport(res);
+                        })
+                        .catch(function () { setSupportStatus('The check could not be read.', true); });
+                    }
+
+                    function renderSupport(res) {
+                        var box = q('#fedSupportResult');
+                        var report = res && res.report;
+                        if (!box || !report) { return; }
+                        var judged = report.filesChecked - report.undescribed;
+                        var html = '<p class="fieldDescription">' + report.filesChecked + ' files checked'
+                            + (report.undescribed ? ' (' + report.undescribed + ' have no known format and are not judged)' : '')
+                            + (report.truncated ? '. The library is larger than one check covers, so this is a sample' : '') + '. '
+                            + (res.thisServerConverts
+                                ? 'This server converts, so a file a player cannot take as stored still plays, at the cost of converting.'
+                                : 'This server does not convert, so a file a player cannot take as stored plays only if a friend converts it.')
+                            + '</p>';
+                        if (!judged) {
+                            box.innerHTML = html;
+                            return;
+                        }
+                        html += '<div class="fed-support-scroll"><table class="fed-support-table"><thead><tr><th>Player</th><th>Plays as stored</th><th>Only sound or wrapper differs</th><th>Picture needs converting</th><th>Most common reason</th></tr></thead><tbody>';
+                        report.players.forEach(function (p) {
+                            var reason = p.topReasons && p.topReasons.length ? p.topReasons[0].reason + ' (' + p.topReasons[0].count + ')' : '';
+                            html += '<tr><td>' + escapeHtml(p.name) + (p.note ? '<div class="fed-hint">' + escapeHtml(p.note) + '</div>' : '') + '</td>'
+                                + '<td class="fed-num fed-support-ok">' + p.playsAsStored + ' (' + Math.round(100 * p.playsAsStored / judged) + '%)</td>'
+                                + '<td class="fed-num' + (p.soundOrWrapperOnly ? ' fed-support-warn' : '') + '">' + p.soundOrWrapperOnly + '</td>'
+                                + '<td class="fed-num' + (p.needsConverting ? ' fed-support-bad' : '') + '">' + p.needsConverting + '</td>'
+                                + '<td>' + escapeHtml(reason) + '</td></tr>';
+                        });
+                        html += '</tbody></table></div>';
+                        var shown = report.formats.slice(0, 40);
+                        html += '<h4 class="fed-subhead">By file type</h4><div class="fed-support-scroll"><table class="fed-support-table"><thead><tr><th>File type</th><th>Files</th><th>Picture needs converting on</th><th>Only sound or wrapper differs on</th><th>Examples</th></tr></thead><tbody>';
+                        shown.forEach(function (f) {
+                            var no = [], sound = [];
+                            f.players.forEach(function (word, i) {
+                                var name = report.players[i] ? report.players[i].name : '';
+                                if (word === 'no') { no.push(name); } else if (word === 'sound') { sound.push(name); }
+                            });
+                            html += '<tr><td>' + escapeHtml(f.label) + '</td><td class="fed-num">' + f.count + '</td>'
+                                + '<td' + (no.length ? ' class="fed-support-bad"' : '') + '>' + (no.length ? escapeHtml(no.join(', ')) : 'None') + '</td>'
+                                + '<td' + (sound.length ? ' class="fed-support-warn"' : '') + '>' + (sound.length ? escapeHtml(sound.join(', ')) : 'None') + '</td>'
+                                + '<td>' + escapeHtml((f.examples || []).join('; ')) + '</td></tr>';
+                        });
+                        html += '</tbody></table></div>';
+                        if (report.formats.length > shown.length) {
+                            html += '<p class="fieldDescription">' + (report.formats.length - shown.length) + ' more file types play on every player listed or are rarer.</p>';
+                        }
+                        html += '<p class="fieldDescription">The player lists are typical capabilities, not a test of your actual devices. Where support depends on the hardware it is counted as not playing.</p>';
+                        box.innerHTML = html;
                     }
 
                     function loadHardwareSettings() {
@@ -6734,7 +6832,7 @@
 
                     function syncSettingsGroupsToggle() {
                         var btn = q('#fedSettingsGroupsToggle');
-                        var groups = qa('#fedPanelAdvanced details.fed-settings-group');
+                        var groups = Array.prototype.slice.call(qa('#fedPanelAdvanced details.fed-settings-group'));
                         if (!btn || !groups.length) {
                             return;
                         }
@@ -6745,7 +6843,7 @@
                     }
 
                     function toggleSettingsGroups() {
-                        var groups = qa('#fedPanelAdvanced details.fed-settings-group');
+                        var groups = Array.prototype.slice.call(qa('#fedPanelAdvanced details.fed-settings-group'));
                         var open = !groups.every(function (g) { return g.open; });
                         groups.forEach(function (g) {
                             g.open = open;
@@ -7586,6 +7684,9 @@
                                     break;
                                 case 'save-hardware':
                                     saveHardwareSettings();
+                                    break;
+                                case 'check-support':
+                                    checkSupport();
                                     break;
                                 case 'search-exclude-items':
                                     searchExcludeItems(t.getAttribute('data-id'));
