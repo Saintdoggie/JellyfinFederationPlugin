@@ -60,7 +60,7 @@ namespace Jellyfin.Plugin.Federation
         {
             // Taking the service is what matters: creating it arms the automatic
             // "this server cannot convert" check before the first play.
-            _ = placement;
+            _placement = placement;
             _changeNotifier = changeNotifier;
             _logger = logger;
             _federationManager = federationManager;
@@ -79,6 +79,8 @@ namespace Jellyfin.Plugin.Federation
             FederationItemPersistenceService.BandwidthOverride = bandwidthMonitor;
         }
 
+        private readonly TranscodePlacementService? _placement;
+
         /// <inheritdoc />
         public async Task StartAsync(CancellationToken cancellationToken)
         {
@@ -91,6 +93,19 @@ namespace Jellyfin.Plugin.Federation
                 _mediaSources is FederationMediaSourceManager
                     ? (Plugin.Instance?.Configuration?.FastStartProbing == false ? "installed but disabled in settings" : "active")
                     : "not installed (unexpected host service layout; playback unaffected)");
+            try
+            {
+                // Says once, at startup, whether this server converts video and why,
+                // so the automatic weak-hardware rule can be checked from the log.
+                var hardware = _placement?.Local();
+                _logger.LogInformation(
+                    "[Federation] Video conversion on this server: {State}",
+                    TranscodePolicy.Describe(Plugin.Instance?.Configuration, TranscodeHardware.TooWeakToConvert(hardware), hardware?.CpuThreads ?? 0));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not describe the conversion rule");
+            }
 
             try
             {

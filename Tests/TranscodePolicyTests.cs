@@ -124,4 +124,25 @@ public sealed class TranscodePolicyTests
         Assert.False(TranscodeHardware.TooWeakToConvert(new TranscodeHardwareInfo { CpuThreads = 0 }));
         Assert.False(TranscodeHardware.TooWeakToConvert(null));
     }
+
+    [Fact]
+    public void Describe_SaysWhatThisServerConvertsAndWhy()
+    {
+        var config = new PluginConfiguration();
+        Assert.Equal("allowed (automatic)", TranscodePolicy.Describe(config, weak: false, cpuThreads: 8));
+
+        var weak = TranscodePolicy.Describe(config, weak: true, cpuThreads: 2);
+        Assert.StartsWith("nothing, automatically: no hardware encoder and 2 CPU threads (fewer than 4).", weak);
+        Assert.Contains("Friends still convert", weak);
+
+        config.UseFriendsTranscoders = false;
+        Assert.DoesNotContain("Friends still convert", TranscodePolicy.Describe(config, weak: true, cpuThreads: 2));
+
+        config.LocalTranscodeRestriction = LocalTranscodeRestriction.AlwaysAllow;
+        Assert.StartsWith("everything", TranscodePolicy.Describe(config, weak: true, cpuThreads: 2));
+        config.LocalTranscodeRestriction = LocalTranscodeRestriction.BlockFriends;
+        Assert.Equal("for its own viewers only (set in settings)", TranscodePolicy.Describe(config, weak: true, cpuThreads: 2));
+        config.LocalTranscodeRestriction = LocalTranscodeRestriction.BlockAll;
+        Assert.StartsWith("nothing (set in settings)", TranscodePolicy.Describe(config, weak: false, cpuThreads: 8));
+    }
 }

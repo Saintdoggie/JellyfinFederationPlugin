@@ -66,6 +66,32 @@ namespace Jellyfin.Plugin.Federation.Services
                 : chosen;
         }
 
+        /// <summary>
+        /// One plain sentence for the startup log: what this server converts and
+        /// why. <paramref name="weak"/> is the hardware check's answer, passed in
+        /// so the sentence does not depend on the probe cache.
+        /// </summary>
+        public static string Describe(PluginConfiguration? config, bool weak, int cpuThreads)
+        {
+            var friendsNote = config?.UseFriendsTranscoders == false
+                ? string.Empty
+                : " Friends still convert their own titles for this server's viewers.";
+            switch (config?.LocalTranscodeRestriction ?? LocalTranscodeRestriction.None)
+            {
+                case LocalTranscodeRestriction.AlwaysAllow:
+                    return "everything (set to convert even if the hardware looks too weak)";
+                case LocalTranscodeRestriction.BlockFriends:
+                    return "for its own viewers only (set in settings)";
+                case LocalTranscodeRestriction.BlockAll:
+                    return "nothing (set in settings)." + friendsNote;
+                default:
+                    return weak
+                        ? "nothing, automatically: no hardware encoder and " + cpuThreads + " CPU threads (fewer than "
+                            + TranscodeHardware.MinimumCpuThreadsToConvert + "). Choose \"Everything\" under Settings → Video conversion to override." + friendsNote
+                        : "allowed (automatic)";
+            }
+        }
+
         /// <summary>True when the automatic check is what stops this server converting.</summary>
         public static bool BlockedByHardware(PluginConfiguration? config)
             => config?.LocalTranscodeRestriction == LocalTranscodeRestriction.None && IsWeak();

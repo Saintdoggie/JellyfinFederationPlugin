@@ -37,6 +37,7 @@ Steps:
 - [x] Gate for 0.0.210: clean Release build with 0 warnings, 1,959 plugin and 163 web tests three times on the final files, catalog check, Companion 224 pass with the same 3 `RcloneBootstrapperTests` failures, and the standby (5 stages, with hls.js in headless Chromium), handoff (12 stages) and peer (10 stages) container runs.
 - [x] Gate for 0.0.211: see the release commit; same suites plus the owned-title container run (5 stages).
 - [x] Upload-direction speed reading: dropped by the owner on 2026-11-10. Each server times the direction it receives, which is the only number the choices use.
+- [x] Startup log line for the conversion rule (0.0.216): `TranscodePolicy.Describe`, logged once by `FederationEntryPoint`.
 - [ ] Light conversion on the receiving server (HDR to SDR, audio only): deferred by the owner; the audio half is now part of "Requested next".
 - [ ] Physical players for steps 1 and 2 (TV, phone, Apple): not done. Released on the owner's release-per-phase instruction with that stated in the release notes.
 

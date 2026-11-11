@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.216",
+        "changelog": "0.0.216: The log now says at startup whether this server converts video and why, for example \"nothing, automatically: no hardware encoder and 2 CPU threads (fewer than 4)\". This makes the automatic rule for small servers easy to check under Dashboard → Logs. Nothing else changed.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-11T17:30:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.216/Jellyfin.Federation.zip",
+        "checksum": "a5c6d3b0c59fb6cec9245f6d75d783db"
+      },
+      {
         "version": "0.0.215",
         "changelog": "0.0.215: Settings page redesign. Eleven tabs became seven, each with one job: Friends (now including pools and friends of friends), Libraries, Hide titles, Downloads, Free up space, Settings and Log. Settings save themselves as you change them, with one small \"Saved\" notice, instead of four identical save-everything buttons and nine separate save buttons. Library choices keep one Save button, shown only when something changed, because saving adds or removes titles. Each friend's Manage panel is split into What they see, What they can do, Their users and Connection, and saves itself too. Removed: the locked one-choice Order boxes, a duplicate Test all servers button, the separate Discovery Refresh button, the cloud badge Add/Remove pair (now a normal switch), and pointer links to tabs that no longer exist. Pairing codes, unavailable in this build, are folded away. Enter now runs the search in every search box. Nothing about playback or sharing changed.",
         "targetAbi": "12.0.0.0",
