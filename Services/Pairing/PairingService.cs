@@ -162,7 +162,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var config = Config;
             if (!IsEnabled(config))
             {
-                return (null, default, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
+                return (null, default, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off under Settings → Connection.");
             }
 
             if (!QuicTransportHost.Available)
@@ -248,7 +248,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             var config = Config;
             if (!IsEnabled(config))
             {
-                return (null, null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
+                return (null, null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off under Settings → Connection.");
             }
 
             if (!QuicTransportHost.Available)
@@ -349,7 +349,7 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
         {
             if (!IsEnabled(Config))
             {
-                return (null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off on the Beta tab.");
+                return (null, ReviewLocked ? ReviewLockedMessage : "Pairing codes are switched off under Settings → Connection.");
             }
 
             var hash = PairingCode.PeekOfferHash(answerText);

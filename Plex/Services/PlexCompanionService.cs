@@ -471,7 +471,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
             {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first, since your friend's Companion app needs it to reach back.", null);
+                return (false, "Could not determine this server's own public URL. Set it under Settings → Connection first, since your friend's Companion app needs it to reach back.", null);
             }
 
             var config = Plugin.Instance?.Configuration;
@@ -518,7 +518,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
             {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first.", null);
+                return (false, "Could not determine this server's own public URL. Set it under Settings → Connection first.", null);
             }
 
             if (string.IsNullOrEmpty(server.IssuedApiKey))
@@ -573,7 +573,7 @@ namespace Jellyfin.Plugin.Federation.Services
             if (ConfigValidator.IsPrivateOrLoopbackHost(derived))
             {
                 _logger.LogWarning(
-                    "[Federation] Auto-detected server URL {Url} is a private/loopback address - refusing to send it to a friend. Set 'This server's public URL' under Advanced settings.",
+                    "[Federation] Auto-detected server URL {Url} is a private/loopback address - refusing to send it to a friend. Set 'This server's public address' under Settings → Connection.",
                     derived);
                 return string.Empty;
             }

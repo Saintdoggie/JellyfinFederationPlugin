@@ -336,7 +336,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
             {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first, since your friend's server needs it to reach back.");
+                return (false, "Could not determine this server's own public URL. Set it under Settings → Connection first, since your friend's server needs it to reach back.");
             }
 
             var requestId = Guid.NewGuid().ToString();
@@ -680,7 +680,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var localUrl = ResolveLocalUrl();
             if (string.IsNullOrEmpty(localUrl))
             {
-                return (false, "Could not determine this server's own public URL. Set it under Advanced settings first.");
+                return (false, "Could not determine this server's own public URL. Set it under Settings → Connection first.");
             }
 
             var apiKey = FederationTokenAuth.GenerateToken();
@@ -2219,7 +2219,7 @@ namespace Jellyfin.Plugin.Federation.Services
             if (ConfigValidator.IsPrivateOrLoopbackHost(derived))
             {
                 _logger.LogWarning(
-                    "[Federation] Auto-detected server URL {Url} is a private/loopback address - refusing to send it to a friend. Set 'This server's public URL' under Advanced settings.",
+                    "[Federation] Auto-detected server URL {Url} is a private/loopback address - refusing to send it to a friend. Set 'This server's public address' under Settings → Connection.",
                     derived);
                 return string.Empty;
             }

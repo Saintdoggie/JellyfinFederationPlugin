@@ -2974,7 +2974,7 @@ namespace Jellyfin.Plugin.Federation.Api
             var config = Plugin.Instance?.Configuration;
             if (config?.ConnectivityMode != ServerConnectivityMode.PublicFacing)
             {
-                return BadRequest(new { error = "Only a public-facing server can create a pool - set this under Connectivity on the Pools tab first." });
+                return BadRequest(new { error = "Only a public-facing server can create a pool - set it under Settings → Connection first." });
             }
 
             if (config.Pools.Count >= FederationFriendService.MaxPools)

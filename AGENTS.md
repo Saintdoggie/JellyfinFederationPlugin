@@ -50,8 +50,13 @@ HTTP, UI, and browser injection:
   `integrations/catalog.json`. That catalog is discovery-only: no package download,
   remote HTML/JavaScript, or third-party executable installation is permitted.
 - `Web/admin/configPage.html` — embedded core admin UI. It is currently a large
-  single-file page with Friends, Pools, Discovery, Libraries, Browse/Downloads,
-  Catalog, Storage, Beta, Integrations, and Advanced tabs, plus links to the optional add-in.
+  single-file page with seven tabs since 0.0.215: Friends (pools and friends of
+  friends are sections there), Libraries, Hide titles (`catalog`), Downloads
+  (`browse`), Free up space (`storage`), Settings (`advanced`; Beta, Integrations
+  and connectivity are sections there) and Log. Settings save themselves
+  (`scheduleAutosave`; a card's `data-fed-save` names its endpoint). Library
+  choices are the one explicit Save (`saveLibraries`): a settings autosave must
+  never commit unsaved library picks.
   `Plex/Web/admin/plexPage.html` owns Plex/Companion setup, import and export UI.
 - `Web/client/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
@@ -229,7 +234,7 @@ Tests and project history:
 - The cloud badge is controlled by `ShowFederatedCloudBadges`, defaults off, and
   reconciles already-rendered cards when the setting changes. It anchors to
   `.cardImageContainer`/`.listItemImage`, and the source label is idempotent.
-- The settings page now treats `Catalog` as local-only outgoing sharing (Movies
+- The settings page treats `Catalog` (labelled Hide titles) as local-only outgoing sharing (Movies
   or Series, newest first) and `Downloads` as remote-only acquisition (Movies or
   Episodes, newest first). Series-level exclusions are inherited by seasons and
   episodes in `FederationPeerAccessService`; do not remove that ancestor check.

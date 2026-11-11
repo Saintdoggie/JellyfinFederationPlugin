@@ -501,7 +501,7 @@ test('settings response parser accepts successful JSON and explains malformed su
 test('catalog and downloads tabs expose distinct local/remote workflows', () => {
   const dom = new JSDOM(configPage);
   const document = dom.window.document;
-  assert.equal(document.querySelector('#fedTabCatalog').textContent.trim(), 'Catalog');
+  assert.equal(document.querySelector('#fedTabCatalog').textContent.trim(), 'Hide titles');
   assert.equal(document.querySelector('#fedTabBrowse').textContent.trim(), 'Downloads');
   assert.deepEqual(
     [...document.querySelectorAll('#fedCatalogType option')].map((option) => option.textContent.trim()),
@@ -592,7 +592,7 @@ test('Downloads server dropdown refreshes on every config load, not just once', 
 
 test('Plex friends can be invited into pools; Companion receivers cannot', () => {
   assert.match(configPage, /Plex Companion \/ Federation v/);
-  assert.match(configPage, /if \(server\.Kind !== 2\) \{\s*html \+= renderFriendPoolsBlock\(server\);/);
+  assert.match(configPage, /if \(server\.Kind !== 2 && currentPools\.length > 0\) \{ html \+= renderFriendPoolsBlock\(server\); \}/);
   assert.match(configPage, /\/api\/pools\/invite/);
 });
 
@@ -727,7 +727,7 @@ function pagingHarness(kind, { fallback = false } = {}) {
     var activePage = {isConnected:true,classList:{contains:()=>false}};
     var downloadsPollInterval, watchingPollInterval, healthPollInterval, logPollInterval, syncStatusPollInterval;
     var TAB_NAMES = ['friends','catalog','browse'], TAB_STORAGE_KEY = 'test', localStorage = {setItem:()=>{}};
-    function qa() {return [];} function stopWatchdog() {} function startPairingPoll() {} function stopPairingPoll() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
+    function qa() {return [];} function stopWatchdog() {} function startPairingPoll() {} function stopPairingPoll() {} function syncPairingPoll() {} function loadDownloads() {} function loadLogs() {} function clearLogBadge() {}
     function loadBrowseServers() {} function populateCatalogFriendPick() {}
     function renderCatalogGrid() {} function setCatalogStatus(msg) {q('#fedCatalogStatus').textContent = msg;}
     function renderBrowseList() {} function updateBrowseSelectionBar() {} function setBrowseStatus(msg) {q('#fedBrowseStatus').textContent = msg;}
@@ -1015,6 +1015,7 @@ function pickerHarness() {
     function escapeHtml(x) { return String(x); }
     function readJson(r) { return r.json(); }
     function saveConfiguration() { saveCalls += 1; savedAuto = buildAutoMappings(); }
+    function saveLibraries() { saveConfiguration(); }
     ${source}
     return {
       get pickerLoaded() { return pickerLoaded; },
@@ -1166,6 +1167,7 @@ test('new-friend prompt saves what to share and what to receive', async () => {
     var pickerLoaded = true;
     var onboardCurrentId = 'srv';
     function saveConfiguration() { state.saved += 1; }
+    function saveLibraries() { state.saved += 1; }
     function loadConfiguration() { state.loaded += 1; }
     function showNextOnboarding() { state.next += 1; }
     ${source}
@@ -1728,7 +1730,7 @@ test('admin tab row is one scrollable row and switchTab keeps the active tab in 
     function qa(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
     function armCatalogSentinel() {} function armBrowseSentinel() {} function noop() {}
     var loadDownloads = noop, loadLogs = noop, clearLogBadge = noop, loadBrowseServers = noop, populateCatalogFriendPick = noop,
-      loadCatalog = noop, stopWatchdog = noop, startPairingPoll = noop, stopPairingPoll = noop, setDownloadView = noop, loadBrowseItems = noop;
+      loadCatalog = noop, stopWatchdog = noop, startPairingPoll = noop, stopPairingPoll = noop, syncPairingPoll = noop, setDownloadView = noop, loadBrowseItems = noop;
     ${configPage.slice(start, end)}
     return switchTab;
   `)(doc);
@@ -1844,7 +1846,7 @@ test('sync status shows per-library plan, progress, outcome and plain-language f
 
   const html = renderSyncStatusHtml({ libraries: [{ ...base, serverName: '<b>Anna</b>', state: 'done', mode: 'changes', total: 1, toDownload: 0, downloaded: 0 }] }, now);
   assert.ok(html.includes('&lt;b&gt;Anna&lt;/b&gt;'), 'friend names are escaped');
-  assert.match(renderSyncStatusHtml({ libraries: [] }, now), /No friend libraries are selected yet/);
+  assert.match(renderSyncStatusHtml({ libraries: [] }, now), /No friend libraries are picked yet/);
 
   // One full resync button per local library, even when several friends feed it.
   const merged = renderSyncStatusHtml({ libraries: [
@@ -1873,7 +1875,7 @@ test('refresh starts a background sync and the page polls per-library status', (
 });
 
 test('friend requests choose shared libraries before sending or accepting', () => {
-  assert.match(configPage, /data-fed-action="new-friend-open"[^>]*>Create new friend request</);
+  assert.match(configPage, /data-fed-action="new-friend-open"[^>]*>Add a friend</);
   assert.match(configPage, /id="fedNewFriend" class="fed-subcard" style="display:none;"/);
   const send = configPage.match(/function sendFriendRequest\(\) \{[\s\S]*?\n {20}\}/);
   assert.ok(send, 'sendFriendRequest not found');
@@ -1995,8 +1997,9 @@ test("friends' favorites rows use solid colours only", () => {
 test("admin page has the friends' favorites switches wired to their own settings route", () => {
   assert.ok(configPage.includes('id="fedChkShowFriendsFavorites"'));
   assert.ok(configPage.includes('id="fedChkShareFavoritesWithFriends"'));
-  assert.ok(configPage.includes('data-fed-action="save-favorites"'));
-  assert.match(configPage, /case 'save-favorites':\s*saveFavoritesSettings\(\);/);
+  // No save button: the card saves itself through its own route.
+  assert.match(configPage, /id="fedFavoritesCard" data-fed-save="favorites"/);
+  assert.match(configPage, /favorites: function \(\) \{ saveFavoritesSettings\(\); \}/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/Favorites', \{\s*method: 'POST'/);
   assert.match(configPage, /loadRemoteTranscodeSettings\(\);\s*loadFavoritesSettings\(\);/);
 });
@@ -2007,9 +2010,11 @@ test('admin page has the direct link switch, per-friend mode and retry wired to 
   assert.match(configPage, /<input type="checkbox" id="fedChkEnableDirectLink" class="emby-checkbox fed-check" \/>/);
   assert.match(configPage, /Direct links with friends <span class="fed-pill fed-pill-off">Beta<\/span>/);
   assert.match(configPage, /chk\.checked = res\.Enabled === true;/);
-  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') > configPage.indexOf('id="fedPanelBeta"'), 'the switch sits on the Beta tab');
-  assert.ok(configPage.indexOf('id="fedDirectLinkCard"') < configPage.indexOf('id="fedPanelAdvanced"'), 'the card is inside the Beta panel');
-  assert.match(configPage, /case 'save-direct-link':\s*saveDirectLinkSettings\(\);/);
+  const linkDom = new JSDOM(configPage);
+  assert.ok(linkDom.window.document.querySelector('#fedDirectLinkCard').closest('details[data-fed-group="network"]'), 'the switch sits under Settings → Connection');
+  linkDom.window.close();
+  assert.match(configPage, /id="fedDirectLinkCard" data-fed-save="direct-link"/);
+  assert.match(configPage, /'direct-link': function \(\) \{ saveDirectLinkSettings\(\); \}/);
   assert.match(configPage, /case 'direct-link-retry':\s*retryDirectLink\(t\.getAttribute\('data-id'\)\);/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/DirectLink', \{\s*method: 'POST'/);
   assert.match(configPage, /'\/Plugins\/Federation\/Friends\/' \+ encodeURIComponent\(serverId\) \+ '\/DirectLink'/);
@@ -2094,7 +2099,8 @@ test('inside a group the menu offers "Invite friends", or says who it is shared 
 test("admin page has the watch party switches wired to their own settings route", () => {
   assert.ok(configPage.includes('id="fedChkHostWatchParties"'));
   assert.ok(configPage.includes('id="fedChkJoinWatchParties"'));
-  assert.match(configPage, /case 'save-watch-parties':\s*saveWatchPartySettings\(\);/);
+  assert.match(configPage, /id="fedWatchPartyCard" data-fed-save="watch-parties"/);
+  assert.match(configPage, /'watch-parties': function \(\) \{ saveWatchPartySettings\(\); \}/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/WatchParties', \{\s*method: 'POST'/);
   assert.match(configPage, /loadFavoritesSettings\(\);\s*loadWatchPartySettings\(\);/);
 });
@@ -2339,8 +2345,8 @@ test('admin page has the viewer and hardware cards wired to their own settings r
   assert.ok(configPage.includes('id="fedChkShareViewersWithFriends"'));
   assert.ok(configPage.includes('id="fedChkSmartPlacement"'));
   assert.ok(configPage.includes('id="fedSelHardwareMode"'));
-  assert.match(configPage, /case 'save-viewers':\s*saveViewerSettings\(\);/);
-  assert.match(configPage, /case 'save-hardware':\s*saveHardwareSettings\(\);/);
+  assert.match(configPage, /viewers: function \(\) \{ saveViewerSettings\(\); \}/);
+  assert.match(configPage, /hardware: function \(\) \{ saveHardwareSettings\(\); \}/);
   assert.match(configPage, /fedFetch\('\/Plugins\/Federation\/Settings\/Hardware', \{\s*method: 'POST'/);
   assert.match(configPage, /loadViewerSettings\(\);\s*loadHardwareSettings\(\);/);
 });
@@ -2463,9 +2469,10 @@ test("admin page has the popular switches saved with the favorites settings", ()
 });
 
 test('Integrations tab is routable, discovery-only, and escapes catalog metadata', () => {
-  assert.match(configPage, /id="fedTabIntegrations"[^>]*data-tab="integrations"/);
-  assert.match(configPage, /id="fedPanelIntegrations"[^>]*data-tab-panel="integrations"/);
-  assert.match(configPage, /var TAB_NAMES = \[[^\]]*'integrations'[^\]]*\]/);
+  // Folded into Settings → Add-ons; the list loads when that section opens.
+  assert.match(configPage, /data-fed-group="addons"[\s\S]{0,200}id="fedPanelIntegrations"/);
+  assert.match(configPage, /d\.getAttribute\('data-fed-group'\) === 'addons'\) \{\s*loadIntegrations\(false\);/);
+  assert.match(configPage, /integrations: 'advanced'/);
   assert.match(configPage, /case 'load-integrations':/);
   assert.match(configPage, /escapeHtml\(entry\.summary\)/);
   assert.match(configPage, /escapeHtml\(entry\.publisher\)/);
@@ -2473,27 +2480,29 @@ test('Integrations tab is routable, discovery-only, and escapes catalog metadata
   assert.doesNotMatch(configPage, /fetch\(entry\.(package|script|html)/);
 });
 
-test('Beta tab sits before Advanced and holds the pairing card, off by default', () => {
-  assert.ok(configPage.indexOf('id="fedTabBeta"') > 0);
-  assert.ok(configPage.indexOf('id="fedTabBeta"') < configPage.indexOf('id="fedTabAdvanced"'));
-  assert.match(configPage, /id="fedTabBeta" aria-controls="fedPanelBeta" tabindex="-1"[^>]*data-tab="beta" role="tab" aria-selected="false"/);
-  assert.match(configPage, /id="fedPanelBeta" aria-labelledby="fedTabBeta" class="fed-tabpanel" data-tab-panel="beta" role="tabpanel"/);
-  assert.match(configPage, /Pairing codes \(Beta\) <span class="fed-pill fed-pill-off">Beta<\/span>/);
+test('beta features sit beside their settings, and pairing stays off and closed', () => {
+  assert.doesNotMatch(configPage, /data-tab="beta"/);
   assert.match(configPage, /<input type="checkbox" id="fedChkEnablePairing" class="emby-checkbox fed-check" disabled title="Pairing codes are disabled in this build while the feature is under review\." \/>/);
-  assert.ok(configPage.includes('Direct links and pairing codes are on the'));
   const dom = new JSDOM(configPage);
   const d = dom.window.document;
   assert.equal(d.getElementById('fedChkEnablePairing').checked, false);
-  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedChkAdaptivePlayback')));
-  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortFirst')));
-  assert.ok(d.getElementById('fedPanelBeta').contains(d.getElementById('fedPairPortLast')));
+  const pairing = d.getElementById('fedPairingCard');
+  assert.equal(pairing.tagName, 'DETAILS');
+  assert.equal(pairing.open, false, 'unavailable, so closed');
+  assert.ok(pairing.closest('details[data-fed-group="network"]'));
+  assert.ok(pairing.contains(d.getElementById('fedPairPortFirst')) && pairing.contains(d.getElementById('fedPairPortLast')));
+  assert.ok(d.getElementById('fedChkAdaptivePlayback').closest('details[data-fed-group="playback"]'));
+  assert.ok(d.getElementById('fedPairingSteps').hidden, 'the steps that cannot be used are not shown');
+  dom.window.close();
 });
 
+
 test('pairing actions and routes are wired', () => {
-  for (const a of ['save-pairing', 'pairing-make', 'pairing-answer', 'pairing-complete', 'pairing-confirm', 'pairing-cancel']) {
+  for (const a of ['pairing-make', 'pairing-answer', 'pairing-complete', 'pairing-confirm', 'pairing-cancel']) {
     assert.ok(configPage.includes("case '" + a + "':"), a);
   }
-  assert.ok(configPage.includes('data-fed-action="save-pairing"'));
+  assert.match(configPage, /id="fedPairingCard" data-fed-save="pairing"/);
+  assert.match(configPage, /pairing: function \(\) \{ savePairingSettings\(\); \}/);
   assert.ok(configPage.includes("'/Plugins/Federation/Settings/Pairing'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Answer'"));
@@ -2503,7 +2512,8 @@ test('pairing actions and routes are wired', () => {
   assert.ok(configPage.includes("confirmPairing(t.getAttribute('data-id'), t.getAttribute('data-safety-number'))"));
   assert.ok(configPage.includes("'POST', { SafetyNumber: safetyNumber }, '#fedPairingFriendStatus'"));
   assert.ok(configPage.includes("'/Plugins/Federation/Pairing/Offer/' + encodeURIComponent(id), 'DELETE'"));
-  assert.match(configPage, /if \(tab === 'beta'\) \{\s*startPairingPoll\(\);\s*\} else \{\s*stopPairingPoll\(\);/);
+  // Polled only while the pairing section is open on the Settings tab.
+  assert.match(configPage, /activeTab === 'advanced' && card && card\.open && \(!group \|\| group\.open\)\) \{\s*startPairingPoll\(\);\s*\} else \{\s*stopPairingPoll\(\);/);
   assert.ok(configPage.includes('escapeHtml(f.CallsItself)'));
   assert.ok(configPage.includes('escapeHtml(f.SafetyNumber)'));
   assert.equal(/gradient/i.test(configPage.slice(configPage.indexOf('fed-pair-code'), configPage.indexOf('fed-pair-code') + 600)), false);
@@ -2689,8 +2699,8 @@ test('Advanced settings are grouped into labelled sections with only the first o
   const { dom, panel } = settingsFilterFunctions();
   const groups = Array.from(panel.querySelectorAll(':scope > details.fed-settings-group'));
   assert.deepEqual(groups.map((g) => g.getAttribute('data-fed-group')),
-    ['playback', 'conversion', 'friends', 'network', 'sync', 'maintenance']);
-  assert.deepEqual(groups.map((g) => g.open), [true, false, false, false, false, false]);
+    ['playback', 'conversion', 'friends', 'network', 'sync', 'addons', 'maintenance']);
+  assert.deepEqual(groups.map((g) => g.open), [true, false, false, false, false, false, false]);
   groups.forEach((g) => assert.ok(g.querySelector(':scope > summary').textContent.trim().length > 5));
   // Every control that was on the tab is still there, exactly once, inside a section.
   ['fedTxtServerUrl', 'fedTxtInternalUrl', 'fedTxtCachePath', 'fedChkAutoProvision', 'fedChkDedup', 'fedChkLoadingOverlay',
@@ -2699,14 +2709,15 @@ test('Advanced settings are grouped into labelled sections with only the first o
     'fedChkShareConversionLogs', 'fedChkShowFriendsFavorites', 'fedChkShareFavoritesWithFriends', 'fedChkShowFriendsPopular',
     'fedChkSharePopularWithFriends', 'fedChkHostWatchParties', 'fedChkJoinWatchParties', 'fedChkShowFriendsViewers',
     'fedChkShareViewersWithFriends', 'fedChkShareHardware', 'fedSelHardwareMode', 'fedChkSmartPlacement', 'fedSelMin4k',
-    'fedSelMinHd', 'fedNumCpuCountsAsEncode', 'fedCloudBadgeToggle', 'fedChkFriendsOfFriends', 'fedTxtDedupIds',
-    'fedTxtRefreshHours', 'fedDiagnostics', 'fedAdvancedStatus'].forEach((id) => {
+    'fedSelMinHd', 'fedNumCpuCountsAsEncode', 'fedChkCloudBadge', 'fedChkFriendsOfFriends', 'fedTxtDedupIds',
+    'fedTxtRefreshHours', 'fedDiagnostics', 'fedAdvancedStatus', 'fedConnectivityMode', 'fedChkEnableDirectLink',
+    'fedChkAdaptivePlayback'].forEach((id) => {
     const el = panel.querySelector('#' + id);
     assert.ok(el, id + ' is still on the Advanced tab');
     assert.ok(el.closest('details.fed-settings-group'), id + ' sits inside a section');
   });
-  // The main save button and hidden items stay outside the collapsible sections.
-  assert.equal(panel.querySelector('#fedBtnSaveAdvanced').closest('details'), null);
+  // Settings save themselves: no save buttons left on the tab.
+  assert.equal(panel.querySelector('button[type="submit"], [data-fed-action^="save-"]'), null);
   assert.ok(panel.querySelector('#fedSettingsFilter').closest('form'), 'filter box is inside the form, so Enter must be guarded');
   assert.match(configPage, /e\.target\.id === 'fedSettingsFilter'[\s\S]{0,200}e\.key === 'Enter'[\s\S]{0,60}preventDefault/);
   dom.window.close();
@@ -2722,12 +2733,11 @@ test('settings filter shows only matching settings, opens their section, and res
   const count = applySettingsFilter(panel, 'watch part');
   assert.ok(count >= 2);
   assert.ok(visible('#fedChkHostWatchParties') && visible('#fedChkJoinWatchParties'));
-  assert.ok(visible('[data-fed-action="save-watch-parties"]'), 'the card keeps its own save button');
+  assert.ok(visible('#fedWatchPartyCard h4'), 'the card keeps its heading');
   assert.ok(!visible('#fedChkShowFriendsFavorites'), 'other cards in the same section are hidden');
   assert.ok(!visible('#fedTxtServerUrl'));
   assert.equal(group('friends').open, true);
   assert.ok(group('network').classList.contains('fed-filter-hide'));
-  assert.ok(visible('#fedBtnSaveAdvanced'), 'the main save button is never filtered away');
 
   // One switch inside a card: its neighbours go, its help text and the card heading stay.
   applySettingsFilter(panel, 'fun facts');
@@ -2742,16 +2752,18 @@ test('settings filter shows only matching settings, opens their section, and res
   applySettingsFilter(panel, 'namespace');
   assert.ok(visible('#fedTxtInternalUrl') && !visible('#fedTxtCachePath'));
   applySettingsFilter(panel, 'DIAGNOSTICS');
-  assert.ok(visible('[data-fed-action="provision"]') && visible('[data-fed-action="test-all"]'));
-  applySettingsFilter(panel, 'cache addresses');
-  assert.ok(visible('#fedTxtServerUrl') && visible('#fedTxtCachePath'), 'a section title match shows the whole section');
+  assert.ok(visible('#fedDiagnostics'));
+  applySettingsFilter(panel, 'rebuild');
+  assert.ok(visible('[data-fed-action="provision"]'));
+  applySettingsFilter(panel, 'friend features');
+  assert.ok(visible('#fedChkHostWatchParties') && visible('#fedChkFriendsOfFriends'), 'a section title match shows the whole section');
 
   // The filter never touches inline display styles other code owns.
   assert.equal(panel.querySelector('#fedHardwareManual').style.display, 'none');
 
   assert.equal(applySettingsFilter(panel, 'zzz-no-such-setting'), 0);
   assert.equal(panel.querySelectorAll('details.fed-settings-group:not(.fed-filter-hide)').length, 0);
-  assert.match(settingsFilterMessage(0, ' zzz '), /^No advanced setting matches "zzz"/);
+  assert.match(settingsFilterMessage(0, ' zzz '), /^No setting matches "zzz"/);
   assert.equal(settingsFilterMessage(1, 'x'), '1 match');
   assert.equal(settingsFilterMessage(4, 'x'), '4 matches');
   assert.equal(settingsFilterMessage(-1, ''), '');
@@ -2759,7 +2771,7 @@ test('settings filter shows only matching settings, opens their section, and res
   assert.equal(applySettingsFilter(panel, '   '), -1);
   assert.equal(panel.querySelectorAll('.fed-filter-hide').length, 0);
   assert.deepEqual(Array.from(panel.querySelectorAll('details.fed-settings-group')).map((g) => g.open),
-    [true, false, false, false, false, false], 'sections return to how they were before filtering');
+    [true, false, false, false, false, false, false], 'sections return to how they were before filtering');
   assert.equal(panel.querySelectorAll('[data-fed-open-before]').length, 0);
   dom.window.close();
 });
@@ -2792,7 +2804,7 @@ test('smart copy choice and quality ladder switches load, save, default off, and
   assert.ok(badgeScript.includes("if (data.selection) { rows.push(['Why this copy', data.selection]); }"));
 });
 
-test('"Open all sections" works on the real NodeList the page helper returns', () => {
+test('"Open all" works on the real NodeList the page helper returns', () => {
   const dom = new JSDOM(configPage);
   const doc = dom.window.document;
   const source = ['syncSettingsGroupsToggle', 'toggleSettingsGroups'].map((name) => extractConfigFunction(name)).join('\n');
@@ -2804,10 +2816,10 @@ test('"Open all sections" works on the real NodeList the page helper returns', (
   assert.ok(button, 'the toggle button exists');
 
   api.syncSettingsGroupsToggle();
-  assert.equal(button.textContent, 'Open all sections');
+  assert.equal(button.textContent, 'Open all');
   api.toggleSettingsGroups();
   assert.ok(groups.every((g) => g.open));
-  assert.equal(button.textContent, 'Close all sections');
+  assert.equal(button.textContent, 'Close all');
   assert.equal(button.getAttribute('aria-expanded'), 'true');
   api.toggleSettingsGroups();
   assert.ok(groups.every((g) => !g.open));
