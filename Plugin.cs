@@ -92,6 +92,8 @@ namespace Jellyfin.Plugin.Federation
                 server.ApiKey = ApiKeyProtector.Unprotect(server.ApiKey);
                 server.IssuedApiKey = ApiKeyProtector.Unprotect(server.IssuedApiKey);
                 server.PairKey = ApiKeyProtector.Unprotect(server.PairKey);
+                server.LinkKey = ApiKeyProtector.Unprotect(server.LinkKey);
+                server.IssuedLinkKey = ApiKeyProtector.Unprotect(server.IssuedLinkKey);
             }
 
             var hadPersistedRelayKey = !string.IsNullOrEmpty(config.InternalRelayApiKey);
@@ -150,6 +152,8 @@ namespace Jellyfin.Plugin.Federation
                 server.ApiKey = ApiKeyProtector.Protect(server.ApiKey);
                 server.IssuedApiKey = ApiKeyProtector.Protect(server.IssuedApiKey);
                 server.PairKey = ApiKeyProtector.Protect(server.PairKey);
+                server.LinkKey = ApiKeyProtector.Protect(server.LinkKey);
+                server.IssuedLinkKey = ApiKeyProtector.Protect(server.IssuedLinkKey);
             }
 
             clone.InternalRelayApiKey = string.Empty;

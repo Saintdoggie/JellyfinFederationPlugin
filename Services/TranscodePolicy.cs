@@ -43,6 +43,13 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static Func<bool>? WeakHardwareProbe { get; set; }
 
         /// <summary>
+        /// Test seam: a probe that applies only to the calling test's flow (and is
+        /// never cached), so a test can make the hardware "weak" without other tests
+        /// running in parallel seeing it.
+        /// </summary>
+        internal static System.Threading.AsyncLocal<Func<bool>?> TestProbe { get; } = new();
+
+        /// <summary>
         /// The restriction in force: the admin's choice, except that the automatic
         /// setting becomes "never convert" on hardware that cannot do it.
         /// </summary>
@@ -69,6 +76,19 @@ namespace Jellyfin.Plugin.Federation.Services
         // The probe reads Jellyfin's settings; hot paths ask many times a second.
         private static bool IsWeak()
         {
+            var local = TestProbe.Value;
+            if (local != null)
+            {
+                try
+                {
+                    return local();
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+
             var probe = WeakHardwareProbe;
             if (probe == null)
             {

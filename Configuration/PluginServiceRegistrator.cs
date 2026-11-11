@@ -59,6 +59,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.AddSingleton<FederationFriendFavoritesService>();
             serviceCollection.AddSingleton<FederationFriendPopularService>();
             serviceCollection.AddSingleton<PlaySupportReportService>();
+            serviceCollection.AddSingleton<LinkedServerService>();
+            serviceCollection.AddHostedService(sp => sp.GetRequiredService<LinkedServerService>());
             serviceCollection.AddSingleton<PartyItemMapper>();
             serviceCollection.AddSingleton<FederatedPartyService>();
             serviceCollection.AddHostedService(sp => sp.GetRequiredService<FederatedPartyService>());

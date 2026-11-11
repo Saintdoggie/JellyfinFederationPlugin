@@ -291,6 +291,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Friend not found.");
             }
 
+            if (friend.IsThroughLink)
+            {
+                return (false, $"{friend.Name} is used through your linked server; reconnect it there.");
+            }
+
             var url = friend.Url.TrimEnd('/');
             if (config.OutgoingFriendRequests.Any(r => string.Equals(r.RemoteServerUrl.TrimEnd('/'), url, StringComparison.OrdinalIgnoreCase)))
             {
@@ -438,6 +443,7 @@ namespace Jellyfin.Plugin.Federation.Services
             foreach (var friend in config.RemoteServers.Where(s =>
                          s.Enabled
                          && s.Kind == ServerKind.Jellyfin
+                         && !s.IsThroughLink
                          && ConfigValidator.IsValidServerUrl(s.Url)).ToList())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -892,6 +898,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         private async Task<(bool Success, string Message)> AddExistingFriendToPoolAsync(FederationPool pool, RemoteServer friend, CancellationToken cancellationToken)
         {
+            if (friend.IsThroughLink)
+            {
+                return (false, $"{friend.Name} is used through your linked server; invite it to pools from there.");
+            }
+
             var normalized = friend.Url.TrimEnd('/');
             if (pool.Members.Any(m => string.Equals(m.Url.TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase)))
             {
@@ -1324,7 +1335,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             foreach (var member in pool.Members.Where(m => m.FederationId != selfId && m.FederationId != excludeFederationId))
             {
-                var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == member.FederationId);
+                var friend = config.RemoteServers.FirstOrDefault(s => s.FederationId == member.FederationId && !s.IsThroughLink);
                 if (friend == null || string.IsNullOrEmpty(friend.ApiKey))
                 {
                     continue;
@@ -1879,6 +1890,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 return (false, "Friend not found.");
             }
 
+            if (server.IsThroughLink)
+            {
+                return (false, $"{server.Name} is used through your linked server; set its rules there.");
+            }
+
             if (rule == null || string.IsNullOrWhiteSpace(rule.RemoteUserId))
             {
                 return (false, "A remote user id is required.");
@@ -2110,7 +2126,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task NotifyAndRevokeOnUnfriendAsync(RemoteServer server, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
+            // A friend used through a linked server is that server's friendship:
+            // removing it here must never end it there.
+            if (server.IsThroughLink || string.IsNullOrEmpty(server.Url) || string.IsNullOrEmpty(server.ApiKey))
             {
                 return;
             }
@@ -2154,7 +2172,8 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var config = Plugin.Instance!.Configuration;
-            return config.RemoteServers.FirstOrDefault(s => string.Equals(s.FederationId, federationId, StringComparison.OrdinalIgnoreCase));
+            // A friend used through a linked server never calls this server, so it can't be the caller.
+            return config.RemoteServers.FirstOrDefault(s => !s.IsThroughLink && string.Equals(s.FederationId, federationId, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

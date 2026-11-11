@@ -147,6 +147,12 @@
                 #federationConfigPage .fed-health[data-state="unreachable"], #federationConfigPage .fed-health[data-state="provider-unavailable"] { color:var(--fed-warn-text); }
                 #federationConfigPage .fed-server-url { overflow-wrap:anywhere; min-width:0; }
                 #federationConfigPage button:focus-visible, #federationConfigPage input:focus-visible, #federationConfigPage select:focus-visible, #federationConfigPage summary:focus-visible { outline:2px solid var(--fed-accent); outline-offset:3px; }
+                #federationConfigPage .fed-link-block { margin: 0 0 1em; padding: 0 0 1em; border-bottom: 1px solid var(--fed-border-soft); }
+                #federationConfigPage .fed-link-codebox { display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; margin: .6em 0; }
+                #federationConfigPage .fed-link-code { font-family: monospace; font-size: 2em; letter-spacing: .12em; font-weight: 600; }
+                #federationConfigPage .fed-link-steps { margin: .4em 0 .8em; padding-left: 1.2em; }
+                #federationConfigPage .fed-link-asked { color: var(--fed-warn-text); }
+                #federationConfigPage .fed-link-input { max-width: 12em; font-family: monospace; letter-spacing: .1em; }
                 #federationConfigPage .fed-offnote { margin-top: 0.5em; font-size: 0.9em; color: var(--fed-warn-text); }
                 #federationConfigPage .fed-pill { font-size: 0.85em; line-height: 1.4; opacity: 0.75; margin-left: 0.4em; white-space: nowrap; }
                 #federationConfigPage .fed-support-scroll { overflow-x: auto; margin: .8em 0; }
@@ -2936,6 +2942,12 @@
                                 html += '<span class="fed-pill">Plex</span>';
                             }
 
+                            if (server.ViaLinkedServerId) {
+                                html += '<span class="fed-pill">Through ' + escapeHtml(linkedServerName(server.ViaLinkedServerId)) + '</span>';
+                            }
+
+                            html += '<span class="fed-pill" data-link-pill="' + escapeHtml(server.Id) + '"></span>';
+
                             if (isOff) {
                                 html += '<span class="fed-pill fed-pill-off">Disabled</span>';
                             }
@@ -2958,9 +2970,19 @@
 
                             html += '<div class="fed-srvstatus" id="fedSrvStatus' + i + '" style="display:none;"></div>';
 
-                            if (isOpen) {
+                            if (isOpen && server.ViaLinkedServerId) {
+                                html += '<div class="fed-friendpanel">';
+                                html += '<p class="fed-hint" style="margin:0;">This friend comes from your linked server ' + escapeHtml(linkedServerName(server.ViaLinkedServerId)) + '. To ' + escapeHtml(title) + ' this server is ' + escapeHtml(linkedServerName(server.ViaLinkedServerId)) + ', so what ' + escapeHtml(title) + ' shares with it, and its limits and rules for it, apply here too. Nothing is shared from this server to them.</p>';
+                                html += '<p class="fed-hint">To stop using it here, switch it off. To remove it everywhere, remove it on ' + escapeHtml(linkedServerName(server.ViaLinkedServerId)) + '.</p>';
+                                html += '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="through-toggle" data-i="' + i + '">' + (isOff ? 'Switch on' : 'Switch off') + '</button>';
+                                html += '</div>';
+                            } else if (isOpen) {
                                 var advOpen = expandedFriendAdvanced[server.Id] === true;
                                 html += '<div class="fed-friendpanel">';
+                                if (!server.Kind && !server.Paired) {
+                                    html += '<div class="fed-link-block" data-link-friend="' + escapeHtml(server.Id) + '" data-link-name="' + escapeHtml(title) + '"></div>';
+                                }
+
                                 html += '<p class="fed-hint" style="margin:0;">' + escapeHtml(friendSharingSummary(server)) + '</p>';
                                 html += renderSharingBlock(server);
                                 html += '<div>';
@@ -3001,8 +3023,147 @@
                         c.innerHTML = html;
                         renderFriendHealth();
                         applyDirectLinkStatus();
+                        renderLinkStatus();
                         renderExternalProviderWarnings();
                         loadLocalLibraries();
+                    }
+
+                    var linkStatus = {};
+                    var linkPollInterval = null;
+                    var linkTick = 0;
+                    var linkMessages = {};
+
+                    function linkedServerName(id) {
+                        var found = (currentConfig.RemoteServers || []).filter(function (x) { return x.Id === id; })[0];
+                        return found ? (found.Name || found.Url || 'your linked server') : 'your linked server';
+                    }
+
+                    function loadLinkStatus() {
+                        return fedFetch('/Plugins/Federation/Link/Status')
+                        .then(function (r) { return readJson(r); })
+                        .then(function (list) {
+                            var next = {};
+                            var newlyLinked = false;
+                            (list || []).forEach(function (st) {
+                                next[st.friendId] = st;
+                                if (st.linked && !(linkStatus[st.friendId] && linkStatus[st.friendId].linked)) {
+                                    newlyLinked = true;
+                                }
+                            });
+                            var hadAny = Object.keys(linkStatus).length > 0;
+                            linkStatus = next;
+                            renderLinkStatus();
+                            if (newlyLinked && hadAny) {
+                                // Friends arrive a few seconds after the link is made.
+                                setTimeout(function () { loadConfiguration(true); }, 5000);
+                            }
+                        })
+                        .catch(function () { });
+                    }
+
+                    function linkBusy() {
+                        return Object.keys(linkStatus).some(function (k) { return linkStatus[k].code || linkStatus[k].peerAsked; });
+                    }
+
+                    function linkStateKey(st) {
+                        if (!st) { return 'idle'; }
+                        if (st.linked) { return 'linked|' + (st.friendsThrough || []).join(','); }
+                        if (st.code) { return 'pending|' + st.theyAcceptedMyEntry + '|' + st.iAcceptedTheirEntry; }
+                        return st.peerAsked ? 'asked' : 'idle';
+                    }
+
+                    function renderLinkStatus() {
+                        qa('[data-link-pill]').forEach(function (pill) {
+                            var st = linkStatus[pill.getAttribute('data-link-pill')];
+                            var text = !st ? '' : st.linked ? 'Linked' : st.code ? 'Linking…' : st.peerAsked ? 'Wants to link' : '';
+                            pill.textContent = text;
+                            pill.style.display = text ? '' : 'none';
+                        });
+                        qa('.fed-link-block').forEach(function (block) {
+                            var id = block.getAttribute('data-link-friend');
+                            var name = block.getAttribute('data-link-name') || 'this friend';
+                            var st = linkStatus[id];
+                            var key = linkStateKey(st);
+                            if (block.getAttribute('data-state') === key) {
+                                var codeEl = block.querySelector('.fed-link-code');
+                                var leftEl = block.querySelector('.fed-link-left');
+                                if (codeEl && st && st.code) { codeEl.textContent = st.code.slice(0, 3) + ' ' + st.code.slice(3); }
+                                if (leftEl && st) { leftEl.textContent = 'Changes in ' + st.codeSecondsLeft + ' s. ' + Math.ceil(st.secondsLeft / 60) + ' min left to finish.'; }
+                                return;
+                            }
+                            block.setAttribute('data-state', key);
+                            var msg = linkMessages[id] ? '<p class="fed-hint fed-link-msg">' + escapeHtml(linkMessages[id]) + '</p>' : '';
+                            var html = '<h4 class="fed-subhead">Link as your own server</h4>';
+                            if (st && st.linked) {
+                                var through = st.friendsThrough || [];
+                                html += '<p class="fieldDescription">Linked. This server and ' + escapeHtml(name) + ' use each other\'s friends as their own; settings stay separate.</p>';
+                                html += '<p class="fed-hint">' + (through.length ? through.length + ' friend(s) used through ' + escapeHtml(name) + ': ' + escapeHtml(through.join(', ')) : 'No friends used through ' + escapeHtml(name) + ' yet.') + '</p>';
+                                html += msg + '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="link-remove" data-id="' + escapeHtml(id) + '">Unlink</button>';
+                            } else if (st && st.code) {
+                                html += '<p class="fieldDescription">Type this code on ' + escapeHtml(name) + ' (Friends → this server → Manage → Link), and type the code ' + escapeHtml(name) + ' shows below.</p>';
+                                html += '<div class="fed-link-codebox"><span class="fed-link-code" aria-live="polite">' + escapeHtml(st.code.slice(0, 3) + ' ' + st.code.slice(3)) + '</span><span class="fed-hint fed-link-left">Changes in ' + st.codeSecondsLeft + ' s. ' + Math.ceil(st.secondsLeft / 60) + ' min left to finish.</span></div>';
+                                html += '<ul class="fed-link-steps"><li>' + (st.theyAcceptedMyEntry ? '✓ ' + escapeHtml(name) + ' accepted the code you typed here' : 'Type ' + escapeHtml(name) + '\'s code here') + '</li>';
+                                html += '<li>' + (st.iAcceptedTheirEntry ? '✓ This server\'s code was typed on ' + escapeHtml(name) : 'Type this server\'s code on ' + escapeHtml(name)) + '</li></ul>';
+                                if (!st.theyAcceptedMyEntry) {
+                                    html += '<div class="fed-inline"><input is="emby-input" class="emby-input fed-link-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Code shown on ' + escapeHtml(name) + '" aria-label="Code shown on ' + escapeHtml(name) + '" />';
+                                    html += '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="link-code" data-id="' + escapeHtml(id) + '">Link</button></div>';
+                                }
+                                html += msg + '<button is="emby-button" type="button" class="emby-button button-flat" data-fed-action="link-cancel" data-id="' + escapeHtml(id) + '">Cancel</button>';
+                            } else {
+                                html += '<p class="fieldDescription">For a second server of your own. Once linked, each server uses the other\'s friends as its own, with nothing for those friends to accept: to them, both servers are the same server. Settings are not shared. Click Link here and on ' + escapeHtml(name) + ', then type each server\'s code on the other.</p>';
+                                if (st && st.peerAsked) {
+                                    html += '<p class="fed-link-asked">' + escapeHtml(name) + ' asked to link. Click Link to show this server\'s code.</p>';
+                                }
+                                html += '<p class="fed-hint">Only link servers you own: whoever runs either server can act as the other towards its friends.</p>';
+                                html += msg + '<button is="emby-button" type="button" class="raised emby-button" data-fed-action="link-start" data-id="' + escapeHtml(id) + '">Link</button>';
+                            }
+                            block.innerHTML = html;
+                        });
+                    }
+
+                    function linkAction(kind, id, block) {
+                        var path = '/Plugins/Federation/Link/' + encodeURIComponent(id);
+                        var options = { method: 'POST' };
+                        if (kind === 'start') {
+                            path += '/Start';
+                        } else if (kind === 'code') {
+                            var input = block ? block.querySelector('.fed-link-input') : null;
+                            path += '/Code';
+                            options.body = JSON.stringify({ Code: input ? input.value : '' });
+                        } else if (kind === 'cancel') {
+                            path += '/Pending';
+                            options.method = 'DELETE';
+                        } else if (kind === 'remove') {
+                            if (!confirm('Unlink? Friends used through the other server are removed here; your friendship with it stays.')) {
+                                return;
+                            }
+                            options.method = 'DELETE';
+                        }
+                        fedFetch(path, options)
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            linkMessages[id] = res && res.message ? res.message : '';
+                            var b = qa('.fed-link-block').filter(function (x) { return x.getAttribute('data-link-friend') === id; })[0];
+                            if (b) { b.removeAttribute('data-state'); }
+                            return loadLinkStatus();
+                        })
+                        .then(function () {
+                            if (kind === 'remove') { loadConfiguration(true); }
+                        })
+                        .catch(function () { linkMessages[id] = 'The request failed.'; renderLinkStatus(); });
+                    }
+
+                    function stopLinkPolling() {
+                        clearInterval(linkPollInterval);
+                        linkPollInterval = null;
+                    }
+
+                    function startLinkPolling() {
+                        if (linkPollInterval) { clearInterval(linkPollInterval); }
+                        loadLinkStatus();
+                        linkPollInterval = setInterval(function () {
+                            if (pageIsVisible() && (linkBusy() || ++linkTick % 10 === 0)) { loadLinkStatus(); }
+                        }, 1500);
                     }
 
                     var externalProviderState = {};
@@ -3192,6 +3353,17 @@
                                 st.removeAttribute('data-fed-transient');
                             }
                         }, 2500);
+                    }
+
+                    function toggleThroughFriend(i) {
+                        var server = currentConfig.RemoteServers[i];
+                        if (!server) { return; }
+                        var body = JSON.parse(JSON.stringify(server));
+                        body.Enabled = server.Enabled === false;
+                        fedFetch('/Plugins/Federation/Servers/' + encodeURIComponent(server.Id), { method: 'PUT', body: JSON.stringify(body) })
+                        .then(function (r) { return readJson(r); })
+                        .then(function () { server.Enabled = body.Enabled; renderFriends(); })
+                        .catch(function () { showError('Could not switch ' + (server.Name || 'this friend') + (body.Enabled ? ' on.' : ' off.')); });
                     }
 
                     function saveServerDetails(i, silent) {
@@ -7499,6 +7671,15 @@
                                 return;
                             }
 
+                            if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('fed-link-input')) {
+                                e.preventDefault();
+                                var linkBlock = e.target.closest('.fed-link-block');
+                                if (linkBlock) {
+                                    linkAction('code', linkBlock.getAttribute('data-link-friend'), linkBlock);
+                                }
+                                return;
+                            }
+
                             if (e.key === 'Escape' && q('#fedInfoModalRoot').innerHTML) {
                                 closeItemInfoModal();
                             } else if (e.key === 'Escape' && q('#fedOnboardRoot').innerHTML) {
@@ -7702,6 +7883,15 @@
                                     break;
                                 case 'manage-friend':
                                     toggleFriendPanel(i);
+                                    break;
+                                case 'link-start':
+                                case 'link-code':
+                                case 'link-cancel':
+                                case 'link-remove':
+                                    linkAction(t.getAttribute('data-fed-action').slice(5), t.getAttribute('data-id'), t.closest('.fed-link-block'));
+                                    break;
+                                case 'through-toggle':
+                                    toggleThroughFriend(i);
                                     break;
                                 case 'toggle-friend-advanced':
                                     toggleFriendAdvanced(t.getAttribute('data-id'));
@@ -8255,6 +8445,9 @@
                         clearInterval(healthPollInterval);
                         clearInterval(logPollInterval);
                         clearInterval(syncStatusPollInterval);
+                        if (typeof stopLinkPolling === 'function') {
+                            stopLinkPolling();
+                        }
                         downloadsPollInterval = watchingPollInterval = healthPollInterval = logPollInterval = syncStatusPollInterval = null;
                         activePage = null;
                         stopWatchdog();
@@ -8300,6 +8493,7 @@
 
                         watchingPollInterval = setInterval(function () { if (pageIsVisible()) { loadWatching(); } }, 5000);
                         healthPollInterval = setInterval(function () { if (pageIsVisible()) { loadFriendHealth(false); } }, 60000);
+                        startLinkPolling();
                         loadLogs();
                         logPollInterval = setInterval(function () { if (pageIsVisible()) { loadLogs(); } }, 10000);
                         loadSyncStatus();

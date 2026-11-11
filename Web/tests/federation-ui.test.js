@@ -2840,3 +2840,47 @@ test('Check support button is on the Advanced tab and renders the report safely'
   assert.match(result.textContent, /1 \(50%\)/, 'percentages are of the judged files');
   dom.window.close();
 });
+
+test('Link section shows each state, escapes names and keeps a typed code across refreshes', () => {
+  const dom = new JSDOM('<div id="root"></div>');
+  const doc = dom.window.document;
+  const names = ['linkStateKey', 'renderLinkStatus', 'escapeHtml'];
+  const source = names.map((name) => extractConfigFunction(name)).join('\n');
+  const state = { linkStatus: {}, linkMessages: {} };
+  const qa = (sel) => Array.from(doc.querySelectorAll(sel));
+  const api = new Function('q', 'qa', 'document', 'state',
+    'var linkStatus = state.linkStatus; var linkMessages = state.linkMessages;\n' + source +
+    '\nreturn { render: function (s) { linkStatus = s; renderLinkStatus(); } };')(
+    (sel) => doc.querySelector(sel), qa, doc, state);
+  const root = doc.querySelector('#root');
+  root.innerHTML = '<span data-link-pill="f1"></span><div class="fed-link-block" data-link-friend="f1" data-link-name="&lt;img src=x onerror=1&gt;"></div>';
+  const block = root.querySelector('.fed-link-block');
+
+  api.render({});
+  assert.ok(block.querySelector('[data-fed-action="link-start"]'), 'idle: a Link button');
+  assert.equal(block.querySelectorAll('img').length, 0, 'the friend name is escaped');
+  assert.match(block.textContent, /whoever runs either server can act as the other/);
+
+  api.render({ f1: { friendId: 'f1', linked: false, peerAsked: true } });
+  assert.match(block.textContent, /asked to link/);
+  assert.equal(root.querySelector('[data-link-pill]').textContent, 'Wants to link');
+
+  const pending = { friendId: 'f1', linked: false, code: '123456', codeSecondsLeft: 20, secondsLeft: 500, theyAcceptedMyEntry: false, iAcceptedTheirEntry: false };
+  api.render({ f1: pending });
+  assert.equal(block.querySelector('.fed-link-code').textContent, '123 456');
+  block.querySelector('.fed-link-input').value = '98';
+  api.render({ f1: { ...pending, code: '654321', codeSecondsLeft: 29 } });
+  assert.equal(block.querySelector('.fed-link-input').value, '98', 'a refresh keeps what the admin is typing');
+  assert.equal(block.querySelector('.fed-link-code').textContent, '654 321');
+  assert.match(block.querySelector('.fed-link-left').textContent, /Changes in 29 s/);
+
+  api.render({ f1: { ...pending, theyAcceptedMyEntry: true } });
+  assert.equal(block.querySelector('.fed-link-input'), null, 'no input once the other server accepted our entry');
+  assert.match(block.textContent, /✓/);
+
+  api.render({ f1: { friendId: 'f1', linked: true, friendsThrough: ['C', 'D'] } });
+  assert.ok(block.querySelector('[data-fed-action="link-remove"]'));
+  assert.match(block.textContent, /2 friend\(s\) used through/);
+  assert.equal(root.querySelector('[data-link-pill]').textContent, 'Linked');
+  dom.window.close();
+});

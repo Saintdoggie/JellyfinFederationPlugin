@@ -75,11 +75,11 @@ public sealed class TranscodePolicyTests
     [Fact]
     public void Automatic_BecomesNeverConvert_OnlyOnHardwareThatCannot()
     {
-        var before = TranscodePolicy.WeakHardwareProbe;
+        var before = TranscodePolicy.TestProbe.Value;
         try
         {
             var config = new PluginConfiguration { EnableRemoteTranscodeForFriends = true };
-            TranscodePolicy.WeakHardwareProbe = () => true;
+            TranscodePolicy.TestProbe.Value = () => true;
             TranscodePolicy.ResetProbeCache();
             Assert.Equal(LocalTranscodeRestriction.BlockAll, TranscodePolicy.Effective(config));
             Assert.False(TranscodePolicy.MayConvertForOwnViewers(config));
@@ -96,19 +96,19 @@ public sealed class TranscodePolicyTests
 
             // A capable server, a failing probe and a missing config change nothing.
             config.LocalTranscodeRestriction = LocalTranscodeRestriction.None;
-            TranscodePolicy.WeakHardwareProbe = () => false;
+            TranscodePolicy.TestProbe.Value = () => false;
             TranscodePolicy.ResetProbeCache();
             Assert.True(TranscodePolicy.MayConvertForOwnViewers(config));
-            TranscodePolicy.WeakHardwareProbe = () => throw new InvalidOperationException();
+            TranscodePolicy.TestProbe.Value = () => throw new InvalidOperationException();
             TranscodePolicy.ResetProbeCache();
             Assert.True(TranscodePolicy.MayConvertForOwnViewers(config));
-            TranscodePolicy.WeakHardwareProbe = () => true;
+            TranscodePolicy.TestProbe.Value = () => true;
             TranscodePolicy.ResetProbeCache();
             Assert.True(TranscodePolicy.MayConvertForOwnViewers(null));
         }
         finally
         {
-            TranscodePolicy.WeakHardwareProbe = before;
+            TranscodePolicy.TestProbe.Value = before;
             TranscodePolicy.ResetProbeCache();
         }
     }

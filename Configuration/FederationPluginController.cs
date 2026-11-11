@@ -344,6 +344,14 @@ namespace Jellyfin.Plugin.Federation.Api
                     // top-level-field preservation block below this loop already
                     // guards against.
                     var oldServer = existing?.RemoteServers?.FirstOrDefault(s => s.Id == server.Id);
+                    if (oldServer == null)
+                    {
+                        server.Linked = false;
+                        server.LinkedAtUtc = null;
+                        server.LinkKey = string.Empty;
+                        server.IssuedLinkKey = string.Empty;
+                        server.ViaLinkedServerId = string.Empty;
+                    }
 
                     // Pairing is made and changed only by the pairing service: a paired
                     // friend keeps its link address and keys, and nothing posted here can
@@ -389,6 +397,20 @@ namespace Jellyfin.Plugin.Federation.Api
                         // Confirmed live: a single config save broke an otherwise-working
                         // fresh handshake this same session.
                         server.IssuedApiKey = oldServer.IssuedApiKey;
+
+                        // The link and friends used through it are made only by
+                        // LinkedServerService; nothing posted here can create or
+                        // change them.
+                        server.Linked = oldServer.Linked;
+                        server.LinkedAtUtc = oldServer.LinkedAtUtc;
+                        server.LinkKey = oldServer.LinkKey;
+                        server.IssuedLinkKey = oldServer.IssuedLinkKey;
+                        server.ViaLinkedServerId = oldServer.ViaLinkedServerId;
+                        if (oldServer.IsThroughLink)
+                        {
+                            server.Url = oldServer.Url;
+                            server.FederationId = oldServer.FederationId;
+                        }
 
                         // Kind is set once at creation (Servers POST) and has no field
                         // in the main Save form - same class of bug as the rest of this
@@ -1161,6 +1183,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 return BadRequest(new { error = "A paired friend's address and token can't be changed; remove and pair again instead." });
             }
 
+            if (existing.IsThroughLink && (!SameAddress(server.Url, existing.Url) || (!string.IsNullOrEmpty(server.ApiKey) && server.ApiKey != existing.ApiKey)))
+            {
+                return BadRequest(new { error = "This friend comes from your linked server; its address and key come from there." });
+            }
+
             existing.Name = server.Name;
             existing.Url = server.Url;
             if (!string.IsNullOrEmpty(server.ApiKey))
@@ -1215,6 +1242,13 @@ namespace Jellyfin.Plugin.Federation.Api
             if (server == null)
             {
                 return NotFound(new { error = "Server not found" });
+            }
+
+            if (server.IsThroughLink)
+            {
+                // It would come straight back with the linked server's next list.
+                var via = config!.RemoteServers.FirstOrDefault(s => s.Id == server.ViaLinkedServerId);
+                return Conflict(new { error = $"{server.Name} comes from your linked server {via?.Name ?? "(unknown)"}. Switch it off here, or remove it on that server." });
             }
 
             // Tell them first, while server.Url/ApiKey/IssuedApiKey are still
@@ -1314,6 +1348,21 @@ namespace Jellyfin.Plugin.Federation.Api
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "[Federation] Post-removal reconciliation failed for {Name}; it will be retried on the next sync", mapping.LocalLibraryName);
+                }
+            }
+
+            // A linked server takes the friends used through it along; one of our
+            // own friends leaves every linked server soon after.
+            var links = HttpContext?.RequestServices?.GetService(typeof(LinkedServerService)) as LinkedServerService;
+            if (links != null)
+            {
+                try
+                {
+                    await links.OnServerRemovedAsync(server, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "[Federation] Could not update linked servers after removing {Name}", server.Name);
                 }
             }
         }
@@ -1441,7 +1490,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var friends = (config.RemoteServers ?? new List<RemoteServer>())
-                .Where(s => s.Enabled)
+                .Where(s => s.Enabled && !s.IsThroughLink)
                 .Select(s => new { name = s.Name, url = s.Url });
             return Ok(new { allowsIntroductions = true, friends });
         }
@@ -7085,6 +7134,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
             return index;
         }
+
+        private static bool SameAddress(string? a, string? b)
+            => string.Equals((a ?? string.Empty).TrimEnd('/'), (b ?? string.Empty).TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
 
         private static void CopyPairing(RemoteServer from, RemoteServer to)
         {

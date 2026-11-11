@@ -42,6 +42,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 server.MonthlyDataCapGb,
                 server.MaxConcurrentStreams,
                 server.DirectLinkMode,
+                server.Linked,
+                server.ViaLinkedServerId,
                 DataUsedThisMonthBytes = limits?.UsedThisMonth(server.FederationId ?? string.Empty) ?? 0,
                 ActiveStreams = limits?.ActiveStreams(server.FederationId ?? string.Empty) ?? 0,
                 RemoteUserAccessRules = (server.RemoteUserAccessRules ?? new List<RemoteUserAccessRule>()).Select(rule => new

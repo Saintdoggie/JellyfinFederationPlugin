@@ -335,6 +335,12 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public async Task<bool> NotifyCatalogChangedAsync(CancellationToken cancellationToken = default, bool sharingChanged = false)
         {
+            if (_server.IsThroughLink)
+            {
+                // The friend never shares anything with us through a link; nothing to tell it.
+                return false;
+            }
+
             try
             {
                 // sharing=true: what we share with them changed, so they must sync
@@ -489,6 +495,73 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
+        /// <summary>The header carrying a link key (<see cref="RemoteServer.LinkKey"/>) on link-only calls.</summary>
+        internal const string OwnerKeyHeader = "X-Federation-Owner-Key";
+
+        /// <summary>
+        /// The only peer messages sent to a friend used through a linked server
+        /// (<see cref="RemoteServer.IsThroughLink"/>): stopping or keeping alive a
+        /// conversion this server started. Anything else posted to the friend -
+        /// viewers, watch parties, direct links - would act for the linked server
+        /// in ways its admin never chose, so it is not sent.
+        /// </summary>
+        internal static bool AllowedThroughLink(string relativePath)
+            => relativePath.TrimStart('/').StartsWith("PlayControl", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Sends a link call (<see cref="LinkedServerService"/>) to this friend's
+        /// <c>Peer/Linked/{relativePath}</c>, with the link key when one is given.
+        /// Status 0 when the friend couldn't be reached; the body is null unless
+        /// the friend answered 2xx with readable JSON.
+        /// </summary>
+        internal async Task<(int Status, T? Body)> SendLinkAsync<T>(HttpMethod method, string relativePath, object? body, string? ownerKey, CancellationToken cancellationToken = default)
+            where T : class
+        {
+            if (_server.IsThroughLink)
+            {
+                return (0, null);
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(method, "/Plugins/Federation/Peer/Linked/" + relativePath.TrimStart('/'));
+                if (body != null)
+                {
+                    request.Content = new StringContent(JsonSerializer.Serialize(body, JsonOpts), System.Text.Encoding.UTF8, "application/json");
+                }
+
+                if (!string.IsNullOrEmpty(ownerKey))
+                {
+                    request.Headers.TryAddWithoutValidation(OwnerKeyHeader, ownerKey);
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var text = await HttpContentReader.ReadTextAsync(response.Content, HttpContentReader.CatalogJsonLimit, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode && (int)response.StatusCode != 409)
+                {
+                    return ((int)response.StatusCode, null);
+                }
+
+                try
+                {
+                    return ((int)response.StatusCode, string.IsNullOrWhiteSpace(text) ? null : JsonSerializer.Deserialize<T>(text, JsonOpts));
+                }
+                catch (JsonException)
+                {
+                    return ((int)response.StatusCode, null);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} at Peer/Linked/{Path}", _server.Name, relativePath);
+                return (0, null);
+            }
+        }
+
         /// <summary>
         /// Posts a small JSON message to the friend's <c>Peer/{relativePath}</c>.
         /// Returns the HTTP status, or 0 when the friend couldn't be reached.
@@ -497,6 +570,11 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             try
             {
+                if (_server.IsThroughLink && !AllowedThroughLink(relativePath))
+                {
+                    return 0;
+                }
+
                 using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/" + relativePath.TrimStart('/'))
                 {
                     Content = new StringContent(JsonSerializer.Serialize(body, PartyJson), System.Text.Encoding.UTF8, "application/json")
@@ -523,6 +601,11 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task<(int Status, T? Body)> PostPeerForJsonAsync<T>(string relativePath, object body, CancellationToken cancellationToken = default)
             where T : class
         {
+            if (_server.IsThroughLink && !AllowedThroughLink(relativePath))
+            {
+                return (0, null);
+            }
+
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/" + relativePath.TrimStart('/'))

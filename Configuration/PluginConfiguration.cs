@@ -1136,6 +1136,45 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// unknown (an older friend without <c>Peer/Favorites</c>).
         /// </summary>
         public bool? PeerSharesFavorites { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether this friend is linked: another server of this
+        /// server's owner, joined by entering a rotating code on both servers
+        /// (<see cref="Services.LinkedServerService"/>). Linked servers use each
+        /// other's friends as their own.
+        /// </summary>
+        public bool Linked { get; set; }
+
+        /// <summary>Gets or sets when the link was made (null: not linked).</summary>
+        public DateTime? LinkedAtUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets the link key the linked server minted for this server; sent
+        /// with every link-only call to it. Secret; encrypted at rest.
+        /// </summary>
+        public string LinkKey { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the link key this server minted for the linked server;
+        /// link-only calls from it must present it. Secret; encrypted at rest.
+        /// </summary>
+        public string IssuedLinkKey { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets, for a friend this server uses through a linked server, the
+        /// local <see cref="Id"/> of that linked server. Such a row carries the
+        /// linked server's own key for the friend (<see cref="ApiKey"/>), so to the
+        /// friend this server is the linked server; it has no
+        /// <see cref="IssuedApiKey"/> (the friend never calls this server), and it
+        /// never sends the friend anything that would change the friendship.
+        /// Empty for an ordinary friend.
+        /// </summary>
+        public string ViaLinkedServerId { get; set; } = string.Empty;
+
+        /// <summary>Gets a value indicating whether this row is a friend used through a linked server.</summary>
+        [System.Xml.Serialization.XmlIgnore]
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool IsThroughLink => !string.IsNullOrEmpty(ViaLinkedServerId);
     }
 
     /// <summary>
