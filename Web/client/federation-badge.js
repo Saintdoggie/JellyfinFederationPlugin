@@ -2411,16 +2411,44 @@
     state.showTimer = setTimeout(function () { showLoadingOverlay(state); }, OVERLAY_SHOW_DELAY_MS);
     state.tickTimer = setInterval(function () { tickLoadingOverlay(state); }, 1000);
 
-    federationFetch('/Plugins/Federation/StartEstimate/' + id, { credentials: 'same-origin' })
+    loadStartEstimate(state, 0);
+  }
+
+  // The first answer usually comes before the server has chosen how to play
+  // the title; when it copies the picture and fixes the sound, a later answer
+  // says so (with its own estimate), so keep asking while the bar is up.
+  var ESTIMATE_POLL_MS = 2500;
+  var ESTIMATE_POLLS = 24;
+
+  function loadStartEstimate(state, poll) {
+    federationFetch('/Plugins/Federation/StartEstimate/' + state.id, { credentials: 'same-origin' })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
-        if (!data || data.federated === false || overlayState !== state) {
+        if (overlayState !== state) {
           return;
         }
 
-        state.seconds = typeof data.seconds === 'number' ? data.seconds : null;
-        state.reason = typeof data.reason === 'string' ? data.reason : '';
-        renderOverlayFrame(state);
+        if (data && data.federated !== false && (poll === 0 || data.soundHelp === true)) {
+          var elapsed = (Date.now() - state.startedAt) / 1000;
+          if (typeof data.seconds === 'number') {
+            // Sound-help estimates count from now; the bar counts from its start.
+            state.seconds = data.soundHelp === true ? elapsed + data.seconds : data.seconds;
+          } else {
+            state.seconds = null;
+          }
+
+          state.reason = typeof data.reason === 'string' ? data.reason : '';
+          state.soundHelp = data.soundHelp === true;
+          renderOverlayFrame(state);
+        }
+
+        if (data && data.federated !== false && poll < ESTIMATE_POLLS && !playingVideoElement()) {
+          setTimeout(function () {
+            if (overlayState === state && !state.cancelled) {
+              loadStartEstimate(state, poll + 1);
+            }
+          }, ESTIMATE_POLL_MS);
+        }
       })
       .catch(function () { /* the bar still shows, just without a projection */ });
   }

@@ -95,6 +95,13 @@ namespace Jellyfin.Plugin.Federation.Configuration
             // dependency - see DiscoverFriendsOfFriendsAsync there.
             serviceCollection.AddScoped<FederationFriendService>();
             serviceCollection.AddSingleton<FederationImageProvider>();
+            serviceCollection.AddSingleton(sp => new SoundHelpEncoder(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SoundHelpEncoder>>(),
+                () => sp.GetService<MediaBrowser.Controller.MediaEncoding.IMediaEncoder>()?.EncoderPath));
+            serviceCollection.AddSingleton(sp => new SoundHelpService(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SoundHelpService>>(),
+                sp.GetRequiredService<IRemoteServerClientFactory>(),
+                () => sp.GetService<MediaBrowser.Controller.MediaEncoding.IMediaEncoder>()?.EncoderPath));
             serviceCollection.AddSingleton<FederationPlaybackProfileFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationPlaybackProfileFilter>());
             serviceCollection.AddTransient<FederationMediaSourceNameFilter>();

@@ -509,6 +509,49 @@ namespace Jellyfin.Plugin.Federation.Services
             => relativePath.TrimStart('/').StartsWith("PlayControl", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
+        /// Sends one piece of a sound track to this linked server's
+        /// <c>Peer/Linked/Sound/{relativePath}</c> and returns the converted sound
+        /// it has ready (<see cref="SoundHelpService"/>). Status 0 when it couldn't
+        /// be reached.
+        /// </summary>
+        internal async Task<(int Status, byte[]? Body)> SendLinkSoundAsync(string relativePath, byte[] body, string? ownerKey, CancellationToken cancellationToken = default)
+        {
+            if (_server.IsThroughLink)
+            {
+                return (0, null);
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/Plugins/Federation/Peer/Linked/Sound/" + relativePath.TrimStart('/'));
+                request.Content = new ByteArrayContent(body);
+                request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+                if (!string.IsNullOrEmpty(ownerKey))
+                {
+                    request.Headers.TryAddWithoutValidation(OwnerKeyHeader, ownerKey);
+                }
+
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return ((int)response.StatusCode, null);
+                }
+
+                var bytes = await HttpContentReader.ReadBytesAsync(response.Content, SoundHelpEncoder.MaxReplyBytes, cancellationToken).ConfigureAwait(false);
+                return ((int)response.StatusCode, bytes);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not reach {ServerName} for sound conversion", _server.Name);
+                return (0, null);
+            }
+        }
+
+        /// <summary>
         /// Sends a link call (<see cref="LinkedServerService"/>) to this friend's
         /// <c>Peer/Linked/{relativePath}</c>, with the link key when one is given.
         /// Status 0 when the friend couldn't be reached; the body is null unless

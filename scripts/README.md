@@ -59,6 +59,7 @@ FEDERATION_SOURCE_DLL=<older plugin dll> JELLYFIN_TEST_IMAGE=<image id> python3 
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_handoff_smoke.py  # remote-transcode handoff end to end
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_owned_title_smoke.py  # own HEVC file plus a friend's H.264 copy: who gets which, redirect to the friend, seeking, support report
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_linked_smoke.py  # three servers: link by codes (wrong code counted), B plays C through A with nothing done on C, removal and unlink
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_sound_help_smoke.py  # two linked servers, viewer server never converts: Dolby Digital to a browser (picture copied, sound converted on the linked server, in sync, after a seek), wrapper-only change, refusals
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_standby_smoke.py  # three servers: standby friend in the playlist, start on another friend, hls.js losing its server mid-play (browser stage needs Python Playwright)
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_party_smoke.py    # watch parties across two servers (scripted SyncPlay players)
 ```

@@ -29,6 +29,13 @@ namespace Jellyfin.Plugin.Federation.Services
     /// <param name="Why">A few plain words for logs and Playback Info, never ids or addresses.</param>
     internal sealed record DevicePlayFitResult(PlayFit Fit, bool? HasPreferredLanguage, string Why);
 
+    /// <summary>A way to play a title without converting its picture (see <see cref="DevicePlayFit.PlanSoundHelp"/>).</summary>
+    /// <param name="ConvertSound">True when the sound must become AAC stereo; false when only the wrapper changes.</param>
+    /// <param name="Wrapper">mp4, mkv or ts.</param>
+    /// <param name="Video">The picture, copied as stored.</param>
+    /// <param name="Audio">The sound track used.</param>
+    internal sealed record SoundHelpPlan(bool ConvertSound, string Wrapper, MediaStream Video, MediaStream Audio);
+
     /// <summary>
     /// Compares a copy's container, video codec and sound track with what the
     /// player said it can play (the device profile every Jellyfin client sends
@@ -81,6 +88,59 @@ namespace Jellyfin.Plugin.Federation.Services
                 hasLanguage,
                 audioPlaysSomewhere ? "only the file wrapper must change" : $"only the {Name(audio!.Codec)} sound must change");
         }
+
+        /// <summary>
+        /// How a device that plays the picture as stored can get the whole title
+        /// without converting video: copy the picture into a wrapper the device
+        /// plays and keep the sound, or (when the sound itself does not play)
+        /// replace it with AAC stereo. Null when the picture does not play, the
+        /// device did not say what it plays, or no wrapper fits.
+        /// </summary>
+        /// <param name="profile">What the player said it plays.</param>
+        /// <param name="streams">The copy's streams.</param>
+        /// <param name="audioIndex">The sound track the player asked for, or null for the viewer's language.</param>
+        /// <param name="preferredLanguage">The viewer's sound language.</param>
+        internal static SoundHelpPlan? PlanSoundHelp(DeviceProfile? profile, IReadOnlyList<MediaStream>? streams, int? audioIndex, string? preferredLanguage)
+        {
+            var video = streams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            var audioStreams = streams?.Where(s => s.Type == MediaStreamType.Audio).ToList() ?? new List<MediaStream>();
+            var audio = audioIndex.HasValue
+                ? audioStreams.FirstOrDefault(s => s.Index == audioIndex.Value)
+                : PickAudio(audioStreams, string.IsNullOrWhiteSpace(preferredLanguage) ? DefaultLanguage : preferredLanguage!).Stream;
+            var playProfiles = profile?.DirectPlayProfiles?.Where(p => p != null && p.Type == DlnaProfileType.Video).ToList();
+            if (playProfiles == null || playProfiles.Count == 0 || video == null || string.IsNullOrWhiteSpace(video.Codec)
+                || audio == null || string.IsNullOrWhiteSpace(audio.Codec)
+                || !VideoConditionsPass(profile!, video))
+            {
+                return null;
+            }
+
+            // Browsers play only MP4 when not given a playlist, so it comes first.
+            var wrappers = new[] { "mp4", "mkv", "ts" };
+            foreach (var wrapper in wrappers)
+            {
+                if (playProfiles.Any(p => ContainerMatches(p.Container, wrapper) && Lists(p.VideoCodec, video.Codec) && Lists(p.AudioCodec, audio.Codec))
+                    && AudioConditionsPass(profile!, audio)
+                    && CopyFits(wrapper, audio.Codec))
+                {
+                    return new SoundHelpPlan(false, wrapper, video, audio);
+                }
+            }
+
+            foreach (var wrapper in wrappers)
+            {
+                if (playProfiles.Any(p => ContainerMatches(p.Container, wrapper) && Lists(p.VideoCodec, video.Codec) && Lists(p.AudioCodec, "aac")))
+                {
+                    return new SoundHelpPlan(true, wrapper, video, audio);
+                }
+            }
+
+            return null;
+        }
+
+        // Sound formats MP4 cannot carry when copied (players would get no sound).
+        private static bool CopyFits(string wrapper, string codec)
+            => wrapper != "mp4" || Codec(codec) is "aac" or "mp3" or "ac3" or "eac3" or "opus" or "flac" or "alac";
 
         /// <summary>
         /// The sound track a viewer would get: their language when the copy has it,

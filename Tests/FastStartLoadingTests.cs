@@ -392,11 +392,11 @@ public class FastStartLoadingTests : IDisposable
     }
 
     [Fact]
-    public void StartEstimate_ForASlowFederatedTitle_ProjectsTheWaitAndNamesTheFriend()
+    public async System.Threading.Tasks.Task StartEstimate_ForASlowFederatedTitle_ProjectsTheWaitAndNamesTheFriend()
     {
         var (controller, item, _) = NewController(93_000_000, 7.5);
 
-        var result = controller.GetStartEstimate(item.Id);
+        var result = await controller.GetStartEstimate(item.Id);
 
         Assert.True(Body<bool>(result, "federated"));
         Assert.InRange(Body<int?>(result, "seconds")!.Value, 70, 90);
@@ -405,11 +405,11 @@ public class FastStartLoadingTests : IDisposable
     }
 
     [Fact]
-    public void StartEstimate_WithoutAMeasurementYet_HasNoSecondsButStillExplains()
+    public async System.Threading.Tasks.Task StartEstimate_WithoutAMeasurementYet_HasNoSecondsButStillExplains()
     {
         var (controller, item, _) = NewController(93_000_000, null);
 
-        var result = controller.GetStartEstimate(item.Id);
+        var result = await controller.GetStartEstimate(item.Id);
 
         Assert.True(Body<bool>(result, "federated"));
         var ok = Assert.IsType<OkObjectResult>(result.Result);
@@ -418,11 +418,11 @@ public class FastStartLoadingTests : IDisposable
     }
 
     [Fact]
-    public void StartEstimate_ForALocalTitle_IsNotFederated()
+    public async System.Threading.Tasks.Task StartEstimate_ForALocalTitle_IsNotFederated()
     {
         var (controller, _, _) = NewController(93_000_000, 7.5);
 
-        var result = controller.GetStartEstimate(Guid.NewGuid());
+        var result = await controller.GetStartEstimate(Guid.NewGuid());
 
         Assert.False(Body<bool>(result, "federated"));
     }

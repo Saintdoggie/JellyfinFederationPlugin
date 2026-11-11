@@ -23,6 +23,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
         private readonly WanBandwidthMonitor _bandwidthMonitor;
         private readonly FunFactService _funFacts;
         private readonly ExternalCatalogRegistry _externalCatalogs;
+        private readonly SoundHelpService? _soundHelp;
+        private readonly MediaBrowser.Controller.Net.IAuthorizationContext? _authorization;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationLoadingController"/> class.
@@ -32,8 +34,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
             FederationLibraryManager federationManager,
             WanBandwidthMonitor bandwidthMonitor,
             FunFactService funFacts,
-            ExternalCatalogRegistry externalCatalogs)
+            ExternalCatalogRegistry externalCatalogs,
+            SoundHelpService? soundHelp = null,
+            MediaBrowser.Controller.Net.IAuthorizationContext? authorization = null)
         {
+            _soundHelp = soundHelp;
+            _authorization = authorization;
             _libraryManager = libraryManager;
             _federationManager = federationManager;
             _bandwidthMonitor = bandwidthMonitor;
@@ -49,8 +55,18 @@ namespace Jellyfin.Plugin.Federation.Configuration
         [HttpGet("StartEstimate/{itemId}")]
         [Authorize]
         [Produces("application/json")]
-        public ActionResult<object> GetStartEstimate(Guid itemId)
+        public async Task<ActionResult<object>> GetStartEstimate(Guid itemId)
         {
+            // A play that copies the picture and fixes the sound starts differently
+            // from a plain stream: say why, with its own estimate.
+            if (_soundHelp != null
+                && _authorization != null
+                && (await _authorization.GetAuthorizationInfo(HttpContext).ConfigureAwait(false))?.UserId is { } userId
+                && _soundHelp.Starting(userId, itemId) is { } starting)
+            {
+                return Ok(new { federated = true, soundHelp = true, seconds = starting.Seconds, reason = starting.Reason });
+            }
+
             var item = _libraryManager.GetItemById(itemId);
             var key = FederationLibraryManager.GetFederationKey(item);
             var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);

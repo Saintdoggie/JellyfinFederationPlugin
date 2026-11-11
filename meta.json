@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.213",
-  "changelog": "0.0.213: Linked servers. Two servers of your own that are friends can be linked from Friends → Manage → Link: click Link on both and type each server's six-digit code on the other. Linked servers then use each other's friends as their own, with nothing for those friends to do: to them both servers are the same server. Settings stay separate. Only link servers you own: whoever runs either server can act as the other towards its friends.",
+  "version": "0.0.214",
+  "changelog": "0.0.214: Sound help. On a server that doesn't convert (set so, or too weak), a friend's title whose picture a device plays but whose sound or file type it doesn't (Dolby or DTS sound in a browser, a Matroska file) now plays instead of failing. When only the file type is wrong, this server repackages it, converting nothing. When the sound itself doesn't play, the picture is copied untouched and only the sound goes to your linked server, which turns it into AAC stereo and sends it back; the picture never leaves this server. Starting takes a few seconds longer; the loading bar says why and shows an estimate. Seeking starts a new stream at the new place. Nothing is saved. Needs a linked server on 0.0.214 that may convert. Not yet checked on physical TVs or phones.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-11T15:00:00Z",
+  "timestamp": "2026-11-11T15:40:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

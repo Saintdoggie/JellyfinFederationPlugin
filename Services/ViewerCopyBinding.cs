@@ -5,6 +5,8 @@ using System.Linq;
 using MediaBrowser.Model.Dlna;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Federation.Services
 {
@@ -88,7 +90,7 @@ namespace Jellyfin.Plugin.Federation.Services
     /// source provider can read them. Jellyfin has already read the request body
     /// by the time the provider runs, so this is the only place to catch them.
     /// </summary>
-    public sealed class FederationPlaybackProfileFilter : IActionFilter
+    public sealed class FederationPlaybackProfileFilter : IAsyncActionFilter
     {
         private const string ItemKey = "Federation.DeviceProfile";
         private const string SourceKey = "Federation.RequestedMediaSourceId";
@@ -105,6 +107,24 @@ namespace Jellyfin.Plugin.Federation.Services
         internal static void Set(HttpContext context, DeviceProfile profile) => context.Items[ItemKey] = profile;
 
         /// <inheritdoc />
+        public async System.Threading.Tasks.Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+        {
+            OnActionExecuting(context);
+            var executed = await next().ConfigureAwait(false);
+            OnActionExecuted(executed);
+            try
+            {
+                await ApplySoundHelpAsync(context, executed).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The response Jellyfin built is still a valid one.
+                context.HttpContext.RequestServices.GetService<Microsoft.Extensions.Logging.ILogger<FederationPlaybackProfileFilter>>()
+                    ?.LogDebug(ex, "[Federation] Sound help check failed");
+            }
+        }
+
+        /// <summary>Reads what the player sent before Jellyfin answers (see <see cref="Get"/>).</summary>
         public void OnActionExecuting(ActionExecutingContext context)
         {
             if (!context.ActionDescriptor.RouteValues.TryGetValue("controller", out var controller)
@@ -142,7 +162,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
         }
 
-        /// <inheritdoc />
+        /// <summary>Reorders Jellyfin's answer where a friend's copy must come first.</summary>
         public void OnActionExecuted(ActionExecutedContext context)
         {
             // A title this server owns, with a friend's copy offered beside the own
@@ -162,6 +182,67 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 // The response Jellyfin built is still a valid one.
             }
+        }
+        // A friend's title this server may not convert, on a device that plays
+        // its picture: copy the picture and fix the sound (SoundHelpService).
+        private static async System.Threading.Tasks.Task ApplySoundHelpAsync(ActionExecutingContext context, ActionExecutedContext executed)
+        {
+            if (TranscodePolicy.MayConvertForOwnViewers(Plugin.Instance?.Configuration)
+                || executed.Result is not Microsoft.AspNetCore.Mvc.ObjectResult { Value: MediaBrowser.Model.MediaInfo.PlaybackInfoResponse response }
+                || !context.ActionArguments.TryGetValue("itemId", out var rawItem) || rawItem is not Guid itemId)
+            {
+                return;
+            }
+
+            var services = context.HttpContext.RequestServices;
+            var soundHelp = services.GetService<SoundHelpService>();
+            var library = services.GetService<MediaBrowser.Controller.Library.ILibraryManager>();
+            var authorization = services.GetService<MediaBrowser.Controller.Net.IAuthorizationContext>();
+            if (soundHelp == null || library == null || authorization == null
+                || FederationLibraryManager.GetFederationKey(library.GetItemById(itemId)) == null)
+            {
+                return;
+            }
+
+            var info = await authorization.GetAuthorizationInfo(context.HttpContext).ConfigureAwait(false);
+            if (info?.UserId is not { } userId || userId == Guid.Empty)
+            {
+                return;
+            }
+
+            int? audioIndex = null;
+            long? startTicks = null;
+            foreach (var argument in context.ActionArguments)
+            {
+                if (argument.Value == null)
+                {
+                    continue;
+                }
+
+                switch (argument.Key.ToLowerInvariant())
+                {
+                    case "audiostreamindex" when argument.Value is int index:
+                        audioIndex ??= index;
+                        break;
+                    case "starttimeticks" when argument.Value is long ticks:
+                        startTicks ??= ticks;
+                        break;
+                    default:
+                        var type = argument.Value.GetType();
+                        if (type.GetProperty("DeviceProfile") != null)
+                        {
+                            audioIndex = type.GetProperty("AudioStreamIndex")?.GetValue(argument.Value) as int? ?? audioIndex;
+                            startTicks = type.GetProperty("StartTimeTicks")?.GetValue(argument.Value) as long? ?? startTicks;
+                        }
+
+                        break;
+                }
+            }
+
+            await soundHelp.ApplyAsync(
+                response,
+                new SoundHelpService.SoundHelpRequest(userId, itemId, Get(context.HttpContext), audioIndex, startTicks, info.User?.AudioLanguagePreference),
+                context.HttpContext.RequestAborted).ConfigureAwait(false);
         }
     }
 }
