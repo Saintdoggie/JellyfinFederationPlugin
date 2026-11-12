@@ -137,6 +137,80 @@ public class DevicePlayFitTests
         Assert.Equal(PlayFit.Direct, DevicePlayFit.Evaluate(Browser(), "mkv", streams, "eng").Fit);
         Assert.Equal(PlayFit.AudioOnly, DevicePlayFit.Evaluate(Browser(), "mkv", streams, "ger").Fit);
     }
+
+    // A film as a remux carries it: lossless sound first, a lighter track beside it.
+    private static List<MediaStream> RemuxTracks(string second = "aac", string secondLanguage = "eng", string? secondTitle = null)
+        => new()
+        {
+            new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264", Height = 1080, Width = 1920, BitDepth = 8, Level = 41 },
+            new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "truehd", Language = "eng", Channels = 8, IsDefault = true },
+            new MediaStream { Index = 2, Type = MediaStreamType.Audio, Codec = second, Language = secondLanguage, Channels = 6, Title = secondTitle },
+            new MediaStream { Index = 3, Type = MediaStreamType.Subtitle, Codec = "subrip", Language = "eng" }
+        };
+
+    [Fact]
+    public void PlayableAudio_PrefersATrackTheDevicePlaysInTheSameLanguage()
+        => Assert.Equal(2, DevicePlayFit.PlayableAudioIndex(Browser(), RemuxTracks(), null));
+
+    [Fact]
+    public void PlayableAudio_LeavesTheDefaultWhenItAlreadyPlays()
+    {
+        var streams = RemuxTracks();
+        streams[1].Codec = "aac";
+
+        Assert.Null(DevicePlayFit.PlayableAudioIndex(Browser(), streams, null));
+    }
+
+    [Theory]
+    [InlineData("dts", "eng", null)]          // nothing the device plays
+    [InlineData("aac", "fre", null)]          // plays, but another language
+    [InlineData("aac", "eng", "Director's Commentary")]
+    public void PlayableAudio_LeavesTheDefaultWhenNoSuitableTrackExists(string codec, string language, string? title)
+        => Assert.Null(DevicePlayFit.PlayableAudioIndex(Browser(), RemuxTracks(codec, language, title), null));
+
+    [Fact]
+    public void PlayableAudio_NeedsADeviceProfileAndASecondTrack()
+    {
+        Assert.Null(DevicePlayFit.PlayableAudioIndex(null, RemuxTracks(), null));
+        Assert.Null(DevicePlayFit.PlayableAudioIndex(new DeviceProfile(), RemuxTracks(), null));
+        Assert.Null(DevicePlayFit.PlayableAudioIndex(Browser(), Streams("h264", "truehd"), null));
+    }
+
+    [Fact]
+    public void PlayableAudio_FollowsTheViewersLanguage()
+    {
+        var streams = RemuxTracks();
+        streams.Add(new MediaStream { Index = 4, Type = MediaStreamType.Audio, Codec = "dts", Language = "ger", Channels = 6 });
+        streams.Add(new MediaStream { Index = 5, Type = MediaStreamType.Audio, Codec = "aac", Language = "ger", Channels = 2 });
+
+        Assert.Equal(5, DevicePlayFit.PlayableAudioIndex(Browser(), streams, "de"));
+        Assert.Equal(2, DevicePlayFit.PlayableAudioIndex(Browser(), streams, "eng"));
+    }
+
+    [Fact]
+    public void WithPlayableAudioFirst_MarksOnlyThatTrackDefault_WithoutChangingTheSharedStreams()
+    {
+        var streams = RemuxTracks();
+
+        var offered = DevicePlayFit.WithPlayableAudioFirst(Browser(), streams, null);
+
+        Assert.False(offered[1].IsDefault);
+        Assert.True(offered[2].IsDefault);
+        Assert.Equal("aac", offered[2].Codec);
+        Assert.Equal(6, offered[2].Channels);
+        Assert.Same(streams[0], offered[0]);
+        Assert.Same(streams[3], offered[3]);
+        Assert.True(streams[1].IsDefault);
+        Assert.False(streams[2].IsDefault);
+    }
+
+    [Fact]
+    public void WithPlayableAudioFirst_ReturnsTheSameListWhenNothingChanges()
+    {
+        var streams = Streams("h264", "aac");
+
+        Assert.Same(streams, DevicePlayFit.WithPlayableAudioFirst(Browser(), streams, null));
+    }
 }
 
 /// <summary>How the fit and the language move the ranking.</summary>

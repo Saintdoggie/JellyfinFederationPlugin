@@ -30,13 +30,25 @@ namespace Jellyfin.Plugin.Federation.Services
                 || app.Contains("chrome", StringComparison.Ordinal)
                 || app.Contains("firefox", StringComparison.Ordinal)
                 || app == "android"
-                || app.Contains("jellyfin") && app.Contains("android", StringComparison.Ordinal))
+                || IsAndroidPhoneApp(app))
             {
                 return false;
             }
 
             return true;
         }
+
+        /// <summary>
+        /// The Jellyfin phone/tablet app for Android. Its player hands a direct-play
+        /// Http source to an HLS-only reader, which rejects an ordinary file, so it
+        /// keeps the server-relayed route. The Android TV app is a different player:
+        /// it opens the source's own address as an ordinary file, which is what lets
+        /// a TV fetch a friend's original straight from the friend's server.
+        /// </summary>
+        private static bool IsAndroidPhoneApp(string app)
+            => app.Contains("jellyfin", StringComparison.Ordinal)
+                && app.Contains("android", StringComparison.Ordinal)
+                && !app.Contains("tv", StringComparison.Ordinal);
 
         private static string Header(HttpRequest? request, string name)
             => request?.Headers.TryGetValue(name, out var value) == true ? value.ToString() : string.Empty;

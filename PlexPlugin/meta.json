@@ -5,7 +5,7 @@
   "overview": "Adds Plex catalogs, Companion connections, Plex metadata and guided imports, and .strm export to Jellyfin Federation. Requires the Jellyfin Federation plugin at exactly the same version; Jellyfin friends do not need it.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.217",
+  "version": "0.0.218",
   "changelog": "First standalone build: installs like any plugin instead of copying a DLL into the Federation plugin folder.",
   "targetAbi": "12.0.0.0",
   "timestamp": "2026-11-10T14:30:00Z"

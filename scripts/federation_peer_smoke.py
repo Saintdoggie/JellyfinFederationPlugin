@@ -353,6 +353,40 @@ def smoke():
             status, _, _ = no_redirect(base, f'/Videos/{item_id}/stream?static=true&mediaSourceId={item_id}&PlaySessionId=qa-play-1',
                 {**viewer, 'Range': 'bytes=0-1023'})
             qa.check(status in (200, 206, 302), f'Player stream request answered {status}')
+            # A TV app is offered the friend's original to play as stored (it
+            # opens the copy's own address, or this server's static stream); the
+            # Android phone app, whose player reads such an address as a playlist,
+            # keeps the relayed route.
+            def app_source(client, device_id):
+                login_header = {'Authorization': f'MediaBrowser Client="{client}", Device="Sandbox", DeviceId="{device_id}", Version="1"'}
+                login = qa.request(base, '/Users/AuthenticateByName', login_header, {'Username':'qa-viewer','Pw':''})
+                app = {'Authorization': login_header['Authorization'] + ', Token="' + login['AccessToken'] + '"'}
+                profile = {'MaxStreamingBitrate': 120000000, 'DirectPlayProfiles': [{'Type': 'Video'}],
+                    'TranscodingProfiles': [{'Type': 'Video', 'Container': 'ts', 'Protocol': 'hls', 'VideoCodec': 'h264', 'AudioCodec': 'aac', 'Context': 'Streaming'}]}
+                answer = qa.request(base, f'/Items/{item_id}/PlaybackInfo?userId={viewer_id}', app,
+                    {'UserId': viewer_id, 'DeviceProfile': profile, 'EnableDirectPlay': True, 'EnableDirectStream': True, 'EnableTranscoding': True})
+                return app, answer['MediaSources'][0]
+            # Direct mode: there the plugin describes the source per app. (In
+            # Proxy mode Jellyfin builds it from the item's own address.)
+            def set_mode(mode):
+                current = qa.request(base, '/Plugins/Federation/Configuration', admin)
+                current['RemoteServers'][0]['StreamingMode'] = mode
+                qa.request(base, '/Plugins/Federation/Configuration', admin, current)
+                refreshed()
+            set_mode('Direct')
+            tv, tv_source = app_source('Jellyfin Android TV', 'peer-qa-tv')
+            qa.check(tv_source.get('SupportsDirectPlay') is True, f'TV app is not offered the original to play as stored: {tv_source.get("SupportsDirectPlay")}')
+            qa.check(not tv_source.get('TranscodingUrl'), 'TV app was given a conversion address for a title it plays as stored')
+            qa.check(tv_source.get('IsRemote') and '/Plugins/Federation/DirectStream/' in (tv_source.get('Path') or ''), 'TV app\'s direct address is not the friend\'s stream gateway')
+            _, tv_bytes = qa.request(*target(tv_source['Path']), {'Range': 'bytes=137-648'}, expected=206, raw=True)
+            qa.check(tv_bytes == payload[137:649], 'TV app\'s direct address did not serve the original')
+            status, _, _ = no_redirect(base, f'/Videos/{item_id}/stream?static=true&mediaSourceId={tv_source["Id"]}', {**tv, 'Range': 'bytes=0-1023'})
+            qa.check(status in (200, 206, 302), f'TV app\'s direct request answered {status}')
+            _, phone_source = app_source('Jellyfin Android', 'peer-qa-phone')
+            qa.check(phone_source.get('SupportsDirectPlay') is not True, 'Android phone app was offered a raw address its player cannot read')
+            qa.check(phone_source.get('TranscodingUrl'), 'Android phone app was left with no way to play')
+            set_mode('Proxy')
+            print('PEER PASS: TV app is offered the original as stored; Android phone app keeps the relayed route', flush=True)
             connection = qa.request(base, '/Plugins/Federation/Playback/Connection', viewer)
             qa.check(connection.get('federated') and connection.get('friend') == settings['RemoteServers'][0]['Name'], f'Playback Info connection wrong: {connection}')
             qa.check(connection.get('route') in ('direct', 'relay') and connection.get('routeText'), 'Playback Info has no route')

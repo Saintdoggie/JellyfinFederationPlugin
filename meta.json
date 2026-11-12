@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.217",
-  "changelog": "0.0.217: Fixes native apps failing to play federated titles that this server converts. The local conversion request was rebuilt with the friend-facing filter, which removed the player's URL token before Jellyfin generated the playlist links; the app then stopped at 0 seconds or asked to retry with transcoding. The request now keeps its original local parameters and only the bitrate and resolution limits change. Requests forwarded to a friend still have local credentials removed. External-subtitle burn-in on a remote sidecar track can still fail. Physical-device checks remain pending.",
+  "version": "0.0.218",
+  "changelog": "0.0.218: The Android TV app now plays a friend's or linked server's title as stored, fetched straight from that server, instead of always going through a conversion on this server. When a title's usual sound track does not play on the device (TrueHD or DTS in a browser, for example) and it has another track in the same language that does, that track is now offered first; a track you pick yourself is still used. The Android phone app still plays through this server, and a friend's separate subtitle file can still fail when that friend is not converting the title.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-12T02:45:00Z",
+  "timestamp": "2026-11-12T04:02:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

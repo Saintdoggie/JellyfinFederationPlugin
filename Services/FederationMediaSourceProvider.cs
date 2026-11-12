@@ -562,7 +562,15 @@ namespace Jellyfin.Plugin.Federation.Services
                         Container = advertised.Container,
                         Size = advertised.Size,
                         Bitrate = advertised.Bitrate,
-                        MediaStreams = advertised.MediaStreams,
+
+                        // A copy carrying several sound tracks in the viewer's language
+                        // is offered with one this device plays as the default, so a
+                        // browser gets the AC-3 or AAC track instead of asking for the
+                        // TrueHD one to be converted. The viewer's own pick still wins.
+                        MediaStreams = DevicePlayFit.WithPlayableAudioFirst(
+                            FederationPlaybackProfileFilter.Get(_httpContextAccessor.HttpContext),
+                            advertised.MediaStreams ?? new List<MediaStream>(),
+                            authorization?.User?.AudioLanguagePreference).ToList(),
                         // Native apps that can fetch the original directly avoid a
                         // conversion; browser and known Android raw-HTTP paths keep
                         // the container-aware Direct Stream/transcode route.
@@ -744,7 +752,10 @@ namespace Jellyfin.Plugin.Federation.Services
                             Container = advertised.Container,
                             Size = advertised.Size,
                             Bitrate = advertised.Bitrate,
-                            MediaStreams = advertised.MediaStreams,
+                            MediaStreams = DevicePlayFit.WithPlayableAudioFirst(
+                                FederationPlaybackProfileFilter.Get(context),
+                                advertised.MediaStreams ?? new List<MediaStream>(),
+                                authorization?.User?.AudioLanguagePreference).ToList(),
                             SupportsDirectPlay = NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, nativeIdentity.Client, nativeIdentity.Device),
                             SupportsDirectStream = true,
                             SupportsTranscoding = false,

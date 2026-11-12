@@ -144,9 +144,18 @@ Playback, authorization, and downloads:
   `PeerPlaybackGrants`, HLS/progressive/subtitle paths, and native loopback URLs.
 - `Services/NativeClientCapabilities.cs` resolves native app identity from the
   authenticated session and standard Jellyfin headers, including token-only requests.
-  Raw HTTP Direct Play is enabled only for suitable native transports; known Android
-  raw-HTTP and browser paths retain Direct Stream/transcode behavior. This is transport
-  detection, not a codec blacklist.
+  Raw HTTP Direct Play is enabled only for suitable native transports. The Android
+  phone app (its player reads a direct-play Http source as an HLS playlist) and
+  browsers stay off it; since 0.0.218 the Android TV app is on it, because it opens
+  a remote source's own address as an ordinary file. This matters: a source offered
+  with `SupportsDirectPlay=false` makes Jellyfin hand every server-driven app a
+  conversion address (HLS through this server's ffmpeg) even when the device plays
+  the file as stored; only jellyfin-web still fetches the original then. This is
+  transport detection, not a codec blacklist.
+- Since 0.0.218 a federated source is offered with a sound track the device plays
+  marked default when the viewer's usual track does not play and another in the same
+  language does (`DevicePlayFit.PlayableAudioIndex`, `WithPlayableAudioFirst`). The
+  shared stream objects are copied, never changed; an explicit track pick still wins.
 - Playback Info reports play method, observed transport, conversion location, and
   original/delivered formats independently. Unknown is not Direct Play.
 - Proxy/Plex over-cap sources require conversion. Never throttle the original input

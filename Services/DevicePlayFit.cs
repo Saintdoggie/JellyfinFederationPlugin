@@ -138,6 +138,105 @@ namespace Jellyfin.Plugin.Federation.Services
             return null;
         }
 
+        /// <summary>
+        /// The sound track to offer this device first, when the one the viewer
+        /// would normally get does not play on it and another track in the same
+        /// language does (a film carrying TrueHD beside AC-3 or AAC, for example).
+        /// Null leaves the copy's own default alone: the device said nothing about
+        /// what it plays, the normal track already plays, or no track in that
+        /// language plays. Commentary tracks are never chosen.
+        /// </summary>
+        /// <param name="profile">What the player said it plays.</param>
+        /// <param name="streams">The copy's streams.</param>
+        /// <param name="preferredLanguage">The viewer's sound language.</param>
+        internal static int? PlayableAudioIndex(DeviceProfile? profile, IReadOnlyList<MediaStream>? streams, string? preferredLanguage)
+        {
+            var audioStreams = streams?.Where(s => s.Type == MediaStreamType.Audio).ToList() ?? new List<MediaStream>();
+            var playProfiles = profile?.DirectPlayProfiles?.Where(p => p != null && p.Type == DlnaProfileType.Video).ToList();
+            if (audioStreams.Count < 2 || playProfiles == null || playProfiles.Count == 0)
+            {
+                return null;
+            }
+
+            var video = streams!.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            bool Plays(MediaStream track)
+                => !string.IsNullOrWhiteSpace(track.Codec)
+                    && playProfiles.Any(p => !string.IsNullOrWhiteSpace(p.AudioCodec)
+                        && (video == null || Lists(p.VideoCodec, video.Codec))
+                        && Lists(p.AudioCodec, track.Codec))
+                    && AudioConditionsPass(profile!, track);
+
+            var language = string.IsNullOrWhiteSpace(preferredLanguage) ? DefaultLanguage : preferredLanguage!;
+            var usual = PickAudio(audioStreams, language).Stream;
+            if (usual == null || string.IsNullOrWhiteSpace(usual.Codec) || Plays(usual))
+            {
+                return null;
+            }
+
+            bool SameAsUsual(MediaStream track)
+                => string.IsNullOrWhiteSpace(usual.Language) || IsUndetermined(usual.Language!)
+                    ? string.IsNullOrWhiteSpace(track.Language) || IsUndetermined(track.Language!)
+                    : !string.IsNullOrWhiteSpace(track.Language) && SameLanguage(track.Language!, usual.Language!);
+
+            return audioStreams
+                .Where(track => !ReferenceEquals(track, usual) && SameAsUsual(track) && !IsCommentary(track) && Plays(track))
+                .OrderByDescending(track => track.Channels ?? 0)
+                .ThenBy(track => track.Index)
+                .Select(track => (int?)track.Index)
+                .FirstOrDefault();
+        }
+
+        /// <summary>
+        /// The copy's streams as this device should see them: unchanged, or a
+        /// copy of the list in which the track from <see cref="PlayableAudioIndex"/>
+        /// is the only default sound track, so Jellyfin picks it unless the viewer
+        /// chose a track themselves. The given list and its streams are never
+        /// changed (they are shared with the catalogue and other devices).
+        /// </summary>
+        /// <param name="profile">What the player said it plays.</param>
+        /// <param name="streams">The copy's streams.</param>
+        /// <param name="preferredLanguage">The viewer's sound language.</param>
+        internal static IReadOnlyList<MediaStream> WithPlayableAudioFirst(DeviceProfile? profile, IReadOnlyList<MediaStream> streams, string? preferredLanguage)
+        {
+            var index = PlayableAudioIndex(profile, streams, preferredLanguage);
+            if (index == null)
+            {
+                return streams;
+            }
+
+            return streams.Select(stream =>
+            {
+                if (stream.Type != MediaStreamType.Audio || stream.IsDefault == (stream.Index == index.Value))
+                {
+                    return stream;
+                }
+
+                var copy = Copy(stream);
+                copy.IsDefault = stream.Index == index.Value;
+                return copy;
+            }).ToList();
+        }
+
+        private static readonly System.Reflection.PropertyInfo[] StreamProperties = typeof(MediaStream)
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(p => p.CanRead && p.SetMethod is { IsPublic: true } && p.GetIndexParameters().Length == 0)
+            .ToArray();
+
+        private static MediaStream Copy(MediaStream stream)
+        {
+            var copy = new MediaStream();
+            foreach (var property in StreamProperties)
+            {
+                property.SetValue(copy, property.GetValue(stream));
+            }
+
+            return copy;
+        }
+
+        private static bool IsCommentary(MediaStream track)
+            => (track.Title ?? string.Empty).Contains("comment", StringComparison.OrdinalIgnoreCase)
+                || (track.DisplayTitle ?? string.Empty).Contains("comment", StringComparison.OrdinalIgnoreCase);
+
         // Sound formats MP4 cannot carry when copied (players would get no sound).
         private static bool CopyFits(string wrapper, string codec)
             => wrapper != "mp4" || Codec(codec) is "aac" or "mp3" or "ac3" or "eac3" or "opus" or "flac" or "alac";

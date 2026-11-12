@@ -24,7 +24,8 @@ public class NativeClientCapabilitiesTests
 
     [Theory]
     [InlineData("Jellyfin for Android", false)]
-    [InlineData("Jellyfin Android TV", false)]
+    [InlineData("Jellyfin Android TV", true)]
+    [InlineData("Jellyfin Android", false)]
     [InlineData("Android", false)]
     [InlineData("Jellyfin Web", false)]
     [InlineData("Firefox", false)]

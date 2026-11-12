@@ -1,5 +1,16 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.218 — apps play friends' titles as stored
+
+Owner's rule (2026-11-11): apps must play a friend's or linked server's title directly; converting on this server is the last resort, not the default.
+
+- [x] Android TV app is offered a friend's original to play as stored. Cause of the conversions: every federated source was offered with `SupportsDirectPlay=false` to any client named "Jellyfin ... Android ...", and Jellyfin then gives a server-driven app only a conversion address (HLS through this server's ffmpeg), even for a file the TV plays as stored. The TV app opens a remote source's own address as a file, so in Direct mode it now fetches from the friend's `DirectStream` gateway itself. The Android phone app stays on the relayed route: its player reads a direct-play Http source as an HLS playlist.
+- [x] A browser or app is offered a sound track it plays when the usual one does not and the copy has another in the same language (`DevicePlayFit.PlayableAudioIndex`).
+- [x] Two-server check: TV identity gets the original with no conversion address and a working direct request; phone identity keeps the relayed route (`scripts/federation_peer_smoke.py`).
+- [ ] Not checked on a physical TV, phone or desktop app.
+- [ ] A friend's separate subtitle file (sidecar) has no readable address on this server when the friend is not the one converting: showing it, converting it to another text format and burning it in all fail (`FederationLibraryManager.RedactStreamPath` placeholder). Subtitles inside the file are not affected. Needs a signed relay for the friend's subtitle file.
+- [ ] Android phone app still gets its video through this server's ffmpeg (copy when the device plays the codecs). A direct route needs a source shape that app's player accepts.
+
 ## Unreleased watch-party, integration and playback review branch
 
 - [x] Add negotiated party wire v2: per-link connection IDs and sequences, send-time-aware heartbeats, bounded work/outbox queues, one pending heartbeat per link, and version-1 compatibility for older friends.
