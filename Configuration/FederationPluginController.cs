@@ -351,6 +351,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.LinkKey = string.Empty;
                         server.IssuedLinkKey = string.Empty;
                         server.ViaLinkedServerId = string.Empty;
+                        server.LinkCatalog = LinkCatalogDirection.BothWays;
+                        server.LinkCatalogPeer = null;
                     }
 
                     // Pairing is made and changed only by the pairing service: a paired
@@ -406,6 +408,8 @@ namespace Jellyfin.Plugin.Federation.Api
                         server.LinkKey = oldServer.LinkKey;
                         server.IssuedLinkKey = oldServer.IssuedLinkKey;
                         server.ViaLinkedServerId = oldServer.ViaLinkedServerId;
+                        server.LinkCatalog = oldServer.LinkCatalog;
+                        server.LinkCatalogPeer = oldServer.LinkCatalogPeer;
                         if (oldServer.IsThroughLink)
                         {
                             server.Url = oldServer.Url;

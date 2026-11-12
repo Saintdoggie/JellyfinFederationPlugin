@@ -62,6 +62,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Clock, replaceable in tests.</summary>
         internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
+        /// <summary>Test seam: what happens after a link's direction changed (default: remove or sync that server's titles).</summary>
+        internal Func<RemoteServer, bool, Task>? AfterDirection { get; set; }
+
         /// <summary>Test seam: what happens after friends were added, changed or removed (default: sync and reconcile).</summary>
         internal Func<IReadOnlyList<string>, IReadOnlyList<LibraryMapping>, Task>? AfterImport { get; set; }
 
@@ -178,7 +181,12 @@ namespace Jellyfin.Plugin.Federation.Services
                     pending?.ReceivedKey != null,
                     pending == null ? 0 : MaxAttempts - pending.Attempts,
                     servers.Where(s => s.ViaLinkedServerId == friend.Id).Select(s => s.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList(),
-                    CannotLink(friend)));
+                    CannotLink(friend),
+                    friend.LinkCatalog,
+                    friend.LinkCatalogPeer,
+                    LinkCatalog.ReceivesHere(friend),
+                    LinkCatalog.SendsThere(friend),
+                    friend.Linked ? LinkCatalog.Describe(friend) : null));
             }
 
             return result;
@@ -272,6 +280,159 @@ namespace Jellyfin.Plugin.Federation.Services
             return TryComplete(friend, pending)
                 ? (true, $"Linked with {friend.Name}. Its friends are being added here.")
                 : (true, $"{friend.Name} accepted this code. Now type this server's code on {friend.Name}.");
+        }
+
+        /// <summary>
+        /// Admin: sets which way titles flow over the link with
+        /// <paramref name="friendId"/> (from this side), and tells the linked
+        /// server so both store the same value. When it can't be told, this side
+        /// keeps the new value and the narrower of the two applies until they
+        /// agree (<see cref="LinkCatalog.ReceivesHere"/>).
+        /// </summary>
+        internal async Task<(bool Ok, string Message)> SetDirectionAsync(string friendId, int direction, CancellationToken cancellationToken)
+        {
+            var friend = Config.RemoteServers?.FirstOrDefault(s => s.Id == friendId && !s.IsThroughLink);
+            if (friend == null || !friend.Linked)
+            {
+                return (false, "This server is not linked.");
+            }
+
+            if (!LinkCatalog.IsValid(direction))
+            {
+                return (false, "Unknown direction.");
+            }
+
+            var value = (LinkCatalogDirection)direction;
+            var receivedBefore = LinkCatalog.ReceivesHere(friend);
+            friend.LinkCatalog = value;
+            var (status, answer) = await _clientFactory.GetClient(friend).SendLinkAsync<LinkAnswer>(HttpMethod.Post, "Direction", new LinkDirectionBody { Direction = (int)value }, friend.LinkKey, cancellationToken).ConfigureAwait(false);
+            var told = status is >= 200 and < 300 && answer?.Ok == true;
+            if (told)
+            {
+                friend.LinkCatalogPeer = value;
+            }
+
+            Plugin.Instance!.SaveConfiguration();
+            _logger.LogInformation("[Federation] Link with {Name}: {Direction}", friend.Name, LinkCatalog.Describe(friend));
+            await DirectionChangedAsync(friend, receivedBefore).ConfigureAwait(false);
+            if (told)
+            {
+                return (true, LinkCatalog.Describe(friend) + ". " + friend.Name + " has the same setting.");
+            }
+
+            return (true, status == 404
+                ? $"Saved here, but {friend.Name} runs an older version that can't store this. Update the other server; until then the narrower setting applies."
+                : $"Saved here, but {friend.Name} could not be told. It is told again when it answers; until then the narrower setting applies.");
+        }
+
+        /// <summary>Peer: the linked server's admin changed the direction (sent from its side).</summary>
+        internal async Task<LinkAnswer> PeerSetDirectionAsync(RemoteServer caller, LinkDirectionBody? body)
+        {
+            if (body == null || !LinkCatalog.IsValid(body.Direction))
+            {
+                return new LinkAnswer { Ok = false, Error = "invalid" };
+            }
+
+            var mine = LinkCatalog.Mirror((LinkCatalogDirection)body.Direction);
+            var receivedBefore = LinkCatalog.ReceivesHere(caller);
+            caller.LinkCatalog = mine;
+            caller.LinkCatalogPeer = mine;
+            Plugin.Instance!.SaveConfiguration();
+            _logger.LogInformation("[Federation] {Name} changed the link: {Direction}", caller.Name, LinkCatalog.Describe(caller));
+            await DirectionChangedAsync(caller, receivedBefore).ConfigureAwait(false);
+            return new LinkAnswer { Ok = true, Linked = true };
+        }
+
+        /// <summary>
+        /// Notes what <paramref name="linked"/> reported in its status: its own
+        /// direction (turned to this side). Returns true when that changed what
+        /// this server shows.
+        /// </summary>
+        internal async Task<bool> NotePeerDirectionAsync(RemoteServer linked, int? reported)
+        {
+            if (reported is not int value || !LinkCatalog.IsValid(value))
+            {
+                return false;
+            }
+
+            var mirrored = LinkCatalog.Mirror((LinkCatalogDirection)value);
+            if (linked.LinkCatalogPeer == mirrored)
+            {
+                return false;
+            }
+
+            var receivedBefore = LinkCatalog.ReceivesHere(linked);
+            linked.LinkCatalogPeer = mirrored;
+            Plugin.Instance!.SaveConfiguration();
+            if (receivedBefore == LinkCatalog.ReceivesHere(linked))
+            {
+                return false;
+            }
+
+            await DirectionChangedAsync(linked, receivedBefore).ConfigureAwait(false);
+            return true;
+        }
+
+        private async Task DirectionChangedAsync(RemoteServer linked, bool receivedBefore)
+        {
+            if (receivedBefore == LinkCatalog.ReceivesHere(linked))
+            {
+                return;
+            }
+
+            if (AfterDirection != null)
+            {
+                await AfterDirection(linked, receivedBefore).ConfigureAwait(false);
+                return;
+            }
+
+            var services = _services;
+            if (services == null)
+            {
+                return;
+            }
+
+            var linkedId = linked.Id;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var sync = services.GetService<FederationSyncService>();
+                    if (sync == null)
+                    {
+                        return;
+                    }
+
+                    if (receivedBefore)
+                    {
+                        // Its titles stop coming here: take them out now, through
+                        // the same sweep and reconcile as an unticked library.
+                        var persistence = services.GetService<FederationItemPersistenceService>();
+                        var cache = services.GetService<FederationItemCache>();
+                        foreach (var name in sync.PruneUnselectedServerSources())
+                        {
+                            var mapping = Config.LibraryMappings?.FirstOrDefault(m => string.Equals(m.LocalLibraryName, name, StringComparison.OrdinalIgnoreCase));
+                            if (mapping != null && persistence != null)
+                            {
+                                await persistence.ReconcileMappingAsync(mapping, CancellationToken.None).ConfigureAwait(false);
+                            }
+                        }
+
+                        if (cache != null)
+                        {
+                            await cache.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+                        }
+                    }
+                    else if (Config.RemoteServers.Any(s => s.Id == linkedId))
+                    {
+                        await sync.SyncServerAsync(linkedId, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Federation] Applying the link direction failed; the next sync applies it");
+                }
+            });
         }
 
         /// <summary>Peer: the friend's admin clicked Link (shown here so this admin clicks it too).</summary>
@@ -408,6 +569,7 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 try
                 {
+                    await RefreshStatusAsync(linked, cancellationToken).ConfigureAwait(false);
                     await ImportFromAsync(linked, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -415,6 +577,51 @@ namespace Jellyfin.Plugin.Federation.Services
                     _logger.LogWarning(ex, "[Federation] Could not fetch friends from linked server {Name}", linked.Name);
                 }
             }
+        }
+
+        /// <summary>The capabilities this version offers over a link (<c>Peer/Linked/Status</c>).</summary>
+        internal static readonly string[] Capabilities = { "link-direction" };
+
+        /// <summary>Test seam / part 4: adds this server's state (hardware, disk, jobs) to its status answer.</summary>
+        internal static Action<LinkPeerStatus, RemoteServer>? FillStatus { get; set; }
+
+        /// <summary>What this server tells <paramref name="caller"/> about itself.</summary>
+        internal static LinkPeerStatus OwnStatus(RemoteServer caller)
+        {
+            var status = new LinkPeerStatus
+            {
+                Version = Plugin.Instance?.Version?.ToString() ?? string.Empty,
+                Direction = (int)caller.LinkCatalog,
+                Capabilities = Capabilities.ToList()
+            };
+            FillStatus?.Invoke(status, caller);
+            return status;
+        }
+
+        /// <summary>Last status each linked server reported, by local id.</summary>
+        internal ConcurrentDictionary<string, (DateTime AtUtc, LinkPeerStatus? Status, int HttpStatus)> PeerStatus { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Asks <paramref name="linked"/> for its status (version, direction,
+        /// capabilities, ...) and notes the direction it has. Null when it did
+        /// not answer; a 404 means it runs a version older than 0.0.222.
+        /// </summary>
+        internal async Task<LinkPeerStatus?> RefreshStatusAsync(RemoteServer linked, CancellationToken cancellationToken)
+        {
+            if (!linked.Linked || !linked.Enabled)
+            {
+                return null;
+            }
+
+            var (status, body) = await _clientFactory.GetClient(linked).SendLinkAsync<LinkPeerStatus>(HttpMethod.Get, "Status", null, linked.LinkKey, cancellationToken).ConfigureAwait(false);
+            var ok = status is >= 200 and < 300 && body != null;
+            PeerStatus[linked.Id] = (UtcNow(), ok ? body : null, status);
+            if (ok)
+            {
+                await NotePeerDirectionAsync(linked, body!.Direction).ConfigureAwait(false);
+            }
+
+            return ok ? body : null;
         }
 
         /// <summary>
@@ -660,6 +867,9 @@ namespace Jellyfin.Plugin.Federation.Services
             friend.LinkedAtUtc = null;
             friend.LinkKey = string.Empty;
             friend.IssuedLinkKey = string.Empty;
+            friend.LinkCatalog = LinkCatalogDirection.BothWays;
+            friend.LinkCatalogPeer = null;
+            PeerStatus.TryRemove(friend.Id, out _);
             Plugin.Instance!.SaveConfiguration();
             Cancel(friend.Id);
             _logger.LogInformation("[Federation] Unlinked from {Name}", friend.Name);
@@ -818,7 +1028,56 @@ namespace Jellyfin.Plugin.Federation.Services
         bool IAcceptedTheirEntry,
         int AttemptsLeft,
         IReadOnlyList<string> FriendsThrough,
-        string? CannotLink);
+        string? CannotLink,
+        LinkCatalogDirection Direction = LinkCatalogDirection.BothWays,
+        LinkCatalogDirection? PeerDirection = null,
+        bool ReceivesHere = true,
+        bool SendsThere = true,
+        string? DirectionText = null);
+
+    /// <summary>Body of <c>Link/{id}/Direction</c> and <c>Peer/Linked/Direction</c>: a <see cref="LinkCatalogDirection"/> as a number, from the sender's side.</summary>
+    public sealed class LinkDirectionBody
+    {
+        /// <summary>Gets or sets the direction from the sender's side.</summary>
+        public int Direction { get; set; }
+    }
+
+    /// <summary>What a linked server says about itself (<c>Peer/Linked/Status</c>, since 0.0.222).</summary>
+    public sealed class LinkPeerStatus
+    {
+        /// <summary>Gets or sets the plugin version.</summary>
+        public string Version { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the link direction from the answering server's side (a <see cref="LinkCatalogDirection"/> number).</summary>
+        public int? Direction { get; set; }
+
+        /// <summary>Gets or sets what the answering server can do over a link.</summary>
+        public List<string> Capabilities { get; set; } = new();
+
+        /// <summary>Gets or sets whether it may convert, and why not.</summary>
+        public bool MayConvert { get; set; }
+
+        /// <summary>Gets or sets why it may not convert (null when it may).</summary>
+        public string? ConvertNote { get; set; }
+
+        /// <summary>Gets or sets its hardware encoder ("none" when it has none).</summary>
+        public string? Encoder { get; set; }
+
+        /// <summary>Gets or sets CPU threads.</summary>
+        public int CpuThreads { get; set; }
+
+        /// <summary>Gets or sets whether it has ffmpeg.</summary>
+        public bool HasFfmpeg { get; set; }
+
+        /// <summary>Gets or sets free bytes where it keeps job files (null when unknown).</summary>
+        public long? FreeBytes { get; set; }
+
+        /// <summary>Gets or sets jobs it is running now (its own and for linked servers).</summary>
+        public int ActiveJobs { get; set; }
+
+        /// <summary>Gets or sets jobs waiting.</summary>
+        public int QueuedJobs { get; set; }
+    }
 
     /// <summary>Body of <c>Peer/Linked/Verify</c>.</summary>
     public sealed class LinkVerifyBody

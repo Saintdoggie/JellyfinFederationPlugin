@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.222",
+        "changelog": "0.0.222: Linked servers: you can now choose which way titles flow over a link. Both ways (as before), only this server's titles go to the other, or only the other's titles come here. Set it under Friends, on the linked server, Manage, Link; the other server takes the same setting by itself. Friends you use through the link are not affected. Useful when one server should see everything and the other should stay as it is.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-12T15:33:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.222/Jellyfin.Federation.zip",
+        "checksum": "6abc1faeee817f0ec396b2395a98d580"
+      },
+      {
         "version": "0.0.221",
         "changelog": "0.0.221: When a friend or linked server has a title in more than one version (a 4K HEVC file beside a 1080p H.264 one, for example), each device now gets the version it can play as it is, instead of the biggest one converted. You can still pick a version yourself. A copy that plays as stored is also preferred over one that needs its picture converted when the copies are on different servers. The Jellyfin desktop app is now offered originals directly from the server that has them.",
         "targetAbi": "12.0.0.0",

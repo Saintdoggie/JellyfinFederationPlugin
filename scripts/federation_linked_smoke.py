@@ -42,6 +42,8 @@ def smoke():
             '-c:a', 'aac', '-metadata:s:a:0', 'language=eng', '-y', media / 'QA Linked (2026).mp4'])
         for role in roles:
             (work / f'media-{role}').mkdir(exist_ok=True)
+        # A has a title of its own too: the link's direction decides whether B shows it.
+        shutil.copy(media / 'QA Linked (2026).mp4', work / 'media-a' / 'QA OwnA (2026).mp4')
         qa.run(['podman', 'network', 'create', network])
         servers = {}
         for role in roles:
@@ -68,7 +70,7 @@ def smoke():
             settings['ServerUrl'] = f'http://{name}:8096'
             settings['InternalServerUrl'] = 'http://127.0.0.1:8096'
             qa.request(base, '/Plugins/Federation/Configuration', admin, settings)
-            if role == 'c':
+            if role in ('a', 'c'):
                 qa.request(base, '/Library/VirtualFolders?name=QA%20Native&collectionType=movies&refreshLibrary=true', admin,
                     {'LibraryOptions':{'PathInfos':[{'Path':'/media'}],'EnableRealtimeMonitor':False,'EnableInternetProviders':False}}, expected=204)
             servers[role] = {'name': name, 'base': base, 'admin': admin, 'host': f'http://{name}:8096',
@@ -148,7 +150,9 @@ def smoke():
             qa.request(b['base'], '/Plugins/Federation/Refresh', b['admin'], {})
             items = qa.request(b['base'], '/Items?Recursive=true&IncludeItemTypes=Movie', b['viewer'])['Items']
             return items or None
-        movie = qa.wait_for(b_movies, 'C\'s movie did not appear on B', 120)[0]
+        def b_titles():
+            return sorted(m['Name'] for m in (b_movies() or []))
+        movie = qa.wait_for(lambda: next((m for m in (b_movies() or []) if m['Name'] == 'QA Linked'), None), 'C\'s movie did not appear on B', 120)
         body = {'UserId': b['viewer_id'], 'MaxStreamingBitrate': 120000000, 'EnableDirectPlay': True, 'EnableDirectStream': True, 'EnableTranscoding': True,
                 'DeviceProfile': {'MaxStreamingBitrate': 120000000,
                     'DirectPlayProfiles': [{'Type':'Video','Container':'mp4,mov','VideoCodec':'h264','AudioCodec':'aac'}],
@@ -160,6 +164,38 @@ def smoke():
         got, head = qa.request(c['base'] + target[len(c['host']):], '', {'Range': 'bytes=0-65535'}, expected=206, raw=True)
         qa.check(head[4:8] == b'ftyp', 'C did not send the MP4 file')
         print('LINKED PASS: B\'s viewer plays C\'s movie; the stream goes straight to C', flush=True)
+
+        stage = 'link direction: B stops showing A\'s own titles; friends used through the link stay'
+        own_library = next(l['ItemId'] for l in qa.request(a['base'], '/Library/VirtualFolders', a['admin']) if l['Name'] == 'QA Native')
+        settings = qa.request(b['base'], '/Plugins/Federation/Configuration', b['admin'])
+        if not any(src.get('ServerId') == a_on_b for m in settings.get('LibraryMappings') or [] for src in m.get('RemoteLibrarySources') or []):
+            target = next((m for m in settings.get('LibraryMappings') or [] if m.get('MediaType') == 'Movie'), None)
+            if target is None:
+                target = {'LocalLibraryName':'Movies','MediaType':'Movie','Enabled':True,'AutoProvision':True,'RemoteServerIds':[],'RemoteLibrarySources':[]}
+                settings.setdefault('LibraryMappings', []).append(target)
+            target.setdefault('RemoteServerIds', []).append(a_on_b)
+            target.setdefault('RemoteLibrarySources', []).append({'ServerId':a_on_b,'RemoteLibraryId':own_library,'RemoteLibraryName':'QA Native'})
+            qa.request(b['base'], '/Plugins/Federation/Configuration', b['admin'], settings)
+            qa.request(b['base'], '/Plugins/Federation/ProvisionLibraries', b['admin'], {})
+        qa.wait_for(lambda: b_titles() == ['QA Linked', 'QA OwnA'] or None, 'B did not show A\'s own title beside C\'s', 120)
+        both = code_on(b, a_on_b)
+        qa.check(both['direction'] == 0 and both['receivesHere'] and both['sendsThere'], f'A new link is not both ways: {both}')
+        refused = qa.request(b['base'], f'/Plugins/Federation/Link/{a_on_b}/Direction', b['admin'], {'Direction': 7})
+        qa.check(not refused['success'], 'An unknown direction was accepted')
+        changed = qa.request(b['base'], f'/Plugins/Federation/Link/{a_on_b}/Direction', b['admin'], {'Direction': 1})
+        qa.check(changed['success'], f'B could not set the direction: {changed}')
+        qa.wait_for(lambda: b_titles() == ['QA Linked'] or None, 'A\'s own title stayed on B, or C\'s title went with it', 120)
+        on_a = code_on(a, b_on_a)
+        qa.check(on_a['direction'] == 2 and on_a['receivesHere'] and not on_a['sendsThere'], f'A does not show the same direction from its side: {on_a}')
+        qa.check([s for s in friends_of(b) if s.get('ViaLinkedServerId') == a_on_b], 'The friend used through the link was dropped with the titles')
+        status, _, _ = no_redirect(a['base'], '/Plugins/Federation/Peer/Linked/Direction', {})
+        qa.check(status in (401, 405), f'The peer direction route answered an anonymous caller (HTTP {status})')
+        # Either server's admin can change it: A sets it back.
+        back = qa.request(a['base'], f'/Plugins/Federation/Link/{b_on_a}/Direction', a['admin'], {'Direction': 0})
+        qa.check(back['success'], f'A could not set the direction back: {back}')
+        qa.wait_for(lambda: b_titles() == ['QA Linked', 'QA OwnA'] or None, 'A\'s own title did not come back on B', 120)
+        qa.check(code_on(b, a_on_b)['direction'] == 0, 'B did not learn that A set the link back to both ways')
+        print('LINKED PASS: direction set on B hides A\'s own title there (C\'s stays), A shows it from its side, A sets it back and the title returns', flush=True)
 
         stage = 'removing C on A removes it from B; unlinking clears both'
         refused = qa.request(b['base'], f'/Plugins/Federation/Servers/{through[0]["Id"]}', b['admin'], method='DELETE', expected=409)

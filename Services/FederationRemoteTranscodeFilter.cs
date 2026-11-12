@@ -672,6 +672,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return handoff.Entry.GetSourcesSnapshot()
                 .Where(s => !string.Equals(s.ServerId, handoff.ServerId, StringComparison.OrdinalIgnoreCase)
+                    && !LinkCatalog.IsHiddenLinkedSource(_federationManager.GetServer(s.ServerId))
                     && FederationMediaSourceProvider.UsesRemoteTranscode(_federationManager.GetServer(s.ServerId)))
                 .GroupBy(s => s.ServerId, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())

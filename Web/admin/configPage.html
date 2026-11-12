@@ -3028,7 +3028,7 @@
 
                     function linkStateKey(st) {
                         if (!st) { return 'idle'; }
-                        if (st.linked) { return 'linked|' + (st.friendsThrough || []).join(','); }
+                        if (st.linked) { return 'linked|' + (st.friendsThrough || []).join(',') + '|' + st.direction + '|' + st.receivesHere + '|' + st.sendsThere; }
                         if (st.code) { return 'pending|' + st.theyAcceptedMyEntry + '|' + st.iAcceptedTheirEntry; }
                         return st.peerAsked ? 'asked' : 'idle';
                     }
@@ -3059,6 +3059,23 @@
                                 var through = st.friendsThrough || [];
                                 html += '<p class="fieldDescription">Linked. This server and ' + escapeHtml(name) + ' use each other\'s friends as their own; settings stay separate.</p>';
                                 html += '<p class="fed-hint">' + (through.length ? through.length + ' friend(s) used through ' + escapeHtml(name) + ': ' + escapeHtml(through.join(', ')) : 'No friends used through ' + escapeHtml(name) + ' yet.') + '</p>';
+                                // Which way titles flow over this link; either server's admin can change it.
+                                var direction = st.direction || 0;
+                                var choices = [
+                                    [0, 'Both ways: each server shows the other\'s titles'],
+                                    [1, 'Only this server\'s titles go to ' + name],
+                                    [2, 'Only ' + name + '\'s titles come here']
+                                ];
+                                html += '<label class="fed-label" for="fedLinkDirection-' + escapeHtml(id) + '">Titles shared over this link</label>';
+                                html += '<select class="emby-select fed-select fed-link-direction" id="fedLinkDirection-' + escapeHtml(id) + '" data-id="' + escapeHtml(id) + '">';
+                                choices.forEach(function (c) {
+                                    html += '<option value="' + c[0] + '"' + (c[0] === direction ? ' selected' : '') + '>' + escapeHtml(c[1]) + '</option>';
+                                });
+                                html += '</select>';
+                                if (st.directionText) {
+                                    var agreed = st.peerDirection === null || st.peerDirection === undefined || (st.receivesHere === (direction !== 1) && st.sendsThere === (direction !== 2));
+                                    html += '<p class="fed-hint">Now: ' + escapeHtml(st.directionText) + '.' + (agreed ? '' : ' ' + escapeHtml(name) + ' has a different setting, so the narrower of the two applies until they match.') + ' Friends used through the link are not affected.</p>';
+                                }
                                 html += msg + '<button is="emby-button" type="button" class="emby-button button-flat fed-danger" data-fed-action="link-remove" data-id="' + escapeHtml(id) + '">Unlink</button>';
                             } else if (st && st.code) {
                                 html += '<p class="fieldDescription">Type this code on ' + escapeHtml(name) + ' (Friends → this server → Manage → Link), and type the code ' + escapeHtml(name) + ' shows below.</p>';
@@ -3111,6 +3128,19 @@
                         .then(function () {
                             if (kind === 'remove') { loadConfiguration(true); }
                         })
+                        .catch(function () { linkMessages[id] = 'The request failed.'; renderLinkStatus(); });
+                    }
+
+                    function setLinkDirection(id, value) {
+                        fedFetch('/Plugins/Federation/Link/' + encodeURIComponent(id) + '/Direction', { method: 'POST', body: JSON.stringify({ Direction: parseInt(value, 10) || 0 }) })
+                        .then(function (r) { return readJson(r); })
+                        .then(function (res) {
+                            linkMessages[id] = res && res.message ? res.message : '';
+                            var b = qa('.fed-link-block').filter(function (x) { return x.getAttribute('data-link-friend') === id; })[0];
+                            if (b) { b.removeAttribute('data-state'); }
+                            return loadLinkStatus();
+                        })
+                        .then(function () { loadConfiguration(true); })
                         .catch(function () { linkMessages[id] = 'The request failed.'; renderLinkStatus(); });
                     }
 
@@ -8228,6 +8258,11 @@
                         page.addEventListener('change', function (e) {
                             var t = e.target;
                             if (!t || !t.classList) {
+                                return;
+                            }
+
+                            if (t.classList.contains('fed-link-direction')) {
+                                setLinkDirection(t.getAttribute('data-id'), t.value);
                                 return;
                             }
 

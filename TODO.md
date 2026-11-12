@@ -1,5 +1,12 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.222 — which way titles flow over a link
+
+- [x] Per link: both ways, only this server's titles go there, or only theirs come here. Either server's admin sets it (Friends → the linked server → Manage → Link); the other server takes the same setting, and when they disagree the narrower applies. Titles of the linked server itself are hidden and removed from the library; friends used through the link, sound help and the link itself are unaffected.
+- [x] Three-server check in `scripts/federation_linked_smoke.py` (set on B, shown mirrored on A, C's title stays, set back from A).
+- [ ] The sending server does not refuse its catalogue to a linked server that should not receive it; the rule is applied where titles would show. Fine between two servers of one owner; add a refusal if links ever join different owners.
+- [ ] Dropped by the owner (2026-11-11): conversion jobs between linked servers. `LinkPeerStatus` keeps unused fields for it.
+
 ## 0.0.221 — the right version for the device
 
 - [x] One friend holding several versions of a title (4K HEVC beside 1080p H.264): the device gets the version it plays as stored under the title's own id; later requests of the play keep it; a version picked by the viewer still plays. Before, the biggest version was offered first and converted. `scripts/federation_versions_smoke.py` (fails on the old behaviour).

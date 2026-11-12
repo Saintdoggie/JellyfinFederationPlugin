@@ -158,6 +158,16 @@ Playback, authorization, and downloads:
   conversion address (HLS through this server's ffmpeg) even when the device plays
   the file as stored; only jellyfin-web still fetches the original then. This is
   transport detection, not a codec blacklist.
+- Since 0.0.222 a link has a catalogue direction (`RemoteServer.LinkCatalog`, from
+  this side: both ways / only mine goes / only theirs comes; `LinkCatalogPeer` is
+  what the other side last said, already mirrored). `Services/LinkCatalog.cs` is the
+  one place that answers whether a linked server's own titles show here; narrower
+  wins when the sides disagree. It is enforced on the receiving server (sync and
+  pruning, copy choice, standby, owned-title copies, favourites, Popular, support
+  report); the sending server does not refuse the catalogue. It never limits
+  friends lent through the link or sound help. Set with `Link/{id}/Direction`,
+  sent to the other side with `Peer/Linked/Direction`, re-read from
+  `Peer/Linked/Status`. A config save must keep both fields.
 - Since 0.0.221 the per-device choice of copy also runs when one friend holds
   several versions of a title (it used to need two servers), and
   `SourceSelectionScorer.Rank` puts a copy the device plays as stored before one

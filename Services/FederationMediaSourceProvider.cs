@@ -220,7 +220,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     var src = entrySources[i];
                     var server = _federationManager.GetServer(src.ServerId);
-                    if (server == null || !server.Enabled)
+                    if (server == null || !server.Enabled || LinkCatalog.IsHiddenLinkedSource(server))
                     {
                         // Matches what FederationSyncService already does when
                         // refreshing: a server that is disabled is as unusable as one
@@ -710,6 +710,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     var server = _federationManager.GetServer(src.ServerId);
                     if (server is { Enabled: true, Kind: ServerKind.Jellyfin }
+                        && !LinkCatalog.IsHiddenLinkedSource(server)
                         && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(src.ServerId) != true
                         && _accessControl.IsAllowed(server, userId, entry.MappingName, src.RemoteItemId))
                     {

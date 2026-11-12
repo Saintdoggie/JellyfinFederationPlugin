@@ -148,6 +148,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var friends = (config.RemoteServers ?? new List<RemoteServer>())
                 .Where(s => s.Enabled
                     && s.Kind == ServerKind.Jellyfin
+                    && !LinkCatalog.IsHiddenLinkedSource(s)
                     && s.PeerSharesFavorites != false
                     && !string.IsNullOrEmpty(s.ApiKey)
                     && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(s.Id) != true

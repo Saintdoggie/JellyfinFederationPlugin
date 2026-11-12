@@ -41,7 +41,12 @@ namespace Jellyfin.Plugin.Federation.Configuration
                 iAcceptedTheirEntry = s.IAcceptedTheirEntry,
                 attemptsLeft = s.AttemptsLeft,
                 friendsThrough = s.FriendsThrough,
-                cannotLink = s.CannotLink
+                cannotLink = s.CannotLink,
+                direction = (int)s.Direction,
+                peerDirection = s.PeerDirection.HasValue ? (int?)s.PeerDirection.Value : null,
+                receivesHere = s.ReceivesHere,
+                sendsThere = s.SendsThere,
+                directionText = s.DirectionText
             }));
         }
 
@@ -60,6 +65,20 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public async Task<IActionResult> Code([FromRoute] string friendId, [FromBody] LinkCodeBody? body, CancellationToken cancellationToken)
         {
             var (ok, message) = await _links.EnterCodeAsync(friendId, body?.Code, cancellationToken).ConfigureAwait(false);
+            return Ok(new { success = ok, message });
+        }
+
+        /// <summary>Admin: which way titles flow over a link (a <see cref="LinkCatalogDirection"/> number, from this side).</summary>
+        [HttpPost("Link/{friendId}/Direction")]
+        [Authorize(Policy = "RequiresElevation")]
+        public async Task<IActionResult> Direction([FromRoute] string friendId, [FromBody] LinkDirectionBody? body, CancellationToken cancellationToken)
+        {
+            if (body == null)
+            {
+                return BadRequest(new { success = false, message = "Say which direction." });
+            }
+
+            var (ok, message) = await _links.SetDirectionAsync(friendId, body.Direction, cancellationToken).ConfigureAwait(false);
             return Ok(new { success = ok, message });
         }
 
@@ -131,6 +150,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
             return Ok(LinkedServerService.Export(caller));
         }
 
+        /// <summary>Peer: this server's version, link direction, capabilities and work state, for a linked server.</summary>
+        [HttpGet("Peer/Linked/Status")]
+        [AllowAnonymous]
+        public IActionResult PeerStatus()
+        {
+            var caller = LinkedCaller();
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            Response.Headers.CacheControl = "no-store";
+            return Ok(LinkedServerService.OwnStatus(caller));
+        }
+
         /// <summary>Peer: the linked server's friends changed; fetch them again.</summary>
         [HttpPost("Peer/Linked/Changed")]
         [AllowAnonymous]
@@ -144,6 +178,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
 
             _ = Task.Run(() => _links.ImportFromAsync(caller, CancellationToken.None));
             return Ok(new LinkAnswer { Ok = true });
+        }
+
+        /// <summary>Peer: the linked server's admin changed which way titles flow.</summary>
+        [HttpPost("Peer/Linked/Direction")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PeerDirection([FromBody] LinkDirectionBody? body)
+        {
+            var caller = LinkedCaller();
+            if (caller == null)
+            {
+                return Unauthorized();
+            }
+
+            var answer = await _links.PeerSetDirectionAsync(caller, body).ConfigureAwait(false);
+            return answer.Ok ? Ok(answer) : BadRequest(answer);
         }
 
         /// <summary>Peer: the linked server unlinked.</summary>

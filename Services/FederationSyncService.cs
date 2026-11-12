@@ -412,7 +412,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var server = config.RemoteServers?.Find(s => s.Id == source.ServerId);
-                    if (server != null && server.Enabled)
+                    if (server != null && server.Enabled && !LinkCatalog.IsHiddenLinkedSource(server))
                     {
                         work.Add((mapping, source, server));
                     }
@@ -1038,19 +1038,24 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var emptySeen = new HashSet<Guid>();
+
+            // A linked server whose titles are set not to come here
+            // (LinkCatalog) is swept like an unticked one - a deliberate choice,
+            // never a network blip, so nothing is kept for it.
+            var hidden = LinkCatalog.HiddenServerIds(config);
             foreach (var mapping in config.LibraryMappings.Where(m => m.Enabled))
             {
                 var sources = mapping.RemoteLibrarySources ?? new List<RemoteLibrarySource>();
-                if (sources.Count == 0)
+                if (sources.Count == 0 && hidden.Count == 0)
                 {
                     continue;
                 }
 
-                var selectedServerIds = new HashSet<string>(sources.Select(s => s.ServerId), StringComparer.OrdinalIgnoreCase);
+                var selectedServerIds = new HashSet<string>(sources.Select(s => s.ServerId).Where(id => !hidden.Contains(id)), StringComparer.OrdinalIgnoreCase);
                 var dropped = _cache.GetEntriesForMapping(mapping.LocalLibraryName)
                     .SelectMany(e => e.GetSourcesSnapshot())
                     .Select(s => s.ServerId)
-                    .Where(id => !string.IsNullOrEmpty(id) && !selectedServerIds.Contains(id))
+                    .Where(id => !string.IsNullOrEmpty(id) && !selectedServerIds.Contains(id) && (sources.Count > 0 || hidden.Contains(id)))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
@@ -1256,6 +1261,25 @@ namespace Jellyfin.Plugin.Federation.Services
                             ? "This friend was removed. Remove the library on the Libraries tab, or add the friend again."
                             : "This friend is turned off on the Friends tab, so it wasn't synced.");
                     }
+                    continue;
+                }
+
+                if (LinkCatalog.IsHiddenLinkedSource(server))
+                {
+                    // Set on the link not to bring its titles here: nothing is
+                    // fetched, and what came before goes (deliberately, not as
+                    // a failure), so the library loses them now.
+                    var hiddenRemoved = _cache.PruneServerSources(mapping.LocalLibraryName, server.Id, new HashSet<Guid>());
+                    if (hiddenRemoved > 0)
+                    {
+                        _logger.LogInformation("[Federation] Removed {Count} title(s) of linked server {Name} from {Mapping}: the link is set not to bring its titles here", hiddenRemoved, server.Name, mapping.LocalLibraryName);
+                    }
+
+                    foreach (var skipped in serverSources)
+                    {
+                        Status.Succeed(StatusKey(mapping, skipped));
+                    }
+
                     continue;
                 }
 

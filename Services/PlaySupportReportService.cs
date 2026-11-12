@@ -114,7 +114,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     foreach (var source in entry.GetSourcesSnapshot())
                     {
                         var server = _federationManager.GetServer(source.ServerId);
-                        if (server == null || !server.Enabled)
+                        if (server == null || !server.Enabled || LinkCatalog.IsHiddenLinkedSource(server))
                         {
                             continue;
                         }

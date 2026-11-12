@@ -699,6 +699,24 @@ namespace Jellyfin.Plugin.Federation.Configuration
     }
 
     /// <summary>
+    /// Which way titles flow over a link between two servers of one owner
+    /// (<see cref="Services.LinkCatalog"/>), always from this server's side.
+    /// Serialised as a number. Conversion jobs, sound help and server
+    /// management work over a link whatever this is.
+    /// </summary>
+    public enum LinkCatalogDirection
+    {
+        /// <summary>Both ways (default; what links made before 0.0.222 did).</summary>
+        BothWays = 0,
+
+        /// <summary>Only this server's titles go to the other; nothing comes here.</summary>
+        OnlyMineGoes = 1,
+
+        /// <summary>Only the other server's titles come here; nothing of this server's goes there.</summary>
+        OnlyTheirsComes = 2
+    }
+
+    /// <summary>
     /// Streaming mode for a remote server.
     /// </summary>
     public enum StreamingMode
@@ -1170,6 +1188,21 @@ namespace Jellyfin.Plugin.Federation.Configuration
         /// Empty for an ordinary friend.
         /// </summary>
         public string ViaLinkedServerId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets, for a linked server, which way titles flow, from this
+        /// server's side. Changed only by <c>Link/{id}/Direction</c> and the
+        /// linked server's <c>Peer/Linked/Direction</c>; a config save keeps it.
+        /// </summary>
+        public LinkCatalogDirection LinkCatalog { get; set; }
+
+        /// <summary>
+        /// Gets or sets what the linked server last said the direction is,
+        /// already turned to this server's side; null when not known yet. When
+        /// the two disagree the narrower one applies
+        /// (<see cref="Services.LinkCatalog.ReceivesHere(RemoteServer)"/>).
+        /// </summary>
+        public LinkCatalogDirection? LinkCatalogPeer { get; set; }
 
         /// <summary>Gets a value indicating whether this row is a friend used through a linked server.</summary>
         [System.Xml.Serialization.XmlIgnore]
