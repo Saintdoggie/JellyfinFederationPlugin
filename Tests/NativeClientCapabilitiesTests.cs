@@ -47,4 +47,19 @@ public class NativeClientCapabilitiesTests
         context.Request.Headers.UserAgent = "Mozilla/5.0";
         Assert.False(NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, "Swiftfin", "iPhone"));
     }
+
+    [Theory]
+    [InlineData("Jellyfin Desktop")]
+    [InlineData("Jellyfin Media Player")]
+    public void TheDesktopApp_GetsOriginalsDirectly_ThoughItSendsABrowsersHeaders(string client)
+    {
+        // The desktop app is the web interface around its own player, which opens
+        // a friend's file as it is; its requests still look like a browser's.
+        var context = new DefaultHttpContext();
+        context.Request.Headers.UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 QtWebEngine/6.9 Chrome/130 Safari/537.36";
+        context.Request.Headers.Origin = "https://media.example.com";
+
+        Assert.True(NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, client, "Desktop"));
+        Assert.False(NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, "Jellyfin Web", "Chrome"));
+    }
 }

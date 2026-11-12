@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.221",
+        "changelog": "0.0.221: When a friend or linked server has a title in more than one version (a 4K HEVC file beside a 1080p H.264 one, for example), each device now gets the version it can play as it is, instead of the biggest one converted. You can still pick a version yourself. A copy that plays as stored is also preferred over one that needs its picture converted when the copies are on different servers. The Jellyfin desktop app is now offered originals directly from the server that has them.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-12T15:21:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.221/Jellyfin.Federation.zip",
+        "checksum": "1541000def7c93aa245151b321c28d14"
+      },
+      {
         "version": "0.0.220",
         "changelog": "0.0.220: Everything the plugin adds to the Jellyfin web interface (badges, buttons, the downloads list, messages, the player overlay) now takes its colours, corner shapes and font from the theme in use, including community themes and Custom CSS, and follows a theme change at once. Text is checked to stay readable on its background. Theme authors can set --federation-* variables to override any of it.",
         "targetAbi": "12.0.0.0",

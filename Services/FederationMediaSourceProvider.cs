@@ -193,8 +193,9 @@ namespace Jellyfin.Plugin.Federation.Services
                 // smart choice is on, and always on a server that may not convert:
                 // there, a copy the device cannot play as stored cannot play at all.
                 var selectionConfig = Plugin.Instance?.Configuration;
-                var deviceAwareWanted = !adaptive && entrySources.Length > 1 && localUserId.HasValue
+                var deviceAwarePossible = !adaptive && localUserId.HasValue
                     && (selectionConfig?.SmartSourceSelection == true || !TranscodePolicy.MayConvertForOwnViewers(selectionConfig));
+                var deviceAwareWanted = deviceAwarePossible && entrySources.Length > 1;
                 var candidates = new List<(int Index, FederatedSource Src, RemoteServer Server, string SourceName)>();
                 for (int i = 0; i < entrySources.Length; i++)
                 {
@@ -430,7 +431,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 // Sources that would take longer than the start budget to begin go after
                 // those that would not (and, when every source is slow, the quickest
                 // goes first). A source whose speed is not measured yet is never demoted.
-                var deviceAware = deviceAwareWanted && playable.Count > 1;
+                // Also when one friend holds several versions of the title (a 4K
+                // HEVC file beside a 1080p H.264 one): the device gets the version
+                // it plays as stored, not the biggest one converted.
+                var deviceAware = deviceAwarePossible && playable.Count > 1;
                 var deviceProfile = deviceAware ? FederationPlaybackProfileFilter.Get(_httpContextAccessor.HttpContext) : null;
                 var fits = deviceProfile == null
                     ? null

@@ -17,6 +17,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
         public static bool SupportsRawHttpDirectPlay(HttpRequest? request, string? client, string? device)
         {
+            if (IsDesktopShell(client))
+            {
+                return true;
+            }
+
             if (string.IsNullOrWhiteSpace(client)
                 || request?.Headers.Origin.Count > 0
                 || request?.Headers.UserAgent.ToString().StartsWith("Mozilla/", StringComparison.Ordinal) == true)
@@ -49,6 +54,18 @@ namespace Jellyfin.Plugin.Federation.Services
             => app.Contains("jellyfin", StringComparison.Ordinal)
                 && app.Contains("android", StringComparison.Ordinal)
                 && !app.Contains("tv", StringComparison.Ordinal);
+
+        /// <summary>
+        /// The Jellyfin desktop app: the web interface in a shell whose own player
+        /// (mpv) opens a source's address as an ordinary file and plays what a
+        /// browser cannot. It sends a browser's headers, so it is known by name.
+        /// </summary>
+        private static bool IsDesktopShell(string? client)
+        {
+            var app = client?.Trim() ?? string.Empty;
+            return app.StartsWith("Jellyfin Desktop", StringComparison.OrdinalIgnoreCase)
+                || app.StartsWith("Jellyfin Media Player", StringComparison.OrdinalIgnoreCase);
+        }
 
         private static string Header(HttpRequest? request, string name)
             => request?.Headers.TryGetValue(name, out var value) == true ? value.ToString() : string.Empty;

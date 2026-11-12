@@ -158,6 +158,13 @@ Playback, authorization, and downloads:
   conversion address (HLS through this server's ffmpeg) even when the device plays
   the file as stored; only jellyfin-web still fetches the original then. This is
   transport detection, not a codec blacklist.
+- Since 0.0.221 the per-device choice of copy also runs when one friend holds
+  several versions of a title (it used to need two servers), and
+  `SourceSelectionScorer.Rank` puts a copy the device plays as stored before one
+  whose picture must be converted, unless the as-stored one is under 1080p and less
+  than half the other's height. E2E: `scripts/federation_versions_smoke.py`. The
+  desktop app (`Jellyfin Desktop`, `Jellyfin Media Player`) is offered raw direct
+  play by name although it sends a browser's headers.
 - Since 0.0.219 a friend's `Peer/Play` gateway serves a title's subtitles and
   subtitle fonts (`RemoteMediaPath.IsSubtitleOrFont`) to a friend who may play the
   title, whether or not it converts video for them; it says so with `subtitles` in

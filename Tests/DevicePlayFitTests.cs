@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Entities;
@@ -272,6 +273,64 @@ public class SourceSelectionFitTests
             ViewerDevice.Unknown);
 
         Assert.Equal("h264", selection.Chosen!.Candidate.Key);
+    }
+
+    [Fact]
+    public void WhenConversionIsAllowed_TheVersionTheDevicePlaysBeatsABiggerOneConverted()
+    {
+        // A 4K HEVC file beside a 1080p H.264 one, on a device without HEVC.
+        var selection = SourceSelectionScorer.Rank(
+            new[]
+            {
+                Copy("4k-hevc", 2160, 60, PlayFit.Convert, mayConvert: true),
+                Copy("1080-h264", 1080, 10, PlayFit.Direct, mayConvert: true, priority: 1)
+            },
+            new ViewerDevice(ViewerClientKind.Web));
+
+        Assert.Equal("1080-h264", selection.Chosen!.Candidate.Key);
+        Assert.Contains("plays on this device as it is", selection.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AMuchSmallerAsStoredVersion_DoesNotAutomaticallyBeatAConvertedOne()
+    {
+        var copies = new[]
+        {
+            Copy("1080-hevc", 1080, 10, PlayFit.Convert, mayConvert: true),
+            Copy("360-h264", 360, 0.8, PlayFit.Direct, mayConvert: true, priority: 1)
+        };
+
+        // Left to the ordinary score: the rule only applies to a comparable picture.
+        var scores = copies.Select(c => SourceSelectionScorer.Score(c, ViewerDevice.Unknown)).OrderByDescending(s => s.Total).ToList();
+        Assert.Equal(scores[0].Candidate.Key, SourceSelectionScorer.Rank(copies, ViewerDevice.Unknown).Chosen!.Candidate.Key);
+    }
+
+    [Fact]
+    public void AnAsStoredVersionInAnotherLanguage_DoesNotPushTheConvertedOneBack()
+    {
+        var selection = SourceSelectionScorer.Rank(
+            new[]
+            {
+                Copy("4k-hevc", 2160, 60, PlayFit.Convert, mayConvert: true, language: true),
+                Copy("1080-h264-foreign", 1080, 10, PlayFit.Direct, mayConvert: true, language: false, priority: 1)
+            },
+            ViewerDevice.Unknown);
+
+        Assert.Equal("4k-hevc", selection.Chosen!.Candidate.Key);
+    }
+
+    [Fact]
+    public void ADeviceThatPlaysTheBigVersion_StillGetsIt()
+    {
+        var selection = SourceSelectionScorer.Rank(
+            new[]
+            {
+                Copy("4k-hevc", 2160, 60, PlayFit.Direct, mayConvert: true),
+                Copy("1080-h264", 1080, 10, PlayFit.Direct, mayConvert: true, priority: 1)
+            },
+            new ViewerDevice(ViewerClientKind.Tv));
+
+        Assert.Equal("4k-hevc", selection.Chosen!.Candidate.Key);
     }
 
     [Fact]

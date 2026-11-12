@@ -1,5 +1,12 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.221 — the right version for the device
+
+- [x] One friend holding several versions of a title (4K HEVC beside 1080p H.264): the device gets the version it plays as stored under the title's own id; later requests of the play keep it; a version picked by the viewer still plays. Before, the biggest version was offered first and converted. `scripts/federation_versions_smoke.py` (fails on the old behaviour).
+- [x] A copy that plays as stored goes before one whose picture must be converted (same language, not struggling), unless it is a much smaller picture.
+- [x] Desktop app offered originals directly (by client name). Not checked on the real app: if its shell does not accept a remote address it falls back to the route through this server, as before.
+- [ ] Android phone app still gets video through this server.
+
 ## 0.0.220 — injected UI follows any theme
 
 - [x] Every colour, corner radius and font the web script adds comes from `--fed-*` tokens derived from the live theme; text is checked for contrast on its surface, and the player overlay keeps a plate that reads over any picture. A theme or Custom CSS can set `--federation-<name>` to override a token.

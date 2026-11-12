@@ -145,6 +145,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="currentKey">The copy chosen last time for this viewer and title, if any.</param>
         /// <param name="mayLeaveCurrent">False while the current copy is inside its minimum dwell.</param>
         /// <returns>Best first.</returns>
+        /// <summary>An as-stored copy at least this tall always goes before one that needs its picture converted.</summary>
+        internal const int AsStoredGoodHeight = 1080;
+
         internal static SourceSelection Rank(IReadOnlyList<SourceCandidate> candidates, ViewerDevice? device, string? currentKey = null, bool mayLeaveCurrent = true)
         {
             device ??= ViewerDevice.Unknown;
@@ -158,8 +161,25 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // Within the tie margin of the best, the admin's priority decides, then
             // the score; everything else follows in score order.
+            // A copy this device plays as it is goes before one whose picture has
+            // to be converted first, unless it is a much smaller picture: the
+            // right file for the device beats a better file made to fit.
+            var asStored = scored
+                .Where(s => s.Candidate.Fit == PlayFit.Direct
+                    && !s.NeedsConversion
+                    && !s.WillStruggle
+                    && s.Candidate.HasPreferredLanguage != false)
+                .ToList();
+            bool AfterAsStored(SourceScore s)
+                => s.Candidate.Fit == PlayFit.Convert
+                    && asStored.Any(a => a.Candidate.Height >= AsStoredGoodHeight
+                        || (a.Candidate.Height > 0 && a.Candidate.Height * 2 >= s.Candidate.Height));
+            var demoted = scored.Where(AfterAsStored).ToHashSet();
+            best = scored.Where(s => !demoted.Contains(s)).Select(s => s.Total).DefaultIfEmpty(best).Max();
+
             var ranked = scored
-                .OrderBy(s => best - s.Total <= TieMargin ? 0 : 1)
+                .OrderBy(s => demoted.Contains(s) ? 1 : 0)
+                .ThenBy(s => best - s.Total <= TieMargin ? 0 : 1)
                 .ThenBy(s => best - s.Total <= TieMargin ? s.Candidate.Priority : 0)
                 .ThenByDescending(s => s.Total)
                 .ThenBy(s => s.Candidate.Priority)
