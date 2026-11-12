@@ -179,6 +179,35 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            if (handoff.SubtitlesOnly)
+            {
+                // Not a converted play: fetch the subtitle from the friend, and
+                // when that fails let this server try as before.
+                var (subtitle, subtitleStatus) = await FetchAsync(
+                    handoff,
+                    path.Kind == RemoteMediaKind.SubtitlePlaylist,
+                    HandoffPlaylistLinks.RelayPrefix(context.HttpContext.Request.PathBase.Value),
+                    context.HttpContext.RequestAborted).ConfigureAwait(false);
+                if (subtitle != null)
+                {
+                    context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                    context.Result = subtitle;
+                    return;
+                }
+
+                if (subtitleStatus == StatusCodes.Status403Forbidden)
+                {
+                    // Most often a token the friend no longer knows; the next
+                    // request gets a fresh one.
+                    RemoteServerClient.InvalidatePlaybackTokens(handoff.ServerId);
+                    PeerPlaybackGrants.ForgetSubtitles(handoff.UserId, path.ItemId, handoff.SourceId);
+                }
+
+                _logger.LogInformation("[Federation] {Server} did not serve the {Kind} of {ItemId} (HTTP {Status}); trying here", handoff.ServerName, path.Kind, path.ItemId, subtitleStatus);
+                await next().ConfigureAwait(false);
+                return;
+            }
+
             FederationPlaybackRoutes.Record(playSessionId, FederatedRoute.FriendConverts);
             if (path.Kind == RemoteMediaKind.HlsMaster)
             {
@@ -470,19 +499,40 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
-            {
-                if (forced == null)
-                {
-                    ApplyLocalConversionCap(context, path, server, source, user.Id, info);
-                }
-
-                return null;
-            }
-
             var normalizedSourceId = string.IsNullOrEmpty(sourceId) ? item.Id.ToString("N") : sourceId;
             PeerPlaybackGrants.Grant? grant;
-            if (forced != null)
+
+            // A friend that converts nothing for us still serves the subtitles
+            // and fonts of its own title: only it can read a separate subtitle file.
+            var subtitlesOnly = false;
+            if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
+            {
+                if (forced != null
+                    || !path.IsSubtitleOrFont
+                    || !FederationMediaSourceProvider.IsPeerDirect(server)
+                    || !PeerTranscodeCapability.ServesSubtitles(server.Id))
+                {
+                    if (forced == null)
+                    {
+                        ApplyLocalConversionCap(context, path, server, source, user.Id, info);
+                    }
+
+                    return null;
+                }
+
+                subtitlesOnly = true;
+            }
+
+            if (subtitlesOnly)
+            {
+                grant = PeerPlaybackGrants.FindSubtitles(user.Id, item.Id, normalizedSourceId);
+                if (grant == null)
+                {
+                    await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
+                    grant = PeerPlaybackGrants.FindSubtitles(user.Id, item.Id, normalizedSourceId);
+                }
+            }
+            else if (forced != null)
             {
                 // Another copy than the request names: its grant is under that
                 // copy's own id, or under the item's id when it is the default copy.
@@ -582,7 +632,8 @@ namespace Jellyfin.Plugin.Federation.Services
             return new Handoff(url, server.Id, server.Name, user.Id, normalizedSourceId, peerBase, path.Kind, playerBase, viaLink, source.Bitrate is > 0 ? source.Bitrate : null)
             {
                 Source = source,
-                Entry = entry
+                Entry = entry,
+                SubtitlesOnly = subtitlesOnly
             };
         }
 
@@ -1000,6 +1051,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             /// <summary>Gets the title's cache entry (its other copies).</summary>
             public FederatedCacheEntry? Entry { get; init; }
+
+            /// <summary>Gets a value indicating whether the friend only serves this title's subtitles and fonts (it converts nothing for us).</summary>
+            public bool SubtitlesOnly { get; init; }
 
             /// <summary>Gets the status this friend answered with when it failed to start.</summary>
             public int FailedStatus { get; init; }

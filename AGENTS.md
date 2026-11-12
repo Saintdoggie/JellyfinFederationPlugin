@@ -152,6 +152,13 @@ Playback, authorization, and downloads:
   conversion address (HLS through this server's ffmpeg) even when the device plays
   the file as stored; only jellyfin-web still fetches the original then. This is
   transport detection, not a codec blacklist.
+- Since 0.0.219 a friend's `Peer/Play` gateway serves a title's subtitles and
+  subtitle fonts (`RemoteMediaPath.IsSubtitleOrFont`) to a friend who may play the
+  title, whether or not it converts video for them; it says so with `subtitles` in
+  the playback-token answer. The receiver keeps those tokens in a separate store
+  (`PeerPlaybackGrants.RecordSubtitles`): a subtitle grant must never route a
+  conversion to the friend. When the friend's answer fails, the request falls back
+  to this server as before.
 - Since 0.0.218 a federated source is offered with a sound track the device plays
   marked default when the viewer's usual track does not play and another in the same
   language does (`DevicePlayFit.PlayableAudioIndex`, `WithPlayableAudioFirst`). The

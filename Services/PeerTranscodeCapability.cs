@@ -23,6 +23,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, bool> QualityLadders = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Clock, replaceable in tests.</summary>
+        private static readonly ConcurrentDictionary<string, bool> Subtitles = new(StringComparer.OrdinalIgnoreCase);
+
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
         /// <summary>Records what a fresh token said.</summary>
@@ -93,8 +95,22 @@ namespace Jellyfin.Plugin.Federation.Services
             => !string.IsNullOrEmpty(serverId) && QualityLadders.TryGetValue(serverId, out var supported) && supported;
 
         /// <summary>Test hook.</summary>
+        /// <summary>Records whether the friend serves subtitles of its titles without converting video (see <see cref="PlaybackTokenResponse.Subtitles"/>).</summary>
+        public static void RecordSubtitles(string? serverId, bool supported)
+        {
+            if (!string.IsNullOrEmpty(serverId))
+            {
+                Subtitles[serverId] = supported;
+            }
+        }
+
+        /// <summary>Whether the friend serves subtitles of its titles even when it converts no video for us.</summary>
+        public static bool ServesSubtitles(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && Subtitles.TryGetValue(serverId, out var supported) && supported;
+
         internal static void Reset()
         {
+            Subtitles.Clear();
             State.Clear();
             SharedSegments.Clear();
             QualityLadders.Clear();

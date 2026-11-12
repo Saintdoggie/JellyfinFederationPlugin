@@ -90,6 +90,12 @@ namespace Jellyfin.Plugin.Federation.Services
             return limit > 0 ? $"nosession-{itemId:N}-{deviceId}" : null;
         }
 
+        /// <summary>
+        /// True for a subtitle track or a subtitle font: read from the title on
+        /// the server that has the file, no video conversion involved.
+        /// </summary>
+        public bool IsSubtitleOrFont => Kind is RemoteMediaKind.Subtitle or RemoteMediaKind.SubtitlePlaylist or RemoteMediaKind.Attachment;
+
         /// <summary>True when the request starts a transcode or stream on the owner (counted against its limit).</summary>
         public bool StartsWork => Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.HlsSegment or RemoteMediaKind.Stream or RemoteMediaKind.UniversalAudio;
 

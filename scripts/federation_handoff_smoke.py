@@ -312,6 +312,15 @@ def smoke():
         qa.check(len(transcode_logs(config)) > before, 'Fallback did not transcode on the receiver')
         print('HANDOFF PASS: owner opt-out falls back to the receiver converting, playback still works', flush=True)
 
+        stage = 'subtitles still come from an owner that converts nothing'
+        # A separate subtitle file exists only on the owner; this server cannot
+        # read it. The owner serves it although it no longer converts video.
+        kept = next((s for s in source.get('MediaStreams', []) if s.get('Type') == 'Subtitle' and s.get('DeliveryUrl')), None)
+        qa.check(kept is not None, 'No external subtitle offered once the owner stopped converting')
+        _, vtt = qa.request(base, kept['DeliveryUrl'], viewer, raw=True)
+        qa.check(b'Handoff subtitle line' in vtt, 'Subtitle text missing once the owner stopped converting')
+        print('HANDOFF PASS: external subtitle still served from an owner that converts nothing for the receiver', flush=True)
+
         stage = 'quality ladder when the receiver converts'
         local_levels = [l for l in master.splitlines() if l and not l.startswith('#')]
         qa.check(len(local_levels) >= 2 and all('FedRung=' in l for l in local_levels[1:]) and 'FedRung=' not in local_levels[0],

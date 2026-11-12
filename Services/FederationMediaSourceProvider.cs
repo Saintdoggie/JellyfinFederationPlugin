@@ -534,6 +534,17 @@ namespace Jellyfin.Plugin.Federation.Services
                         PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken, candidate.RemoteMediaSourceId);
                     }
 
+                    // The title's subtitles and fonts come from the friend that has
+                    // the file even when it converts nothing for us: a separate
+                    // subtitle file exists only there.
+                    if (localUserId.HasValue
+                        && IsPeerDirect(candidate.Server)
+                        && PeerTranscodeCapability.ServesSubtitles(candidate.Server.Id)
+                        && PeerPlaybackGrants.TokenFromDirectPath(candidate.Path) is { } subtitleToken)
+                    {
+                        PeerPlaybackGrants.RecordSubtitles(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, subtitleToken, candidate.RemoteMediaSourceId);
+                    }
+
                     var mustConvert = SourceOverageBitrate(candidate.Server, remote) > 0
                         && (handoff || candidate.Server.StreamingMode == StreamingMode.Proxy || candidate.Server.Kind != ServerKind.Jellyfin);
                     var sourceName = candidate.Distinguish
@@ -931,7 +942,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 && PeerTranscodeCapability.IsAvailable(server!.Id);
 
         /// <summary>True for a Jellyfin peer whose bytes go straight from it to the viewer.</summary>
-        private static bool IsPeerDirect(RemoteServer? server)
+        internal static bool IsPeerDirect(RemoteServer? server)
             => server is { StreamingMode: StreamingMode.Direct, Kind: ServerKind.Jellyfin };
 
         private bool IsBrowserRequest()

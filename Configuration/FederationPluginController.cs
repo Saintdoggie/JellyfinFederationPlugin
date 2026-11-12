@@ -3737,7 +3737,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Tells the friend this gateway gives each quality level its own
                 // conversion (Services.HlsQualityLadder), so it may add lower levels
                 // to the playlist. Older friends ignore it.
-                qualityLadder = purpose == FederationTokenPurpose.Playback
+                qualityLadder = purpose == FederationTokenPurpose.Playback,
+
+                // Tells the friend this token opens Peer/Play for the title's
+                // subtitles and subtitle fonts whether or not this server converts
+                // video for them: a separate subtitle file exists only here.
+                subtitles = purpose == FederationTokenPurpose.Playback
             });
         }
 
@@ -4107,7 +4112,7 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance?.Configuration;
-            var owner = ResolveRemoteTranscodeFriend(token, path.ItemId, out var remoteUserId);
+            var owner = ResolveRemoteTranscodeFriend(token, path.ItemId, out var remoteUserId, path.IsSubtitleOrFont);
             if (owner == null)
             {
                 Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
@@ -4265,11 +4270,14 @@ namespace Jellyfin.Plugin.Federation.Api
         /// the friendship must still exist, remote transcoding must be on for this
         /// server and that friend, and the viewer must still be allowed the item.
         /// </summary>
-        private RemoteServer? ResolveRemoteTranscodeFriend(string? token, Guid itemGuid, out string? remoteUserId)
+        // subtitleOrFont: a subtitle track or font of a title the friend may already
+        // play from here. It is part of that title, not a video conversion, so it
+        // is served whether or not this server converts for friends.
+        private RemoteServer? ResolveRemoteTranscodeFriend(string? token, Guid itemGuid, out string? remoteUserId, bool subtitleOrFont = false)
         {
             remoteUserId = null;
             var config = Plugin.Instance?.Configuration;
-            if (!Services.TranscodePolicy.FriendsMayConvertHere(config)
+            if ((!subtitleOrFont && !Services.TranscodePolicy.FriendsMayConvertHere(config))
                 || !_playbackTokens.TryValidate(token, itemGuid.ToString("N"), out var federationId, out var purpose, out remoteUserId)
                 || purpose != FederationTokenPurpose.Playback)
             {
@@ -4285,7 +4293,7 @@ namespace Jellyfin.Plugin.Federation.Api
             // Not owner.Enabled: that switch is whether we pull from this friend,
             // not whether we share with them (DirectStream doesn't check it either);
             // sharing is IsItemVisible's job.
-            return owner is { AllowRemoteTranscode: true } && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid)
+            return owner != null && (subtitleOrFont || owner.AllowRemoteTranscode) && _peerAccess.IsItemVisible(owner, remoteUserId, itemGuid)
                 ? owner
                 : null;
         }

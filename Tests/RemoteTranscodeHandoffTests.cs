@@ -90,6 +90,52 @@ public class RemoteTranscodeHandoffTests
     }
 
     [Fact]
+    public void SubtitleGrant_IsKeptApartFromTheConversionGrant()
+    {
+        // A friend that converts nothing for us serves subtitles only: its
+        // grant must never make a conversion go to that friend.
+        var user = Guid.NewGuid();
+        var item = Guid.NewGuid();
+        PeerPlaybackGrants.RecordSubtitles(user, item, item.ToString("N"), "owner", item, "token", "remote-source");
+
+        Assert.Null(PeerPlaybackGrants.Find(user, item, null));
+        var grant = PeerPlaybackGrants.FindSubtitles(user, item, null);
+        Assert.NotNull(grant);
+        Assert.Equal("token", grant!.Token);
+        Assert.Equal("remote-source", grant.RemoteMediaSourceId);
+        Assert.Null(PeerPlaybackGrants.FindSubtitles(Guid.NewGuid(), item, null));
+
+        PeerPlaybackGrants.ForgetSubtitles(user, item, null);
+        Assert.Null(PeerPlaybackGrants.FindSubtitles(user, item, null));
+    }
+
+    [Fact]
+    public void SubtitleCapability_IsSeparateFromConverting_AndOffForOlderFriends()
+    {
+        var friend = "subtitle-cap-" + Guid.NewGuid().ToString("N");
+        Assert.False(PeerTranscodeCapability.ServesSubtitles(friend));
+
+        PeerTranscodeCapability.RecordSubtitles(friend, true);
+        Assert.True(PeerTranscodeCapability.ServesSubtitles(friend));
+        Assert.False(PeerTranscodeCapability.IsAvailable(friend));
+
+        PeerTranscodeCapability.RecordSubtitles(friend, false);
+        Assert.False(PeerTranscodeCapability.ServesSubtitles(friend));
+    }
+
+    [Theory]
+    [InlineData("/Videos/0123456789abcdef0123456789abcdef/0123456789abcdef0123456789abcdef/Subtitles/3/Stream.vtt", true)]
+    [InlineData("/Videos/0123456789abcdef0123456789abcdef/0123456789abcdef0123456789abcdef/Attachments/2", true)]
+    [InlineData("/Videos/0123456789abcdef0123456789abcdef/master.m3u8", false)]
+    [InlineData("/Videos/0123456789abcdef0123456789abcdef/hls1/main/4.ts", false)]
+    public void OnlySubtitlesAndFonts_AreServedWithoutConverting(string path, bool expected)
+    {
+        Assert.True(RemoteMediaPath.TryParse(path, out var parsed));
+        Assert.Equal(expected, parsed!.IsSubtitleOrFont);
+        Assert.False(expected && parsed.StartsWork);
+    }
+
+    [Fact]
     public void PlaybackGrant_RetainsExactRemoteMediaSource()
     {
         PeerPlaybackGrants.Reset();

@@ -19,6 +19,8 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<(Guid User, Guid Item, string Source), Grant> Grants = new();
 
         /// <summary>Clock, replaceable in tests.</summary>
+        private static readonly ConcurrentDictionary<(Guid User, Guid Item, string Source), Grant> SubtitleGrants = new();
+
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
         /// <summary>Remembers the grant behind one offered source.</summary>
@@ -36,6 +38,25 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>Drops a grant the friend refused, so the next request mints a fresh one.</summary>
+        /// <summary>
+        /// Remembers the friend token behind a source for subtitle and font
+        /// requests only. Kept apart from <see cref="Record"/>, whose grants also
+        /// send conversions to the friend.
+        /// </summary>
+        public static void RecordSubtitles(Guid userId, Guid itemId, string sourceId, string serverId, Guid remoteItemId, string token, string? remoteMediaSourceId = null)
+            => SubtitleGrants[(userId, itemId, Normalize(sourceId))] = new Grant(serverId, remoteItemId, token, UtcNow() + Lifetime, remoteMediaSourceId);
+
+        /// <summary>The subtitle-only grant for a source, or null.</summary>
+        public static Grant? FindSubtitles(Guid userId, Guid itemId, string? sourceId)
+        {
+            var key = (userId, itemId, Normalize(string.IsNullOrEmpty(sourceId) ? itemId.ToString("N") : sourceId));
+            return SubtitleGrants.TryGetValue(key, out var grant) && grant.ExpiresUtc > UtcNow() ? grant : null;
+        }
+
+        /// <summary>Drops a subtitle-only grant (the friend refused its token).</summary>
+        public static void ForgetSubtitles(Guid userId, Guid itemId, string? sourceId)
+            => SubtitleGrants.TryRemove((userId, itemId, Normalize(string.IsNullOrEmpty(sourceId) ? itemId.ToString("N") : sourceId)), out _);
+
         public static void Forget(Guid userId, Guid itemId, string? sourceId)
             => Grants.TryRemove((userId, itemId, Normalize(string.IsNullOrEmpty(sourceId) ? itemId.ToString("N") : sourceId)), out _);
 
@@ -59,7 +80,11 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>Test hook.</summary>
-        internal static void Reset() => Grants.Clear();
+        internal static void Reset()
+        {
+            Grants.Clear();
+            SubtitleGrants.Clear();
+        }
 
         private static string Normalize(string sourceId)
             => Guid.TryParse(sourceId, out var g) ? g.ToString("N") : sourceId.ToLowerInvariant();
@@ -72,6 +97,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 if (kv.Value.ExpiresUtc <= now)
                 {
                     Grants.TryRemove(kv.Key, out _);
+                }
+            }
+
+            foreach (var kv in SubtitleGrants)
+            {
+                if (kv.Value.ExpiresUtc <= now)
+                {
+                    SubtitleGrants.TryRemove(kv.Key, out _);
                 }
             }
         }

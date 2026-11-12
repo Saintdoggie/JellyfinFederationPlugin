@@ -1279,6 +1279,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     PeerTranscodeCapability.Record(_server.Id, result.RemoteTranscode == true);
                     PeerTranscodeCapability.RecordSharedSegments(_server.Id, result.SharedSegments == true);
                     PeerTranscodeCapability.RecordQualityLadder(_server.Id, result.QualityLadder == true);
+                    PeerTranscodeCapability.RecordSubtitles(_server.Id, result.Subtitles == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -2678,6 +2679,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// levels in the playlist. Older friends leave it unset: no levels are added.
         /// </summary>
         public bool? QualityLadder { get; set; }
+
+        /// <summary>
+        /// Whether this Playback token opens the friend's gateway for the title's
+        /// subtitles and subtitle fonts even when the friend converts no video
+        /// for us (0.0.219+). Older friends leave it unset.
+        /// </summary>
+        public bool? Subtitles { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

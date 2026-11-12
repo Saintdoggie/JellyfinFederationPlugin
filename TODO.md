@@ -8,7 +8,8 @@ Owner's rule (2026-11-11): apps must play a friend's or linked server's title di
 - [x] A browser or app is offered a sound track it plays when the usual one does not and the copy has another in the same language (`DevicePlayFit.PlayableAudioIndex`).
 - [x] Two-server check: TV identity gets the original with no conversion address and a working direct request; phone identity keeps the relayed route (`scripts/federation_peer_smoke.py`).
 - [ ] Not checked on a physical TV, phone or desktop app.
-- [ ] A friend's separate subtitle file (sidecar) has no readable address on this server when the friend is not the one converting: showing it, converting it to another text format and burning it in all fail (`FederationLibraryManager.RedactStreamPath` placeholder). Subtitles inside the file are not affected. Needs a signed relay for the friend's subtitle file.
+- [x] 0.0.219: a friend's subtitles and subtitle fonts come from the friend even when it converts no video for us (`RemoteMediaPath.IsSubtitleOrFont`, token answer `subtitles`, `PeerPlaybackGrants.RecordSubtitles`, `Handoff.SubtitlesOnly`). Fixes a separate subtitle file (sidecar) failing to load; both servers need 0.0.219. E2E stage in `scripts/federation_handoff_smoke.py`.
+- [ ] Burning a friend's separate subtitle file into the picture on this server still fails (ffmpeg gets the `FederationLibraryManager.RedactStreamPath` placeholder as its input). Needs the file fetched to a local temporary copy first, or the conversion done by the friend.
 - [ ] Android phone app still gets its video through this server's ffmpeg (copy when the device plays the codecs). A direct route needs a source shape that app's player accepts.
 
 ## Unreleased watch-party, integration and playback review branch
