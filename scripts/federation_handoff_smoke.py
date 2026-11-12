@@ -327,7 +327,9 @@ def smoke():
         # owner serves it itself with picture and sound copied, and this server
         # does no work and carries no bytes.
         def ffmpeg_logs(folder):
-            return sorted((folder / 'log').glob('FFmpeg.*.log'))
+            # This server's own ffmpeg runs; copies of a friend's log don't count.
+            return sorted(p for p in (folder / 'log').glob('FFmpeg.*.log')
+                          if not p.read_text(errors='replace').startswith('Conversion log from friend'))
         streams = native['MediaSources'][0]['MediaStreams']
         codecs = lambda kind: ','.join(sorted({s['Codec'] for s in streams if s['Type'] == kind and s.get('Codec')}))
         wrapper_profile = {**profile, 'DirectPlayProfiles': [{'Type':'Video','Container':'mp4','VideoCodec':codecs('Video'),'AudioCodec':codecs('Audio')}],
@@ -358,13 +360,83 @@ def smoke():
         qa.check('-codec:v:0 copy' in command and '-codec:a:0 copy' in command, 'The owner re-encoded picture or sound in a copy play')
         qa.check('-codec:v:0 libx264' not in command and 'FFmpeg.Remux' in new_owner[-1].name, 'The owner started an encoder in a copy play')
         qa.check(set(ffmpeg_logs(config)) == here_logs, 'The receiving server ran ffmpeg for a copy play')
+        print(f'HANDOFF PASS: copy play: owner that converts nothing repackaged the file (picture and sound copied, {len(first)} byte first segment, a later one too); receiver ran no ffmpeg', flush=True)
+
+        stage = 'copy play: the Android phone app gets the title from the owner, not through this server'
+        # The phone app's player reads a remote address as a playlist, so it is
+        # never offered the plain file. Its device plays the file as stored, so
+        # the only "reason" Jellyfin gives is that direct play was not offered:
+        # the owner repackages it and the phone fetches it there.
+        phone_login = {'Authorization': 'MediaBrowser Client="Jellyfin Android", Device="Sandbox Phone", DeviceId="handoff-qa-phone", Version="2.6.2"',
+                       'User-Agent': 'Jellyfin Android/2.6.2 (Linux; Android 14)'}
+        login = qa.request(base, '/Users/AuthenticateByName', phone_login, {'Username':'qa-viewer','Pw':''})
+        phone = {**phone_login, 'Authorization': phone_login['Authorization'] + ', Token="' + login['AccessToken'] + '"'}
+        phone_profile = {'MaxStreamingBitrate': 120000000, 'DirectPlayProfiles': [{'Type': 'Video'}],
+            'TranscodingProfiles': [{'Type':'Video','Container':'ts','Protocol':'hls','VideoCodec':codecs('Video'),'AudioCodec':codecs('Audio') + ',mp3','Context':'Streaming','MaxAudioChannels':'6'}],
+            'SubtitleProfiles': [{'Format':'vtt','Method':'External'}], 'CodecProfiles': [], 'ContainerProfiles': []}
+        owner_logs, here_logs = set(ffmpeg_logs(source_config)), set(ffmpeg_logs(config))
+        phone_source = qa.request(base, f'/Items/{item_id}/PlaybackInfo?userId={viewer_id}', phone,
+            {'UserId': viewer_id, 'MaxStreamingBitrate': 120000000, 'EnableDirectPlay': True, 'EnableDirectStream': True,
+             'EnableTranscoding': True, 'DeviceProfile': phone_profile})['MediaSources'][0]
+        qa.check(phone_source.get('SupportsDirectPlay') is not True, 'The phone app was offered a plain address its player cannot read')
+        phone_url = phone_source.get('TranscodingUrl') or ''
+        reasons = urllib.parse.parse_qs(urllib.parse.urlsplit(phone_url).query).get('TranscodeReasons', [''])[0]
+        qa.check(phone_url and set(reasons.split(',')) <= {'DirectPlayError', 'ContainerNotSupported', 'AudioCodecNotSupported'}, f'The phone play was given other reasons: {reasons}')
+        _, phone_master = qa.request(base, phone_url, None, raw=True)
+        phone_master = phone_master.decode()
+        qa.check(login['AccessToken'] not in phone_master and 'ApiKey' not in phone_master and 'api_key' not in phone_master, 'A credential reached the phone playlist')
+        phone_variant_url = next(l for l in phone_master.splitlines() if l and not l.startswith('#'))
+        qa.check(phone_variant_url.startswith(relay) and f'{source_host}/Plugins/Federation/Peer/Play/' in urllib.parse.unquote(phone_variant_url[len(relay):]),
+                 f'The phone play was not sent to the owner (reasons: {reasons})')
+        _, phone_variant = qa.request(base, phone_variant_url, None, raw=True)
+        phone_segments = [l for l in phone_variant.decode().splitlines() if l and not l.startswith('#')]
+        _, phone_first = qa.request(on_source(phone_segments[0]), '', None, raw=True)
+        qa.check(len(phone_first) > 10000 and phone_first[0] == 0x47, 'The phone\'s first segment is not MPEG-TS video')
+        new_owner = [p for p in ffmpeg_logs(source_config) if p not in owner_logs]
+        qa.check(new_owner and all('FFmpeg.Remux' in p.name for p in new_owner), 'The owner converted for the phone instead of repackaging')
+        qa.check(set(ffmpeg_logs(config)) == here_logs, 'The receiving server ran ffmpeg for the phone play')
+        print(f'HANDOFF PASS: copy play: Android phone app (reasons {reasons}) played from the owner, repackaged not converted; receiver ran no ffmpeg', flush=True)
+
+        stage = 'copy play: seeking forward and back lands on the right moment'
+        # A seek is a request for a segment further in (or back). The owner
+        # restarts its copy there; what arrives must start where the playlist
+        # says that segment starts, or the picture jumps or stalls.
+        def first_video_seconds(ts):
+            for at in range(0, len(ts) - 188, 188):
+                packet = ts[at:at + 188]
+                if packet[0] != 0x47 or not packet[1] & 0x40:
+                    continue
+                body = 4 + (1 + packet[4] if packet[3] & 0x20 else 0)
+                pes = packet[body:]
+                if len(pes) > 14 and pes[:3] == b'\x00\x00\x01' and 0xE0 <= pes[3] <= 0xEF and pes[7] & 0x80:
+                    v = pes[9:14]
+                    return ((((v[0] >> 1) & 7) << 30) | (v[1] << 22) | ((v[2] >> 1) << 15) | (v[3] << 7) | (v[4] >> 1)) / 90000
+            return None
+        lines = phone_variant.decode().splitlines()
+        lengths = [float(l.split(':')[1].split(',')[0]) for l in lines if l.startswith('#EXTINF:')]
+        qa.check(len(lengths) == len(phone_segments) and abs(sum(lengths) - 90) < 2, f'The copy playlist does not cover the film: {len(lengths)} segments, {sum(lengths):.1f}s')
+        base_pts = first_video_seconds(phone_first)
+        qa.check(base_pts is not None, 'No picture timestamp in the first segment')
+        landed = []
+        for index in (len(phone_segments) - 1, 1, len(phone_segments) // 2, 0):
+            _, part = qa.request(on_source(phone_segments[index]), '', None, raw=True)
+            qa.check(len(part) > 1000 and part[0] == 0x47, f'Segment {index} is not MPEG-TS')
+            at = first_video_seconds(part)
+            wanted = sum(lengths[:index])
+            qa.check(at is not None and abs((at - base_pts) - wanted) < 0.25, f'Segment {index} starts at {None if at is None else at - base_pts:.2f}s, the playlist says {wanted:.2f}s')
+            landed.append(f'{index}@{wanted:.1f}s')
+        qa.check(set(ffmpeg_logs(config)) == here_logs, 'The receiving server ran ffmpeg during seeks')
+        qa.check(all('FFmpeg.Remux' in p.name for p in ffmpeg_logs(source_config) if p not in owner_logs), 'A seek made the owner convert')
+        print(f'HANDOFF PASS: copy play: seeks to segments {", ".join(landed)} each start where the playlist says (segment lengths {min(lengths):.1f}-{max(lengths):.1f}s follow the file\'s keyframes); still no conversion anywhere', flush=True)
+
+        stage = 'copy play: a play that needs re-encoding is not sent to an owner that converts nothing'
         # A request that needs re-encoding must not be forced into a copy on an
         # owner that converts nothing: it stays with this server, as before.
         _, must_convert = negotiate(viewer, bitrate=2400000)
         _, convert_master = qa.request(base, must_convert['TranscodingUrl'], None, raw=True)
         qa.check('HandoffPlaylist' not in convert_master.decode() and source_host not in convert_master.decode(),
                  'A play that needs re-encoding was sent to an owner that converts nothing')
-        print(f'HANDOFF PASS: copy play: owner that converts nothing repackaged the file (picture and sound copied, {len(first)} byte first segment, a later one too); receiver ran no ffmpeg; a must-convert play stayed here', flush=True)
+        print('HANDOFF PASS: copy play: a must-convert play stayed on the receiving server', flush=True)
 
         stage = 'quality ladder when the receiver converts'
         local_levels = [l for l in master.splitlines() if l and not l.startswith('#')]

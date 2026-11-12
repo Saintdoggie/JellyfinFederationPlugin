@@ -23,7 +23,12 @@ the release checklist; `AGENTS.md` describes the code. No personal data here: us
   could not take).
 - **Not yet proven on a real device.** All proof so far is the test servers in
   `scripts/`. Step 8 lists the devices.
-- **Next:** step 4 (seeking and resume inside a copy play), then 5, 6, 7.
+- **After 0.0.223, test-only commits:** phone-app stage and seek stage in
+  `scripts/federation_handoff_smoke.py` (steps 3 and 4).
+- **Next:** real-internet timing with a disposable test server on the owner's VPS
+  (see "Real-world test bench"), then steps 5, 6, 7, 7b.
+- **0.0.223 is not installed on the owner's live servers** as of 2026-11-12
+  evening (someone was watching; ask before any restart).
 - **Known and unfixed:** see "Open problems".
 
 ## The rules, in the owner's words (2026-11-12)
@@ -132,8 +137,10 @@ the receiver's check only avoids sending requests that would then not play.
   playlist whose segments come from the owner; the owner's log is an
   `FFmpeg.Remux` with `-codec:v:0 copy -codec:a:0 copy`; the receiver runs no
   ffmpeg; a must-convert request is not sent as a copy play.
-  **Still to add:** the same with the Android phone identity (User-Agent and
-  `Client="Jellyfin Android"`), which is the main real-world case.
+  The Android phone identity (`Client="Jellyfin Android"`) has its own stage: it
+  is offered no plain address, Jellyfin's reasons are
+  `AudioCodecNotSupported,DirectPlayError` (the first one is the false reason
+  described below), and the play comes from the owner as an `FFmpeg.Remux`.
 - [x] **3b. Linked servers never convert each other's titles.** (0.0.223)
   `LinkedPlayRule` + `FederationRemoteTranscodeFilter.LocalRefusal`: HTTP 409
   `linked-server-no-conversion` with a message built from `TranscodeReasons` and
@@ -141,8 +148,14 @@ the receiver's check only avoids sending requests that would then not play.
   session message (`ShowRefusalAsync`). The owner converting its own file and
   sending it straight to the player is still allowed: that is not "through the
   other server". Stage in `scripts/federation_linked_smoke.py`.
-- [ ] **4. Seeking and resume.** Start at an offset, seek forward and back, check
-  segment timing on files with sparse keyframes.
+- [x] **4. Seeking.** (test added after 0.0.223) Stage "seeking forward and back"
+  in the handoff smoke: segments 8, 1, 4, 0 of a copy play each start (first
+  picture timestamp) within 0.25 s of where the playlist says. The test file has
+  keyframes about every 10.4 s; Jellyfin cuts copy-play segments on the file's
+  keyframes (6.7–10.4 s here), so sparse keyframes give long segments, not wrong
+  ones. **Not covered:** resume from a saved position in a real app (apps send
+  `StartTimeTicks` or just ask for a later segment; both reach the owner
+  unchanged), and files with keyframes more than ~20 s apart.
 - [ ] **5. Sound.** When the usual track cannot be copied for the device and
   another in the viewer's language can (0.0.218 picks it), the copy play uses that
   track. When none can, say so plainly instead of failing.
@@ -160,6 +173,17 @@ the receiver's check only avoids sending requests that would then not play.
   whether they should be.
 - [ ] **8. Real devices.** Android TV, Android phone, desktop app, Chrome, an iOS
   app. Record what each one requested and where the bytes came from.
+
+## Real-world test bench (owner's idea, 2026-11-12)
+
+The smokes run every server on one machine, so they prove routing, not speed.
+The owner allows disposable test servers on their VPS to measure delay and
+throughput over the real internet: a test owner server there, a test receiver at
+home, and a script playing the part of the player, comparing a copy play straight
+from the far server with the old route through the near one. Keep test servers
+apart from the live ones (own container names, own folders, own ports, generated
+test clips only), never restart or reconfigure the live servers for it, and do
+not delete anything afterwards without asking. Record results here.
 
 ## Jellyfin behaviour found while building this (saves you a day)
 
