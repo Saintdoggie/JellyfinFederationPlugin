@@ -124,6 +124,59 @@ public class RemoteTranscodeHandoffTests
         Assert.Contains("PlaySessionId=p", filtered, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("ApiKey", false)]
+    [InlineData("api_key", false)]
+    [InlineData("X-Emby-Token", true)]
+    public void LocalConversionQuery_PreservesViewerAuthenticationAndNativeParameters(string tokenKey, bool handheld)
+    {
+        var requested = new QueryCollection(new Dictionary<string, StringValues>
+        {
+            [tokenKey] = "viewer+token/value=",
+            ["MediaSourceId"] = Source.ToString("N"),
+            ["VideoBitrate"] = "40000000",
+            ["AudioBitrate"] = "192000",
+            ["MaxStreamingBitrate"] = "60000000",
+            ["LiveStreamId"] = "local-stream",
+            ["DeviceProfileId"] = "local-profile",
+            ["Tag"] = new StringValues(new[] { "first+value", "second&value" })
+        });
+
+        var capped = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(
+            FederationRemoteTranscodeFilter.LocalConversionQuery(requested, 20, handheld));
+
+        Assert.Equal("viewer+token/value=", capped[tokenKey].ToString());
+        Assert.Equal(Source.ToString("N"), capped["MediaSourceId"].ToString());
+        Assert.Equal("18808000", capped["VideoBitrate"].ToString());
+        Assert.Equal("19000000", capped["MaxStreamingBitrate"].ToString());
+        Assert.Equal("local-stream", capped["LiveStreamId"].ToString());
+        Assert.Equal("local-profile", capped["DeviceProfileId"].ToString());
+        Assert.Equal(new[] { "first+value", "second&value" }, capped["Tag"].ToArray());
+        Assert.Equal(handheld, capped.ContainsKey("MaxHeight"));
+        if (handheld)
+        {
+            Assert.Equal("1080", capped["MaxHeight"].ToString());
+        }
+
+        // The local viewer's credentials still must never travel to a friend.
+        Assert.DoesNotContain("viewer", RemoteMediaPath.FilterQuery(requested), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalConversionQuery_WithoutACapDoesNotInventAuthenticationOrChangeNativeValues()
+    {
+        var requested = RemoteMediaPath.ParseQuery("?MediaSourceId=local&VideoBitrate=40000000&MaxHeight=720&Tag=a%2Bb%3D");
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(
+            FederationRemoteTranscodeFilter.LocalConversionQuery(requested, null, true));
+
+        Assert.Equal("local", query["MediaSourceId"].ToString());
+        Assert.Equal("40000000", query["VideoBitrate"].ToString());
+        Assert.Equal("720", query["MaxHeight"].ToString());
+        Assert.Equal("a+b=", query["Tag"].ToString());
+        Assert.False(query.ContainsKey("ApiKey"));
+        Assert.False(query.ContainsKey("api_key"));
+    }
+
     [Fact]
     public void ReceiverQuery_MapsSourceToFriendItem_AndHoldsBitratesToTheCap()
     {

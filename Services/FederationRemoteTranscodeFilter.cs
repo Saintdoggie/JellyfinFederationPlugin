@@ -775,13 +775,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 cap = allocation.CapMbps;
             }
 
-            var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) => string.Equals(name, "MediaSourceId", StringComparison.OrdinalIgnoreCase)
-                ? value
-                : RewriteQueryValue(name, value, source.RemoteItemId, cap, request.Query));
-            if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
-            {
-                query = HandheldClientLimits.WithResolution(query, request.Query, handheld);
-            }
+            var query = LocalConversionQuery(request.Query, cap,
+                handheld && (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream));
 
             request.QueryString = new QueryString(query);
             var capped = RemoteMediaPath.ParseQuery(query);
@@ -789,6 +784,22 @@ namespace Jellyfin.Plugin.Federation.Services
             UpdateBoundArgument(context, "videoBitrate", capped, "VideoBitrate");
             UpdateBoundArgument(context, "maxWidth", capped, "MaxWidth");
             UpdateBoundArgument(context, "maxHeight", capped, "MaxHeight");
+        }
+
+        /// <summary>Applies conversion limits to a request handled by this server's own Jellyfin.</summary>
+        internal static string LocalConversionQuery(IEnumerable<KeyValuePair<string, StringValues>> requested, int? cap, bool handheld)
+        {
+            // This request stays on this server. The peer allow-list deliberately
+            // strips ApiKey and native session/profile fields; using it here makes
+            // Jellyfin emit child playlists without the native player's URL token.
+            // Preserve the existing local query, including repeated values, and
+            // change only the limits. Peer forwarding still uses FilterQuery.
+            var query = QueryString.Create(requested.SelectMany(pair => pair.Value.Select(value =>
+                new KeyValuePair<string, string?>(pair.Key,
+                    string.Equals(pair.Key, "MediaSourceId", StringComparison.OrdinalIgnoreCase)
+                        ? value
+                        : RewriteQueryValue(pair.Key, value ?? string.Empty, Guid.Empty, cap, requested))))).Value ?? string.Empty;
+            return HandheldClientLimits.WithResolution(query, requested, handheld);
         }
 
         private static void UpdateBoundArgument(ActionExecutingContext context, string argument, IEnumerable<KeyValuePair<string, StringValues>> query, string name)
