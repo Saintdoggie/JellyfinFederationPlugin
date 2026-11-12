@@ -3746,7 +3746,12 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Tells the friend this token opens Peer/Play for the title's
                 // subtitles and subtitle fonts whether or not this server converts
                 // video for them: a separate subtitle file exists only here.
-                subtitles = purpose == FederationTokenPurpose.Playback
+                subtitles = purpose == FederationTokenPurpose.Playback,
+
+                // Tells the friend this token opens Peer/Play for a copy play
+                // (Services.CopyPlay): the title as a streaming playlist with
+                // picture and sound copied, whether or not this server converts.
+                copyPlay = purpose == FederationTokenPurpose.Playback
             });
         }
 
@@ -4116,7 +4121,20 @@ namespace Jellyfin.Plugin.Federation.Api
             }
 
             var config = Plugin.Instance?.Configuration;
-            var owner = ResolveRemoteTranscodeFriend(token, path.ItemId, out var remoteUserId, path.IsSubtitleOrFont);
+            // A playlist is served to anyone who may play the title. Where this
+            // server does not convert for that friend, it is answered as a copy
+            // play: the request is rewritten so no encoder can start.
+            var owner = ResolveRemoteTranscodeFriend(token, path.ItemId, out var remoteUserId, path.IsSubtitleOrFont || path.IsPlaylistOrSegment);
+            var copyOnly = owner != null
+                && path.IsPlaylistOrSegment
+                && !(owner.AllowRemoteTranscode && Services.TranscodePolicy.FriendsMayConvertHere(config));
+            if (copyOnly && !Services.CopyPlay.OwnerAccepts(Request.Query, _libraryManager.GetItemById(path.MediaSourceId ?? path.ItemId)?.GetMediaStreams()))
+            {
+                // It needs an encoder and this server runs none for this friend:
+                // refused as it always was, so the friend's server deals with it.
+                owner = null;
+            }
+
             if (owner == null)
             {
                 Services.FederationRemoteTranscodeGateway.ApplyCors(HttpContext);
@@ -4155,7 +4173,7 @@ namespace Jellyfin.Plugin.Federation.Api
             if (path.StartsWork)
             {
                 if (!string.IsNullOrEmpty(playSessionId)
-                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, deviceId, limit, path.ItemId))
+                    && !_remoteTranscodeSessions.TryTouch(owner.FederationId, playSessionId, deviceId, copyOnly ? 0 : limit, path.ItemId))
                 {
                     if (streamLease is { Created: true })
                     {
@@ -4175,7 +4193,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
             }
 
-            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct)).ConfigureAwait(false);
+            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct, copyOnly)).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -4274,9 +4292,10 @@ namespace Jellyfin.Plugin.Federation.Api
         /// the friendship must still exist, remote transcoding must be on for this
         /// server and that friend, and the viewer must still be allowed the item.
         /// </summary>
-        // subtitleOrFont: a subtitle track or font of a title the friend may already
-        // play from here. It is part of that title, not a video conversion, so it
-        // is served whether or not this server converts for friends.
+        // subtitleOrFont (the name predates copy plays): a request this server
+        // answers without converting, for a title the friend may already play from
+        // here: a subtitle track, a font, or a playlist the caller then serves as
+        // a copy play. Allowed whether or not this server converts for friends.
         private RemoteServer? ResolveRemoteTranscodeFriend(string? token, Guid itemGuid, out string? remoteUserId, bool subtitleOrFont = false)
         {
             remoteUserId = null;

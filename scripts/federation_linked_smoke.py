@@ -14,6 +14,7 @@ other, exactly as an admin does. Expected:
 
 Only containers/network created here are touched; production is never used.
 """
+import json
 import os
 from pathlib import Path
 import secrets
@@ -73,7 +74,7 @@ def smoke():
             if role in ('a', 'c'):
                 qa.request(base, '/Library/VirtualFolders?name=QA%20Native&collectionType=movies&refreshLibrary=true', admin,
                     {'LibraryOptions':{'PathInfos':[{'Path':'/media'}],'EnableRealtimeMonitor':False,'EnableInternetProviders':False}}, expected=204)
-            servers[role] = {'name': name, 'base': base, 'admin': admin, 'host': f'http://{name}:8096',
+            servers[role] = {'name': name, 'base': base, 'admin': admin, 'host': f'http://{name}:8096', 'config': config,
                              'viewer': {'Authorization':'MediaBrowser Token="'+viewer['AccessToken']+'"'}, 'viewer_id': viewer['User']['Id']}
         a, b, c = servers['a'], servers['b'], servers['c']
 
@@ -196,6 +197,34 @@ def smoke():
         qa.wait_for(lambda: b_titles() == ['QA Linked', 'QA OwnA'] or None, 'A\'s own title did not come back on B', 120)
         qa.check(code_on(b, a_on_b)['direction'] == 0, 'B did not learn that A set the link back to both ways')
         print('LINKED PASS: direction set on B hides A\'s own title there (C\'s stays), A shows it from its side, A sets it back and the title returns', flush=True)
+
+        stage = 'a linked server\'s title is never converted on the other server'
+        # A's own title on B. A player that cannot take it as stored must not make
+        # B pull the file across and convert it: B refuses and names the format.
+        own = next(m for m in b_movies() if m['Name'] == 'QA OwnA')
+        def offer(profile, bitrate):
+            info = qa.request(b['base'], f'/Items/{own["Id"]}/PlaybackInfo?userId={b["viewer_id"]}', b['viewer'],
+                {'UserId': b['viewer_id'], 'MaxStreamingBitrate': bitrate, 'EnableDirectPlay': False, 'EnableDirectStream': False, 'EnableTranscoding': True,
+                 'AllowVideoStreamCopy': False, 'AllowAudioStreamCopy': False, 'DeviceProfile': {'MaxStreamingBitrate': bitrate, **profile, 'SubtitleProfiles': [], 'CodecProfiles': [], 'ContainerProfiles': []}})
+            return info['MediaSources'][0].get('TranscodingUrl') or ''
+        hls = lambda video, audio: [{'Container':'ts','Type':'Video','VideoCodec':video,'AudioCodec':audio,'Protocol':'hls','Context':'Streaming','MinSegments':1}]
+        b_logs = lambda: sorted((b['config'] / 'log').glob('FFmpeg.*.log'))
+        # A may convert its own file for B's viewer and send it straight to the
+        # player; that is not "through B". Here A converts nothing for friends.
+        qa.check(qa.request(a['base'], f'/Plugins/Federation/Friends/{b_on_a}/RemoteTranscode', a['admin'], {'Allow': False})['success'], 'A could not stop converting for B')
+        before = b_logs()
+        # The player's quality setting is far below the file: only a conversion could meet it.
+        url = offer({'DirectPlayProfiles': [], 'TranscodingProfiles': hls('h264', 'aac')}, 400000)
+        qa.check(url, 'B offered no conversion address to refuse')
+        def refused():
+            status, _, answer = no_redirect(b['base'], url, {})
+            return (status, answer) if status == 409 else None
+        status, answer = qa.wait_for(refused, 'B did not refuse to convert a linked server\'s title', 40)
+        answer = json.loads(answer or b'{}') if status == 409 else {}
+        qa.check(status == 409 and answer.get('error') == 'linked-server-no-conversion', f'B did not refuse to convert a linked server\'s title (HTTP {status})')
+        qa.check('linked server' in answer.get('message', '') and 'H.264' in answer['message'], f'The refusal does not explain itself: {answer.get("message")}')
+        qa.check(b_logs() == before, 'B started ffmpeg for a linked server\'s title')
+        print('LINKED PASS: B refuses to convert A\'s title and says why: ' + answer['message'], flush=True)
 
         stage = 'removing C on A removes it from B; unlinking clears both'
         refused = qa.request(b['base'], f'/Plugins/Federation/Servers/{through[0]["Id"]}', b['admin'], method='DELETE', expected=409)

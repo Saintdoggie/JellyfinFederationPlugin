@@ -25,6 +25,8 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Clock, replaceable in tests.</summary>
         private static readonly ConcurrentDictionary<string, bool> Subtitles = new(StringComparer.OrdinalIgnoreCase);
 
+        private static readonly ConcurrentDictionary<string, bool> CopyPlays = new(StringComparer.OrdinalIgnoreCase);
+
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
         /// <summary>Records what a fresh token said.</summary>
@@ -108,8 +110,22 @@ namespace Jellyfin.Plugin.Federation.Services
         public static bool ServesSubtitles(string? serverId)
             => !string.IsNullOrEmpty(serverId) && Subtitles.TryGetValue(serverId, out var supported) && supported;
 
+        /// <summary>Records whether the friend repackages its titles without re-encoding (see <see cref="PlaybackTokenResponse.CopyPlay"/>).</summary>
+        public static void RecordCopyPlay(string? serverId, bool supported)
+        {
+            if (!string.IsNullOrEmpty(serverId))
+            {
+                CopyPlays[serverId] = supported;
+            }
+        }
+
+        /// <summary>Whether the friend serves copy plays (<see cref="CopyPlay"/>) even when it converts nothing for us.</summary>
+        public static bool ServesCopyPlay(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && CopyPlays.TryGetValue(serverId, out var supported) && supported;
+
         internal static void Reset()
         {
+            CopyPlays.Clear();
             Subtitles.Clear();
             State.Clear();
             SharedSegments.Clear();

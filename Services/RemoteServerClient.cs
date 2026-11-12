@@ -1280,6 +1280,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     PeerTranscodeCapability.RecordSharedSegments(_server.Id, result.SharedSegments == true);
                     PeerTranscodeCapability.RecordQualityLadder(_server.Id, result.QualityLadder == true);
                     PeerTranscodeCapability.RecordSubtitles(_server.Id, result.Subtitles == true);
+                    PeerTranscodeCapability.RecordCopyPlay(_server.Id, result.CopyPlay == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -2686,6 +2687,14 @@ namespace Jellyfin.Plugin.Federation.Services
         /// for us (0.0.219+). Older friends leave it unset.
         /// </summary>
         public bool? Subtitles { get; set; }
+
+        /// <summary>
+        /// Whether this Playback token opens the friend's gateway for a copy play
+        /// (<see cref="Services.CopyPlay"/>): the title as a streaming playlist with
+        /// picture and sound copied, served even when the friend converts nothing
+        /// for us (0.0.223+). Older friends leave it unset.
+        /// </summary>
+        public bool? CopyPlay { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

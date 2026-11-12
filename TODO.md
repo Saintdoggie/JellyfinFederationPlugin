@@ -1,5 +1,19 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.223 — player fixes: copy play, and linked servers never convert for each other
+
+Plan of record and takeover notes: `DIRECT-PLAY.md`.
+
+- [x] A player that cannot take the plain file (another wrapper, or an app that only reads playlists) gets the title repackaged by the server that holds it, picture and sound copied, even when that server converts nothing. The viewer's server does no work and carries no bytes.
+- [x] The owner's rewrite cannot start an encoder; a request that needs one is refused there and handled as before.
+- [x] A linked server's title is never converted on the other server. The play is refused with what the device could not take (picture format, sound format, quality setting, subtitle), in the answer, the log and on the player's screen.
+- [x] The "this server converts nothing" refusal also holds with "use friends' converters" off (it used to be skipped).
+- [x] Two-server and three-server checks added to `scripts/federation_handoff_smoke.py` and `scripts/federation_linked_smoke.py`.
+- [ ] Not tried on a real phone, TV or desktop app. Whether an app shows Jellyfin's on-screen message depends on the app.
+- [ ] Copy plays are still labelled "friend converts" in Playback Info and the dashboard.
+- [ ] Seeking inside a copy play on files with sparse keyframes, mixed https/http in browsers, and a viewer's server that converts nothing: steps 4, 6, 7 in `DIRECT-PLAY.md`.
+- [ ] Friends reached through a link are not covered by the linked rule.
+
 ## 0.0.222 — which way titles flow over a link
 
 - [x] Per link: both ways, only this server's titles go there, or only theirs come here. Either server's admin sets it (Friends → the linked server → Manage → Link); the other server takes the same setting, and when they disagree the narrower applies. Titles of the linked server itself are hidden and removed from the library; friends used through the link, sound help and the link itself are unaffected.

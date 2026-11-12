@@ -158,6 +158,27 @@ Playback, authorization, and downloads:
   conversion address (HLS through this server's ffmpeg) even when the device plays
   the file as stored; only jellyfin-web still fetches the original then. This is
   transport detection, not a codec blacklist.
+- **Player fixes (direct play everywhere) are planned and tracked in
+  `DIRECT-PLAY.md`.** Read its "State right now" before touching playback.
+- Since 0.0.223 the server that holds a file serves a **copy play**
+  (`Services/CopyPlay.cs`): the title as a streaming playlist with picture and
+  sound copied, not re-encoded, for a player that cannot take the plain file. It
+  is direct play in another wrapper, so a server that converts nothing still does
+  it (`copyPlay` in the playback-token answer, `PeerTranscodeCapability.ServesCopyPlay`).
+  The owner's gateway rewrites such a request with `CopyPlay.ForceCopy` so it
+  cannot start an encoder, and refuses one that would need to
+  (`CopyPlay.OwnerAccepts`). The receiver sends a playlist request to the owner
+  when `CopyPlay.Fits` (Jellyfin's `TranscodeReasons` are wrapper-only, no
+  burned-in subtitle, under the bitrate cap), with a grant from
+  `PeerPlaybackGrants.FindDirect`, the no-conversion store shared with subtitles;
+  it can never route a real conversion to an owner that refuses to convert.
+- Since 0.0.223 **linked servers do not convert each other's titles**
+  (`Services/LinkedPlayRule.cs`, `FederationRemoteTranscodeFilter.LocalRefusal`).
+  A linked server's title plays from that server as stored, as a copy play, or
+  converted by that server itself; the viewer's server never pulls it across to
+  convert. Otherwise HTTP 409 `linked-server-no-conversion` with a sentence naming
+  what the device could not take, also shown on the player through Jellyfin's
+  session message. Friends that are not linked keep the old fallback.
 - Since 0.0.222 a link has a catalogue direction (`RemoteServer.LinkCatalog`, from
   this side: both ways / only mine goes / only theirs comes; `LinkCatalogPeer` is
   what the other side last said, already mirrored). `Services/LinkCatalog.cs` is the

@@ -321,6 +321,51 @@ def smoke():
         qa.check(b'Handoff subtitle line' in vtt, 'Subtitle text missing once the owner stopped converting')
         print('HANDOFF PASS: external subtitle still served from an owner that converts nothing for the receiver', flush=True)
 
+        stage = 'copy play: an owner that converts nothing still repackages its file for the player'
+        # A player that plays the picture and sound but not the MKV wrapper (or an
+        # app whose player only reads playlists). Nothing needs re-encoding, so the
+        # owner serves it itself with picture and sound copied, and this server
+        # does no work and carries no bytes.
+        def ffmpeg_logs(folder):
+            return sorted((folder / 'log').glob('FFmpeg.*.log'))
+        streams = native['MediaSources'][0]['MediaStreams']
+        codecs = lambda kind: ','.join(sorted({s['Codec'] for s in streams if s['Type'] == kind and s.get('Codec')}))
+        wrapper_profile = {**profile, 'DirectPlayProfiles': [{'Type':'Video','Container':'mp4','VideoCodec':codecs('Video'),'AudioCodec':codecs('Audio')}],
+                           'TranscodingProfiles': [{**profile['TranscodingProfiles'][0], 'AudioCodec': codecs('Audio') + ',aac', 'MaxAudioChannels': '8'}]}
+        owner_logs, here_logs = set(ffmpeg_logs(source_config)), set(ffmpeg_logs(config))
+        info = qa.request(base, f'/Items/{item_id}/PlaybackInfo?userId={viewer_id}', viewer,
+            {'UserId': viewer_id, 'MaxStreamingBitrate': 120000000, 'EnableDirectPlay': True, 'EnableDirectStream': True,
+             'EnableTranscoding': True, 'DeviceProfile': wrapper_profile})
+        copy_source = info['MediaSources'][0]
+        copy_url = copy_source.get('TranscodingUrl') or ''
+        qa.check(re.search(r'TranscodeReasons=ContainerNotSupported(,AudioCodecNotSupported)?(&|$)', copy_url), 'The play was not a wrapper-only one: ' + re.sub(r'(?i)api_?key=[0-9a-f]+', 'key=x', copy_url)[-260:])
+        _, copy_master = qa.request(base, copy_url, None, raw=True)
+        copy_master = copy_master.decode()
+        qa.check(viewer_token not in copy_master and 'ApiKey' not in copy_master and 'api_key' not in copy_master, 'A credential reached the copy playlist')
+        copy_variant_url = next(l for l in copy_master.splitlines() if l and not l.startswith('#'))
+        qa.check(copy_variant_url.startswith(relay) and f'{source_host}/Plugins/Federation/Peer/Play/' in urllib.parse.unquote(copy_variant_url[len(relay):]),
+                 'The copy play was not sent to the owner')
+        _, copy_variant = qa.request(base, copy_variant_url, None, raw=True)
+        copy_segments = [l for l in copy_variant.decode().splitlines() if l and not l.startswith('#')]
+        _, first = qa.request(on_source(copy_segments[0]), '', None, raw=True)
+        qa.check(len(first) > 10000 and first[0] == 0x47, 'First copy segment is not MPEG-TS video')
+        # A seek further in: the owner serves that segment too.
+        _, later = qa.request(on_source(copy_segments[min(5, len(copy_segments) - 1)]), '', None, raw=True)
+        qa.check(len(later) > 10000 and later[0] == 0x47, 'A later copy segment is not MPEG-TS video')
+        new_owner = [p for p in ffmpeg_logs(source_config) if p not in owner_logs]
+        qa.check(new_owner, 'The owner started no ffmpeg for the copy play')
+        command = new_owner[-1].read_text(errors='replace')
+        qa.check('-codec:v:0 copy' in command and '-codec:a:0 copy' in command, 'The owner re-encoded picture or sound in a copy play')
+        qa.check('-codec:v:0 libx264' not in command and 'FFmpeg.Remux' in new_owner[-1].name, 'The owner started an encoder in a copy play')
+        qa.check(set(ffmpeg_logs(config)) == here_logs, 'The receiving server ran ffmpeg for a copy play')
+        # A request that needs re-encoding must not be forced into a copy on an
+        # owner that converts nothing: it stays with this server, as before.
+        _, must_convert = negotiate(viewer, bitrate=2400000)
+        _, convert_master = qa.request(base, must_convert['TranscodingUrl'], None, raw=True)
+        qa.check('HandoffPlaylist' not in convert_master.decode() and source_host not in convert_master.decode(),
+                 'A play that needs re-encoding was sent to an owner that converts nothing')
+        print(f'HANDOFF PASS: copy play: owner that converts nothing repackaged the file (picture and sound copied, {len(first)} byte first segment, a later one too); receiver ran no ffmpeg; a must-convert play stayed here', flush=True)
+
         stage = 'quality ladder when the receiver converts'
         local_levels = [l for l in master.splitlines() if l and not l.startswith('#')]
         qa.check(len(local_levels) >= 2 and all('FedRung=' in l for l in local_levels[1:]) and 'FedRung=' not in local_levels[0],

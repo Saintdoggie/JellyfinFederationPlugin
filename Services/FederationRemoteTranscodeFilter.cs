@@ -79,6 +79,10 @@ namespace Jellyfin.Plugin.Federation.Services
         private readonly MediaBrowser.Common.Net.INetworkManager? _network;
         private readonly PlaybackRouteMetrics? _routeMetrics;
         private readonly FederationBandwidthAllocator? _bandwidth;
+        private readonly MediaBrowser.Controller.Session.ISessionManager? _sessions;
+
+        // One on-screen explanation per device and title; players retry a refused request.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> RefusalsShown = new(StringComparer.Ordinal);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationRemoteTranscodeFilter"/> class.
@@ -95,8 +99,10 @@ namespace Jellyfin.Plugin.Federation.Services
             DirectLink.DirectLinkManager? directLinks = null,
             MediaBrowser.Common.Net.INetworkManager? network = null,
             PlaybackRouteMetrics? routeMetrics = null,
-            FederationBandwidthAllocator? bandwidth = null)
+            FederationBandwidthAllocator? bandwidth = null,
+            MediaBrowser.Controller.Session.ISessionManager? sessions = null)
         {
+            _sessions = sessions;
             _bandwidth = bandwidth;
             _routeMetrics = routeMetrics;
             _directLinks = directLinks;
@@ -136,6 +142,21 @@ namespace Jellyfin.Plugin.Federation.Services
                 return;
             }
 
+            if (Plugin.Instance?.Configuration?.UseFriendsTranscoders == false)
+            {
+                // Friends' servers are not asked to serve plays. What this server
+                // may not convert itself is still refused, not quietly converted.
+                if (LocalRefusal(context, path!) is { } off)
+                {
+                    context.HttpContext.Response.Headers.CacheControl = "private, no-store";
+                    context.Result = off;
+                    return;
+                }
+
+                await next().ConfigureAwait(false);
+                return;
+            }
+
             var playSessionId = RemoteMediaPath.QueryValue(context.HttpContext.Request.Query, "PlaySessionId");
             if (path!.Kind == RemoteMediaKind.HlsSegment && _handoffs.HandedOffTo(playSessionId) == null)
             {
@@ -168,10 +189,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (handoff == null)
             {
-                if (LocalConversionBlocked(path))
+                if (LocalRefusal(context, path) is { } refusal)
                 {
                     context.HttpContext.Response.Headers.CacheControl = "private, no-store";
-                    context.Result = LocalConversionRefused();
+                    context.Result = refusal;
                     return;
                 }
 
@@ -200,7 +221,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     // Most often a token the friend no longer knows; the next
                     // request gets a fresh one.
                     RemoteServerClient.InvalidatePlaybackTokens(handoff.ServerId);
-                    PeerPlaybackGrants.ForgetSubtitles(handoff.UserId, path.ItemId, handoff.SourceId);
+                    PeerPlaybackGrants.ForgetDirect(handoff.UserId, path.ItemId, handoff.SourceId);
                 }
 
                 _logger.LogInformation("[Federation] {Server} did not serve the {Kind} of {ItemId} (HTTP {Status}); trying here", handoff.ServerName, path.Kind, path.ItemId, subtitleStatus);
@@ -249,6 +270,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 // that really switched converting off says so in that new token.
                 RemoteServerClient.InvalidatePlaybackTokens(handoff.ServerId);
                 PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
+                PeerPlaybackGrants.ForgetDirect(handoff.UserId, path.ItemId, handoff.SourceId);
                 var fresh = await ResolveAsync(context, path).ConfigureAwait(false);
                 if (fresh != null)
                 {
@@ -262,10 +284,10 @@ namespace Jellyfin.Plugin.Federation.Services
                 else
                 {
                     // The fresh token says the friend no longer converts for us.
-                    if (LocalConversionBlocked(path))
+                    if (LocalRefusal(context, path) is { } refusal)
                     {
                         context.HttpContext.Response.Headers.CacheControl = "private, no-store";
-                        context.Result = LocalConversionRefused();
+                        context.Result = refusal;
                         return;
                     }
 
@@ -291,11 +313,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 fetched = await WithStandbyAsync(context, path, handoff, fetched, relayPrefix, playSessionId).ConfigureAwait(false);
                 if (handoff.ViaLink)
                 {
-                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts, and the video comes over the direct link to this home viewer", path.Kind, path.ItemId, handoff.ServerName);
+                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it {Work}, and the video comes over the direct link to this home viewer", path.Kind, path.ItemId, handoff.ServerName, handoff.CopyPlay ? "repackages its file without converting (copy play)" : "converts");
                 }
                 else
                 {
-                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it converts and streams straight to the player", path.Kind, path.ItemId, handoff.ServerName);
+                    _logger.LogInformation("[Federation] {Kind} for {ItemId} handed to {Server}: it {Work} and streams straight to the player", path.Kind, path.ItemId, handoff.ServerName, handoff.CopyPlay ? "repackages its file without converting (copy play)" : "converts");
                 }
 
                 context.HttpContext.Response.Headers.CacheControl = "private, no-store";
@@ -310,10 +332,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 // at a time - this is the playlist every play starts with.
                 PeerTranscodeCapability.Record(handoff.ServerId, false);
                 PeerPlaybackGrants.Forget(handoff.UserId, path.ItemId, handoff.SourceId);
-                if (LocalConversionBlocked(path))
+                PeerPlaybackGrants.ForgetDirect(handoff.UserId, path.ItemId, handoff.SourceId);
+                if (LocalRefusal(context, path) is { } refusal)
                 {
                     context.HttpContext.Response.Headers.CacheControl = "private, no-store";
-                    context.Result = LocalConversionRefused();
+                    context.Result = refusal;
                     return;
                 }
 
@@ -394,6 +417,101 @@ namespace Jellyfin.Plugin.Federation.Services
             return item != null && FederationLibraryManager.GetFederationKey(item) != null;
         }
 
+        /// <summary>
+        /// The refusal for a request this server would otherwise convert itself,
+        /// or null when it may: either this server converts nothing for
+        /// federated titles, or the title belongs to a linked server
+        /// (<see cref="LinkedPlayRule"/>).
+        /// </summary>
+        private ObjectResult? LocalRefusal(ActionExecutingContext context, RemoteMediaPath path)
+        {
+            if (LocalConversionBlocked(path))
+            {
+                return LocalConversionRefused();
+            }
+
+            if (!path.StartsWork)
+            {
+                return null;
+            }
+
+            var item = _library.GetItemById(path.ItemId);
+            var key = item == null ? null : FederationLibraryManager.GetFederationKey(item);
+            var entry = key == null ? null : _federationManager.Cache.GetEntryByKey(key);
+            if (entry == null)
+            {
+                return null;
+            }
+
+            var query = context.HttpContext.Request.Query;
+            var source = SelectSource(entry, path.ItemId, path.MediaSourceId?.ToString("N") ?? RemoteMediaPath.QueryValue(query, "MediaSourceId"));
+            var server = source == null ? null : _federationManager.GetServer(source.ServerId);
+            if (!LinkedPlayRule.Applies(server, path))
+            {
+                return null;
+            }
+
+            var message = LinkedPlayRule.Explain(server!.Name, source, query);
+            _logger.LogWarning("[Federation] Not converting {ItemId} here: {Message}", path.ItemId, message);
+            _ = ShowRefusalAsync(context.HttpContext, path.ItemId, message);
+            return new ObjectResult(new { error = LinkedPlayRule.Error, message })
+            {
+                StatusCode = StatusCodes.Status409Conflict
+            };
+        }
+
+        /// <summary>
+        /// Shows the reason on the device that asked, through Jellyfin's own
+        /// on-screen message (web and the official apps display it). A player
+        /// otherwise shows only its generic playback error. Best effort.
+        /// </summary>
+        private async Task ShowRefusalAsync(HttpContext http, Guid itemId, string message)
+        {
+            try
+            {
+                if (_sessions == null)
+                {
+                    return;
+                }
+
+                var info = await _authorization.GetAuthorizationInfo(http).ConfigureAwait(false);
+                var deviceId = info?.DeviceId ?? RemoteMediaPath.QueryValue(http.Request.Query, "DeviceId");
+                if (info == null || string.IsNullOrEmpty(deviceId))
+                {
+                    return;
+                }
+
+                var now = DateTime.UtcNow;
+                var shownKey = deviceId + "|" + itemId.ToString("N");
+                if (RefusalsShown.TryGetValue(shownKey, out var last) && now - last < TimeSpan.FromSeconds(30))
+                {
+                    return;
+                }
+
+                RefusalsShown[shownKey] = now;
+                foreach (var stale in RefusalsShown.Where(kv => now - kv.Value > TimeSpan.FromMinutes(5)).Select(kv => kv.Key).ToList())
+                {
+                    RefusalsShown.TryRemove(stale, out _);
+                }
+
+                var session = _sessions.Sessions.FirstOrDefault(s => string.Equals(s.DeviceId, deviceId, StringComparison.Ordinal) && s.UserId == info.UserId);
+                if (session == null)
+                {
+                    return;
+                }
+
+                await _sessions.SendMessageCommand(
+                    null,
+                    session.Id,
+                    new MediaBrowser.Model.Session.MessageCommand { Header = "Can't play this here", Text = message, TimeoutMs = 15000 },
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not show the refusal on the player");
+            }
+        }
+
         private static ObjectResult LocalConversionRefused()
             => new(new { error = "local-transcoding-disabled", message = "This server is set never to convert video, and the server owning this title cannot convert it either. Choose a copy this device can play directly." })
             {
@@ -434,7 +552,6 @@ namespace Jellyfin.Plugin.Federation.Services
             path = null;
             var request = context.HttpContext.Request;
             if (!HttpMethods.IsGet(request.Method)
-                || Plugin.Instance?.Configuration?.UseFriendsTranscoders == false
                 || !context.ActionDescriptor.RouteValues.TryGetValue("controller", out var controller)
                 || controller == null
                 || !MediaControllers.Contains(controller)
@@ -504,13 +621,29 @@ namespace Jellyfin.Plugin.Federation.Services
 
             // A friend that converts nothing for us still serves the subtitles
             // and fonts of its own title: only it can read a separate subtitle file.
+            // The same goes for a copy play: the file repackaged without
+            // re-encoding, for a player that cannot take the plain file.
             var subtitlesOnly = false;
+            var copyPlay = false;
             if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
             {
-                if (forced != null
-                    || !path.IsSubtitleOrFont
-                    || !FederationMediaSourceProvider.IsPeerDirect(server)
-                    || !PeerTranscodeCapability.ServesSubtitles(server.Id))
+                var ownerServesIt = forced == null && FederationMediaSourceProvider.IsPeerDirect(server);
+                subtitlesOnly = ownerServesIt && path.IsSubtitleOrFont && PeerTranscodeCapability.ServesSubtitles(server.Id);
+                copyPlay = ownerServesIt
+                    && path.IsPlaylistOrSegment
+                    && PeerTranscodeCapability.ServesCopyPlay(server.Id)
+                    && CopyPlay.Fits(request.Query, source.Bitrate, _federationManager.GetEffectiveWanCapMbps(server) ?? 0, source.MediaStreams);
+                if (ownerServesIt && path.Kind == RemoteMediaKind.HlsMaster && !copyPlay)
+                {
+                    _logger.LogInformation(
+                        "[Federation] {Item} is not a copy play from {Server} (friend offers it: {Offers}; reasons: {Reasons}); handled here",
+                        path.ItemId,
+                        server.Name,
+                        PeerTranscodeCapability.ServesCopyPlay(server.Id),
+                        RemoteMediaPath.QueryValue(request.Query, "TranscodeReasons") ?? "none given");
+                }
+
+                if (!subtitlesOnly && !copyPlay)
                 {
                     if (forced == null)
                     {
@@ -519,17 +652,15 @@ namespace Jellyfin.Plugin.Federation.Services
 
                     return null;
                 }
-
-                subtitlesOnly = true;
             }
 
-            if (subtitlesOnly)
+            if (subtitlesOnly || copyPlay)
             {
-                grant = PeerPlaybackGrants.FindSubtitles(user.Id, item.Id, normalizedSourceId);
+                grant = PeerPlaybackGrants.FindDirect(user.Id, item.Id, normalizedSourceId);
                 if (grant == null)
                 {
                     await _mediaSources.GetPlaybackMediaSources(item, user, false, false, context.HttpContext.RequestAborted).ConfigureAwait(false);
-                    grant = PeerPlaybackGrants.FindSubtitles(user.Id, item.Id, normalizedSourceId);
+                    grant = PeerPlaybackGrants.FindDirect(user.Id, item.Id, normalizedSourceId);
                 }
             }
             else if (forced != null)
@@ -559,6 +690,11 @@ namespace Jellyfin.Plugin.Federation.Services
                 || !string.Equals(grant.ServerId, server.Id, StringComparison.OrdinalIgnoreCase)
                 || grant.RemoteItemId != source.RemoteItemId)
             {
+                if (copyPlay && path.Kind == RemoteMediaKind.HlsMaster)
+                {
+                    _logger.LogInformation("[Federation] No playback token from {Server} for a copy play of {Item}; handled here", server.Name, path.ItemId);
+                }
+
                 return null;
             }
 
@@ -633,7 +769,8 @@ namespace Jellyfin.Plugin.Federation.Services
             {
                 Source = source,
                 Entry = entry,
-                SubtitlesOnly = subtitlesOnly
+                SubtitlesOnly = subtitlesOnly,
+                CopyPlay = copyPlay
             };
         }
 
@@ -1055,6 +1192,9 @@ namespace Jellyfin.Plugin.Federation.Services
 
             /// <summary>Gets a value indicating whether the friend only serves this title's subtitles and fonts (it converts nothing for us).</summary>
             public bool SubtitlesOnly { get; init; }
+
+            /// <summary>Gets a value indicating whether the friend serves this play as a copy play (<see cref="Services.CopyPlay"/>) though it converts nothing for us.</summary>
+            public bool CopyPlay { get; init; }
 
             /// <summary>Gets the status this friend answered with when it failed to start.</summary>
             public int FailedStatus { get; init; }

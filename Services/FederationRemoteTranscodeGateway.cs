@@ -157,11 +157,15 @@ namespace Jellyfin.Plugin.Federation.Services
             string internalRelayKey,
             string loopbackBase,
             Guid? internalUserId,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool copyOnly = false)
         {
             var request = context.Request;
             var response = context.Response;
-            var url = NativeUrl(loopbackBase, path, RemoteMediaPath.FilterQuery(request.Query), internalUserId);
+
+            // copyOnly: this server does not convert for the caller. The playlist
+            // is still served, as a copy play that cannot start an encoder.
+            var url = NativeUrl(loopbackBase, path, copyOnly ? CopyPlay.ForceCopy(request.Query) : RemoteMediaPath.FilterQuery(request.Query), internalUserId);
             var isHead = HttpMethods.IsHead(request.Method);
 
             // A lower quality level: Jellyfin hashes the User-Agent into the

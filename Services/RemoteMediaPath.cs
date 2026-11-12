@@ -96,6 +96,9 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         public bool IsSubtitleOrFont => Kind is RemoteMediaKind.Subtitle or RemoteMediaKind.SubtitlePlaylist or RemoteMediaKind.Attachment;
 
+        /// <summary>True for a streaming playlist or one of its segments.</summary>
+        public bool IsPlaylistOrSegment => Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.HlsSegment;
+
         /// <summary>True when the request starts a transcode or stream on the owner (counted against its limit).</summary>
         public bool StartsWork => Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.HlsSegment or RemoteMediaKind.Stream or RemoteMediaKind.UniversalAudio;
 

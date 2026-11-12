@@ -538,15 +538,15 @@ namespace Jellyfin.Plugin.Federation.Services
                         PeerPlaybackGrants.Record(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, grantToken, candidate.RemoteMediaSourceId);
                     }
 
-                    // The title's subtitles and fonts come from the friend that has
-                    // the file even when it converts nothing for us: a separate
-                    // subtitle file exists only there.
+                    // The title's subtitles and fonts, and a copy play (the file
+                    // repackaged without re-encoding), come from the friend that
+                    // has the file even when it converts nothing for us.
                     if (localUserId.HasValue
                         && IsPeerDirect(candidate.Server)
-                        && PeerTranscodeCapability.ServesSubtitles(candidate.Server.Id)
+                        && (PeerTranscodeCapability.ServesSubtitles(candidate.Server.Id) || PeerTranscodeCapability.ServesCopyPlay(candidate.Server.Id))
                         && PeerPlaybackGrants.TokenFromDirectPath(candidate.Path) is { } subtitleToken)
                     {
-                        PeerPlaybackGrants.RecordSubtitles(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, subtitleToken, candidate.RemoteMediaSourceId);
+                        PeerPlaybackGrants.RecordDirect(localUserId.Value, item.Id, sourceId, candidate.Server.Id, candidate.Src.RemoteItemId, subtitleToken, candidate.RemoteMediaSourceId);
                     }
 
                     var mustConvert = SourceOverageBitrate(candidate.Server, remote) > 0

@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.222",
-  "changelog": "0.0.222: Linked servers: you can now choose which way titles flow over a link. Both ways (as before), only this server's titles go to the other, or only the other's titles come here. Set it under Friends, on the linked server, Manage, Link; the other server takes the same setting by itself. Friends you use through the link are not affected. Useful when one server should see everything and the other should stay as it is.",
+  "version": "0.0.223",
+  "changelog": "Player fixes: a friend's server repackages its own file for players that cannot take it as stored (copy play, no conversion); linked servers never convert each other's titles and say what the device could not play.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-12T15:33:00Z",
+  "timestamp": "2026-11-12T19:16:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

@@ -96,17 +96,17 @@ public class RemoteTranscodeHandoffTests
         // grant must never make a conversion go to that friend.
         var user = Guid.NewGuid();
         var item = Guid.NewGuid();
-        PeerPlaybackGrants.RecordSubtitles(user, item, item.ToString("N"), "owner", item, "token", "remote-source");
+        PeerPlaybackGrants.RecordDirect(user, item, item.ToString("N"), "owner", item, "token", "remote-source");
 
         Assert.Null(PeerPlaybackGrants.Find(user, item, null));
-        var grant = PeerPlaybackGrants.FindSubtitles(user, item, null);
+        var grant = PeerPlaybackGrants.FindDirect(user, item, null);
         Assert.NotNull(grant);
         Assert.Equal("token", grant!.Token);
         Assert.Equal("remote-source", grant.RemoteMediaSourceId);
-        Assert.Null(PeerPlaybackGrants.FindSubtitles(Guid.NewGuid(), item, null));
+        Assert.Null(PeerPlaybackGrants.FindDirect(Guid.NewGuid(), item, null));
 
-        PeerPlaybackGrants.ForgetSubtitles(user, item, null);
-        Assert.Null(PeerPlaybackGrants.FindSubtitles(user, item, null));
+        PeerPlaybackGrants.ForgetDirect(user, item, null);
+        Assert.Null(PeerPlaybackGrants.FindDirect(user, item, null));
     }
 
     [Fact]
