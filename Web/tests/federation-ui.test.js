@@ -110,8 +110,9 @@ test('badge styling is solid and crisp, with no gradients', () => {
   assert.equal(styleBlock[0].includes('linear-gradient'), false);
   assert.equal(styleBlock[0].includes('radial-gradient'), false);
   assert.equal(styleBlock[0].includes('backdrop-filter'), false);
-  assert.match(styleBlock[0], /background:rgba\(\d+,\s*\d+,\s*\d+,\s*\d?\.?\d+\);/);
-  assert.match(styleBlock[0], /border:1px solid rgba\(\d+,\s*\d+,\s*\d+,\s*\d?\.?\d+\);/);
+  // Solid backing plate and hairline border, both from the theme tokens.
+  assert.match(styleBlock[0], /background:var\(--fed-osd-surface\);/);
+  assert.match(styleBlock[0], /border:1px solid var\(--fed-osd-border\);/);
   assert.equal(badgeScript.slice(0, badgeScript.indexOf('.federation-download-ring')).includes('gradient'), false);
 });
 

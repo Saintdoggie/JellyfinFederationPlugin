@@ -273,25 +273,26 @@
       createSurface() {
         var surface = document.createElement('div');
         surface.className = 'federation-adaptive-surface';
-        surface.style.cssText = 'position:fixed;inset:0;background:#000;z-index:10000;display:flex;align-items:center;justify-content:center;';
-        var bar = document.createElement('div');
-        bar.style.cssText = 'position:absolute;top:1rem;left:1rem;display:flex;gap:.7rem;align-items:center;z-index:2;color:#fff;background:#111c;padding:.6rem;border-radius:.4rem;';
-        var close = document.createElement('button'); close.textContent = 'Close player';
+        // Colours come from the badge script's theme tokens (.federation-adaptive-*).
+        surface.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;';
+        var bar = document.createElement('div'); bar.className = 'federation-adaptive-bar';
+        bar.style.cssText = 'position:absolute;top:1rem;left:1rem;display:flex;gap:.7rem;align-items:center;z-index:2;padding:.6rem;';
+        var close = document.createElement('button'); close.className = 'emby-button raised'; close.textContent = 'Close player';
         close.onclick = () => this.deps.playbackManager.stop(this);
         var toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = this.enabled;
         var label = document.createElement('label'); label.append(toggle, document.createTextNode(' Automatic server switching'));
         toggle.onchange = () => { this.enabled = toggle.checked; localStorage.setItem(this.disabledKey, String(!this.enabled)); if (!this.enabled) this.cancelPreparation(); };
-        var fullscreen = document.createElement('button'); fullscreen.textContent = 'Fullscreen';
+        var fullscreen = document.createElement('button'); fullscreen.className = 'emby-button raised'; fullscreen.textContent = 'Fullscreen';
         fullscreen.onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else if (surface.requestFullscreen) surface.requestFullscreen().catch(function () {}); };
         bar.append(close, label, fullscreen);
-        this.audioSelect = document.createElement('select'); this.audioSelect.setAttribute('aria-label', 'Audio track');
+        this.audioSelect = document.createElement('select'); this.audioSelect.className = 'emby-select-withcolor'; this.audioSelect.setAttribute('aria-label', 'Audio track');
         this.audioSelect.onchange = () => this.deps.playbackManager.setAudioStreamIndex(Number(this.audioSelect.value), this);
-        this.subtitleSelect = document.createElement('select'); this.subtitleSelect.setAttribute('aria-label', 'Subtitle track');
+        this.subtitleSelect = document.createElement('select'); this.subtitleSelect.className = 'emby-select-withcolor'; this.subtitleSelect.setAttribute('aria-label', 'Subtitle track');
         this.subtitleSelect.onchange = () => this.deps.playbackManager.setSubtitleStreamIndex(Number(this.subtitleSelect.value), this);
         bar.append(this.audioSelect, this.subtitleSelect);
         bar.style.flexWrap = 'wrap';
-        this.notice = document.createElement('div'); this.notice.setAttribute('role', 'status'); this.notice.setAttribute('aria-live', 'polite');
-        this.notice.style.cssText = 'position:absolute;top:1rem;right:1rem;max-width:40vw;color:white;background:#111d;padding:.6rem;border-radius:.4rem;pointer-events:none;display:none;z-index:3;';
+        this.notice = document.createElement('div'); this.notice.className = 'federation-adaptive-notice'; this.notice.setAttribute('role', 'status'); this.notice.setAttribute('aria-live', 'polite');
+        this.notice.style.cssText = 'position:absolute;top:1rem;right:1rem;max-width:40vw;padding:.6rem;pointer-events:none;display:none;z-index:3;';
         surface.append(bar, this.notice); document.body.appendChild(surface); this.surface = surface;
       }
       refreshTrackControls() {

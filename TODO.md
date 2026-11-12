@@ -1,5 +1,12 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.220 — injected UI follows any theme
+
+- [x] Every colour, corner radius and font the web script adds comes from `--fed-*` tokens derived from the live theme; text is checked for contrast on its surface, and the player overlay keeps a plate that reads over any picture. A theme or Custom CSS can set `--federation-<name>` to override a token.
+- [x] Re-derived when the theme link, Custom CSS, body classes or the system colour scheme change.
+- [x] Checked in Chromium against Jellyfin 12's own stylesheets with the six stock themes and three community themes (ElegantFin, Zesty, Scyfin): badge shown, all contrast checks pass. Harness was temporary, not in the repo.
+- [ ] Not looked at by eye on every injected surface (downloads list, action sheets, player Playback Info) under each theme; the settings page under Dashboard is not part of this.
+
 ## 0.0.218 — apps play friends' titles as stored
 
 Owner's rule (2026-11-11): apps must play a friend's or linked server's title directly; converting on this server is the last resort, not the default.

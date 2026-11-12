@@ -60,6 +60,12 @@ HTTP, UI, and browser injection:
   `Plex/Web/admin/plexPage.html` owns Plex/Companion setup, import and export UI.
 - `Web/client/federation-badge.js` — jellyfin-web SPA injection: card/detail badges,
   action-sheet entries, downloads, hiding/sharing controls, and origin filter.
+  Since 0.0.220 nothing it adds has a fixed colour: every style uses `--fed-*`
+  tokens, derived from the live theme (`sampleTheme` reads what the theme paints on
+  jellyfin-web's own classes, `deriveTokens` is pure and enforces contrast) and
+  refreshed when the theme, Custom CSS or colour scheme changes. Each token defers
+  to a `--federation-<name>` a theme may set. New UI must use the tokens; no
+  gradients. Tests: `Web/tests/federation-theme.test.js`.
 - `Services/WebClientInjector.cs` and `Middleware/BadgeScriptInjectionMiddleware.cs`
   — disk and serve-time injection paths. Both must remain idempotent.
 - `Middleware/ConfigurationPageCompressionFixMiddleware.cs` — workaround for

@@ -31,7 +31,746 @@
     '<path d="M2 4.27 3.28 3 21 20.72 19.73 22l-3.08-3.08c-1.44.61-2.99.93-4.65.93-5 0-9.27-3.11-11-7.5.72-1.84 1.87-3.45 3.31-4.71L2 4.27ZM12 9a3 3 0 0 1 3 3c0 .35-.06.68-.16 1L11 9.16c.32-.1.65-.16 1-.16Zm0-4.5c5 0 9.27 3.11 11 7.5a11.8 11.8 0 0 1-2.88 4.19l-1.42-1.42A9.8 9.8 0 0 0 20.82 12C19.17 8.36 15.75 6 12 6c-1.1 0-2.16.2-3.15.56L7.34 5.06A11.6 11.6 0 0 1 12 4.5ZM9.5 12a2.5 2.5 0 0 0 2.94 2.46l-2.9-2.9c-.03.14-.04.29-.04.44Z"></path>' +
     '</svg>';
 
+  // -------------------------------------------------------------------------
+  // Theme tokens
+  //
+  // Everything this script draws takes its look from the active jellyfin-web
+  // theme instead of fixed colours. jellyfin-web themes (the stock ones and
+  // community CSS pasted into Custom CSS) are plain CSS on shared class names
+  // and mostly expose no variables, so the theme is read from computed styles:
+  // real elements where they exist, otherwise hidden probe elements carrying
+  // the same classes. The result is one small set of --fed-* custom
+  // properties on :root that every injected rule uses. Each one resolves as
+  // var(--federation-<name>, <derived>), so a theme or the server's Custom CSS
+  // can set --federation-accent (etc.) on :root and win. See "Theming" in
+  // README.md. Re-derived (debounced) when the theme link, <head> styles, or
+  // the <html>/<body> classes change.
+  //
+  // FED-TOKENS-BEGIN: the only place colour values may appear in this file.
+  // -------------------------------------------------------------------------
+  var TOKEN_STYLE_ID = 'federation-theme-tokens';
+  var THEME_FALLBACK = {
+    surface: '#101010',
+    raised: '#202020',
+    text: '#ffffff',
+    accent: '#00a4dc',
+    danger: '#c62828',
+    black: '#000000',
+    white: '#ffffff',
+    scrim: 'rgba(0, 0, 0, 0.6)',
+    shadowDark: '0 .3em 1.2em rgba(0, 0, 0, 0.5)',
+    shadowLight: '0 .2em .9em rgba(0, 0, 0, 0.18)',
+    osdShadow: '0 1px 4px rgba(0, 0, 0, 0.5)'
+  };
+
+  function clampByte(n) {
+    return Math.max(0, Math.min(255, Math.round(n)));
+  }
+
+  function clampUnit(n) {
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function hslToRgb(h, s, l) {
+    h = ((h % 360) + 360) % 360 / 360;
+    if (s === 0) {
+      return [l, l, l];
+    }
+
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    function hue(t) {
+      if (t < 0) { t += 1; }
+      if (t > 1) { t -= 1; }
+      if (t < 1 / 6) { return p + (q - p) * 6 * t; }
+      if (t < 1 / 2) { return q; }
+      if (t < 2 / 3) { return p + (q - p) * (2 / 3 - t) * 6; }
+      return p;
+    }
+
+    return [hue(h + 1 / 3), hue(h), hue(h - 1 / 3)];
+  }
+
+  function channel(part, scale) {
+    part = String(part).trim();
+    if (part.charAt(part.length - 1) === '%') {
+      return parseFloat(part) / 100 * scale;
+    }
+
+    return parseFloat(part);
+  }
+
+  var colorCanvas = null;
+
+  // Anything the fast paths below do not understand (named colours, oklch(),
+  // color-mix(), lab() ...) is handed to the browser: paint it into a 1x1
+  // canvas and read the sRGB pixel back. No canvas (jsdom) means no colour.
+  function canvasColor(text) {
+    try {
+      if (typeof window.CanvasRenderingContext2D === 'undefined') {
+        return null;
+      }
+
+      if (!colorCanvas) {
+        colorCanvas = document.createElement('canvas');
+        colorCanvas.width = 1;
+        colorCanvas.height = 1;
+      }
+
+      var ctx = colorCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        return null;
+      }
+
+      ctx.fillStyle = THEME_FALLBACK.black;
+      ctx.fillStyle = text;
+      var first = ctx.fillStyle;
+      ctx.fillStyle = THEME_FALLBACK.white;
+      ctx.fillStyle = text;
+      if (ctx.fillStyle !== first) {
+        return null; // not a colour: the sentinel survived
+      }
+
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillRect(0, 0, 1, 1);
+      var d = ctx.getImageData(0, 0, 1, 1).data;
+      var a = d[3] / 255;
+      if (a === 0) {
+        return { r: 0, g: 0, b: 0, a: 0 };
+      }
+
+      return { r: d[0], g: d[1], b: d[2], a: a };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Any CSS colour string -> {r,g,b,a} (0-255, alpha 0-1), or null.
+  function parseColor(value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (typeof value === 'object' && typeof value.r === 'number') {
+      return value;
+    }
+
+    var s = String(value).trim().toLowerCase();
+    if (!s || s === 'none' || s === 'currentcolor' || s === 'inherit' || s === 'initial' || s === 'unset' || s === 'revert') {
+      return null;
+    }
+
+    if (s === 'transparent') {
+      return { r: 0, g: 0, b: 0, a: 0 };
+    }
+
+    var m = /^#([0-9a-f]{3,8})$/.exec(s);
+    if (m) {
+      var h = m[1];
+      if (h.length === 3 || h.length === 4) {
+        h = h.split('').map(function (c) { return c + c; }).join('');
+      }
+
+      if (h.length !== 6 && h.length !== 8) {
+        return null;
+      }
+
+      return {
+        r: parseInt(h.substr(0, 2), 16),
+        g: parseInt(h.substr(2, 2), 16),
+        b: parseInt(h.substr(4, 2), 16),
+        a: h.length === 8 ? parseInt(h.substr(6, 2), 16) / 255 : 1
+      };
+    }
+
+    m = /^(rgba?|hsla?)\(([^()]*)\)$/.exec(s);
+    if (m) {
+      var parts = m[2].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+      if (parts.length < 3) {
+        return null;
+      }
+
+      var alpha = parts.length > 3 ? channel(parts[3], 1) : 1;
+      var rgb;
+      if (m[1].charAt(0) === 'r') {
+        rgb = [channel(parts[0], 255), channel(parts[1], 255), channel(parts[2], 255)];
+      } else {
+        var hsl = hslToRgb(parseFloat(parts[0]), clampUnit(channel(parts[1], 1)), clampUnit(channel(parts[2], 1)));
+        rgb = [hsl[0] * 255, hsl[1] * 255, hsl[2] * 255];
+      }
+
+      if (isNaN(rgb[0]) || isNaN(rgb[1]) || isNaN(rgb[2]) || isNaN(alpha)) {
+        return null;
+      }
+
+      return { r: clampByte(rgb[0]), g: clampByte(rgb[1]), b: clampByte(rgb[2]), a: clampUnit(alpha) };
+    }
+
+    m = /^color\(srgb\s+([^()]*)\)$/.exec(s);
+    if (m) {
+      var p = m[1].replace(/\//g, ' ').split(/\s+/).filter(Boolean);
+      if (p.length >= 3) {
+        return {
+          r: clampByte(channel(p[0], 1) * 255),
+          g: clampByte(channel(p[1], 1) * 255),
+          b: clampByte(channel(p[2], 1) * 255),
+          a: p.length > 3 ? clampUnit(channel(p[3], 1)) : 1
+        };
+      }
+    }
+
+    return canvasColor(s);
+  }
+
+  function colorCss(c, alpha) {
+    var a = alpha == null ? c.a : alpha;
+    a = Math.round(clampUnit(a) * 1000) / 1000;
+    if (a >= 1) {
+      return 'rgb(' + clampByte(c.r) + ', ' + clampByte(c.g) + ', ' + clampByte(c.b) + ')';
+    }
+
+    return 'rgba(' + clampByte(c.r) + ', ' + clampByte(c.g) + ', ' + clampByte(c.b) + ', ' + a + ')';
+  }
+
+  // fg painted over an opaque bg.
+  function composite(fg, bg) {
+    var a = fg.a;
+    return {
+      r: fg.r * a + bg.r * (1 - a),
+      g: fg.g * a + bg.g * (1 - a),
+      b: fg.b * a + bg.b * (1 - a),
+      a: 1
+    };
+  }
+
+  function mixColor(a, b, t) {
+    return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1 };
+  }
+
+  function luminance(c) {
+    function lin(v) {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  }
+
+  // WCAG contrast ratio between two opaque colours (1-21).
+  function contrastRatio(a, b) {
+    var la = luminance(a);
+    var lb = luminance(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  }
+
+  function isDarkColor(c) {
+    return luminance(c) < 0.2;
+  }
+
+  function saturation(c) {
+    var max = Math.max(c.r, c.g, c.b);
+    var min = Math.min(c.r, c.g, c.b);
+    return max === 0 ? 0 : (max - min) / max;
+  }
+
+  // Black or white, whichever reads better on bg.
+  function bestMono(bg) {
+    var black = parseColor(THEME_FALLBACK.black);
+    var white = parseColor(THEME_FALLBACK.white);
+    return contrastRatio(black, bg) >= contrastRatio(white, bg) ? black : white;
+  }
+
+  // The first candidate that reads on bg at `min`, else black/white.
+  function readableOn(bg, candidates, min) {
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var c = parseColor(candidates[i]);
+      if (c && c.a > 0.3) {
+        var solid = composite(c, bg);
+        if (contrastRatio(solid, bg) >= min) {
+          return solid;
+        }
+      }
+    }
+
+    return bestMono(bg);
+  }
+
+  // fg nudged toward black or white (whichever bg favours) until it reaches
+  // `min` contrast on bg: keeps the hue of an accent or error colour while
+  // making it legible as text or an outline on that surface.
+  function ensureContrast(fg, bg, min) {
+    if (contrastRatio(fg, bg) >= min) {
+      return fg;
+    }
+
+    var target = bestMono(bg);
+    for (var t = 0.1; t <= 1.0001; t += 0.1) {
+      var next = mixColor(fg, target, t);
+      if (contrastRatio(next, bg) >= min) {
+        return next;
+      }
+    }
+
+    return target;
+  }
+
+  function firstColor(candidates, minAlpha) {
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var c = parseColor(candidates[i]);
+      if (c && c.a > (minAlpha == null ? 0.02 : minAlpha)) {
+        return c;
+      }
+    }
+
+    return null;
+  }
+
+  // First visible colour in the list, made opaque by painting it over the
+  // next visible one (and finally over the fallback).
+  function opaqueColor(candidates, fallback) {
+    var list = candidates || [];
+    for (var i = 0; i < list.length; i++) {
+      var c = parseColor(list[i]);
+      if (c && c.a > 0.02) {
+        return c.a >= 1 ? c : composite(c, opaqueColor(list.slice(i + 1), fallback));
+      }
+    }
+
+    return parseColor(fallback);
+  }
+
+  // A saturated accent wins over a neutral one: a theme that greys out
+  // .button-submit usually still colours its played indicator.
+  function pickAccent(candidates, surface) {
+    var neutral = null;
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var c = parseColor(candidates[i]);
+      if (!c || c.a <= 0.3) {
+        continue;
+      }
+
+      var solid = composite(c, surface);
+      if (saturation(solid) >= 0.15) {
+        return solid;
+      }
+
+      if (!neutral && contrastRatio(solid, surface) >= 1.5) {
+        neutral = solid;
+      }
+    }
+
+    return neutral || parseColor(THEME_FALLBACK.accent);
+  }
+
+  function pickLength(candidates, fallback) {
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var v = String(candidates[i] == null ? '' : candidates[i]).trim();
+      if (/^-?[\d.]+(px|em|rem|%)$/.test(v) || v === '0') {
+        return v;
+      }
+    }
+
+    return fallback;
+  }
+
+  // A border radius that rounds a small square badge or chip fully (50%,
+  // 100em) is reported as "round".
+  function pickRound(candidates, roundValue, fallback) {
+    var v = pickLength(candidates, '');
+    if (!v) {
+      return fallback;
+    }
+
+    var n = parseFloat(v);
+    if ((/%$/.test(v) && n >= 50) || (/px$/.test(v) && n >= 100) || (/r?em$/.test(v) && n >= 6)) {
+      return roundValue;
+    }
+
+    return v;
+  }
+
+  // Pure: raw samples (lists of candidate strings, most specific first) ->
+  // token values. See sampleTheme() for what each list holds.
+  function deriveTokens(sample) {
+    sample = sample || {};
+    var surface = opaqueColor(sample.surface, THEME_FALLBACK.surface);
+    var raised = opaqueColor((sample.raised || []).concat([colorCss(surface)]), THEME_FALLBACK.raised);
+    var dark = isDarkColor(surface);
+
+    var textRaw = firstColor(sample.text, 0.3);
+    var text = textRaw ? { r: textRaw.r, g: textRaw.g, b: textRaw.b, a: 1 } : bestMono(surface);
+    if (contrastRatio(text, surface) < 3) {
+      text = bestMono(surface);
+    }
+
+    var mutedAlpha = textRaw && textRaw.a < 0.95 ? Math.max(0.6, textRaw.a) : 0.7;
+    while (mutedAlpha < 1 && contrastRatio(composite({ r: text.r, g: text.g, b: text.b, a: mutedAlpha }, surface), surface) < 4.5) {
+      mutedAlpha += 0.05;
+    }
+
+    var accent = pickAccent(sample.accent, surface);
+    // The theme's own text colour for its accent is kept when it is at
+    // least as legible as jellyfin-web's stock white on blue (2.9); our
+    // buttons then look like the theme's. Anything fainter becomes black or white.
+    var accentText = readableOn(accent, sample.accentText, 2.5);
+    var accentStrong = ensureContrast(accent, surface, 3);
+
+    var border = firstColor(sample.border);
+    var danger = opaqueColor(sample.danger, THEME_FALLBACK.danger);
+
+    var scrim = null;
+    (sample.scrim || []).some(function (entry) {
+      var c = parseColor(entry && entry.color);
+      var opacity = entry && entry.opacity != null && entry.opacity !== '' ? parseFloat(entry.opacity) : 1;
+      if (c && !isNaN(opacity) && c.a * opacity >= 0.25) {
+        scrim = { r: c.r, g: c.g, b: c.b, a: Math.min(0.85, c.a * opacity) };
+        return true;
+      }
+      return false;
+    });
+
+    var toast = opaqueColor((sample.toast || []).concat([colorCss(raised)]), THEME_FALLBACK.raised);
+    var toastText = readableOn(toast, (sample.toastText || []).concat([colorCss(text)]), 4.5);
+
+    // Over video or poster art: the theme's dialog surface when its text
+    // stays readable with that surface painted at `osdAlpha` over pure black
+    // and pure white (the worst pictures possible); otherwise a dark scrim.
+    var osdAlpha = 0.92;
+    var black = parseColor(THEME_FALLBACK.black);
+    var white = parseColor(THEME_FALLBACK.white);
+    function readsOverAnything(bg, fg, alpha) {
+      var c = { r: bg.r, g: bg.g, b: bg.b, a: alpha };
+      return contrastRatio(fg, composite(c, black)) >= 4.5 && contrastRatio(fg, composite(c, white)) >= 4.5;
+    }
+
+    var osdBase = raised;
+    var osdText = readableOn(raised, [colorCss(text)], 4.5);
+    if (!readsOverAnything(osdBase, osdText, osdAlpha)) {
+      osdBase = black;
+      osdAlpha = 0.78;
+      osdText = white;
+    }
+
+    var osdSolid = composite({ r: osdBase.r, g: osdBase.g, b: osdBase.b, a: osdAlpha }, osdBase);
+    var osdAccent = ensureContrast(accent, osdSolid, 3);
+
+    return {
+      surface: colorCss(surface),
+      'surface-raised': colorCss(raised),
+      text: colorCss(text),
+      'text-muted': colorCss(text, Math.min(1, mutedAlpha)),
+      accent: colorCss(accent),
+      'accent-text': colorCss(accentText),
+      'accent-strong': colorCss(accentStrong),
+      'accent-soft': colorCss(accent, dark ? 0.16 : 0.12),
+      border: border ? colorCss(border) : colorCss(text, 0.16),
+      hover: colorCss(text, 0.08),
+      placeholder: colorCss(text, 0.07),
+      danger: colorCss(danger),
+      'danger-text': colorCss(ensureContrast(danger, raised, 4.5)),
+      'toast-surface': colorCss(toast),
+      'toast-text': colorCss(toastText),
+      'overlay-scrim': scrim ? colorCss(scrim) : THEME_FALLBACK.scrim,
+      shadow: dark ? THEME_FALLBACK.shadowDark : THEME_FALLBACK.shadowLight,
+      radius: pickLength(sample.radius, '.2em'),
+      'radius-pill': pickRound(sample.radiusPill, '999px', '999px'),
+      'radius-badge': pickRound(sample.radiusBadge, '50%', '.45em'),
+      font: (sample.font || []).filter(function (f) { return f && String(f).trim(); })[0] || 'inherit',
+      'osd-surface': colorCss(osdBase, osdAlpha),
+      'osd-text': colorCss(osdText),
+      'osd-text-muted': colorCss(osdText, 0.82),
+      'osd-border': colorCss(osdText, 0.2),
+      'osd-track': colorCss(osdText, 0.25),
+      'osd-accent': colorCss(osdAccent),
+      'osd-shadow': THEME_FALLBACK.osdShadow,
+      stage: colorCss(black)
+    };
+  }
+
+  // Pure: token map -> the :root rule. Each --fed-<name> defers to a
+  // --federation-<name> a theme or Custom CSS may define.
+  function tokenCss(tokens) {
+    return ':root{' + Object.keys(tokens).map(function (name) {
+      return '--fed-' + name + ':var(--federation-' + name + ',' + tokens[name] + ');';
+    }).join('') + '}';
+  }
+  // FED-TOKENS-END
+  // -------------------------------------------------------------------------
+
+  // Reads one computed property from a real element matching `selector`
+  // (outside our own UI), else from a hidden probe built with `classes`
+  // (space-separated; '>' nests the next element inside the previous one).
+  function readThemeProp(probeHost, selector, classes, prop) {
+    var el = null;
+    try {
+      el = selector ? document.querySelector(selector + ':not([class*="federation-"])') : null;
+    } catch (e) {
+      el = null;
+    }
+
+    if (!el && probeHost && classes) {
+      var parent = probeHost;
+      classes.split('>').forEach(function (cls) {
+        var node = document.createElement(/button/.test(cls) ? 'button' : 'div');
+        node.className = cls.trim();
+        parent.appendChild(node);
+        parent = node;
+      });
+      el = parent;
+    }
+
+    if (!el) {
+      return '';
+    }
+
+    try {
+      return window.getComputedStyle(el).getPropertyValue(prop) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function readThemeVar(name) {
+    try {
+      var v = window.getComputedStyle(document.documentElement).getPropertyValue(name);
+      if (v && v.trim()) {
+        return v.trim();
+      }
+
+      return document.body ? (window.getComputedStyle(document.body).getPropertyValue(name) || '').trim() : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // Collects candidate values for deriveTokens(), most specific first: an
+  // explicit --federation-* override, then what the live theme actually
+  // paints on jellyfin-web's own classes, then jellyfin-web's own variables.
+  function sampleTheme() {
+    var host = document.createElement('div');
+    host.className = 'federation-theme-probe';
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = 'position:absolute;left:-9999px;top:0;width:10px;height:10px;overflow:hidden;visibility:hidden;pointer-events:none;';
+    (document.body || document.documentElement).appendChild(host);
+    function prop(selector, classes, name) {
+      var holder = document.createElement('div');
+      host.appendChild(holder);
+      return readThemeProp(holder, selector, classes, name);
+    }
+
+    var html = document.documentElement;
+    var htmlStyle = null;
+    var bodyStyle = null;
+    try {
+      htmlStyle = window.getComputedStyle(html);
+      bodyStyle = document.body ? window.getComputedStyle(document.body) : null;
+    } catch (e) { /* jsdom or a detached document */ }
+
+    var sample = {
+      surface: [
+        readThemeVar('--federation-surface'),
+        prop('.backgroundContainer', 'backgroundContainer', 'background-color'),
+        htmlStyle ? htmlStyle.backgroundColor : '',
+        bodyStyle ? bodyStyle.backgroundColor : '',
+        prop('.skinBody', 'skinBody', 'background-color'),
+        readThemeVar('--jf-palette-background-default')
+      ],
+      raised: [
+        readThemeVar('--federation-surface-raised'),
+        prop('', 'focuscontainer dialog formDialog', 'background-color'),
+        prop('', 'focuscontainer dialog actionSheet', 'background-color'),
+        readThemeVar('--jf-palette-background-paper')
+      ],
+      text: [
+        readThemeVar('--federation-text'),
+        readThemeVar('--jf-palette-text-primary'),
+        bodyStyle ? bodyStyle.color : '',
+        htmlStyle ? htmlStyle.color : ''
+      ],
+      accent: [
+        readThemeVar('--federation-accent'),
+        prop('', 'emby-button raised button-submit', 'background-color'),
+        prop('', 'indicator playedIndicator', 'background-color'),
+        prop('', 'itemProgressBar>itemProgressBarForeground', 'background-color'),
+        readThemeVar('--theme-primary-color'),
+        readThemeVar('--accent-color'),
+        readThemeVar('--accentColor'),
+        readThemeVar('--accent'),
+        readThemeVar('--primary-color'),
+        readThemeVar('--jf-palette-primary-main')
+      ],
+      accentText: [
+        readThemeVar('--federation-accent-text'),
+        prop('', 'emby-button raised button-submit', 'color'),
+        prop('', 'indicator playedIndicator', 'color'),
+        readThemeVar('--jf-palette-primary-contrastText')
+      ],
+      danger: [
+        readThemeVar('--federation-danger'),
+        prop('', 'emby-button raised button-delete', 'background-color'),
+        readThemeVar('--jf-palette-error-main')
+      ],
+      border: [
+        readThemeVar('--federation-border'),
+        prop('', 'actionsheetDivider', 'background-color'),
+        readThemeVar('--jf-palette-divider')
+      ],
+      toast: [prop('', 'toast', 'background-color')],
+      toastText: [prop('', 'toast', 'color')],
+      scrim: [
+        { color: readThemeVar('--federation-overlay-scrim'), opacity: 1 },
+        {
+          color: prop('', 'dialogBackdrop dialogBackdropOpened', 'background-color'),
+          opacity: prop('', 'dialogBackdrop dialogBackdropOpened', 'opacity')
+        }
+      ],
+      radius: [
+        readThemeVar('--federation-radius'),
+        prop('', 'cardBox>cardScalable>cardImageContainer', 'border-top-left-radius'),
+        prop('', 'emby-button raised', 'border-top-left-radius')
+      ],
+      radiusPill: [
+        readThemeVar('--federation-radius-pill'),
+        prop('', 'paper-icon-button-light', 'border-top-left-radius')
+      ],
+      radiusBadge: [
+        readThemeVar('--federation-radius-badge'),
+        prop('', 'indicator playedIndicator', 'border-top-left-radius')
+      ],
+      font: [
+        readThemeVar('--federation-font'),
+        bodyStyle ? bodyStyle.fontFamily : '',
+        htmlStyle ? htmlStyle.fontFamily : ''
+      ]
+    };
+
+    if (host.parentNode) {
+      host.parentNode.removeChild(host);
+    }
+
+    return sample;
+  }
+
+  function refreshThemeTokens() {
+    var css;
+    try {
+      css = tokenCss(deriveTokens(sampleTheme()));
+    } catch (e) {
+      css = tokenCss(deriveTokens({}));
+    }
+
+    var style = document.getElementById(TOKEN_STYLE_ID);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = TOKEN_STYLE_ID;
+      (document.head || document.documentElement).appendChild(style);
+    }
+
+    // Rewriting identical text would be a <head> mutation for nothing.
+    if (style.textContent !== css) {
+      style.textContent = css;
+    }
+  }
+
+  var themeRefreshTimer = null;
+  function scheduleThemeRefresh(delayMs) {
+    if (themeRefreshTimer) {
+      clearTimeout(themeRefreshTimer);
+    }
+
+    themeRefreshTimer = setTimeout(function () {
+      themeRefreshTimer = null;
+      refreshThemeTokens();
+    }, delayMs == null ? 200 : delayMs);
+  }
+
+  function isOwnThemeNode(node) {
+    while (node && node.nodeType !== 1) {
+      node = node.parentNode;
+    }
+
+    return !!(node && node.id && /^federation-/.test(node.id));
+  }
+
+  // A swapped theme <link> applies only once it has loaded.
+  function bindStylesheetLoads() {
+    var links = document.querySelectorAll('link[rel~="stylesheet"], link#cssTheme');
+    for (var i = 0; i < links.length; i++) {
+      if (!links[i].__federationThemeLoad) {
+        links[i].__federationThemeLoad = true;
+        links[i].addEventListener('load', function () { scheduleThemeRefresh(50); });
+      }
+    }
+  }
+
+  function watchTheme() {
+    if (document.__federationThemeWatch || typeof MutationObserver === 'undefined') {
+      return;
+    }
+
+    document.__federationThemeWatch = true;
+    bindStylesheetLoads();
+    var watcher = new MutationObserver(function (records) {
+      var relevant = records.some(function (record) {
+        if (record.type === 'attributes') {
+          return !isOwnThemeNode(record.target);
+        }
+
+        if (record.type === 'characterData') {
+          return !isOwnThemeNode(record.target);
+        }
+
+        var nodes = [].slice.call(record.addedNodes).concat([].slice.call(record.removedNodes));
+        return !isOwnThemeNode(record.target) && nodes.some(function (n) { return !isOwnThemeNode(n); });
+      });
+      if (relevant) {
+        bindStylesheetLoads();
+        scheduleThemeRefresh();
+      }
+    });
+    if (document.head) {
+      watcher.observe(document.head, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['href', 'media', 'disabled', 'rel'] });
+    }
+
+    watcher.observe(document.documentElement, { attributes: true });
+    if (document.body) {
+      watcher.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    }
+
+    try {
+      var scheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      if (scheme && typeof scheme.addEventListener === 'function') {
+        scheme.addEventListener('change', function () { scheduleThemeRefresh(); });
+      }
+    } catch (e) { /* no media query support */ }
+
+    // Custom CSS and late theme chunks often land after the first paint.
+    window.addEventListener('load', function () { scheduleThemeRefresh(); });
+    scheduleThemeRefresh(1500);
+  }
+
+  function ensureThemeTokens() {
+    if (!document.getElementById(TOKEN_STYLE_ID)) {
+      refreshThemeTokens();
+    }
+
+    watchTheme();
+  }
+
+  window.__federationTheme = {
+    parseColor: parseColor,
+    contrastRatio: contrastRatio,
+    luminance: luminance,
+    ensureContrast: ensureContrast,
+    readableOn: readableOn,
+    pickAccent: pickAccent,
+    deriveTokens: deriveTokens,
+    tokenCss: tokenCss,
+    refresh: refreshThemeTokens
+  };
+
   function injectStyle() {
+    ensureThemeTokens();
     if (document.getElementById(STYLE_ID)) {
       return;
     }
@@ -51,45 +790,47 @@
       // accent color) live top-right/bottom-right. Deliberately NOT the theme
       // accent - a matching-color blue disc top-left read as another "state"
       // badge like the played checkmark rather than "info about where this
-      // item comes from". Dark chip with a light cloud is neutral, always
-      // legible over any poster art, and doesn't compete visually with
-      // Jellyfin's own colored state badges.
-      '.federation-badge-corner{position:absolute;top:.45em;left:.45em;width:clamp(1.65em,1.55vw,2em);height:clamp(1.65em,1.55vw,2em);border-radius:.48em;',
-      'background:rgba(8,11,16,.92);color:#fff;',
+      // item comes from". It takes the theme's surface (or a dark scrim when
+      // that would not read over arbitrary art, see deriveTokens) and the
+      // shape of the theme's own played indicator, so it sits beside
+      // Jellyfin's coloured state badges without competing with them.
+      '.federation-badge-corner{position:absolute;top:.45em;left:.45em;width:clamp(1.65em,1.55vw,2em);height:clamp(1.65em,1.55vw,2em);border-radius:var(--fed-radius-badge);',
+      'background:var(--fed-osd-surface);color:var(--fed-osd-text);',
       'display:flex;align-items:center;justify-content:center;',
-      'z-index:3;pointer-events:none;line-height:0;',
-      'border:1px solid rgba(255,255,255,.28);',
-      'box-shadow:0 1px 4px rgba(0,0,0,.5);}',
+      'z-index:3;pointer-events:none;line-height:0;box-sizing:border-box;',
+      'border:1px solid var(--fed-osd-border);',
+      'box-shadow:var(--fed-osd-shadow);}',
       '.federation-badge-corner svg{display:block;width:56%;height:56%;opacity:1;}',
 
       // Progress ring shown centered over a card/poster while an item is
-      // actively being downloaded. Keeps its own dark backing plate since it
+      // actively being downloaded. Keeps its own backing plate since it
       // overlays arbitrary poster art, not page chrome.
       '.federation-download-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);',
-      'z-index:4;pointer-events:none;filter:drop-shadow(0 1px 4px rgba(0,0,0,.6));}',
-      '.federation-ring-bg{fill:rgba(10,12,16,.66);stroke:rgba(255,255,255,.2);stroke-width:1;}',
-      '.federation-ring-fg{fill:none;stroke:var(--theme-primary-color,#00a4dc);stroke-width:3;stroke-linecap:round;}',
-      '.federation-ring-text{fill:#fff;font-size:9px;font-weight:700;font-family:inherit;}',
+      'z-index:4;pointer-events:none;filter:drop-shadow(var(--fed-osd-shadow));}',
+      '.federation-ring-bg{fill:var(--fed-osd-surface);stroke:var(--fed-osd-border);stroke-width:1;}',
+      '.federation-ring-fg{fill:none;stroke:var(--fed-osd-accent);stroke-width:3;stroke-linecap:round;}',
+      '.federation-ring-text{fill:var(--fed-osd-text);font-size:9px;font-weight:700;font-family:var(--fed-font);font-variant-numeric:tabular-nums;}',
 
-      // Source tag in the detail page's itemMiscInfo line: same muted text
-      // treatment as the year/runtime entries around it - no border, no fill,
-      // no uppercase. Inline svg sized off the surrounding font so it stays
-      // proportional.
-      '.federation-source-tag{display:inline-flex;align-items:center;gap:.3em;opacity:.7;margin-left:.5em;vertical-align:middle;}',
-      '.federation-source-tag svg{display:block;width:1em;height:1em;flex-shrink:0;}',
+      // Source tag in the detail page's itemMiscInfo line: it carries
+      // jellyfin-web's own mediaInfoItem class, so it gets the same spacing,
+      // colour and font as the year/runtime entries around it in any theme.
+      // Inline svg sized off the surrounding font so it stays proportional.
+      '.federation-source-tag{display:inline-flex;align-items:center;gap:.3em;vertical-align:middle;}',
+      '.federation-source-tag svg{display:block;width:1em;height:1em;flex-shrink:0;opacity:.85;}',
       '.federation-download-ring svg{display:block;}',
       '.federation-actionsheet-item{display:flex;align-items:center;min-height:3em;text-align:start;}',
       '.federation-action-icon{display:flex;align-items:center;justify-content:center;flex:0 0 1.5em;width:1.5em;height:1.5em;margin-inline-end:1em;line-height:1;}',
       '.federation-action-icon svg{display:block;width:1.2em;height:1.2em;transform:none;}',
-      '.federation-actionsheet-item:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:-2px;}',
-      '@media(forced-colors:active){.federation-badge-corner{background:Canvas;color:CanvasText;border:1px solid CanvasText;}}',
+      '.federation-actionsheet-item:focus-visible{outline:2px solid var(--fed-accent-strong);outline-offset:-2px;}',
+      '@media(forced-colors:active){.federation-badge-corner,.federation-server-label,#federation-loading-overlay,.federation-party-notice{background:Canvas;color:CanvasText;border:1px solid CanvasText;}',
+      '.federation-ring-bg{fill:Canvas;stroke:CanvasText;}.federation-ring-fg{stroke:Highlight;}.federation-ring-text{fill:CanvasText;}}',
 
       // Library origin tabs: All / this server / each federated friend.
       '.federation-origin-filter{display:flex;flex-wrap:wrap;align-items:center;gap:.35em;width:100%;padding:.15em 0 .7em;margin:0;}',
       '.federation-origin-filter[data-empty="1"]{display:none;}',
       '.federation-origin-tab{border:0;background:transparent;color:inherit;opacity:.72;font:inherit;line-height:1.2;padding:.45em .9em;border-radius:.45em;cursor:pointer;}',
-      '.federation-origin-tab[aria-selected="true"]{opacity:1;color:var(--theme-primary-color,#00a4dc);background:rgba(0,164,220,.14);}',
-      '.federation-origin-tab:focus-visible{outline:2px solid var(--theme-primary-color,#00a4dc);outline-offset:2px;}',
+      '.federation-origin-tab[aria-selected="true"]{opacity:1;color:var(--fed-accent-strong);background:var(--fed-accent-soft);}',
+      '.federation-origin-tab:focus-visible{outline:2px solid var(--fed-accent-strong);outline-offset:2px;}',
       '.card.federation-origin-hidden,.listItem.federation-origin-hidden{display:none!important;}',
       '.federation-origin-empty{display:none;padding:1.4em .2em;opacity:.7;}',
       '.federation-origin-empty[data-show="1"]{display:block;}',
@@ -103,11 +844,11 @@
       // Friends' favorites rows on the Favorites tab: a sideways-scrolling row
       // of plain cards under jellyfin-web's own section heading.
       '.federation-favorites-row{display:flex;gap:1em;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;padding-top:.3em;padding-bottom:1.2em;}',
-      '.federation-fav-card{flex:0 0 auto;display:flex;flex-direction:column;gap:.25em;color:inherit;text-decoration:none;scroll-snap-align:start;border-radius:.3em;}',
+      '.federation-fav-card{flex:0 0 auto;display:flex;flex-direction:column;gap:.25em;color:inherit;text-decoration:none;scroll-snap-align:start;border-radius:var(--fed-radius);}',
       '.federation-fav-portrait{width:clamp(7.5em,14vw,11em);}',
       '.federation-fav-backdrop{width:clamp(13em,24vw,19em);}',
       '.federation-fav-square{width:clamp(8.5em,15vw,12em);}',
-      '.federation-fav-art{display:block;position:relative;width:100%;border-radius:.3em;overflow:hidden;background:rgba(255,255,255,.07);}',
+      '.federation-fav-art{display:block;position:relative;width:100%;border-radius:var(--fed-radius);overflow:hidden;background:var(--fed-placeholder);}',
       '.federation-fav-portrait .federation-fav-art{aspect-ratio:2/3;}',
       '.federation-fav-backdrop .federation-fav-art{aspect-ratio:16/9;}',
       '.federation-fav-square .federation-fav-art{aspect-ratio:1/1;}',
@@ -115,27 +856,42 @@
       '.federation-fav-noart{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:.6em;opacity:.75;font-size:.9em;}',
       '.federation-fav-title,.federation-fav-sub{display:block;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
       '.federation-fav-sub{opacity:.6;font-size:.9em;}',
-      '.federation-fav-card:hover .federation-fav-art,.federation-fav-card:focus-visible .federation-fav-art{outline:3px solid var(--theme-primary-color,#00a4dc);outline-offset:-3px;}',
+      '.federation-fav-card:hover .federation-fav-art,.federation-fav-card:focus-visible .federation-fav-art{outline:3px solid var(--fed-accent-strong);outline-offset:-3px;}',
       '.federation-fav-card:focus-visible{outline:none;}',
 
-      // Watch-party status line (bottom centre, solid colours).
-      '.federation-party-notice{position:fixed;left:50%;bottom:5em;transform:translateX(-50%);max-width:min(32em,calc(100vw - 2em));padding:.7em 1.1em;border-radius:.4em;background:rgba(20,22,26,.96);color:#fff;z-index:100000;opacity:0;pointer-events:none;transition:opacity .2s;}',
+      // Watch-party status line (bottom centre, solid colours), painted like
+      // the theme's own toast notifications.
+      '.federation-party-notice{position:fixed;left:50%;bottom:5em;transform:translateX(-50%);max-width:min(32em,calc(100vw - 2em));box-sizing:border-box;padding:.8em 1.2em;border-radius:var(--fed-radius);background:var(--fed-toast-surface);color:var(--fed-toast-text);font-family:var(--fed-font);box-shadow:var(--fed-shadow);z-index:100000;opacity:0;pointer-events:none;transition:opacity .2s;}',
       '.federation-party-notice[data-show="1"]{opacity:1;}',
+      '@media(prefers-reduced-motion:reduce){.federation-party-notice{transition:none;}}',
 
-      // "Download to this server" destination picker (solid colours).
-      '.federation-dest-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1em;}',
-      '.federation-dest{width:min(30em,100%);max-height:calc(100vh - 2em);overflow:auto;background:#202226;color:#fff;border-radius:.5em;padding:1.2em 1.3em;box-shadow:0 .5em 2em rgba(0,0,0,.5);}',
-      '.federation-dest h3{margin:0 0 .8em;font-size:1.2em;font-weight:500;}',
-      '.federation-dest label{display:flex;gap:.7em;align-items:flex-start;padding:.45em .3em;border-radius:.3em;cursor:pointer;}',
-      '.federation-dest label:hover{background:rgba(255,255,255,.06);}',
-      '.federation-dest input[type=radio]{margin-top:.25em;}',
-      '.federation-dest-path{display:block;opacity:.6;font-size:.85em;word-break:break-all;}',
-      '.federation-dest-new{width:100%;box-sizing:border-box;margin:.2em 0 0;padding:.45em .6em;border-radius:.3em;border:1px solid #555;background:#15171a;color:#fff;font:inherit;}',
-      '.federation-dest-remember{margin-top:.6em;opacity:.85;}',
-      '.federation-dest-error{color:#ff8a80;min-height:1.2em;margin:.4em 0 0;font-size:.9em;}',
-      '.federation-dest-actions{display:flex;justify-content:flex-end;gap:.6em;margin-top:.8em;}',
-      '.federation-dest-actions button{padding:.5em 1.1em;border-radius:.3em;border:0;font:inherit;cursor:pointer;background:#33363c;color:#fff;}',
-      '.federation-dest-actions .federation-dest-go{background:var(--theme-primary-color,#00a4dc);}'
+      // Adaptive web player (federation-adaptive.js): its control bar and
+      // notice sit over video like the player chip.
+      '.federation-adaptive-surface{background:var(--fed-stage);}',
+      '.federation-adaptive-bar,.federation-adaptive-notice{background:var(--fed-osd-surface);color:var(--fed-osd-text);border:1px solid var(--fed-osd-border);border-radius:var(--fed-radius);font-family:var(--fed-font);}',
+      '.federation-adaptive-bar .emby-button{margin:0;}',
+
+      // "Download to this server" destination picker (solid colours). The
+      // box is a jellyfin-web dialog (dialog formDialog, formDialogHeader,
+      // emby-input, emby-button raised / button-submit), so the theme draws
+      // its frame, header, field and buttons; these rules only lay it out
+      // and fill in what a theme may leave unset.
+      '.federation-dest-backdrop{position:fixed;inset:0;background:var(--fed-overlay-scrim);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1em;box-sizing:border-box;}',
+      '.federation-dest{width:min(30em,100%);max-height:calc(100vh - 2em);overflow:auto;display:flex;flex-direction:column;position:relative;background-color:var(--fed-surface-raised);color:var(--fed-text);font-family:var(--fed-font);}',
+      '.federation-dest-header{padding:.9em 1.3em;}',
+      '.federation-dest h3{margin:0;font-size:1.2em;font-weight:500;}',
+      '.federation-dest-body{padding:.8em 1.3em 1.2em;}',
+      '.federation-dest label{display:flex;gap:.7em;align-items:flex-start;padding:.5em .4em;border-radius:var(--fed-radius);cursor:pointer;}',
+      '.federation-dest label:hover{background:var(--fed-hover);}',
+      '.federation-dest input[type=radio],.federation-dest input[type=checkbox]{margin:.2em 0 0;width:1.1em;height:1.1em;flex-shrink:0;accent-color:var(--fed-accent);}',
+      '.federation-dest label>span{flex:1;min-width:0;}',
+      '.federation-dest-path{display:block;opacity:.7;font-size:.85em;word-break:break-all;}',
+      '.federation-dest .federation-dest-new{margin-top:.45em;font-size:1em;}',
+      '.federation-dest-remember{margin-top:.4em;}',
+      '.federation-dest-error{color:var(--fed-danger-text);min-height:1.2em;margin:.4em 0 0;font-size:.9em;}',
+      '.federation-dest-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.6em;margin-top:.8em;}',
+      '.federation-dest-actions .emby-button{margin:0;}',
+      '.federation-dest-actions .emby-button:focus-visible{box-shadow:0 0 0 2px var(--fed-accent-strong);}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -746,12 +1502,22 @@
           var backdrop = document.createElement('div');
           backdrop.className = 'federation-dest-backdrop';
           var box = document.createElement('div');
-          box.className = 'federation-dest';
+          // jellyfin-web's own dialog classes: the theme paints the frame.
+          box.className = 'federation-dest focuscontainer dialog formDialog';
           box.setAttribute('role', 'dialog');
           box.setAttribute('aria-modal', 'true');
+          box.setAttribute('aria-labelledby', 'federation-dest-title');
+          var header = document.createElement('div');
+          header.className = 'formDialogHeader federation-dest-header';
           var title = document.createElement('h3');
+          title.className = 'formDialogHeaderTitle';
+          title.id = 'federation-dest-title';
           title.textContent = 'Download to this server';
-          box.appendChild(title);
+          header.appendChild(title);
+          box.appendChild(header);
+          var body = document.createElement('div');
+          body.className = 'formDialogContent federation-dest-body';
+          box.appendChild(body);
 
           function addChoice(id, name, sub) {
             var label = document.createElement('label');
@@ -768,7 +1534,7 @@
             text.appendChild(path);
             label.appendChild(radio);
             label.appendChild(text);
-            box.appendChild(label);
+            body.appendChild(label);
             return label;
           }
 
@@ -776,7 +1542,7 @@
           var newLabel = addChoice('folder:', 'New folder', 'A name (made next to your Movies folder) or a full path. It becomes its own library.');
           var input = document.createElement('input');
           input.type = 'text';
-          input.className = 'federation-dest-new';
+          input.className = 'emby-input federation-dest-new';
           input.placeholder = 'e.g. From friends or /media/friends';
           input.value = isNewFolder ? current.substring('folder:'.length) : '';
           newLabel.querySelector('span').appendChild(input);
@@ -790,24 +1556,26 @@
           rememberText.textContent = 'Use this for every download';
           remember.appendChild(rememberBox);
           remember.appendChild(rememberText);
-          box.appendChild(remember);
+          body.appendChild(remember);
 
           var error = document.createElement('div');
           error.className = 'federation-dest-error';
-          box.appendChild(error);
+          error.setAttribute('role', 'alert');
+          body.appendChild(error);
 
           var actions = document.createElement('div');
           actions.className = 'federation-dest-actions';
           var cancel = document.createElement('button');
           cancel.type = 'button';
+          cancel.className = 'emby-button raised button-cancel';
           cancel.textContent = 'Cancel';
           var go = document.createElement('button');
           go.type = 'button';
-          go.className = 'federation-dest-go';
+          go.className = 'emby-button raised button-submit federation-dest-go';
           go.textContent = 'Download';
           actions.appendChild(cancel);
           actions.appendChild(go);
-          box.appendChild(actions);
+          body.appendChild(actions);
           backdrop.appendChild(box);
           document.body.appendChild(backdrop);
 
@@ -1057,8 +1825,10 @@
       old.remove();
     }
 
+    // mediaInfoItem: jellyfin-web's class for each entry on this line, so
+    // the theme spaces and colours it like the year and runtime beside it.
     var tag = document.createElement('span');
-    tag.className = 'federation-source-tag';
+    tag.className = 'mediaInfoItem federation-source-tag';
     tag.setAttribute('data-item-id', normalizeId(rawId));
     tag.setAttribute('data-server-name', name);
     tag.title = label;
@@ -2244,24 +3014,28 @@
   var overlayState = null;
 
   function injectOverlayStyle() {
+    ensureThemeTokens();
     if (document.getElementById(OVERLAY_STYLE_ID)) {
       return;
     }
 
     var style = document.createElement('style');
     style.id = OVERLAY_STYLE_ID;
+    // Over the player: the theme's surface, text, accent and font (or a dark
+    // scrim where the surface would not read over video, see deriveTokens).
     style.textContent = [
       '#' + OVERLAY_ID + '{position:fixed;left:0;right:0;bottom:0;z-index:100000;box-sizing:border-box;',
-      'padding:.9em 1.4em 1.1em;background:rgba(0,0,0,.82);color:#fff;font-size:clamp(13px,1.1vw,16px);line-height:1.4;',
+      'padding:.9em 1.4em 1.1em;background:var(--fed-osd-surface);color:var(--fed-osd-text);font-family:var(--fed-font);',
+      'border-top:1px solid var(--fed-osd-border);font-size:clamp(13px,1.1vw,16px);line-height:1.4;',
       'pointer-events:none;}',
-      '#' + OVERLAY_ID + ' .fl-bar{height:4px;background:rgba(255,255,255,.22);border-radius:2px;overflow:hidden;margin-bottom:.6em;}',
-      '#' + OVERLAY_ID + ' .fl-fill{height:100%;width:0;background:#fff;transition:width .9s linear;}',
+      '#' + OVERLAY_ID + ' .fl-bar{height:4px;background:var(--fed-osd-track);border-radius:var(--fed-radius-pill);overflow:hidden;margin-bottom:.6em;}',
+      '#' + OVERLAY_ID + ' .fl-fill{height:100%;width:0;background:var(--fed-osd-accent);border-radius:inherit;transition:width .9s linear;}',
       '#' + OVERLAY_ID + ' .fl-fill.fl-indeterminate{width:30%;animation:fl-slide 1.4s ease-in-out infinite;}',
-      '#' + OVERLAY_ID + ' .fl-time{font-weight:600;}',
-      '#' + OVERLAY_ID + ' .fl-reason,#' + OVERLAY_ID + ' .fl-fact{opacity:.85;}',
+      '#' + OVERLAY_ID + ' .fl-time{font-weight:600;font-variant-numeric:tabular-nums;}',
+      '#' + OVERLAY_ID + ' .fl-reason,#' + OVERLAY_ID + ' .fl-fact{color:var(--fed-osd-text-muted);}',
       '#' + OVERLAY_ID + ' .fl-fact{margin-top:.35em;font-style:italic;}',
       '@keyframes fl-slide{0%{margin-left:-30%}100%{margin-left:100%}}',
-      '@media (prefers-reduced-motion:reduce){#' + OVERLAY_ID + ' .fl-fill.fl-indeterminate{animation:none;width:100%;opacity:.5}}'
+      '@media (prefers-reduced-motion:reduce){#' + OVERLAY_ID + ' .fl-fill{transition:none}#' + OVERLAY_ID + ' .fl-fill.fl-indeterminate{animation:none;width:100%;opacity:.5}}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -2355,6 +3129,7 @@
     injectOverlayStyle();
     var node = document.createElement('div');
     node.id = OVERLAY_ID;
+    node.className = 'federation-loading-overlay';
     node.innerHTML = '<div class="fl-bar"><div class="fl-fill"></div></div>'
       + '<div class="fl-time"></div><div class="fl-reason"></div><div class="fl-fact"></div>';
     document.body.appendChild(node);
@@ -2469,16 +3244,24 @@
   var serverLabelState = { itemId: null, name: '', hideTimer: null, lastTrigger: 0, nameRequestedFor: null };
 
   function injectServerLabelStyle() {
+    ensureThemeTokens();
     if (document.getElementById(SERVER_LABEL_STYLE_ID)) {
       return;
     }
 
     var style = document.createElement('style');
     style.id = SERVER_LABEL_STYLE_ID;
+    // Drawn like the player's own on-screen text: the theme's font, rounded
+    // like its OSD buttons, on the theme's surface where that reads over
+    // video (light theme: light chip, dark text), else on a dark scrim.
     style.textContent = [
       '#' + SERVER_LABEL_ID + '{position:fixed;top:4.5em;right:1.2em;z-index:100000;box-sizing:border-box;',
-      'max-width:70vw;padding:.35em .8em;border-radius:.4em;background:rgba(0,0,0,.68);color:#fff;',
-      'font-size:clamp(12px,1vw,15px);line-height:1.4;pointer-events:none;text-align:right;}'
+      'max-width:70vw;padding:.4em .95em;border-radius:var(--fed-radius-pill);background:var(--fed-osd-surface);color:var(--fed-osd-text);',
+      'border:1px solid var(--fed-osd-border);box-shadow:var(--fed-osd-shadow);font-family:var(--fed-font);font-weight:500;',
+      'font-size:clamp(12px,1vw,15px);line-height:1.4;pointer-events:none;text-align:right;',
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:federation-label-in .18s ease-out;}',
+      '@keyframes federation-label-in{from{opacity:0}to{opacity:1}}',
+      '@media (prefers-reduced-motion:reduce){#' + SERVER_LABEL_ID + '{animation:none}}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -2575,6 +3358,7 @@
     if (!node) {
       node = document.createElement('div');
       node.id = SERVER_LABEL_ID;
+      node.className = 'federation-server-label';
       node.setAttribute('role', 'status');
       document.body.appendChild(node);
     }
