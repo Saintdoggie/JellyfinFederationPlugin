@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.223",
+  "version": "0.0.224",
   "changelog": "Player fixes: a friend's server repackages its own file for players that cannot take it as stored (copy play, no conversion); linked servers never convert each other's titles and say what the device could not play.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-12T19:16:00Z",
+  "timestamp": "2026-11-13T02:29:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

@@ -123,7 +123,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var item = _libraryManager.GetItemById(itemId);
             var key = FederationLibraryManager.GetFederationKey(item);
-            var entry = key == null ? null : _federation.Cache.GetEntryByKey(key);
+            if (key == null)
+            {
+                return addAlternates && item != null ? WithOtherServersCopies(item, own, list) : null;
+            }
+
+            var entry = _federation.Cache.GetEntryByKey(key);
             if (entry == null)
             {
                 return null;
@@ -171,6 +176,71 @@ namespace Jellyfin.Plugin.Federation.Services
 
             return list;
         }
+
+        /// <summary>
+        /// A title this server owns that other servers also hold: their copies are added to the version list, so
+        /// one card stands for the title everywhere and the copy is chosen on its page. The own file stays first
+        /// unless a linked server's copy is clearly better (see <see cref="OwnedTitleFriendCopies.IsBetterCopy"/>);
+        /// then that copy leads, and with it the player's default. Costs no call to another server.
+        /// </summary>
+        private List<MediaSourceInfo>? WithOtherServersCopies(MediaBrowser.Controller.Entities.BaseItem item, MediaSourceInfo own, List<MediaSourceInfo> list)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (!OwnedTitleFriendCopies.Listed(config) || item is not MediaBrowser.Controller.Entities.Video)
+            {
+                return null;
+            }
+
+            var entry = OwnedTitleFriendCopies.FindEntry(_federation.Cache, config!, item);
+            if (entry == null)
+            {
+                return null;
+            }
+
+            var copies = entry.GetSourcesSnapshot()
+                .Select(source => (Source: source, Server: _federation.GetServer(source.ServerId)))
+                .Where(c => c.Server is { Enabled: true, Kind: Configuration.ServerKind.Jellyfin } && !LinkCatalog.IsHiddenLinkedSource(c.Server))
+                .ToList();
+            if (copies.Count == 0)
+            {
+                return null;
+            }
+
+            var ownCount = list.Count;
+            var serverCounts = copies.GroupBy(c => c.Source.ServerId).ToDictionary(g => g.Key, g => g.Count());
+            var leading = new List<MediaSourceInfo>();
+            foreach (var (source, server) in copies)
+            {
+                var offline = FederationItemPersistenceService.AvailabilityOverride?.IsOffline(source.ServerId) == true;
+                var cap = _federation.GetEffectiveWanCapMbps(server!);
+                var fits = source.Bitrate is > 0 && (!cap.HasValue || source.Bitrate.Value <= cap.Value * 1_000_000L);
+                var alternate = BuildAlternate(source, server!.Name, entry.Metadata.RunTimeTicks, offline, serverCounts[source.ServerId] > 1, fits);
+                if (list.Any(existing => existing.Id == alternate.Id) || leading.Any(existing => existing.Id == alternate.Id))
+                {
+                    continue;
+                }
+
+                if (server.Linked && !offline && OwnedTitleFriendCopies.IsBetterCopy(own.MediaStreams, own.Bitrate, source.MediaStreams, source.Bitrate))
+                {
+                    leading.Add(alternate);
+                }
+                else
+                {
+                    list.Add(alternate);
+                }
+            }
+
+            if (ownCount == 1)
+            {
+                own.Name = OwnCopyName;
+            }
+
+            list.InsertRange(0, leading.OrderByDescending(s => s.MediaStreams?.Where(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video).Max(m => m.Width) ?? 0));
+            return list;
+        }
+
+        /// <summary>The label of the own file in a version list that also holds other servers' copies.</summary>
+        internal const string OwnCopyName = "This server";
 
         /// <summary>
         /// A description of another server's copy built from what the catalog already knows about it. Its id is the same

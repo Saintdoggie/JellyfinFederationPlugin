@@ -279,8 +279,8 @@ test('this-server origin tab hides federated cards and tags item queries', async
   dom.window.close();
 });
 
-test('friend origin tab keeps that friend and hides local titles', async () => {
-  const { dom, getItemsCalls } = makeLibraryWindow();
+test('friend origin tab asks the server for that friend and hides nothing in a library grid', async () => {
+  const { dom, getItemsCalls, calls } = makeLibraryWindow();
   await settle();
   await settle();
   const friendTab = [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'Friend');
@@ -288,9 +288,38 @@ test('friend origin tab keeps that friend and hides local titles', async () => {
   await settle();
   await settle();
   assert.equal(dom.window.document.querySelector('.card[data-id="' + itemId + '"]').classList.contains('federation-origin-hidden'), false);
-  assert.equal(dom.window.document.querySelector('.card[data-id="' + localItemId + '"]').classList.contains('federation-origin-hidden'), true);
+  // The server answers a library grid for that friend, and its answer holds
+  // titles owned here that the friend has too: the browser hides nothing there.
+  assert.equal(dom.window.document.querySelector('.card[data-id="' + localItemId + '"]').classList.contains('federation-origin-hidden'), false);
   await dom.window.ApiClient.getItems('abc', {});
-  assert.equal(getItemsCalls.at(-1).Tags, '🌐 Friend');
+  assert.equal(getItemsCalls.at(-1).federationOrigin, 'Friend');
+  assert.equal(getItemsCalls.at(-1).Tags, undefined);
+  await dom.window.fetch('/Users/abc/Items?ParentId=1');
+  assert.ok(calls.at(-1).includes('federationOrigin=Friend'));
+  dom.window.close();
+});
+
+test('server tab reaches the server through XMLHttpRequest too, and sits above the grid', async () => {
+  const { dom } = makeLibraryWindow();
+  const opened = [];
+  await settle();
+  await settle();
+  // Stand in for the browser's own open(); the next render hooks it again.
+  dom.window.XMLHttpRequest.prototype.open = function (method, url) { opened.push(String(url)); };
+  dom.window.__federationOriginXhrHook = false;
+  const bar = dom.window.document.querySelector('.federation-origin-filter');
+  assert.equal(bar.nextElementSibling.classList.contains('itemsContainer'), true);
+  [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'Friend').click();
+  await settle();
+  new dom.window.XMLHttpRequest().open('GET', 'http://localhost/Items?parentId=1&includeItemTypes=Movie');
+  assert.ok(opened.at(-1).startsWith('http://localhost/Items?'));
+  assert.ok(opened.at(-1).includes('federationOrigin=Friend'));
+  new dom.window.XMLHttpRequest().open('GET', '/Items/abc/PlaybackInfo');
+  assert.equal(opened.at(-1), '/Items/abc/PlaybackInfo');
+  [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((tab) => tab.textContent.trim() === 'This server').click();
+  await settle();
+  new dom.window.XMLHttpRequest().open('GET', '/Items?parentId=1');
+  assert.ok(opened.at(-1).includes('ExcludeItemTags=Federated'));
   dom.window.close();
 });
 

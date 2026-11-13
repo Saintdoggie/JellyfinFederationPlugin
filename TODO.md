@@ -1,5 +1,19 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.224 — server tabs that work, and one card per title with every server's copy
+
+- [x] Library server tabs (All / This server / each server): the server now answers the tab, so every page is full and the count is that server's count. Before, newer library pages asked through XMLHttpRequest, which the tab did not catch: the browser got an ordinary page of the whole library and could only hide cards on it ("1-100 of 742" with one card).
+- [x] A server's tab also lists titles owned here that the server has too. Such a title has one card (the own one), so no tag could find it; the tab is answered from the catalogue (`federationOrigin=<server name>` on `/Items`, `FederationLocalOnlyItemsFilter.ItemIdsOnServer`, put into the query's own `ids`).
+- [x] The tabs sit directly above the grid as one row of pills that scrolls sideways on a phone (they used to land under the grid on newer library pages).
+- [x] A title owned here lists every other server's copy in its version list (`FederationMediaSourceNameFilter.WithOtherServersCopies`); the own file is "This server" and comes first, unless a linked server's copy is clearly better (`OwnedTitleFriendCopies.IsBetterCopy`: picture a fifth wider, or same size at 1.5x the bitrate), which then leads.
+- [x] A copy picked there plays from its server when the device plays it as stored; when it does not, the own file plays (`FederationPlaybackProfileFilter.DivertOwnedTitlePick`, `OwnedTitleFriendCopies.Order` with preferred ids). A linked server's better copy is also offered first to players that name no copy.
+- [x] Stages added to `scripts/federation_owned_title_smoke.py` (version list, picked copy, fallback, server tab incl. a stale page number).
+- [x] Gate for 0.0.224: clean Release build with 0 warnings, 2,102 plugin and 182 web tests twice, Companion 224 pass with the same 3 `RcloneBootstrapperTests` failures, and the owned-title (10 stages), versions, linked, handoff, standby and sound-help container runs.
+- [ ] Not seen in a real browser against a live library: the tab row was only rendered in a test page, and the reload of the newer library pages after a tab click (query cache found through the page root, else a page reload) is untested there.
+- [ ] "A linked server's better copy leads" is covered by unit tests only; no linked pair in the smoke holds a better copy.
+- [ ] A picked copy the device cannot play as stored is not repackaged or converted by its server (copy play is wired for federated titles, not for copies of owned titles): the own file plays instead. The viewer's sound and subtitle choice is not carried to a picked copy.
+- [ ] Home page rows and search still hide cards in the browser; a title owned here is not shown under another server's tab there.
+
 ## 0.0.223 — player fixes: copy play, and linked servers never convert for each other
 
 Plan of record and takeover notes: `DIRECT-PLAY.md`.

@@ -50,6 +50,95 @@ namespace Jellyfin.Plugin.Federation.Services
                 && (config.SmartSourceSelection || !TranscodePolicy.MayConvertForOwnViewers(config));
 
         /// <summary>
+        /// Whether other servers' copies of an owned title are listed as versions
+        /// beside the own file, can be picked there, and a linked server's better
+        /// copy is put first. Needs only the merging of copies.
+        /// </summary>
+        internal static bool Listed(PluginConfiguration? config) => config != null && config.EnableDedup;
+
+        /// <summary>
+        /// The catalogue entry holding other servers' copies of a title this server
+        /// owns: the same provider-id key the sync merges copies on, in any enabled
+        /// library. Null when no other server has the title.
+        /// </summary>
+        internal static FederatedCacheEntry? FindEntry(FederationItemCache cache, PluginConfiguration config, MediaBrowser.Controller.Entities.BaseItem item)
+        {
+            if (item.ProviderIds == null || item.ProviderIds.Count == 0)
+            {
+                return null;
+            }
+
+            var kind = item.GetBaseItemKind().ToString();
+            foreach (var providerName in config.DedupProviderIds ?? new List<string>())
+            {
+                if (!FederationLibraryManager.TryGetProviderId(item.ProviderIds, providerName, out var value) || string.IsNullOrEmpty(value))
+                {
+                    continue;
+                }
+
+                foreach (var mapping in config.LibraryMappings ?? new List<LibraryMapping>())
+                {
+                    if (!mapping.Enabled || string.IsNullOrEmpty(mapping.LocalLibraryName))
+                    {
+                        continue;
+                    }
+
+                    var entry = cache.GetEntryByKey(FederationItemCache.BuildProviderKey(mapping.LocalLibraryName, providerName, value));
+                    if (entry != null && string.Equals(entry.ItemType, kind, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return entry;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Whether another copy is clearly better than the own one: a picture at
+        /// least a fifth wider (width, because a cropped film is less tall at the
+        /// same quality), or the same picture size at one and a half times the
+        /// bitrate or more. Never when either picture size is unknown.
+        /// </summary>
+        internal static bool IsBetterCopy(IEnumerable<MediaBrowser.Model.Entities.MediaStream>? own, long? ownBitrate, IEnumerable<MediaBrowser.Model.Entities.MediaStream>? other, long? otherBitrate)
+        {
+            var (ownWidth, ownRate) = Picture(own, ownBitrate);
+            var (otherWidth, otherRate) = Picture(other, otherBitrate);
+            if (ownWidth <= 0 || otherWidth <= 0)
+            {
+                return false;
+            }
+
+            if (otherWidth >= ownWidth * 1.2)
+            {
+                return true;
+            }
+
+            return otherWidth >= ownWidth * 0.9 && ownRate > 0 && otherRate >= ownRate * 1.5;
+        }
+
+        private static (int Width, long Bitrate) Picture(IEnumerable<MediaBrowser.Model.Entities.MediaStream>? streams, long? fileBitrate)
+        {
+            var video = streams?
+                .Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Video)
+                .OrderByDescending(s => s.Width ?? 0)
+                .FirstOrDefault();
+            if (video == null)
+            {
+                return (0, 0);
+            }
+
+            var width = video.Width is > 0 ? video.Width.Value : (video.Height ?? 0) * 16 / 9;
+            return (width, video.BitRate is > 0 ? video.BitRate.Value : fileBitrate ?? 0);
+        }
+
+        /// <summary>Request item naming the copy picked in the version list (see <see cref="FederationPlaybackProfileFilter"/>).</summary>
+        internal const string PickKey = "Federation.OwnedTitlePick";
+
+        /// <summary>Request item naming the offered copies that go before the own file when the device plays them as stored.</summary>
+        internal const string PreferredKey = "Federation.OwnedTitlePreferred";
+
+        /// <summary>
         /// Whether a friend's copy is looked for: only when the device is known not
         /// to play the own file as stored.
         /// </summary>
@@ -66,14 +155,25 @@ namespace Jellyfin.Plugin.Federation.Services
         /// server's own plays without converting, the remaining friend copies go
         /// first. Otherwise the order is left alone.
         /// </summary>
-        internal static IReadOnlyList<MediaSourceInfo> Order(IReadOnlyList<MediaSourceInfo> sources, IReadOnlyCollection<string> offeredIds)
+        /// <remarks>
+        /// <paramref name="preferredIds"/> are offered copies that go first whenever
+        /// the device plays them as stored: the one picked in the version list, or
+        /// a linked server's better copy.
+        /// </remarks>
+        internal static IReadOnlyList<MediaSourceInfo> Order(IReadOnlyList<MediaSourceInfo> sources, IReadOnlyCollection<string> offeredIds, IReadOnlyCollection<string>? preferredIds = null)
         {
             bool Offered(MediaSourceInfo s) => s.Id != null && offeredIds.Contains(s.Id, StringComparer.OrdinalIgnoreCase);
             bool PlaysAsStored(MediaSourceInfo s) => s.SupportsDirectPlay || s.SupportsDirectStream;
+            bool Preferred(MediaSourceInfo s) => preferredIds != null && s.Id != null && preferredIds.Contains(s.Id, StringComparer.OrdinalIgnoreCase) && PlaysAsStored(s);
 
             var kept = sources.Any(s => Offered(s) && !PlaysAsStored(s)) && sources.Any(s => !Offered(s))
                 ? sources.Where(s => !Offered(s) || PlaysAsStored(s)).ToList()
                 : sources;
+            if (kept.Any(Preferred))
+            {
+                return kept.Where(Preferred).Concat(kept.Where(s => !Preferred(s))).ToList();
+            }
+
             if (kept.Any(s => !Offered(s) && PlaysAsStored(s)) || !kept.Any(Offered))
             {
                 return kept;

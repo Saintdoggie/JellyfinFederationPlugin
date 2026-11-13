@@ -654,7 +654,7 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var config = Plugin.Instance?.Configuration;
             var context = _httpContextAccessor.HttpContext;
-            if (!OwnedTitleFriendCopies.Wanted(config)
+            if (!OwnedTitleFriendCopies.Listed(config)
                 || context == null
                 || item is not Video
                 || item.ProviderIds == null
@@ -680,39 +680,72 @@ namespace Jellyfin.Plugin.Federation.Services
                 var userId = authorization.UserId;
                 var deviceId = authorization.DeviceId;
                 var language = authorization.User?.AudioLanguagePreference;
-                IReadOnlySet<string>? offered = null;
+                IReadOnlySet<string>? offered = OwnedTitleFriendCopies.Shared.Offered(userId, deviceId, item.Id);
+
+                // Three reasons to offer another server's copy of an owned title:
+                // the device cannot play the own file as stored (automatic choice),
+                // the viewer picked that copy in the version list, or a linked
+                // server holds a clearly better copy. Everything else returns
+                // before any other server is asked.
+                var pick = context.Items.TryGetValue(OwnedTitleFriendCopies.PickKey, out var rawPick) ? rawPick as string : null;
+                var named = pick == null ? FederationPlaybackProfileFilter.GetRequestedMediaSourceId(context) : null;
+                var ownNeedsHelp = false;
+                IReadOnlyList<MediaStream>? ownStreams = null;
                 if (profile != null)
                 {
-                    var own = DevicePlayFit.Evaluate(profile, item.Container, OwnStreams(item), language);
-                    if (!OwnedTitleFriendCopies.OwnFileNeedsHelp(own))
+                    if (named != null && offered?.Contains(named) != true)
                     {
-                        OwnedTitleFriendCopies.Shared.Forget(userId, deviceId, item.Id);
+                        // The player named a copy that is not one of these (usually
+                        // the own file): Jellyfin answers with that copy alone.
                         return Enumerable.Empty<MediaSourceInfo>();
                     }
-                }
-                else
-                {
-                    offered = OwnedTitleFriendCopies.Shared.Offered(userId, deviceId, item.Id);
-                    if (offered == null || offered.Count == 0)
-                    {
-                        return Enumerable.Empty<MediaSourceInfo>();
-                    }
-                }
 
-                var entry = FindFriendEntryForOwnedTitle(item, config!);
-                if (entry == null)
+                    ownStreams = OwnStreams(item);
+                    ownNeedsHelp = OwnedTitleFriendCopies.Wanted(config)
+                        && OwnedTitleFriendCopies.OwnFileNeedsHelp(DevicePlayFit.Evaluate(profile, item.Container, ownStreams, language));
+                }
+                else if (offered == null || offered.Count == 0)
                 {
                     return Enumerable.Empty<MediaSourceInfo>();
                 }
 
+                var entry = OwnedTitleFriendCopies.FindEntry(_federationManager.Cache, config!, item);
+                if (entry == null)
+                {
+                    if (profile != null)
+                    {
+                        OwnedTitleFriendCopies.Shared.Forget(userId, deviceId, item.Id);
+                    }
+
+                    return Enumerable.Empty<MediaSourceInfo>();
+                }
+
+                var better = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var candidates = new List<(FederatedSource Src, RemoteServer Server)>();
                 foreach (var src in entry.GetSourcesSnapshot())
                 {
                     var server = _federationManager.GetServer(src.ServerId);
-                    if (server is { Enabled: true, Kind: ServerKind.Jellyfin }
-                        && !LinkCatalog.IsHiddenLinkedSource(server)
-                        && FederationItemPersistenceService.AvailabilityOverride?.IsOffline(src.ServerId) != true
-                        && _accessControl.IsAllowed(server, userId, entry.MappingName, src.RemoteItemId))
+                    if (server is not { Enabled: true, Kind: ServerKind.Jellyfin }
+                        || LinkCatalog.IsHiddenLinkedSource(server)
+                        || FederationItemPersistenceService.AvailabilityOverride?.IsOffline(src.ServerId) == true
+                        || !_accessControl.IsAllowed(server, userId, entry.MappingName, src.RemoteItemId))
+                    {
+                        continue;
+                    }
+
+                    var baseId = BuildSourceId(src);
+                    if (profile != null
+                        && server.Linked
+                        && OwnedTitleFriendCopies.IsBetterCopy(ownStreams, item.TotalBitrate, src.MediaStreams, src.Bitrate))
+                    {
+                        better.Add(baseId);
+                    }
+
+                    if (profile == null
+                        || ownNeedsHelp
+                        || named != null
+                        || better.Contains(baseId)
+                        || string.Equals(baseId, pick, StringComparison.OrdinalIgnoreCase))
                     {
                         candidates.Add((src, server));
                     }
@@ -720,6 +753,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 if (candidates.Count == 0)
                 {
+                    if (profile != null)
+                    {
+                        OwnedTitleFriendCopies.Shared.Forget(userId, deviceId, item.Id);
+                    }
+
                     return Enumerable.Empty<MediaSourceInfo>();
                 }
 
@@ -733,6 +771,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
                 var nativeIdentity = NativeClientCapabilities.Identify(context.Request, authorization);
                 var sources = new List<MediaSourceInfo>();
+                var preferred = new List<string>();
                 for (var c = 0; c < candidates.Count; c++)
                 {
                     var (src, server) = candidates[c];
@@ -744,16 +783,49 @@ namespace Jellyfin.Plugin.Federation.Services
                     }
 
                     var direct = server.StreamingMode == StreamingMode.Direct;
+                    var baseId = BuildSourceId(src);
+                    var first = true;
                     foreach (var remote in direct ? remotes : remotes.Take(1))
                     {
                         var sourceId = BuildSourceId(src, direct && remotes.Count > 1 ? remote.Id : null);
-                        var wanted = profile != null
-                            ? DevicePlayFit.Evaluate(profile, remote.Container, remote.MediaStreams, language).Fit == PlayFit.Direct
-                            : offered!.Contains(sourceId);
-                        if (!wanted || SourceOverageBitrate(server, remote) > 0)
+
+                        // The version list names a server's copy by its plain id; a
+                        // server holding several versions answers that id with its first.
+                        var isPick = first && string.Equals(baseId, pick, StringComparison.OrdinalIgnoreCase);
+                        if (first && (isPick || (profile == null && offered!.Contains(baseId) && !offered.Contains(sourceId))))
+                        {
+                            sourceId = baseId;
+                        }
+
+                        first = false;
+                        bool wanted;
+                        if (profile == null)
+                        {
+                            wanted = offered!.Contains(sourceId);
+                        }
+                        else if (isPick)
+                        {
+                            // Offered whatever the device makes of it: when it cannot
+                            // play it as stored the own file plays instead (see Order).
+                            wanted = true;
+                        }
+                        else
+                        {
+                            wanted = DevicePlayFit.Evaluate(profile, remote.Container, remote.MediaStreams, language).Fit == PlayFit.Direct
+                                && (named != null
+                                    ? string.Equals(sourceId, named, StringComparison.OrdinalIgnoreCase)
+                                    : ownNeedsHelp || better.Contains(baseId));
+                        }
+
+                        if (!wanted || (!isPick && SourceOverageBitrate(server, remote) > 0))
                         {
                             // Would itself need converting, or the friend's link cannot carry it.
                             continue;
+                        }
+
+                        if (profile != null && (isPick || better.Contains(baseId)))
+                        {
+                            preferred.Add(sourceId);
                         }
 
                         var sourcePath = direct ? WithRemoteMediaSourceId(path, remote.Id) : path;
@@ -794,11 +866,15 @@ namespace Jellyfin.Plugin.Federation.Services
                     {
                         OwnedTitleFriendCopies.Shared.Remember(userId, deviceId, item.Id, sources.Select(s => s.Id));
                         context.Items[OwnedTitleFriendCopies.OfferKey] = sources.Select(s => s.Id).ToList();
+                        context.Items[OwnedTitleFriendCopies.PreferredKey] = preferred;
                         _logger.LogInformation(
-                            "[Federation] {Name} is owned here but this device cannot play the own file as stored; offering {Count} friend copy(ies) it can ({Servers})",
+                            "[Federation] {Name} is owned here; offering {Count} copy(ies) from other servers ({Servers}): {Reason}",
                             item.Name,
                             sources.Count,
-                            string.Join(", ", sources.Select(s => s.Name).Distinct()));
+                            string.Join(", ", sources.Select(s => s.Name).Distinct()),
+                            pick != null ? "picked in the version list"
+                                : ownNeedsHelp ? "this device cannot play the own file as stored"
+                                : "a linked server holds a better copy");
                     }
                 }
 
@@ -814,38 +890,6 @@ namespace Jellyfin.Plugin.Federation.Services
                 _logger.LogDebug(ex, "[Federation] Could not look for a friend's copy of {Name}", item.Name);
                 return Enumerable.Empty<MediaSourceInfo>();
             }
-        }
-
-        /// <summary>
-        /// The cache entry for friends' copies of a title this server owns: the
-        /// same provider-id key the sync merges copies on, in any enabled library.
-        /// </summary>
-        private FederatedCacheEntry? FindFriendEntryForOwnedTitle(BaseItem item, PluginConfiguration config)
-        {
-            var kind = item.GetBaseItemKind().ToString();
-            foreach (var providerName in config.DedupProviderIds ?? new List<string>())
-            {
-                if (!FederationLibraryManager.TryGetProviderId(item.ProviderIds, providerName, out var value) || string.IsNullOrEmpty(value))
-                {
-                    continue;
-                }
-
-                foreach (var mapping in config.LibraryMappings ?? new List<LibraryMapping>())
-                {
-                    if (!mapping.Enabled || string.IsNullOrEmpty(mapping.LocalLibraryName))
-                    {
-                        continue;
-                    }
-
-                    var entry = _federationManager.Cache.GetEntryByKey(FederationItemCache.BuildProviderKey(mapping.LocalLibraryName, providerName, value));
-                    if (entry != null && string.Equals(entry.ItemType, kind, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return entry;
-                    }
-                }
-            }
-
-            return null;
         }
 
         /// <summary>

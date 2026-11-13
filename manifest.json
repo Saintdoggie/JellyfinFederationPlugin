@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.224",
+        "changelog": "Library server tabs are answered by the server (full pages, right counts, titles you own that the server also has) and sit above the grid; a title you own lists other servers' copies in its version list, a linked server's clearly better copy first; a picked copy plays from its server when the device plays it as stored.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-13T02:29:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.224/Jellyfin.Federation.zip",
+        "checksum": "cd000d38b3bbfb95a4f56470042513e1"
+      },
+      {
         "version": "0.0.223",
         "changelog": "Player fixes: a friend's server repackages its own file for players that cannot take it as stored (copy play, no conversion); linked servers never convert each other's titles and say what the device could not play.",
         "targetAbi": "12.0.0.0",

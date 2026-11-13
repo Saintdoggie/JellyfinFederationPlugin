@@ -69,4 +69,45 @@ public class OwnedTitleFriendCopiesTests
         var notOffered = new[] { own, friend };
         Assert.Same(notOffered, OwnedTitleFriendCopies.Order(notOffered, Array.Empty<string>()));
     }
+
+    [Fact]
+    public void BetterCopy_IsAClearlyBiggerPicture_OrTheSameSizeAtFarMoreBitrate()
+    {
+        static MediaBrowser.Model.Entities.MediaStream[] Video(int width, int height, int bitrate) => new[]
+        {
+            new MediaBrowser.Model.Entities.MediaStream { Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Width = width, Height = height, BitRate = bitrate }
+        };
+
+        var own1080 = Video(1920, 1080, 8_000_000);
+        Assert.True(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, Video(3840, 1600, 20_000_000), null));
+
+        // A cropped film is less tall at the same quality: not worse, and not better.
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, Video(1920, 800, 9_000_000), null));
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(Video(1920, 800, 8_000_000), null, own1080, null));
+
+        Assert.True(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, Video(1920, 1080, 12_000_000), null));
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, Video(1920, 1080, 11_000_000), null));
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, Video(1280, 720, 30_000_000), null));
+
+        // The file's bitrate stands in when the picture track's is not known.
+        Assert.True(OwnedTitleFriendCopies.IsBetterCopy(Video(1920, 1080, 0), 8_000_000, Video(1920, 1080, 0), 20_000_000));
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(null, null, Video(3840, 2160, 1), null));
+        Assert.False(OwnedTitleFriendCopies.IsBetterCopy(own1080, null, null, 99_000_000));
+    }
+
+    [Fact]
+    public void Order_PickedOrBetterCopyGoesFirstOnlyWhenTheDevicePlaysItAsStored()
+    {
+        var own = new MediaBrowser.Model.Dto.MediaSourceInfo { Id = "own", SupportsDirectPlay = true, SupportsDirectStream = true, SupportsTranscoding = true };
+        var picked = new MediaBrowser.Model.Dto.MediaSourceInfo { Id = "PICK", SupportsDirectStream = true };
+        var pickedUnplayable = new MediaBrowser.Model.Dto.MediaSourceInfo { Id = "pick", SupportsDirectPlay = false, SupportsDirectStream = false };
+
+        Assert.Equal(new[] { "PICK", "own" }, OwnedTitleFriendCopies.Order(new[] { own, picked }, new[] { "pick" }, new[] { "pick" }).Select(s => s.Id));
+
+        // Not preferred: the own file that plays as stored stays first.
+        Assert.Equal(new[] { "own", "PICK" }, OwnedTitleFriendCopies.Order(new[] { own, picked }, new[] { "pick" }).Select(s => s.Id));
+
+        // Picked but the device cannot play it as stored: the own file plays, the copy is not left for conversion.
+        Assert.Equal(new[] { "own" }, OwnedTitleFriendCopies.Order(new[] { own, pickedUnplayable }, new[] { "pick" }, new[] { "pick" }).Select(s => s.Id));
+    }
 }

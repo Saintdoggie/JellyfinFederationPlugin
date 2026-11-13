@@ -826,11 +826,17 @@
       '.federation-ring-bg{fill:Canvas;stroke:CanvasText;}.federation-ring-fg{stroke:Highlight;}.federation-ring-text{fill:CanvasText;}}',
 
       // Library origin tabs: All / this server / each federated friend.
-      '.federation-origin-filter{display:flex;flex-wrap:wrap;align-items:center;gap:.35em;width:100%;padding:.15em 0 .7em;margin:0;}',
+      // One quiet row of pills above the grid; it scrolls sideways on a narrow
+      // screen instead of wrapping into a block.
+      '.federation-origin-filter{display:flex;flex-wrap:nowrap;align-items:center;gap:.5em;box-sizing:border-box;width:100%;margin:0;padding-top:.3em;padding-bottom:1em;overflow-x:auto;scrollbar-width:none;font-family:var(--fed-font);}',
+      '.federation-origin-filter::-webkit-scrollbar{display:none;}',
       '.federation-origin-filter[data-empty="1"]{display:none;}',
-      '.federation-origin-tab{border:0;background:transparent;color:inherit;opacity:.72;font:inherit;line-height:1.2;padding:.45em .9em;border-radius:.45em;cursor:pointer;}',
-      '.federation-origin-tab[aria-selected="true"]{opacity:1;color:var(--fed-accent-strong);background:var(--fed-accent-soft);}',
+      '.federation-origin-label{flex:0 0 auto;margin-inline-end:.25em;font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.55;}',
+      '.federation-origin-tab{flex:0 0 auto;box-sizing:border-box;border:1px solid transparent;background:var(--fed-hover);color:inherit;font:inherit;font-size:.92em;line-height:1.2;white-space:nowrap;padding:.5em 1.05em;border-radius:var(--fed-radius-pill);cursor:pointer;opacity:.8;transition:opacity .12s ease,background-color .12s ease,border-color .12s ease;}',
+      '.federation-origin-tab:hover{opacity:1;}',
+      '.federation-origin-tab[aria-selected="true"]{opacity:1;font-weight:600;color:var(--fed-accent-strong);background:var(--fed-accent-soft);border-color:var(--fed-accent-strong);}',
       '.federation-origin-tab:focus-visible{outline:2px solid var(--fed-accent-strong);outline-offset:2px;}',
+      '@media(prefers-reduced-motion:reduce){.federation-origin-tab{transition:none;}}',
       '.card.federation-origin-hidden,.listItem.federation-origin-hidden{display:none!important;}',
       '.federation-origin-empty{display:none;padding:1.4em .2em;opacity:.7;}',
       '.federation-origin-empty[data-show="1"]{display:block;}',
@@ -2079,12 +2085,24 @@
     return /^#!?\/(home|movies|tv|search|list|music)(\.html)?(?=[?\/#]|$)/i.test(window.location.hash || '');
   }
 
+  // Library grids, where every card comes from an /Items query the server has
+  // already narrowed to the chosen server. That answer also holds titles this
+  // server owns that the chosen server has too, which the browser cannot tell
+  // from other own titles, so it must not hide cards there.
+  function originServerFiltered() {
+    return /^#!?\/(movies|tv|list|music)(\.html)?(?=[?\/#]|$)/i.test(window.location.hash || '');
+  }
+
   function cardMatchesOrigin(el) {
     if (unavailableIds.has(normalizeId(el.getAttribute('data-id')))) {
       return false;
     }
     var mode = getOriginFilter();
     if (mode === 'all' || !originFilterActive()) {
+      return true;
+    }
+
+    if (mode.indexOf('friend:') === 0 && originServerFiltered()) {
       return true;
     }
 
@@ -2159,7 +2177,7 @@
     }
 
     if (mode.indexOf('friend:') === 0) {
-      options.Tags = joinQueryTag(options.Tags, '🌐 ' + mode.slice(7));
+      options.federationOrigin = mode.slice(7);
     }
   }
 
@@ -2183,7 +2201,12 @@
       if (mode === 'local') {
         parsed.searchParams.set('ExcludeItemTags', joinQueryTag(parsed.searchParams.get('ExcludeItemTags'), 'Federated'));
       } else if (mode.indexOf('friend:') === 0) {
-        parsed.searchParams.set('Tags', joinQueryTag(parsed.searchParams.get('Tags'), '🌐 ' + mode.slice(7)));
+        parsed.searchParams.set('federationOrigin', mode.slice(7));
+      }
+
+      // An address on another origin (an app shell pointed at this server) keeps it.
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(String(url))) {
+        return parsed.href;
       }
 
       return parsed.pathname + parsed.search + parsed.hash;
@@ -2209,6 +2232,28 @@
       };
     }
 
+    // The newer library pages ask through XMLHttpRequest, not fetch: without
+    // this the server never heard about the chosen tab and the browser could
+    // only hide cards on the page it was given.
+    if (!window.__federationOriginXhrHook && window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+      window.__federationOriginXhrHook = true;
+      var origOpen = window.XMLHttpRequest.prototype.open;
+      window.XMLHttpRequest.prototype.open = function (method, url) {
+        var args = Array.prototype.slice.call(arguments);
+        try {
+          if (typeof url === 'string' || (url && typeof url.href === 'string')) {
+            var text = typeof url === 'string' ? url : url.href;
+            var next = applyOriginToUrl(text);
+            if (next && next !== text) {
+              args[1] = next;
+            }
+          }
+        } catch (e) { /* leave the request unchanged */ }
+
+        return origOpen.apply(this, args);
+      };
+    }
+
     if (!window.ApiClient || window.ApiClient.__federationOriginHook) {
       return;
     }
@@ -2224,14 +2269,59 @@
     }
   }
 
+  // The newer library pages keep their lists in a query cache that the page
+  // owns. It is reached through the page's own root so the lists can be asked
+  // for again; null when this build of the web client has none.
+  function findQueryClient() {
+    try {
+      var host = null;
+      var nodes = document.querySelectorAll('body > div, body > div > div');
+      for (var n = 0; n < nodes.length && !host; n++) {
+        var keys = Object.keys(nodes[n]);
+        for (var k = 0; k < keys.length; k++) {
+          if (keys[k].indexOf('__reactContainer$') === 0) {
+            host = nodes[n][keys[k]];
+            break;
+          }
+        }
+      }
+
+      var queue = host ? [host.stateNode && host.stateNode.current ? host.stateNode.current : host] : [];
+      for (var seen = 0; queue.length && seen < 4000; seen++) {
+        var fiber = queue.shift();
+        var props = fiber && fiber.memoizedProps;
+        if (props && props.client && typeof props.client.invalidateQueries === 'function') {
+          return props.client;
+        }
+
+        if (fiber && fiber.child) { queue.push(fiber.child); }
+        if (fiber && fiber.sibling) { queue.push(fiber.sibling); }
+      }
+    } catch (e) { /* not this kind of page */ }
+
+    return null;
+  }
+
   function reloadLibraryItems() {
+    var asked = false;
     document.querySelectorAll('.itemsContainer').forEach(function (container) {
       try {
         if (typeof container.notifyRefreshNeeded === 'function') {
           container.notifyRefreshNeeded(true);
+          asked = true;
         }
       } catch (e) { /* visibility filter still applies */ }
     });
+
+    try {
+      var client = findQueryClient();
+      if (client) {
+        client.invalidateQueries();
+        asked = true;
+      }
+    } catch (e) { /* fall through */ }
+
+    return asked;
   }
 
   function originHostPage() {
@@ -2250,6 +2340,23 @@
 
     if (page.classList.contains('libraryPage') || page.classList.contains('homePage') || page.classList.contains('searchPage')) {
       return page;
+    }
+
+    return null;
+  }
+
+  // The grid the tabs sit above on a library page: the first one on show.
+  function originGrid(page) {
+    if (!page.classList.contains('libraryPage')) {
+      return null;
+    }
+
+    var grids = page.querySelectorAll('.itemsContainer');
+    for (var i = 0; i < grids.length; i++) {
+      var tab = grids[i].closest('.pageTabContent');
+      if (!grids[i].closest('.hide') && (!tab || tab.classList.contains('is-active'))) {
+        return grids[i];
+      }
     }
 
     return null;
@@ -2286,9 +2393,16 @@
     }
     var signature = friends.join('\t') + '|' + mode;
     var bar = page.querySelector(':scope .federation-origin-filter');
+    var grid = originGrid(page);
+    if (bar && grid && grid.parentNode && bar.nextElementSibling !== grid) {
+      // The page drew another grid (another tab of the library): follow it.
+      grid.parentNode.insertBefore(bar, grid);
+    }
+
     if (!bar) {
-      var toolbar = originToolbar(page);
-      if (!toolbar || !toolbar.parentNode) {
+      // A library page whose grid is not drawn yet gets its tabs when it is.
+      var toolbar = grid || page.classList.contains('libraryPage') ? null : originToolbar(page);
+      if (!grid && (!toolbar || !toolbar.parentNode)) {
         applyOriginVisibility();
         return;
       }
@@ -2297,7 +2411,12 @@
       bar.className = 'federation-origin-filter padded-left padded-right';
       bar.setAttribute('role', 'tablist');
       bar.setAttribute('aria-label', 'Library source');
-      toolbar.parentNode.insertBefore(bar, toolbar.nextSibling);
+      if (grid) {
+        grid.parentNode.insertBefore(bar, grid);
+      } else {
+        toolbar.parentNode.insertBefore(bar, toolbar.nextSibling);
+      }
+
       bar.addEventListener('click', function (event) {
         var tab = event.target.closest('.federation-origin-tab');
         if (!tab) {
@@ -2314,7 +2433,11 @@
 
         setOriginFilter(next);
         renderOriginFilter();
-        reloadLibraryItems();
+        if (!reloadLibraryItems() && originServerFiltered()) {
+          // Nothing on this page can be asked to load again: load the page
+          // again, the choice is kept for the session.
+          try { window.location.reload(); } catch (e) { /* cards are still hidden in place */ }
+        }
       });
     }
 
@@ -2330,7 +2453,7 @@
 
     bar.setAttribute('data-signature', signature);
     bar.setAttribute('data-empty', friends.length === 0 ? '1' : '0');
-    bar.innerHTML = tabs.map(function (tab) {
+    bar.innerHTML = '<span class="federation-origin-label" aria-hidden="true">From</span>' + tabs.map(function (tab) {
       var selected = tab.origin === 'all' ? mode === 'all'
         : tab.origin === 'local' ? mode === 'local'
           : mode === 'friend:' + decodeURIComponent(tab.origin.slice(7));

@@ -152,6 +152,7 @@ namespace Jellyfin.Plugin.Federation.Services
                             context.HttpContext.Items[SourceKey] = sourceId;
                         }
 
+                        DivertOwnedTitlePick(context, argument);
                         return;
                     }
                 }
@@ -159,6 +160,60 @@ namespace Jellyfin.Plugin.Federation.Services
                 {
                     // Without the profile the choice simply falls back to the device-neutral one.
                 }
+            }
+        }
+
+        /// <summary>
+        /// A title this server owns, asked for with another server's copy picked in
+        /// the version list. Jellyfin answers a named source with that source alone,
+        /// so a copy the device cannot play as stored would end in an error. The
+        /// name is taken off the request and kept beside it instead: Jellyfin then
+        /// answers with every copy, the picked one goes first when the device plays
+        /// it as stored, and the own file plays when it does not.
+        /// </summary>
+        private static void DivertOwnedTitlePick(ActionExecutingContext context, object body)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var property = body.GetType().GetProperty("MediaSourceId");
+            var named = property?.GetValue(body) as string;
+            if (string.IsNullOrEmpty(named) && context.ActionArguments.TryGetValue("mediaSourceId", out var fromQuery))
+            {
+                named = fromQuery as string;
+            }
+
+            if (!OwnedTitleFriendCopies.Listed(config)
+                || string.IsNullOrEmpty(named)
+                || !context.ActionArguments.TryGetValue("itemId", out var rawItem)
+                || rawItem is not Guid itemId
+                || (Guid.TryParse(named, out var namedId) && namedId == itemId))
+            {
+                return;
+            }
+
+            var services = context.HttpContext.RequestServices;
+            var federation = services.GetService<FederationLibraryManager>();
+            var item = services.GetService<MediaBrowser.Controller.Library.ILibraryManager>()?.GetItemById(itemId);
+            if (federation == null || item == null || federation.IsFederatedItem(item))
+            {
+                return;
+            }
+
+            var entry = OwnedTitleFriendCopies.FindEntry(federation.Cache, config!, item);
+            if (entry == null
+                || !entry.GetSourcesSnapshot().Any(s => string.Equals(FederationMediaSourceProvider.BuildSourceId(s), named, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            context.HttpContext.Items[OwnedTitleFriendCopies.PickKey] = named;
+            if (property is { CanWrite: true })
+            {
+                property.SetValue(body, null);
+            }
+
+            if (context.ActionArguments.ContainsKey("mediaSourceId"))
+            {
+                context.ActionArguments["mediaSourceId"] = null;
             }
         }
 
@@ -175,7 +230,10 @@ namespace Jellyfin.Plugin.Federation.Services
                     && context.Result is Microsoft.AspNetCore.Mvc.ObjectResult { Value: MediaBrowser.Model.MediaInfo.PlaybackInfoResponse response }
                     && response.MediaSources is { Count: > 1 } sources)
                 {
-                    response.MediaSources = OwnedTitleFriendCopies.Order(sources, offered);
+                    response.MediaSources = OwnedTitleFriendCopies.Order(
+                        sources,
+                        offered,
+                        context.HttpContext.Items.TryGetValue(OwnedTitleFriendCopies.PreferredKey, out var first) ? first as IReadOnlyCollection<string> : null);
                 }
             }
             catch (Exception)

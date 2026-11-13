@@ -18,6 +18,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
 import federation_metadata_smoke as qa
 from federation_handoff_smoke import container_log
 from federation_peer_smoke import no_redirect
@@ -40,6 +41,9 @@ def smoke():
             qa.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=24', '-f', 'lavfi', '-i',
                 'sine=frequency=440:sample_rate=48000', '-t', '60', '-c:v', codec, '-preset', 'veryfast', '-b:v', '3M',
                 '-c:a', 'aac', '-metadata:s:a:0', 'language=eng', '-y', media / title])
+        # A second title only the receiver has: it must stay out of the friend's tab.
+        only_here = 'QA Only Here (2026) [imdbid-tt9912347].mkv'
+        shutil.copy(work / ('media-' + names[1]) / title, work / ('media-' + names[1]) / only_here)
         qa.run(['podman', 'network', 'create', network])
         servers = []
         for name in names:
@@ -76,7 +80,9 @@ def smoke():
         for server in servers:
             qa.wait_for(lambda: [m for m in movies(server['base'], server['admin']) if m.get('ProviderIds', {}).get('Imdb')],
                         'A server did not scan its title with the id from the file name')
-        own = movies(base, admin)[0]
+        qa.wait_for(lambda: len([m for m in movies(base, admin) if m.get('ProviderIds', {}).get('Imdb')]) == 2 or None,
+                    'The receiver did not scan both of its titles')
+        own = next(m for m in movies(base, admin) if m['ProviderIds']['Imdb'] == 'tt9912346')
 
         stage = 'friendship and a shared library; the friend copy of an owned title is not added'
         qa.check(qa.request(base, '/Plugins/Federation/Friends/Send', admin, {'Url': friend['host']})['success'], 'Friend request failed')
@@ -111,7 +117,7 @@ def smoke():
             sources = negotiate('h264')
             return sources if len(sources) == 2 else None
         sources = qa.wait_for(offered, 'A device that cannot play the own file was not offered the friend\'s copy')
-        qa.check(len(movies(base, admin)) == 1, 'The friend\'s copy of an owned title became a second library title')
+        qa.check(len(movies(base, admin)) == 2, 'The friend\'s copy of an owned title became another library title')
         print('OWNED PASS: the friend holds the title too, and the library still shows it once', flush=True)
 
         stage = 'a device that only plays H.264 gets the friend copy first, the own file as the one to convert'
@@ -121,7 +127,7 @@ def smoke():
         qa.check(first.get('SupportsDirectStream') or first.get('SupportsDirectPlay'), 'The friend\'s copy is not offered to play as stored')
         qa.check(not first.get('TranscodingUrl'), 'The friend\'s copy was offered for conversion')
         qa.check(second['Id'].replace('-', '') == own_id and second.get('TranscodingUrl'), 'The own file is not kept as the copy to convert')
-        qa.check('is owned here but' in container_log(receiver['name']), 'The receiver did not log the offer')
+        qa.check('is owned here; offering' in container_log(receiver['name']), 'The receiver did not log the offer')
         print('OWNED PASS: H.264-only device: friend copy first (plays as stored), own HEVC file second (to convert)', flush=True)
 
         stage = 'the stream request for the friend copy goes straight to the friend, with seeking'
@@ -151,13 +157,61 @@ def smoke():
         qa.check(status == 200, f'The own file did not play from this server (HTTP {status})')
         print('OWNED PASS: HEVC-capable device: own file only, served by this server', flush=True)
 
+        stage = 'the version list of the owned title names both servers, own file first'
+        friend_name = qa.request(base, '/Plugins/Federation/Configuration', admin)['RemoteServers'][0]['Name']
+        listed = next(m for m in movies(base, viewer) if m['Id'] == own['Id'])['MediaSources']
+        qa.check(len(listed) == 2, f'The version list holds {len(listed)} entries, expected the own file and the friend copy')
+        qa.check(listed[0]['Id'].replace('-', '') == own_id and listed[0]['Name'] == 'This server', f'The own file is not first as "This server": {listed[0]["Name"]}')
+        qa.check(listed[1]['Name'].startswith(friend_name) and listed[1]['Protocol'] == 'Http', f'The friend copy is not listed under its server: {listed[1]["Name"]}')
+        pick = listed[1]['Id']
+        print(f'OWNED PASS: version list: "This server", then "{listed[1]["Name"]}"', flush=True)
+
+        stage = 'a copy picked in the version list plays from the friend when the device plays it as stored'
+        def negotiate_pick(video_codecs):
+            body = {'UserId': viewer_id, 'MaxStreamingBitrate': 120000000, 'EnableDirectPlay': True, 'EnableDirectStream': True,
+                    'EnableTranscoding': True, 'MediaSourceId': pick, 'DeviceProfile': profile(video_codecs)}
+            return qa.request(base, f'/Items/{own["Id"]}/PlaybackInfo?userId={viewer_id}', viewer, body)['MediaSources']
+        picked = negotiate_pick('h264,hevc')
+        qa.check(len(picked) == 2 and picked[0]['Id'] == pick and (picked[0].get('SupportsDirectStream') or picked[0].get('SupportsDirectPlay')),
+                 f'The picked copy is not first and playable as stored: {[s["Id"] for s in picked]}')
+        qa.check(picked[1]['Id'].replace('-', '') == own_id, 'The own file is not kept behind the picked copy')
+        status, headers, _ = no_redirect(base, f'/Videos/{own["Id"]}/stream.mkv?static=true&mediaSourceId={pick}', viewer)
+        target = headers.get('Location') or headers.get('location') or ''
+        qa.check(status == 302 and target.startswith(friend['host'] + '/Plugins/Federation/DirectStream/'), f'The picked copy was not sent to the friend (HTTP {status})')
+        print('OWNED PASS: picked copy: first in the answer, stream request redirected to the friend', flush=True)
+
+        stage = 'a picked copy the device cannot play as stored falls back to the own file'
+        fallback = negotiate_pick('hevc')
+        qa.check(len(fallback) == 1 and fallback[0]['Id'].replace('-', '') == own_id and not fallback[0].get('TranscodingUrl'),
+                 f'An HEVC-only device that picked the H.264 copy did not get the own file as stored: {[s["Id"] for s in fallback]}')
+        capable = negotiate('h264,hevc')
+        qa.check(len(capable) == 1 and capable[0]['Id'].replace('-', '') == own_id, 'After a pick, an ordinary play was still offered the friend copy')
+        print('OWNED PASS: picked copy the device cannot play: own file plays; the next ordinary play gets the own file only', flush=True)
+
+        stage = 'the friend\'s tab in the library lists the title owned here that the friend has too, and nothing else'
+        def tab(origin, extra=''):
+            path = '/Items?Recursive=true&IncludeItemTypes=Movie&SortBy=SortName&Limit=100' + extra
+            if origin:
+                path += '&federationOrigin=' + urllib.parse.quote(origin)
+            return qa.request(base, path, viewer)
+        everything = tab(None)
+        qa.check(everything['TotalRecordCount'] == 2, f'The unfiltered library holds {everything["TotalRecordCount"]} titles, expected 2')
+        native = next(l['ItemId'] for l in qa.request(base, '/Library/VirtualFolders', admin) if l['Name'] == 'QA Native')
+        for extra in ('', '&ParentId=' + native, '&ParentId=' + native + '&StartIndex=100'):
+            theirs_tab = tab(friend_name, extra)
+            qa.check(theirs_tab['TotalRecordCount'] == 1 and [i['Id'] for i in theirs_tab['Items']] == [own['Id']],
+                     f'The friend\'s tab ({extra or "whole server"}) shows {theirs_tab["TotalRecordCount"]} titles / {[i["Name"] for i in theirs_tab["Items"]]}')
+        nobody = tab('No Such Server')
+        qa.check(nobody['TotalRecordCount'] == 0 and not nobody['Items'], 'A tab for an unknown server showed titles')
+        print('OWNED PASS: friend tab: 1 of 2 titles (the one owned here that the friend also has), full count, also from a stale page number', flush=True)
+
         stage = 'the support report counts the own file and the friend copy, and names what each player needs'
         qa.check(qa.request(base, '/Plugins/Federation/PlaySupport/Start', admin, {})['success'], 'The support check did not start')
         support = qa.wait_for(lambda: (lambda r: r if not r['running'] and r.get('report') else None)(
             qa.request(base, '/Plugins/Federation/PlaySupport', admin)), 'The support check did not finish', 60)
         report = support['report']
         labels = {f['label']: f for f in report['formats']}
-        qa.check(report['filesChecked'] == 2 and report['undescribed'] == 0, f'The support check saw {report["filesChecked"]} files, expected the own file and the friend copy')
+        qa.check(report['filesChecked'] == 3 and report['undescribed'] == 0, f'The support check saw {report["filesChecked"]} files, expected the two own files and the friend copy')
         qa.check(set(labels) == {'HEVC, AAC, in MKV', 'H.264, AAC, in MKV'}, f'Unexpected file types: {sorted(labels)}')
         origins = {e.split(':', 1)[0] for f in report['formats'] for e in f['examples']}
         qa.check('This server' in origins and len(origins) == 2, f'The friend copy was not attributed to the friend: {sorted(origins)}')
