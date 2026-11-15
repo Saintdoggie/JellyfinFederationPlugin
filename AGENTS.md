@@ -319,6 +319,15 @@ Tests and project history:
 - Direct-link requests carry the authenticated link-friend context, punching and
   QUIC acceptance use exact endpoints, and read-ahead revalidates before serving.
   Pairing remains review-locked; non-home relay tickets are not implemented.
+- Windows servers (2026-11-15, `docs/DIRECT-LINK.md` "Windows servers"): the side that
+  accepts a direct or paired link keeps its punched UDP socket and carries the QUIC
+  listener's packets through `Services/DirectLink/UdpBridge.cs`, because Windows
+  Firewall admits the friend only on the socket that sent first. Never close that
+  socket before the link ends on Windows, keep the bridge's two exact-endpoint
+  filters, and keep the listener on loopback. `DirectLinkIdentity.KeyFlags` must stay
+  non-ephemeral on Windows (Schannel). Real-machine check:
+  `scripts/federation_windows_smoke.py`; Linux coverage of the bridge:
+  `federation_directlink_smoke.py --bridge`.
 
 ## Validation and release policy
 

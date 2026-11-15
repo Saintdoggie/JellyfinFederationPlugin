@@ -509,7 +509,11 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
             });
             if (changed)
             {
-                await SendConfirmedAndHelloAsync(friendId, sendConfirmed: false, cancellationToken).ConfigureAwait(false);
+                // Tell the friend again that this side confirmed. Whoever confirms first
+                // is refused above (the friend had not confirmed yet) and would otherwise
+                // never say so again until the link reconnects, leaving both sides waiting.
+                // It ends there: the friend's answer to this one changes nothing here.
+                await SendConfirmedAndHelloAsync(friendId, sendConfirmed: true, cancellationToken).ConfigureAwait(false);
             }
 
             return accepted;
@@ -1254,8 +1258,13 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                     try
                     {
                         var port = Interlocked.Exchange(ref _port, null) ?? PairPort.Bind(LocalPort, Role);
+
+                        // The accepting side on Windows keeps the punched socket: the
+                        // firewall lets the friend in on that socket only (see UdpBridge).
+                        var keepPort = Role != 0 && DirectLink.UdpBridge.Needed;
+                        DirectLink.UdpBridge? bridge = null;
                         IPEndPoint? path;
-                        using (port)
+                        try
                         {
                             port.SetKey(_key, Role);
                             State = LastConnectedUtc == null ? "connecting" : "reconnecting";
@@ -1264,53 +1273,95 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                             var everConnected = LastConnectedUtc != null || Config?.RemoteServers.FirstOrDefault(s => s.Id == FriendId)?.PairLastConnectedUtc != null;
                             path = await port.PunchAsync(Targets, round => Schedule(round, DateTime.UtcNow - started, everConnected), cancellationToken).ConfigureAwait(false);
                         }
+                        catch
+                        {
+                            port.Dispose();
+                            throw;
+                        }
+
+                        if (!keepPort || path == null)
+                        {
+                            port.Dispose();
+                            keepPort = false;
+                        }
 
                         if (path == null)
                         {
                             continue;
                         }
 
-                        // The path is where an authenticated packet came from, which the
-                        // friend can choose: the same rules as any endpoint it lists.
-                        if (!PairingEndpoints.IsAcceptable(path, OwnSubnets(), AllowPrivateForTests))
+                        try
                         {
-                            State = "refused";
-                            Detail = "The friend answered from an address that isn't allowed.";
-                            await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
-                            continue;
-                        }
+                            // The path is where an authenticated packet came from, which the
+                            // friend can choose: the same rules as any endpoint it lists.
+                            if (!PairingEndpoints.IsAcceptable(path, OwnSubnets(), AllowPrivateForTests))
+                            {
+                                State = "refused";
+                                Detail = "The friend answered from an address that isn't allowed.";
+                                await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
+                                continue;
+                            }
 
-                        if (!_owner.AllowedByJellyfin(path.Address))
-                        {
-                            State = "refused";
-                            Detail = "Jellyfin's network settings don't allow the friend's address " + DirectLink.DirectLinkProtocol.Redact(path.Address) + ".";
-                            await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
-                            continue;
-                        }
+                            if (!_owner.AllowedByJellyfin(path.Address))
+                            {
+                                State = "refused";
+                                Detail = "Jellyfin's network settings don't allow the friend's address " + DirectLink.DirectLinkProtocol.Redact(path.Address) + ".";
+                                await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
+                                continue;
+                            }
 
-                        object quic;
-                        if (Role == 0)
-                        {
-                            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
-                            quic = await QuicTransportHost.ConnectPaired(LocalPort, path, _certificate, _peerFingerprint, proofKey, transcript, 32, cancellationToken).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            quic = await QuicTransportHost.AcceptPaired(LocalPort, path, _certificate, _peerFingerprint, proofKey, transcript, 32, ListenWindow, cancellationToken).ConfigureAwait(false);
-                        }
+                            object quic;
+                            if (Role == 0)
+                            {
+                                await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
+                                quic = await QuicTransportHost.ConnectPaired(LocalPort, path, _certificate, _peerFingerprint, proofKey, transcript, 32, cancellationToken).ConfigureAwait(false);
+                            }
+                            else if (keepPort)
+                            {
+                                bridge = DirectLink.UdpBridge.Create(port.Socket, path);
+                                keepPort = false; // the bridge owns the socket now
+                                var accepting = QuicTransportHost.AcceptPaired(bridge.ListenerPort, bridge.ListenerSees, _certificate, _peerFingerprint, proofKey, transcript, 32, ListenWindow, cancellationToken);
+                                bridge.Start();
+                                quic = await accepting.ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                quic = await QuicTransportHost.AcceptPaired(LocalPort, path, _certificate, _peerFingerprint, proofKey, transcript, 32, ListenWindow, cancellationToken).ConfigureAwait(false);
+                            }
 
-                        var link = new DirectLinkConnection(quic, FriendId, false, null);
-                        Link = link;
-                        LastConnectedUtc = DateTime.UtcNow;
-                        failures = 0;
-                        State = "connected";
-                        Detail = "Connected via " + DirectLink.DirectLinkProtocol.Redact(path);
-                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} is up via {Path}", FriendId, DirectLink.DirectLinkProtocol.Redact(path));
-                        _owner.OnLinkUp(this, link);
-                        await link.Closed.WaitAsync(cancellationToken).ConfigureAwait(false);
-                        _owner._logger.LogInformation("[Federation] Paired link to {Friend} dropped: {Reason}", FriendId, DirectLink.DirectLinkProtocol.RedactText(link.CloseReason));
-                        Link = null;
-                        await link.DisposeAsync().ConfigureAwait(false);
+                            var how = Role == 0 ? "dialled" : bridge != null ? "accepted on the punched socket" : "accepted";
+                            DirectLinkConnection link;
+                            try
+                            {
+                                link = new DirectLinkConnection(quic, FriendId, false, null, bridge);
+                                bridge = null; // closed with the link from here on
+                            }
+                            catch
+                            {
+                                await QuicTransportHost.Close(quic).ConfigureAwait(false);
+                                throw;
+                            }
+
+                            Link = link;
+                            LastConnectedUtc = DateTime.UtcNow;
+                            failures = 0;
+                            State = "connected";
+                            Detail = "Connected via " + DirectLink.DirectLinkProtocol.Redact(path);
+                            _owner._logger.LogInformation("[Federation] Paired link to {Friend} is up via {Path} ({How})", FriendId, DirectLink.DirectLinkProtocol.Redact(path), how);
+                            _owner.OnLinkUp(this, link);
+                            await link.Closed.WaitAsync(cancellationToken).ConfigureAwait(false);
+                            _owner._logger.LogInformation("[Federation] Paired link to {Friend} dropped: {Reason}", FriendId, DirectLink.DirectLinkProtocol.RedactText(link.CloseReason));
+                            Link = null;
+                            await link.DisposeAsync().ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            bridge?.Dispose();
+                            if (keepPort)
+                            {
+                                port.Dispose();
+                            }
+                        }
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {

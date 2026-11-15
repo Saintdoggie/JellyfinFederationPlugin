@@ -1,6 +1,6 @@
 # Direct link: friend-to-friend UDP connection (design spec)
 
-Status: shipped on `master`; direct links remain opt-in. Linux x64/arm64 are supported by the bundled native library; Windows still needs physical-host validation.
+Status: shipped on `master`; direct links remain opt-in. Linux x64/arm64 are supported by the bundled native library. Windows 11 works with Jellyfin's own MsQuic and was checked on a real machine on 2026-11-15 (see "Windows servers"); Windows 10 is untested.
 
 > Implementation notes (what changed from the first draft below):
 > - **QUIC runs in a private AssemblyLoadContext.** Jellyfin's web host asks
@@ -223,6 +223,59 @@ Capability: the responder advertises `DirectLink: 1` in `Peer/SystemInfo`
   and everything else works as before.
 - Verified 2026-10-21: works in the official images b603f4b6dede (12.2) and
   3305a4c72c38 (12.0), with a pinned-certificate QUIC transfer at ~6 Gbps on loopback.
+
+## Windows servers
+
+Checked on 2026-11-15 with a portable Jellyfin 12.4 on Windows 11 Home against a
+Linux Jellyfin 12.4, both on one LAN, Windows Firewall on and no rule added
+(`scripts/federation_windows_smoke.py`).
+
+- **MsQuic** comes with Jellyfin on Windows (`msquic.dll` beside `jellyfin.exe`,
+  2.5.11 in Jellyfin 12.4); nothing is bundled or preloaded. The transport still
+  runs in its private load context.
+- **The link key.** Windows' TLS (Schannel) refuses a certificate whose private
+  key exists only in memory ("the platform does not support ephemeral keys"), and
+  such a key could not be saved either. `DirectLinkIdentity.KeyFlags` loads the key
+  as exportable on Windows (it passes through the user's key store while the
+  certificate object lives) and stays in-memory elsewhere.
+- **Windows Firewall and the accepting side.** The firewall lets a friend's UDP
+  packets in only on the very socket that sent to the friend first; a new socket on
+  the same port does not inherit that (checked with plain sockets). The accepting
+  side used to punch with one socket, close it and let the QUIC listener bind the
+  port again, so the friend's first QUIC packet was dropped as unsolicited unless
+  the admin had allowed Jellyfin through the firewall. Now, on Windows, the punched
+  socket stays open for the life of the link and `UdpBridge` copies packets between
+  it and a QUIC listener bound to loopback (which the firewall does not filter).
+  No firewall rule, prompt or admin right is needed.
+  - Only the punched friend's exact endpoint is let in and only the listener's
+    exact loopback endpoint is let out; everything else is counted and dropped.
+  - The listener binds `127.0.0.1` only (`QuicTransport.ListenAddress`: an expected
+    remote on loopback means the plugin carries the packets).
+  - The link reports the friend's real endpoint and the punched port
+    (`DirectLinkConnection.RemoteEndPoint` / `LocalEndPoint`), so Jellyfin's
+    remote-access rules and the status page see what they saw before.
+  - Closing the link closes the bridge and frees the port.
+  - The dialling side needs none of this: its QUIC socket sends first.
+  - Linux is unchanged. `FEDERATION_DIRECTLINK_TEST_BRIDGE=1` (test builds only,
+    `federation_directlink_smoke.py --bridge`) runs the Linux accepting side the
+    same way, so the NAT matrix covers the bridge.
+- **Measured on the LAN:** 780 to 1,290 Mbps in the link's own speed test, in both
+  directions, through the bridge as well.
+- The friend channel is unchanged: a friend made by address still needs an https
+  address the other server can reach. A Windows server whose web port is closed in
+  the firewall is as unreachable as any other.
+
+Not checked: two real home routers with Windows on one side, Windows 10 (its TLS
+may not support QUIC at all; the status line then says so), Jellyfin installed as
+a Windows service under another account, and a third-party firewall.
+
+Known limit found on the way (not Windows-specific): each side takes the first
+path that answers. Two servers that can reach each other over several networks at
+once (two LAN cards, LAN plus a VPN) can settle on different paths, and the
+accepting side then refuses the dialler's QUIC connection as "not the friend's
+address". The test rig pins one address per side (`FEDERATION_DIRECTLINK_TEST_ONLY_HOST`,
+test builds only). A fix needs the dialler to name its chosen path in a final punch
+packet; QUIC acceptance must keep matching one exact endpoint.
 
 ## Config (PluginConfiguration)
 

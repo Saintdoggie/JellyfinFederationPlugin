@@ -1,5 +1,25 @@
 # Jellyfin Federation — remaining work
 
+## Windows servers: direct link and pairing (branch `work/windows-link`, not released)
+
+Asked for on 2026-11-15: friends who run Jellyfin on Windows must be able to use the direct link. Design notes: `docs/DIRECT-LINK.md` "Windows servers", `docs/PAIRING.md` "Windows and two fixes".
+
+- [x] The link key loads on Windows (`DirectLinkIdentity.KeyFlags`). Before, every link a Windows server dialled failed with "the platform does not support ephemeral keys", and the key was never saved.
+- [x] A friend can dial in to a Windows server with Windows Firewall on and no rule: the accepting side keeps its punched socket and carries the link through `Services/DirectLink/UdpBridge.cs`. Before, the friend's first QUIC packet was dropped and the link ended as "the friend didn't answer".
+- [x] The same for the accepting role of a paired link.
+- [x] Pairing: an answer code from a server whose clock runs a second behind is no longer refused as "time is off".
+- [x] Pairing: confirming the safety number on both servers now finishes (tokens swap) in either order; it used to hang until the link reconnected. Found with the lock off; pairing itself stays review-locked.
+- [x] `scripts/federation_windows_smoke.py`: real Windows 11 machine against a Linux container. Direct scenario 8/8 (both directions connected, a title played each way over the link, 780 to 1,290 Mbps on the LAN). Paired scenario 8/8 in both roles on a private unlocked build.
+- [x] `scripts/federation_directlink_smoke.py --bridge` runs the Linux accepting side the Windows way; its confirm calls send the safety number again (the `paired` scenario had gone stale), and the "connected with a speed" check waits for the measurement instead of reading it once.
+- [x] Gate on 2026-11-15: clean Release build with 0 warnings; 2,108 plugin tests twice; NAT matrix `all` 32/32 the normal way; the Windows way 31/32 in a run that shared the machine with the Windows check (the one miss read "connected, 0 Mbps", most likely the speed read before it was measured; that race is fixed above) and `cone` 27/27 run alone; `paired` 19/19 both ways on a private unlocked build. The bridge is slower on Linux (330 to 450 Mbps in the harness against 1,700 without it) because the punched socket was first used asynchronously; Linux never uses it outside the test switch. Web and Companion code untouched, their suites not rerun.
+- [ ] Release: version number and order against the unreleased 0.0.225 (Video dropdown) work are the owner's call.
+- [ ] Two real home routers with Windows on one side. The check above was one LAN with the harness's own STUN responder, so it proves the firewall and Windows' QUIC, not NAT behaviour (that is the container matrix, on Linux).
+- [ ] Windows 10: untested. Its TLS may not offer QUIC; the status line should then say direct links are not available.
+- [ ] Jellyfin installed as a Windows service under another account, and third-party firewalls.
+- [ ] Pairing files on Windows: `RestrictToOwner` and the pairing certificate's Unix mode do nothing there, so the files rely on the data folder's own permissions. Give them an owner-only ACL before pairing is unlocked.
+- [ ] Each side takes the first path that answers; servers joined by several networks at once (two LAN cards, LAN plus VPN) can pick different paths and the link is refused as "not the friend's address". Needs a final "this path" punch packet from the dialler. The Windows rig pins one address per side.
+- [ ] A friend made by address still needs a reachable https address. "No port forwarding at all" is pairing, which is locked for review since 2026-10-23.
+
 ## 0.0.224 — server tabs that work, and one card per title with every server's copy
 
 - [x] Library server tabs (All / This server / each server): the server now answers the tab, so every page is full and the count is that server's count. Before, newer library pages asked through XMLHttpRequest, which the tab did not catch: the browser got an ordinary page of the whole library and could only hide cards on it ("1-100 of 742" with one card).

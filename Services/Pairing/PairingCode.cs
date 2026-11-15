@@ -200,7 +200,13 @@ namespace Jellyfin.Plugin.Federation.Services.Pairing
                 }
 
                 Validate(code);
-                if (code.Created > now + ClockSkew || code.Expires - code.Created > Lifetime)
+                // An answer carries the offer's expiry (the offering server's clock) and
+                // its own creation time (the answering server's clock). When the answering
+                // clock runs behind, even by a second, the span looks longer than a
+                // lifetime; allow the same skew as for timestamps from the future. This
+                // never extends expiry: that is still judged against Expires below.
+                var longestSpan = expected == PairingCodeKind.Answer ? Lifetime + ClockSkew : Lifetime;
+                if (code.Created > now + ClockSkew || code.Expires - code.Created > longestSpan)
                 {
                     return (null, bytes, "This code's time is off. Check both servers' clocks.");
                 }

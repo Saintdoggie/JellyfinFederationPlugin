@@ -97,6 +97,26 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             }
         }
 
+        /// <summary>
+        /// Env var naming the one local address a test server may offer. A test machine
+        /// with several networks to the other one (LAN, Wi-Fi, VPN) otherwise has several
+        /// working paths, and the two sides can settle on different ones.
+        /// </summary>
+        public const string TestOnlyHostEnv = "FEDERATION_DIRECTLINK_TEST_ONLY_HOST";
+
+        /// <summary>Gets the only local address to offer, in the isolated test build; otherwise null.</summary>
+        public static IPAddress? TestOnlyHost
+        {
+            get
+            {
+#if FEDERATION_TEST_HOOKS
+                return TestMode && IPAddress.TryParse(Environment.GetEnvironmentVariable(TestOnlyHostEnv), out var only) ? only : null;
+#else
+                return null;
+#endif
+            }
+        }
+
         /// <summary>A new random session id (32 hex characters).</summary>
         public static string NewSessionId() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 

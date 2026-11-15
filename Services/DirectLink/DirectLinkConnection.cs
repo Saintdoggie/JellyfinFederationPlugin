@@ -21,6 +21,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private int _activeStreams;
         private int _disposed;
         private int _closeStarted;
+        private readonly UdpBridge? _bridge;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DirectLinkConnection"/> class.
@@ -29,13 +30,15 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         /// <param name="serverId">The friend's configured server id.</param>
         /// <param name="isInitiator">True on the side that opens the streams.</param>
         /// <param name="federationToken">Initiator: gives the friend's current federation token, sent on every request (read each time, so a re-paired friend's new token is used).</param>
-        public DirectLinkConnection(object connection, string serverId, bool isInitiator, Func<string?>? federationToken)
+        /// <param name="bridge">The UDP bridge carrying this link, if any; closed with the link. Its endpoints are the real ones (QUIC only sees loopback then).</param>
+        public DirectLinkConnection(object connection, string serverId, bool isInitiator, Func<string?>? federationToken, UdpBridge? bridge = null)
         {
             Quic = connection;
             ServerId = serverId;
             IsInitiator = isInitiator;
-            RemoteEndPoint = QuicTransportHost.RemoteEndPoint(connection);
-            LocalEndPoint = QuicTransportHost.LocalEndPoint(connection);
+            _bridge = bridge;
+            RemoteEndPoint = bridge?.Peer ?? QuicTransportHost.RemoteEndPoint(connection);
+            LocalEndPoint = bridge?.Local ?? QuicTransportHost.LocalEndPoint(connection);
             ConnectedUtc = DateTime.UtcNow;
             if (isInitiator)
             {
@@ -154,7 +157,15 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
 
             MarkClosed(CloseReason ?? "closed");
             Http?.Dispose();
-            await QuicTransportHost.Close(Quic).ConfigureAwait(false);
+            try
+            {
+                await QuicTransportHost.Close(Quic).ConfigureAwait(false);
+            }
+            finally
+            {
+                _bridge?.Dispose();
+            }
+
             _closing.Dispose();
         }
 

@@ -49,6 +49,30 @@ Use a separate output directory instead if the normal Release output must be ret
 The fixture creates its own networks and generated credentials; do not point it at a
 live server or publish its private logs.
 
+`--bridge` runs the accepting side the way a Windows server does (the punched socket
+stays open and carries the link; `Services/DirectLink/UdpBridge.cs`). The `paired`
+scenario needs a build with `PairingService.ReviewLocked` off; never commit or ship one.
+
+## Windows direct-link check
+
+`federation_windows_smoke.py` drives a real Windows machine over ssh (key login,
+PowerShell) and a Linux Jellyfin container on this machine's host network. It needs a
+portable Jellyfin unpacked on the Windows machine and a test-hooks build:
+
+```sh
+dotnet build JellyfinFederationPlugin.csproj -c Release -p:FederationTestHooks=true -o /tmp/fed-test-build
+python3 scripts/federation_windows_smoke.py --ssh user@winhost --win-host 198.51.100.10 \
+    --win-lan-ip 192.0.2.10 --linux-ip 192.0.2.11 \
+    --win-jellyfin 'C:\jf-test\server\jellyfin' --win-root 'C:\jf-test' --plugin-dir /tmp/fed-test-build
+```
+
+`--win-host` is an address the Windows test server's web port answers on (the firewall
+usually blocks it on the LAN; a VPN address works). The link itself is punched between
+the two LAN addresses, through the firewall. The script changes no firewall rule,
+makes the test media on the Windows machine, stops both servers at the end and deletes
+nothing there. `--scenario paired` needs the unlocked build described above; run it
+until Windows has had both roles (the first check prints the role).
+
 ## Two-server federation checks
 
 After a Release build:

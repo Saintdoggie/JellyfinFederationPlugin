@@ -40,6 +40,7 @@ IP = {'stun': '10.231.0.5', 'router-a-wan': '10.231.0.10', 'router-b-wan': '10.2
 PUBLIC = {'a': f"http://{IP['router-a-wan']}:8096", 'b': f"http://{IP['router-b-wan']}:8096"}
 LAN = {'a': f"http://{IP['jf-a']}:8096", 'b': f"http://{IP['jf-b']}:8096"}
 CREATED_CONTAINERS, CREATED_NETS = [], []
+BRIDGE = False  # --bridge: accepting sides keep their punched socket, as on Windows (Services/DirectLink/UdpBridge.cs)
 RESULTS = []
 
 
@@ -227,7 +228,8 @@ class Server:
         if (self.dll / 'native').is_dir():
             # The bundled MsQuic ships in the release zip under native/<rid>/.
             shutil.copytree(self.dll / 'native', plugin / 'native', dirs_exist_ok=True)
-        ctr(self.name, '--network', f"fdl-lan-{self.side}:ip={IP['jf-' + self.side]}", '-e', 'FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE=1',
+        bridge = ['-e', 'FEDERATION_DIRECTLINK_TEST_BRIDGE=1'] if BRIDGE else []
+        ctr(self.name, '--network', f"fdl-lan-{self.side}:ip={IP['jf-' + self.side]}", '-e', 'FEDERATION_DIRECTLINK_TEST_ALLOW_PRIVATE=1', *bridge,
             '-v', f'{self.config}:/config', '-v', f'{media}:/media:ro', image=qa.JELLYFIN_IMAGE, tail=None)
 
     def call(self, path, headers=None, data=None, **kw):
@@ -423,10 +425,14 @@ def scenario_checks(a, b, item_id, friend_id, name, expect_connected):
     if expect_connected:
         def connected():
             def poll():
+                # The speed is measured just after the link comes up; wait for both.
                 e = a.entry()
-                return e if e and e.get('State') == 'connected' else None
-            e = wait_for(poll, 'A never reached connected', seconds=60)
-            return (e.get('Mbps') or 0) > 0, f"State={e['State']} Mbps={e.get('Mbps')} Remote={e.get('RemoteEndpoint')}"
+                return e if e and e.get('State') == 'connected' and (e.get('Mbps') or 0) > 0 else None
+            try:
+                e = wait_for(poll, 'A never reached connected with a measured speed', seconds=60)
+            except RuntimeError:
+                e = a.entry() or {'State': None}
+            return e.get('State') == 'connected' and (e.get('Mbps') or 0) > 0, f"State={e['State']} Mbps={e.get('Mbps')} Remote={e.get('RemoteEndpoint')}"
         guard(f'[{name}] 2. A shows B connected with Mbps > 0 within 60 s', connected)
         try:
             before = (a.entry() or {}).get('BytesIn') or 0
@@ -554,8 +560,9 @@ def paired_checks(a, b):
     guard('[paired] 3. before both admins confirm, no tokens are swapped', nothing_before_check)
 
     def confirmed():
-        a.call(f"/Plugins/Federation/Pairing/{holder['b_on_a']}/Confirm", data={})
-        b.call(f"/Plugins/Federation/Pairing/{holder['a_on_b']}/Confirm", data={})
+        # Confirming is bound to the number the admin compared.
+        a.call(f"/Plugins/Federation/Pairing/{holder['b_on_a']}/Confirm", data={'SafetyNumber': paired_status(a, holder['b_on_a'])['SafetyNumber']})
+        b.call(f"/Plugins/Federation/Pairing/{holder['a_on_b']}/Confirm", data={'SafetyNumber': paired_status(b, holder['a_on_b'])['SafetyNumber']})
         wait_for(lambda: paired_status(a, holder['b_on_a'])['Ready'] or None, 'A never ready', seconds=60)
         wait_for(lambda: paired_status(b, holder['a_on_b'])['Ready'] or None, 'B never ready', seconds=60)
         return True, 'ready on both'
@@ -710,10 +717,13 @@ def attack_checks(a, b, item_id, friend_id):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--scenario', choices=['cone', 'symmetric', 'paired', 'all'], default='all')
+    ap.add_argument('--bridge', action='store_true', help='run the accepting side the way Windows does: the punched socket stays open and carries the link')
     ap.add_argument('--keep', action='store_true', help='leave containers/networks up for debugging')
     ap.add_argument('--topology-only', action='store_true', help='only prove the NAT plumbing (no Jellyfin)')
     ap.add_argument('--plugin-dir', default=str(qa.REPO / 'bin/Release/net10.0'), help='directory holding the built plugin dll')
     args = ap.parse_args()
+    global BRIDGE
+    BRIDGE = args.bridge
     os.environ.setdefault('TMPDIR', str(Path.home() / '.t'))
     base_tmp = Path(os.environ['TMPDIR']) / 'fdl'
     base_tmp.mkdir(parents=True, exist_ok=True)
