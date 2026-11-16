@@ -42,6 +42,14 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
 
         public static bool IsSupported() => QuicConnection.IsSupported && QuicListener.IsSupported;
 
+        /// <summary>
+        /// Where a listener binds. A friend expected on loopback means the plugin
+        /// carries the packets itself (its UDP bridge), so nothing else may reach
+        /// the listener: bind loopback only.
+        /// </summary>
+        private static IPAddress ListenAddress(IPEndPoint expectedRemote)
+            => IPAddress.IsLoopback(expectedRemote.Address) ? IPAddress.Loopback : IPAddress.Any;
+
         /// <summary>Overrides receive windows for new connections (bytes); zero restores the production profile.</summary>
         public static void ConfigureWindows(long connection, long stream)
         {
@@ -209,7 +217,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 listener = await QuicListener.ListenAsync(
                     new QuicListenerOptions
                     {
-                        ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
+                        ListenEndPoint = new IPEndPoint(ListenAddress(expectedRemote), localPort),
                         ApplicationProtocols = Protocols,
                         ListenBacklog = 4,
                         ConnectionOptionsCallback = (candidate, _, _) =>
@@ -417,7 +425,7 @@ namespace Jellyfin.Plugin.Federation.QuicTransport
                 listener = await QuicListener.ListenAsync(
                     new QuicListenerOptions
                     {
-                        ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
+                        ListenEndPoint = new IPEndPoint(ListenAddress(expectedRemote), localPort),
                         ApplicationProtocols = PairedProtocols,
                         ListenBacklog = 2,
                         ConnectionOptionsCallback = (candidate, _, _) =>

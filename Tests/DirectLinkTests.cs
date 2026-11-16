@@ -640,6 +640,52 @@ public class DirectLinkTests
         Assert.Equal(aPort, QuicTransportHost.LocalEndPoint(client).Port);
     }
 
+    [Fact]
+    public async Task Link_AcceptedThroughTheUdpBridge_Works_AndReportsTheFriendsRealAddress()
+    {
+        // What a Windows server does when a friend dials in: the punched socket stays
+        // open and carries the listener's packets (Services/DirectLink/UdpBridge.cs).
+        RequireQuic();
+        using var web = new TinyHttpServer();
+        var initiator = DirectLinkIdentity.LoadOrCreate(null, "initiator");
+        var responder = DirectLinkIdentity.LoadOrCreate(null, "responder");
+        var session = DirectLinkProtocol.NewSessionId();
+        var key = DirectLinkProtocol.SessionKey(Key, Key.Reverse().ToArray(), session);
+        var initiatorPort = FreeUdpPort();
+        var friend = new IPEndPoint(IPAddress.Loopback, initiatorPort);
+        var punched = Bound();
+        var punchedAt = (IPEndPoint)punched.LocalEndPoint!;
+        var bridge = UdpBridge.Create(punched, friend);
+
+        var accept = DirectLinkHandshake.AcceptAsync(bridge.ListenerPort, bridge.ListenerSees, responder.Certificate, initiator.Fingerprint, key, session, responder.Fingerprint, 16, TimeSpan.FromSeconds(10), CancellationToken.None);
+        bridge.Start();
+        var client = await DirectLinkHandshake.ConnectAsync(initiatorPort, punchedAt, initiator.Certificate, responder.Fingerprint, key, session, initiator.Fingerprint, CancellationToken.None);
+        var server = await accept;
+
+        var serverLink = new DirectLinkConnection(server, "friend", false, null, bridge);
+        Assert.Equal(friend, serverLink.RemoteEndPoint);
+        Assert.Equal(punchedAt.Port, serverLink.LocalEndPoint.Port);
+        await using (var clientLink = new DirectLinkConnection(client, "friend", true, () => "the-token"))
+        {
+            clientLink.StartCloseWatch();
+            var forwarder = new DirectLinkForwarder(() => new Uri("http://127.0.0.1:" + web.Port), NullLogger.Instance);
+            var serving = forwarder.RunAsync(serverLink, "friend");
+            for (var i = 0; i < 3; i++)
+            {
+                using var response = await clientLink.Http!.GetAsync("/Plugins/Federation/Peer/Play/tok/videos/x/seg" + i + ".mp4");
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.Equal(TinyHttpServer.BodySize, (await response.Content.ReadAsByteArrayAsync()).Length);
+            }
+
+            Assert.Equal(0, bridge.Dropped);
+        }
+
+        // Closing the link closes the bridge and frees the punched port.
+        await serverLink.DisposeAsync();
+        using var again = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        again.Bind(new IPEndPoint(IPAddress.Loopback, punchedAt.Port));
+    }
+
     private static void RequireQuic()
     {
         if (!QuicTransportHost.Available)

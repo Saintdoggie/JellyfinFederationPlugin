@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.226",
+        "changelog": "0.0.226: Windows servers can use the direct link. The link key now loads on Windows, and a friend can dial in with Windows Firewall on and no rule added. Two pairing fixes (clock a second behind, confirming in either order); pairing itself stays locked for review.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-16T04:08:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.226/Jellyfin.Federation.zip",
+        "checksum": "594343c8a264911739293ed3715670c8"
+      },
+      {
         "version": "0.0.225",
         "changelog": "0.0.225: The Video row is now one dropdown for every server's copy, labelled resolution, bitrate, codec and abbreviated server (LOCAL for your own copy). A linked server's better copy stays first. Picking a copy keeps Jellyfin's native audio, subtitle and exact media-source selection flow.",
         "targetAbi": "12.0.0.0",

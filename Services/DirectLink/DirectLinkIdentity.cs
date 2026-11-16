@@ -82,7 +82,7 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     var password = hasProtectedPassword
                         ? ApiKeyProtector.Unprotect(File.ReadAllText(passwordPath!))
                         : Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-                    var loaded = X509CertificateLoader.LoadPkcs12FromFile(path, hasProtectedPassword ? password : null, X509KeyStorageFlags.EphemeralKeySet);
+                    var loaded = X509CertificateLoader.LoadPkcs12FromFile(path, hasProtectedPassword ? password : null, KeyFlags);
                     if (loaded.HasPrivateKey && loaded.NotAfter > DateTime.UtcNow.AddDays(30))
                     {
                         if (!hasProtectedPassword)
@@ -141,8 +141,18 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 false));
             using var made = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
 
-            return X509CertificateLoader.LoadPkcs12(made.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.EphemeralKeySet);
+            return X509CertificateLoader.LoadPkcs12(made.Export(X509ContentType.Pkcs12), null, KeyFlags);
         }
+
+        /// <summary>
+        /// How the private key is held once loaded. Windows' TLS (Schannel) refuses a
+        /// key that exists only in memory ("the platform does not support ephemeral
+        /// keys"), so there the key goes through the user's key store for as long as
+        /// the certificate object lives. Everywhere else it stays in memory.
+        /// </summary>
+        internal static X509KeyStorageFlags KeyFlags => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? X509KeyStorageFlags.Exportable
+            : X509KeyStorageFlags.EphemeralKeySet;
 
         private static void RestrictToOwner(string path)
         {

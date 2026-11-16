@@ -140,6 +140,37 @@ public class PairingCodeTests
     }
 
     [Fact]
+    public void Answer_FromAServerWhoseClockRunsBehind_IsAccepted()
+    {
+        // The answer keeps the offer's expiry; a slower clock on the answering
+        // server makes the span between its two timestamps longer than a lifetime.
+        using var a = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        using var b = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var offer = Offer(a);
+        var (offerBytes, _) = offer.Encode();
+        foreach (var behind in new[] { TimeSpan.FromSeconds(2), PairingCode.ClockSkew })
+        {
+            var answer = AnswerFor(offerBytes, b);
+            answer.Created = Now - behind;
+            answer.Expires = offer.Expires;
+            var (read, _, error) = PairingCode.TryDecode(answer.Encode(offer.Secret).Text, PairingCodeKind.Answer, Now, offer.Secret);
+            Assert.Null(error);
+            Assert.NotNull(read);
+        }
+
+        var tooFar = AnswerFor(offerBytes, b);
+        tooFar.Created = Now - PairingCode.ClockSkew - TimeSpan.FromSeconds(1);
+        tooFar.Expires = offer.Expires;
+        Assert.Contains("clock", PairingCode.TryDecode(tooFar.Encode(offer.Secret).Text, PairingCodeKind.Answer, Now, offer.Secret).Error);
+
+        // Expiry itself is not extended.
+        var late = AnswerFor(offerBytes, b);
+        late.Created = Now - TimeSpan.FromSeconds(2);
+        late.Expires = offer.Expires;
+        Assert.Contains("expired", PairingCode.TryDecode(late.Encode(offer.Secret).Text, PairingCodeKind.Answer, offer.Expires + TimeSpan.FromSeconds(1), offer.Secret).Error);
+    }
+
+    [Fact]
     public void PointsOffTheCurve_AreRefused()
     {
         using var key = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);

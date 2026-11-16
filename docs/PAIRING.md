@@ -22,8 +22,8 @@ goes over the punched link.
   Swapping the codes is caught by the safety number, which is **required**.
 - A paired friend can do exactly what a normal friend can, nothing more.
 - Everything is off by default, on the new **Beta** tab, with plain explanations.
-- Not in v1: symmetric NAT on both sides, IPv6, Windows (comes with the Windows
-  direct-link work), Plex/Companion. A paired friend sees your home address, and the
+- Not in v1: symmetric NAT on both sides, IPv6, Plex/Companion. Windows works since
+  the Windows direct-link work (2026-11-15, see "Windows and two fixes" at the end). A paired friend sees your home address, and the
   code contains it. The UI says so.
 
 ## Threat model
@@ -338,3 +338,27 @@ the last link, the safety number and the helpers in use.
   `K`, endpoint filtering, probing capped. M6 mailbox per-direction keys, persisted
   counters, daily box ids, honest disclosure. M7 per-pairing ephemeral keys and TLS
   forward secrecy. M8 stream and request limits.
+
+## Windows and two fixes (2026-11-15)
+
+Pairing is still review-locked (`PairingService.ReviewLocked`); nothing here turns it
+on. The checks below ran on a private build with the lock off, never committed.
+
+- **Windows.** The accepting role keeps its pairing port's socket and carries the link
+  through `UdpBridge`, for the same Windows Firewall reason as the direct link
+  (`docs/DIRECT-LINK.md`, "Windows servers"). Which side accepts is decided by the two
+  certificates, so it is random per pairing; the log says `dialled`, `accepted` or
+  `accepted on the punched socket`. Checked on a real Windows 11 machine in both roles:
+  pair, confirm, catalogue both ways and a play both ways.
+- **Answer codes and clocks.** An answer keeps the offer's expiry (the offering server's
+  clock) and its own creation time (the answering server's clock). When the answering
+  clock ran behind by even a second, the span was longer than a lifetime and the offering
+  server refused the answer with "This code's time is off". Two real machines differ by
+  a second or two all the time; the container harness shares one clock and never saw it.
+  The span check on an answer now allows `ClockSkew`; expiry is unchanged.
+- **Confirming never finished.** Since confirmation was bound to the safety number, a
+  server refuses the friend's "confirmed" message until its own admin has confirmed, and
+  the first server to confirm never said so again. Neither side then swapped tokens, in
+  either order, until the link happened to reconnect. `OnPeerConfirmedAsync` now tells the
+  friend again when the friend's confirmation is accepted; the exchange ends there.
+- The harness's confirm calls now send the safety number (`federation_directlink_smoke.py`).

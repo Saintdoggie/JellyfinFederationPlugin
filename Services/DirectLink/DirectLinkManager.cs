@@ -747,7 +747,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 _logger.LogDebug(ex, "[Federation] Direct link: couldn't list network interfaces");
             }
 
-            return result.DistinctBy(r => r.Item1).Take(DirectLinkProtocol.MaxCandidates).ToList();
+            var only = DirectLinkProtocol.TestOnlyHost;
+            return result.Where(r => only == null || r.Item1.Address.Equals(only)).DistinctBy(r => r.Item1).Take(DirectLinkProtocol.MaxCandidates).ToList();
         }
 
         private async Task<(IPEndPoint? Public, NatKind Nat)> DiscoverAsync(Socket socket, CancellationToken cancellationToken)
@@ -1165,13 +1166,25 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
         private async Task RespondAsync(RemoteServer caller, DirectLinkOffer offer, Socket socket, List<IPEndPoint> candidates, NatKind peerNat, byte[] sessionKey, DirectLinkIdentity identity, Action setupDone, CancellationToken cancellationToken)
         {
             var localPort = ((IPEndPoint)socket.LocalEndPoint!).Port;
+
+            // Windows Firewall only lets the friend in on the socket that punched, so
+            // there the socket stays open and carries the link (see UdpBridge).
+            var keepSocket = UdpBridge.Needed;
+            UdpBridge? bridge = null;
             try
             {
                 PunchResult punch;
-                using (socket)
+                try
                 {
                     var puncher = new Puncher(socket, false, offer.SessionId, sessionKey, candidates, peerNat == NatKind.Symmetric);
                     punch = await puncher.RunAsync(cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (!keepSocket)
+                    {
+                        socket.Dispose();
+                    }
                 }
 
                 if (punch.Path == null)
@@ -1189,9 +1202,19 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     return;
                 }
 
-                var quic = await DirectLinkHandshake.AcceptAsync(
-                    localPort,
-                    punch.Path,
+                var listenPort = localPort;
+                var expected = punch.Path;
+                if (keepSocket)
+                {
+                    bridge = UdpBridge.Create(socket, punch.Path);
+                    keepSocket = false; // the bridge owns the socket now
+                    listenPort = bridge.ListenerPort;
+                    expected = bridge.ListenerSees;
+                }
+
+                var accepting = DirectLinkHandshake.AcceptAsync(
+                    listenPort,
+                    expected,
                     identity.Certificate,
                     offer.Fingerprint,
                     sessionKey,
@@ -1199,7 +1222,9 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                     identity.Fingerprint,
                     Forwarder.MaxConcurrentStreams,
                     TimeSpan.FromSeconds(10),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken);
+                bridge?.Start();
+                var quic = await accepting.ConfigureAwait(false);
 
                 // Setting up is over: the slot is for links being set up, not for
                 // links in use (those count against MaxInboundLinks).
@@ -1207,7 +1232,8 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
                 DirectLinkConnection link;
                 try
                 {
-                    link = new DirectLinkConnection(quic, caller.Id, false, null);
+                    link = new DirectLinkConnection(quic, caller.Id, false, null, bridge);
+                    bridge = null; // closed with the link from here on
                 }
                 catch
                 {
@@ -1280,6 +1306,14 @@ namespace Jellyfin.Plugin.Federation.Services.DirectLink
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Federation] Direct link from {Friend} failed", caller.Name);
+            }
+            finally
+            {
+                bridge?.Dispose();
+                if (keepSocket)
+                {
+                    socket.Dispose();
+                }
             }
         }
 
