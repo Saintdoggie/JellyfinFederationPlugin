@@ -223,6 +223,18 @@ public class DownloadsViewersHardwareTests
     {
         Assert.Equal("DirectStream", FederatedRoute.OwnerPlayMethod(FederatedRoute.ConvertedHere, PlayMethod.Transcode));
         Assert.Equal("Transcode", FederatedRoute.OwnerPlayMethod(FederatedRoute.FriendConverts, PlayMethod.Transcode));
+        Assert.Equal("DirectStream", FederatedRoute.OwnerPlayMethod(FederatedRoute.FriendConverts, PlayMethod.Transcode, copyPlay: true));
+        Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, PlayMethod.DirectPlay, copyPlay: true));
+
+        FederationPlaybackRoutes.Reset();
+        Assert.False(FederationPlaybackRoutes.IsCopyPlay("s1"));
+        FederationPlaybackRoutes.RecordCopyPlay("s1", true);
+        Assert.True(FederationPlaybackRoutes.IsCopyPlay("s1"));
+        FederationPlaybackRoutes.RecordCopyPlay("s1", false);
+        Assert.False(FederationPlaybackRoutes.IsCopyPlay("s1"));
+        FederationPlaybackRoutes.RecordCopyPlay("s2", true);
+        FederationPlaybackRoutes.Forget("s2");
+        Assert.False(FederationPlaybackRoutes.IsCopyPlay("s2"));
         Assert.Equal("Unknown", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, null));
         Assert.Equal("DirectPlay", FederatedRoute.OwnerPlayMethod(FederatedRoute.Direct, PlayMethod.DirectPlay));
     }

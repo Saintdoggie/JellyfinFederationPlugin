@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Extensions.Logging;
 
@@ -76,6 +77,12 @@ namespace Jellyfin.Plugin.Federation.Services
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
         {
             var origin = context.HttpContext.Request.Query[OriginParameter].FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+            if (IsHomeRow(context))
+            {
+                await AnswerHomeRowAsync(context, next, origin?.Trim()).ConfigureAwait(false);
+                return;
+            }
+
             if (origin != null && IsItemsQuery(context) && context.ActionArguments.ContainsKey("ids"))
             {
                 try
@@ -138,7 +145,27 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
-            await next().ConfigureAwait(false);
+            var executed = await next().ConfigureAwait(false);
+
+            // A search does not honour the id list (Jellyfin answers it from the
+            // search index), so a server tab's search is narrowed in the answer.
+            if (origin != null && IsItemsQuery(context)
+                && context.HttpContext.Request.Query.Any(q => string.Equals(q.Key, "searchTerm", StringComparison.OrdinalIgnoreCase) && q.Value.Any(v => !string.IsNullOrWhiteSpace(v)))
+                && executed.Result is Microsoft.AspNetCore.Mvc.ObjectResult { Value: MediaBrowser.Model.Querying.QueryResult<BaseItemDto> found } answer)
+            {
+                try
+                {
+                    if (HomeRowRule(origin.Trim(), false) is { } keep)
+                    {
+                        var items = NarrowRow(found.Items, keep, null);
+                        answer.Value = new MediaBrowser.Model.Querying.QueryResult<BaseItemDto>(found.StartIndex, items.Count, items);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not narrow a search for the server tab");
+                }
+            }
         }
 
         /// <summary>Test seam: whether a server is known to be offline.</summary>
@@ -264,6 +291,118 @@ namespace Jellyfin.Plugin.Federation.Services
 
             Memo[memoKey] = (now, found);
             return found;
+        }
+
+        /// <summary>
+        /// The home page's rows (Recently Added, Continue Watching, Next Up). Their
+        /// endpoints take no list of ids to hold the answer to, so the answer itself
+        /// is narrowed: more is asked for, what does not belong is taken out, and the
+        /// row is cut back to the length the page wanted. The browser used to hide
+        /// those cards, which left short rows and showed apps the unfiltered list.
+        /// </summary>
+        private async Task AnswerHomeRowAsync(ActionExecutingContext context, ActionExecutionDelegate next, string? origin)
+        {
+            Func<BaseItemDto, bool>? keep = null;
+            int? wanted = null;
+            try
+            {
+                keep = HomeRowRule(origin, AsksForLocalOnly(context.HttpContext.Request.Query["ExcludeItemTags"]));
+                if (keep != null && context.ActionArguments.TryGetValue("limit", out var limit) && limit is int asked && asked > 0)
+                {
+                    wanted = asked;
+                    context.ActionArguments["limit"] = WidenedLimit(asked);
+                }
+            }
+            catch (Exception ex)
+            {
+                keep = null;
+                _logger.LogDebug(ex, "[Federation] Could not prepare a home row for the server tab");
+            }
+
+            var executed = await next().ConfigureAwait(false);
+            if (keep == null || executed.Result is not Microsoft.AspNetCore.Mvc.ObjectResult answer)
+            {
+                return;
+            }
+
+            try
+            {
+                if (answer.Value is MediaBrowser.Model.Querying.QueryResult<BaseItemDto> page)
+                {
+                    var items = NarrowRow(page.Items, keep, wanted);
+                    answer.Value = new MediaBrowser.Model.Querying.QueryResult<BaseItemDto>(page.StartIndex, items.Count, items);
+                }
+                else if (answer.Value is IEnumerable<BaseItemDto> list)
+                {
+                    answer.Value = NarrowRow(list, keep, wanted);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Federation] Could not narrow a home row for the server tab");
+            }
+        }
+
+        /// <summary>How many to ask Jellyfin for so a narrowed row can still be full.</summary>
+        internal static int WidenedLimit(int asked) => Math.Min(Math.Max(asked * 5, 60), 300);
+
+        /// <summary>The titles of <paramref name="items"/> that pass, cut to the asked length.</summary>
+        internal static List<BaseItemDto> NarrowRow(IEnumerable<BaseItemDto> items, Func<BaseItemDto, bool> keep, int? wanted)
+        {
+            var kept = items.Where(keep);
+            return (wanted is { } count ? kept.Take(count) : kept).ToList();
+        }
+
+        /// <summary>
+        /// What a home row keeps: under a server's tab the titles that server has,
+        /// under "This server" everything not shown from another server, and always
+        /// nothing whose every server is offline. An episode or a track goes by its
+        /// show or album. Null when there is nothing to take out.
+        /// </summary>
+        internal Func<BaseItemDto, bool>? HomeRowRule(string? origin, bool localOnly)
+        {
+            var unavailable = UnavailableItemIds();
+            HashSet<Guid>? onServer = null;
+            HashSet<Guid>? shownFromElsewhere = null;
+            if (!string.IsNullOrEmpty(origin))
+            {
+                onServer = ItemIdsOnServer(origin, null, null).ToHashSet();
+            }
+            else if (localOnly)
+            {
+                shownFromElsewhere = _library.GetItemIds(new InternalItemsQuery { Tags = new[] { Marker }, Recursive = true }).ToHashSet();
+            }
+
+            if (onServer == null && shownFromElsewhere == null && unavailable.Length == 0)
+            {
+                return null;
+            }
+
+            var offline = unavailable.ToHashSet();
+            bool In(HashSet<Guid> set, BaseItemDto dto)
+                => set.Contains(dto.Id)
+                    || (dto.SeriesId is { } series && set.Contains(series))
+                    || (dto.AlbumId is { } album && set.Contains(album));
+
+            return dto => dto != null
+                && !In(offline, dto)
+                && (onServer == null || In(onServer, dto))
+                && (shownFromElsewhere == null || !In(shownFromElsewhere, dto));
+        }
+
+        private static bool IsHomeRow(ActionExecutingContext context)
+        {
+            var values = context.ActionDescriptor.RouteValues;
+            if (!values.TryGetValue("controller", out var controller) || !values.TryGetValue("action", out var action))
+            {
+                return false;
+            }
+
+            return (string.Equals(controller, "UserLibrary", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(action, "GetLatestMedia", StringComparison.Ordinal) || string.Equals(action, "GetLatestMediaLegacy", StringComparison.Ordinal)))
+                || (string.Equals(controller, "Items", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(action, "GetResumeItems", StringComparison.Ordinal) || string.Equals(action, "GetResumeItemsLegacy", StringComparison.Ordinal)))
+                || (string.Equals(controller, "TvShows", StringComparison.OrdinalIgnoreCase) && string.Equals(action, "GetNextUp", StringComparison.Ordinal));
         }
 
         private static bool IsItemsQuery(ActionExecutingContext context)

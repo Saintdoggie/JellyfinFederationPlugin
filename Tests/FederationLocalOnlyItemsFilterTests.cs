@@ -225,6 +225,89 @@ public class FederationLocalOnlyItemsFilterTests
         try { System.IO.File.Delete(path); } catch (System.IO.IOException) { }
     }
 
+    /// <summary>
+    /// The home page's rows have no id list to narrow, so the answer is narrowed:
+    /// more is asked for, the row keeps only what the chosen tab holds (an episode
+    /// goes by its show) and is cut back to the asked length.
+    /// </summary>
+    [Fact]
+    public async Task HomeRows_AreNarrowedOnTheServer_ForServerTabAndThisServerTab()
+    {
+        FederationLocalOnlyItemsFilter.ResetMemo();
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "federation-home-test-" + Guid.NewGuid() + ".json");
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        cache.Initialize(path);
+        var fromVps = cache.UpsertByProviderId("Movies", "imdb", "tt1", new MediaBrowser.Model.Dto.BaseItemDto
+        {
+            Name = "Only there",
+            Type = Jellyfin.Data.Enums.BaseItemKind.Movie,
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["imdb"] = "tt1" }
+        }, "vps", Guid.NewGuid(), 0, "Movie");
+        var vpsShow = new Movie { Id = Guid.NewGuid(), ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FederationKey"] = fromVps.Key, ["imdb"] = "tt1" } };
+        var own = new Movie { Id = Guid.NewGuid(), ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["imdb"] = "tt9" } };
+        var library = new Mock<ILibraryManager>();
+        library.Setup(l => l.GetItemList(It.IsAny<InternalItemsQuery>())).Returns(new List<BaseItem> { vpsShow, own });
+        library.Setup(l => l.GetItemIds(It.Is<InternalItemsQuery>(q => q.Tags.SequenceEqual(new[] { "Federated" }) && q.Recursive)))
+            .Returns(new List<Guid> { vpsShow.Id });
+        var config = new Jellyfin.Plugin.Federation.Configuration.PluginConfiguration
+        {
+            RemoteServers = new List<Jellyfin.Plugin.Federation.Configuration.RemoteServer> { new() { Id = "vps", Name = "ubuntu-vps", Enabled = true } },
+            LibraryMappings = new List<Jellyfin.Plugin.Federation.Configuration.LibraryMapping> { new() { LocalLibraryName = "Movies", Enabled = true } }
+        };
+        var filter = new FederationLocalOnlyItemsFilter(library.Object, NullLogger<FederationLocalOnlyItemsFilter>.Instance) { CacheOverride = cache, Settings = () => config };
+        filter.ItemIdOf = _ => Guid.NewGuid();
+
+        MediaBrowser.Model.Dto.BaseItemDto Card(Guid id, Guid? series = null) => new() { Id = id, SeriesId = series };
+        var episodeOfVps = Card(Guid.NewGuid(), vpsShow.Id);
+        var ownEpisode = Card(Guid.NewGuid(), own.Id);
+        var row = new List<MediaBrowser.Model.Dto.BaseItemDto> { Card(own.Id), Card(vpsShow.Id), ownEpisode, episodeOfVps, Card(vpsShow.Id), Card(vpsShow.Id) };
+
+        async Task<(object? Value, object? Limit)> Ask(string controller, string action, string query, object value, int? limit)
+        {
+            var http = new DefaultHttpContext();
+            http.Request.QueryString = new QueryString(query);
+            var descriptor = new ActionDescriptor { RouteValues = new Dictionary<string, string?> { ["controller"] = controller, ["action"] = action } };
+            var arguments = new Dictionary<string, object?> { ["limit"] = limit };
+            var context = new ActionExecutingContext(new ActionContext(http, new RouteData(), descriptor), new List<IFilterMetadata>(), arguments, new object());
+            var result = new Microsoft.AspNetCore.Mvc.ObjectResult(value);
+            await filter.OnActionExecutionAsync(context, () => Task.FromResult(new ActionExecutedContext(context, new List<IFilterMetadata>(), new object()) { Result = result }));
+            return (result.Value, arguments["limit"]);
+        }
+
+        // The server's tab: its titles and its shows' episodes, cut to the 3 asked for; 60 were asked of Jellyfin.
+        var (latest, widened) = await Ask("UserLibrary", "GetLatestMedia", "?federationOrigin=Ubuntu-VPS", row, 3);
+        Assert.Equal(60, widened);
+        Assert.Equal(new[] { vpsShow.Id, episodeOfVps.Id, vpsShow.Id }, ((IEnumerable<MediaBrowser.Model.Dto.BaseItemDto>)latest!).Select(d => d.Id));
+
+        // "This server": nothing shown from another server, in a paged answer too.
+        var (resume, _) = await Ask("Items", "GetResumeItems", "?ExcludeItemTags=Federated", new MediaBrowser.Model.Querying.QueryResult<MediaBrowser.Model.Dto.BaseItemDto>(0, row.Count, row), 12);
+        var page = (MediaBrowser.Model.Querying.QueryResult<MediaBrowser.Model.Dto.BaseItemDto>)resume!;
+        Assert.Equal(new[] { own.Id, ownEpisode.Id }, page.Items.Select(d => d.Id));
+        Assert.Equal(2, page.TotalRecordCount);
+
+        // No tab chosen and nothing offline: the answer and the limit are Jellyfin's own.
+        var (untouched, limit) = await Ask("TvShows", "GetNextUp", string.Empty, row, 3);
+        Assert.Same(row, untouched);
+        Assert.Equal(3, limit);
+
+        // Another endpoint with the same parameter is left alone.
+        var (other, _) = await Ask("UserLibrary", "GetItem", "?federationOrigin=Ubuntu-VPS", row, 3);
+        Assert.Same(row, other);
+
+        // A search under the server's tab: Jellyfin ignores the id list there, so the answer is narrowed.
+        var (search, _) = await Ask("Items", "GetItems", "?federationOrigin=Ubuntu-VPS&searchTerm=the", new MediaBrowser.Model.Querying.QueryResult<MediaBrowser.Model.Dto.BaseItemDto>(0, row.Count, row), 100);
+        var hits = (MediaBrowser.Model.Querying.QueryResult<MediaBrowser.Model.Dto.BaseItemDto>)search!;
+        Assert.Equal(new[] { vpsShow.Id, episodeOfVps.Id, vpsShow.Id, vpsShow.Id }, hits.Items.Select(d => d.Id));
+        Assert.Equal(4, hits.TotalRecordCount);
+
+        // A library page (no search) keeps Jellyfin's own paged answer: it was asked by id.
+        var paged = new MediaBrowser.Model.Querying.QueryResult<MediaBrowser.Model.Dto.BaseItemDto>(0, row.Count, row);
+        var (library1, _) = await Ask("Items", "GetItems", "?federationOrigin=Ubuntu-VPS", paged, 100);
+        Assert.Same(paged, library1);
+
+        Assert.Equal(300, FederationLocalOnlyItemsFilter.WidenedLimit(100));
+    }
+
     private static async Task<(ActionExecutingContext Context, bool NextCalled)> RunAsync(
         string action,
         string query,

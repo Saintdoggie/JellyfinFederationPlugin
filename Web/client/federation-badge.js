@@ -997,6 +997,8 @@
         });
         federatedIds = next;
         unavailableIds = new Set((catalog.unavailableIds || []).map(normalizeId));
+        catalogLoaded = true;
+        rememberFriendNames();
         scheduleScan();
       })
       .catch(function () {
@@ -2098,12 +2100,98 @@
   }
 
   function setOriginFilter(mode) {
+    var changed = getOriginFilter() !== mode;
     try {
       sessionStorage.setItem(ORIGIN_STORAGE_KEY, mode);
     } catch (e) { /* sessionStorage unavailable */ }
+
+    if (changed) {
+      firstPageOfEveryLibrary();
+    }
+  }
+
+  // Another tab is another list, so it starts at its first page. jellyfin-web
+  // keeps the page a library was left on (in the open page and, per library,
+  // in this browser), and a shorter list asked for from that position showed a
+  // late slice of the tab, or nothing at all.
+  function firstPageOfEveryLibrary() {
+    try {
+      for (var i = 0; i < window.localStorage.length; i++) {
+        var key = window.localStorage.key(i);
+        var text = window.localStorage.getItem(key);
+        if (!text || text.charAt(0) !== '{' || text.indexOf('"StartIndex"') < 0) {
+          continue;
+        }
+
+        var kept = JSON.parse(text);
+        if (kept && typeof kept.StartIndex === 'number' && kept.StartIndex > 0) {
+          kept.StartIndex = 0;
+          window.localStorage.setItem(key, JSON.stringify(kept));
+        }
+      }
+    } catch (e) { /* storage is optional */ }
+
+    // The open library page holds its position in its own state.
+    try {
+      walkPageFibers(function (fiber) {
+        var hook = fiber.memoizedState;
+        for (var n = 0; hook && typeof hook === 'object' && 'memoizedState' in hook && n < 80; n++) {
+          var state = hook.memoizedState;
+          if (state && typeof state === 'object' && !Array.isArray(state)
+            && typeof state.StartIndex === 'number' && state.StartIndex > 0
+            && hook.queue && typeof hook.queue.dispatch === 'function') {
+            hook.queue.dispatch(function (previous) {
+              return previous && typeof previous === 'object' ? Object.assign({}, previous, { StartIndex: 0 }) : previous;
+            });
+          }
+
+          hook = hook.next;
+        }
+
+        return false;
+      });
+    } catch (e) { /* this build of the web client keeps it elsewhere */ }
+  }
+
+  // The server names of the last catalogue, kept in this browser so the tabs
+  // are drawn with the page instead of a moment later, when the catalogue
+  // request has come back. Names only; replaced by every catalogue answer.
+  var ORIGIN_NAMES_KEY = 'federationOriginNames';
+  var catalogLoaded = false;
+
+  function rememberedFriendNames() {
+    try {
+      var kept = JSON.parse(window.localStorage.getItem(ORIGIN_NAMES_KEY) || 'null');
+      if (kept && kept.token === tokenMark() && Array.isArray(kept.names)) {
+        return kept.names.filter(function (n) { return typeof n === 'string' && n; }).slice(0, 50);
+      }
+    } catch (e) { /* nothing remembered */ }
+
+    return [];
+  }
+
+  function rememberFriendNames() {
+    try {
+      window.localStorage.setItem(ORIGIN_NAMES_KEY, JSON.stringify({ token: tokenMark(), names: uniqueFriendNames() }));
+    } catch (e) { /* storage is optional */ }
+  }
+
+  // Tells one signed-in person's list from another's without storing the token.
+  function tokenMark() {
+    var token = getToken() || '';
+    var mark = 0;
+    for (var i = 0; i < token.length; i++) {
+      mark = (mark * 31 + token.charCodeAt(i)) % 2147483647;
+    }
+
+    return token ? String(mark) : '';
   }
 
   function uniqueFriendNames() {
+    if (!catalogLoaded && federatedIds.size === 0) {
+      return rememberedFriendNames();
+    }
+
     var names = [];
     var seen = {};
     federatedIds.forEach(function (name) {
@@ -2137,8 +2225,9 @@
   // already narrowed to the chosen server. That answer also holds titles this
   // server owns that the chosen server has too, which the browser cannot tell
   // from other own titles, so it must not hide cards there.
+  // Since 0.0.229 the home rows and search are answered that way too.
   function originServerFiltered() {
-    return /^#!?\/(movies|tv|list|music)(\.html)?(?=[?\/#]|$)/i.test(window.location.hash || '');
+    return /^#!?\/(home|search|movies|tv|list|music)(\.html)?(?=[?\/#]|$)/i.test(window.location.hash || '');
   }
 
   function cardMatchesOrigin(el) {
@@ -2235,7 +2324,15 @@
     }
 
     var path = String(url).split('?')[0];
-    return /\/Items\/?$/.test(path) || /\/Users\/[^/]+\/Items\/?$/.test(path);
+    return /\/Items\/?$/.test(path) || /\/Users\/[^/]+\/Items\/?$/.test(path) || isHomeRowUrl(path);
+  }
+
+  // The home page's rows: Recently Added, Continue Watching, Next Up. The
+  // server narrows their answers to the chosen tab (FederationLocalOnlyItemsFilter).
+  function isHomeRowUrl(path) {
+    return /\/(Users\/[^/]+\/)?Items\/(Latest|Resume)\/?$/.test(path)
+      || /\/UserItems\/Resume\/?$/.test(path)
+      || /\/Shows\/NextUp\/?$/.test(path);
   }
 
   function applyOriginToUrl(url) {
@@ -2321,37 +2418,67 @@
   // owns. It is reached through the page's own root so the lists can be asked
   // for again; null when this build of the web client has none.
   function findQueryClient() {
+    var found = null;
     try {
-      var host = null;
-      var nodes = document.querySelectorAll('body > div, body > div > div');
-      for (var n = 0; n < nodes.length && !host; n++) {
-        var keys = Object.keys(nodes[n]);
-        for (var k = 0; k < keys.length; k++) {
-          if (keys[k].indexOf('__reactContainer$') === 0) {
-            host = nodes[n][keys[k]];
-            break;
-          }
-        }
-      }
-
-      var queue = host ? [host.stateNode && host.stateNode.current ? host.stateNode.current : host] : [];
-      for (var seen = 0; queue.length && seen < 4000; seen++) {
-        var fiber = queue.shift();
-        var props = fiber && fiber.memoizedProps;
+      walkPageFibers(function (fiber) {
+        var props = fiber.memoizedProps;
         if (props && props.client && typeof props.client.invalidateQueries === 'function') {
-          return props.client;
+          found = props.client;
+          return true;
         }
 
-        if (fiber && fiber.child) { queue.push(fiber.child); }
-        if (fiber && fiber.sibling) { queue.push(fiber.sibling); }
-      }
+        return false;
+      });
     } catch (e) { /* not this kind of page */ }
 
-    return null;
+    return found;
+  }
+
+  // Visits the parts of the page jellyfin-web built itself, top down, until
+  // the visitor says it has what it wanted. Does nothing on a build without them.
+  function walkPageFibers(visit) {
+    var host = null;
+    var nodes = document.querySelectorAll('body > div, body > div > div');
+    for (var n = 0; n < nodes.length && !host; n++) {
+      var keys = Object.keys(nodes[n]);
+      for (var k = 0; k < keys.length; k++) {
+        if (keys[k].indexOf('__reactContainer$') === 0) {
+          host = nodes[n][keys[k]];
+          break;
+        }
+      }
+    }
+
+    var queue = host ? [host.stateNode && host.stateNode.current ? host.stateNode.current : host] : [];
+    for (var seen = 0; queue.length && seen < 6000; seen++) {
+      var fiber = queue.shift();
+      if (!fiber) {
+        continue;
+      }
+
+      if (visit(fiber)) {
+        return;
+      }
+
+      if (fiber.child) { queue.push(fiber.child); }
+      if (fiber.sibling) { queue.push(fiber.sibling); }
+    }
   }
 
   function reloadLibraryItems() {
     var asked = false;
+    // The saved lists first: jellyfin-web keeps answers (the home page's rows
+    // among them, across page loads) and hands a row asked to refresh the kept
+    // answer while it counts as fresh. Marked stale, the refresh below asks the
+    // server again, with the chosen tab.
+    try {
+      var client = findQueryClient();
+      if (client) {
+        client.invalidateQueries();
+        asked = true;
+      }
+    } catch (e) { /* fall through */ }
+
     document.querySelectorAll('.itemsContainer').forEach(function (container) {
       try {
         if (typeof container.notifyRefreshNeeded === 'function') {
@@ -2360,14 +2487,6 @@
         }
       } catch (e) { /* visibility filter still applies */ }
     });
-
-    try {
-      var client = findQueryClient();
-      if (client) {
-        client.invalidateQueries();
-        asked = true;
-      }
-    } catch (e) { /* fall through */ }
 
     return asked;
   }
@@ -3705,6 +3824,7 @@
       currentUserIsAdmin = false;
       federatedIds = new Map();
       unavailableIds = new Set();
+      catalogLoaded = false;
       return;
     }
 

@@ -230,6 +230,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             FederationPlaybackRoutes.Record(playSessionId, FederatedRoute.FriendConverts);
+            FederationPlaybackRoutes.RecordCopyPlay(playSessionId, handoff.CopyPlay);
             if (path.Kind == RemoteMediaKind.HlsMaster)
             {
                 FirstSegmentTiming.RecordPlaylist(playSessionId);

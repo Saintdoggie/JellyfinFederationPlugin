@@ -91,7 +91,7 @@ JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_party_smoke.py    # wa
 Real Chrome against two servers (needs Python Playwright and Chrome or Chromium):
 
 ```sh
-JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_ui_smoke.py   # server tabs full, download relayed, the plugin's dashboard page, friend offline
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_ui_smoke.py   # server tabs full, home rows and search by server, download relayed, the plugin's dashboard page, themes, friend offline
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_ui_lab.py --hold   # keep the two servers up to look by hand; details in a private file it names
 python3 scripts/federation_ui_smoke.py --lab <that lab.json> tabs plugin     # run chosen stages against the held lab
 FEDERATION_QA_THEME_CSS=<folder of community theme .css> python3 scripts/federation_ui_smoke.py themes   # every plugin text measured on every theme (stock themes only without the folder)

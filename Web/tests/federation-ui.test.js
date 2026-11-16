@@ -375,6 +375,55 @@ test('friend origin tab asks the server for that friend and hides nothing in a l
   assert.equal(getItemsCalls.at(-1).Tags, undefined);
   await dom.window.fetch('/Users/abc/Items?ParentId=1');
   assert.ok(calls.at(-1).includes('federationOrigin=Friend'));
+  // The home page's rows carry the tab too; the server narrows their answers.
+  for (const row of ['/Items/Latest?userId=abc&limit=16', '/Users/abc/Items/Latest?limit=16', '/UserItems/Resume?userId=abc', '/Users/abc/Items/Resume', '/Shows/NextUp?userId=abc']) {
+    await dom.window.fetch(row);
+    assert.ok(calls.at(-1).includes('federationOrigin=Friend'), row);
+  }
+  await dom.window.fetch('/Items/abc/PlaybackInfo?userId=abc');
+  assert.equal(calls.at(-1).includes('federationOrigin'), false);
+  // The server names are kept for the next page load, tied to this sign-in, without the token itself.
+  const kept = JSON.parse(dom.window.localStorage.getItem('federationOriginNames'));
+  assert.deepEqual(kept.names, ['Friend']);
+  assert.equal(JSON.stringify(kept).includes('test-token'), false);
+  dom.window.close();
+});
+
+test('choosing a server tab starts every library at its first page', async () => {
+  const { dom } = makeLibraryWindow();
+  await settle();
+  await settle();
+  const store = dom.window.localStorage;
+  store.setItem('movies - lib1', JSON.stringify({ ViewMode: 'grid', SortBy: ['SortName'], StartIndex: 200 }));
+  store.setItem('series - lib2', JSON.stringify({ ViewMode: 'grid', StartIndex: 300 }));
+  store.setItem('unrelated', 'StartIndex 5, not a settings object');
+  // The open page keeps its position in its own state: stand in for that.
+  const updates = [];
+  const pageState = { ViewMode: 'grid', StartIndex: 200 };
+  const root = dom.window.document.createElement('div');
+  root['__reactContainer$test'] = {
+    child: { memoizedState: { memoizedState: 'other', next: { memoizedState: pageState, queue: { dispatch: (update) => updates.push(update) }, next: null } } }
+  };
+  dom.window.document.body.appendChild(root);
+  const tab = (name) => [...dom.window.document.querySelectorAll('.federation-origin-tab')].find((t) => t.textContent.trim() === name);
+  tab('Friend').click();
+  await settle();
+  assert.deepEqual(JSON.parse(store.getItem('movies - lib1')), { ViewMode: 'grid', SortBy: ['SortName'], StartIndex: 0 });
+  assert.equal(JSON.parse(store.getItem('series - lib2')).StartIndex, 0);
+  assert.equal(store.getItem('unrelated'), 'StartIndex 5, not a settings object');
+  assert.equal(updates.length, 1);
+  assert.equal(JSON.stringify(updates[0](pageState)), JSON.stringify({ ViewMode: 'grid', StartIndex: 0 }));
+  assert.equal(pageState.StartIndex, 200, 'the page state object itself is not changed in place');
+  // The same tab again is not a new list.
+  store.setItem('movies - lib1', JSON.stringify({ StartIndex: 100 }));
+  tab('Friend').click();
+  await settle();
+  assert.equal(JSON.parse(store.getItem('movies - lib1')).StartIndex, 100);
+  assert.equal(updates.length, 1);
+  tab('This server').click();
+  await settle();
+  assert.equal(JSON.parse(store.getItem('movies - lib1')).StartIndex, 0);
+  assert.equal(updates.length, 2);
   dom.window.close();
 });
 

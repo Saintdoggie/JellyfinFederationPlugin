@@ -2011,8 +2011,10 @@ namespace Jellyfin.Plugin.Federation.Api
                 : (MediaBrowser.Model.Session.PlayMethod?)null;
             var handedOff = _handoffs?.HandedOffTo(playSessionId) != null;
             var route = FederatedRoute.Classify(server, method, handedOff, FederationPlaybackRoutes.Get(playSessionId));
+            var copyPlay = route == FederatedRoute.FriendConverts && FederationPlaybackRoutes.IsCopyPlay(playSessionId);
             var routeText = route switch
             {
+                FederatedRoute.FriendConverts when copyPlay => server.Name + " sends its file as it is, repackaged for streaming, straight to this player",
                 FederatedRoute.Direct => "Straight from " + server.Name + " to this player",
                 FederatedRoute.Relay => "From " + server.Name + ", passed through this server unchanged",
                 FederatedRoute.FriendConverts => server.Name + " converts it and sends it straight to this player",
@@ -2049,6 +2051,7 @@ namespace Jellyfin.Plugin.Federation.Api
             var routeMeasurement = _routeMetrics?.Snapshot(user.Id, measurementDeviceId, server.Id, metricRoute);
             var conversion = route switch
             {
+                FederatedRoute.FriendConverts when copyPlay => "None (picture and sound are the original)",
                 FederatedRoute.FriendConverts => server.Name,
                 FederatedRoute.ConvertedHere => "This server",
                 _ when method == MediaBrowser.Model.Session.PlayMethod.DirectPlay => "None",
@@ -2064,6 +2067,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 friend = server.Name,
                 route,
                 routeText,
+                copyPlay,
                 playMethod = method?.ToString() ?? "Unknown",
                 conversion,
                 originalContainer = source.Container,
@@ -2078,7 +2082,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 audioCopied = transcoding?.IsAudioDirect,
                 transcodeReasons = transcoding == null ? null : transcoding.TranscodeReasons.ToString(),
                 streaming = server.StreamingMode.ToString(),
-                placement = route is FederatedRoute.FriendConverts or FederatedRoute.ConvertedHere
+                placement = !copyPlay && route is FederatedRoute.FriendConverts or FederatedRoute.ConvertedHere
                     ? _placement?.Last(server.Id, item.Id)?.Reason
                     : null,
                 latencyMs = _ranking?.LatencyMs(server.Id) is double ms ? Math.Round(ms) : (double?)null,

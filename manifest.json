@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.229.0",
+        "changelog": "0.0.229: a server tab chosen from a later page of a library now opens at its first page (it showed a late slice of the list, or nothing); under a server tab the home rows and search are answered by the server (full rows, nothing hidden in the page, apps get the same); the server tabs are drawn with the page; a title a friend sends unconverted is no longer described as converted.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-16T14:48:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.229/Jellyfin.Federation.zip",
+        "checksum": "d2772d5d76965cb3faca78b27a30aa2e"
+      },
+      {
         "version": "0.0.228.0",
         "changelog": "0.0.228: the web additions read on every theme (stock and community); friends' titles are marked as soon as the page opens instead of up to 30 seconds later; an administrator who signs in is recognised without a reload; the menu entries arrive on a slow menu.",
         "targetAbi": "12.0.0.0",

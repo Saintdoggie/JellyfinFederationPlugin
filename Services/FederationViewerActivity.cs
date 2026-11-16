@@ -99,8 +99,9 @@ namespace Jellyfin.Plugin.Federation.Services
         }
 
         /// <summary>The play method the friend (owner) sees: when this server converts, the friend only serves the original.</summary>
-        public static string OwnerPlayMethod(string route, PlayMethod? viewerMethod)
-            => route == ConvertedHere
+        /// <remarks>A copy play is the owner repackaging its file, not converting it: DirectStream too.</remarks>
+        public static string OwnerPlayMethod(string route, PlayMethod? viewerMethod, bool copyPlay = false)
+            => route == ConvertedHere || (copyPlay && route == FriendConverts)
                 ? nameof(MediaBrowser.Model.Session.PlayMethod.DirectStream)
                 : viewerMethod?.ToString() ?? "Unknown";
     }
@@ -341,7 +342,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 PositionTicks = positionTicks,
                 IsPaused = isPaused,
                 Route = route,
-                PlayMethod = FederatedRoute.OwnerPlayMethod(route, session.PlayState?.PlayMethod),
+                PlayMethod = FederatedRoute.OwnerPlayMethod(route, session.PlayState?.PlayMethod, FederationPlaybackRoutes.IsCopyPlay(playSessionId)),
                 ViewerId = session.UserId == Guid.Empty ? null : session.UserId.ToString("N"),
                 ViewerName = session.UserName,
                 Client = session.Client,

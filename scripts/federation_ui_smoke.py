@@ -4,7 +4,7 @@
     JELLYFIN_TEST_IMAGE=<image> python3 scripts/federation_ui_smoke.py            # own lab, removed afterwards
     python3 scripts/federation_ui_smoke.py --lab /path/to/lab.json [stage ...]   # a lab held by federation_ui_lab.py
 
-Stages: tabs, download, plugin, themes, offline (last: it stops the friend and
+Stages: tabs, home, download, plugin, themes, offline (last: it stops the friend and
 starts it again). Needs Python Playwright and Chrome or Chromium.
 Screenshots go to FEDERATION_QA_SHOTS when set (a private folder: they show the
 fixture only, but keep them out of the repository).
@@ -81,7 +81,99 @@ def stage_tabs(browser, lab):
     pick_tab(page, 'All', everything)
     qa.check(not errors, 'Page errors on the library page: ' + '; '.join(errors[:3]))
     page.context.close()
-    print(f'UI PASS: server tabs in Chrome: All {everything}, This server {counts["here_only"] + counts["shared"]}, friend {counts["friend_only"] + counts["shared"]}; no card hidden inside a page', flush=True)
+
+    # A library of several pages: a tab chosen from a later page starts at its
+    # own first page. jellyfin-web keeps the page position, and a shorter list
+    # asked for from there showed a late slice of the tab, or nothing.
+    size = 5
+    page, _, errors = fb.signed_in_page(browser, base, 'qa-viewer', local={'libraryPageSize': str(size)})
+    library_grid(page, base, library_id, size)
+    following = page.locator('button[title="Next"]').first
+    for _ in range(2):
+        following.click()
+        page.wait_for_load_state('networkidle', timeout=60000)
+        page.wait_for_timeout(800)
+    last = page.evaluate(GRID)
+    qa.check(last['names'] and last['names'][0].startswith('QA Here'), f'Page 3 of All did not open: {last["names"]}')
+    for label, first in ((lab['friend_name'], 'QA Friend 01'), ('This server', 'QA Here 01'), ('All', 'QA Friend 01')):
+        grid = pick_tab(page, label, size)
+        qa.check(grid['names'][0] == first and grid['hidden'] == 0,
+                 f'{label} chosen from a later page: starts at {grid["names"][:2]}, {grid["hidden"]} hidden; expected its first page ({first})')
+        if label != 'All':
+            following.click()
+            page.wait_for_load_state('networkidle', timeout=60000)
+            page.wait_for_timeout(800)
+    qa.check(not errors, 'Page errors on the paged library page: ' + '; '.join(errors[:3]))
+    page.context.close()
+    print(f'UI PASS: server tabs in Chrome: All {everything}, This server {counts["here_only"] + counts["shared"]}, friend {counts["friend_only"] + counts["shared"]}; no card hidden inside a page; a tab chosen from a later page opens at its first page', flush=True)
+
+
+HOME_ROW = """() => {
+  const page = document.querySelector('.page:not(.hide)');
+  const sections = page ? [...page.querySelectorAll('.verticalSection')] : [];
+  const row = sections.find(s => /Recently Added/i.test((s.querySelector('.sectionTitle') || {}).textContent || ''));
+  const cards = row ? [...row.querySelectorAll('.card[data-id]')] : [];
+  return {
+    names: cards.filter(c => getComputedStyle(c).display !== 'none').map(c => (c.querySelector('.cardText') || {}).textContent || ''),
+    hidden: cards.filter(c => getComputedStyle(c).display === 'none').length,
+    selected: ([...document.querySelectorAll('.federation-origin-tab[aria-selected=true]')][0] || {}).textContent || ''
+  };
+}"""
+
+
+def stage_home(browser, lab):
+    """Home rows under a server tab are answered by the server: full rows, nothing hidden in the page."""
+    base, friend = lab['receiver']['base'], lab['friend_name']
+    viewer, viewer_id = token(base, 'qa-viewer')
+    origin = urllib.parse.quote(friend)
+    # What every app gets: the row narrowed and still as long as asked.
+    for path in (f'/Items/Latest?userId={viewer_id}&limit=5', f'/Users/{viewer_id}/Items/Latest?limit=5'):
+        theirs = [i['Name'] for i in qa.request(base, f'{path}&federationOrigin={origin}', viewer)]
+        qa.check(len(theirs) == 5 and not any(n.startswith('QA Here') for n in theirs), f'{path.split("?")[0]} for the friend: {theirs}')
+        own = [i['Name'] for i in qa.request(base, f'{path}&ExcludeItemTags=Federated', viewer)]
+        qa.check(len(own) == 5 and not any(n.startswith('QA Friend') for n in own), f'{path.split("?")[0]} for this server: {own}')
+    plain = qa.request(base, f'/Items/Latest?userId={viewer_id}&limit=5', viewer)
+    qa.check(len(plain) == 5, 'Latest with no tab chosen changed length')
+    nobody = qa.request(base, f'/Items/Latest?userId={viewer_id}&limit=5&federationOrigin=Nobody', viewer)
+    qa.check(nobody == [], 'A server name nobody has must give an empty row, not everything')
+
+    page, _, errors = fb.signed_in_page(browser, base, 'qa-viewer')
+    page.wait_for_selector('.federation-origin-tab', timeout=45000)
+    seen = {}
+    for label, unwanted in ((friend, 'QA Here'), ('This server', 'QA Friend')):
+        page.locator('.federation-origin-tab', has_text=label).first.click()
+        # The page loads again with the choice kept.
+        page.wait_for_function("""([label, unwanted]) => {
+            const on = document.querySelector('.federation-origin-tab[aria-selected=true]');
+            const cards = [...document.querySelectorAll('.page:not(.hide) .verticalSection .card[data-id] .cardText')].map(c => c.textContent);
+            return on && on.textContent === label && cards.length > 0 && !cards.some(n => n.startsWith(unwanted));
+        }""", arg=[label, unwanted], timeout=60000)
+        page.wait_for_timeout(1200)
+        row = page.evaluate(HOME_ROW)
+        qa.check(row['names'] and row['hidden'] == 0 and not any(n.startswith(unwanted) for n in row['names']),
+                 f'home under "{label}": {len(row["names"])} cards, {row["hidden"]} hidden in the page, names {row["names"][:4]}')
+        seen[label] = len(row['names'])
+        shot(page, 'home-' + ('friend' if label == friend else 'here'))
+    # Search, same rule: the server answers for the chosen tab and the page hides nothing.
+    counts = lab['counts']
+    fb.go(page, base, '#/search?query=QA')
+    found = {}
+    for label, unwanted, expected in (('This server', 'QA Friend', counts['here_only'] + counts['shared']), (friend, 'QA Here', counts['friend_only'] + counts['shared'])):
+        page.wait_for_selector('.federation-origin-tab', timeout=45000)
+        page.locator('.federation-origin-tab', has_text=label).first.click()
+        page.wait_for_function("""([label, unwanted, n]) => {
+            const on = document.querySelector('.federation-origin-tab[aria-selected=true]');
+            const cards = [...document.querySelectorAll('.page:not(.hide) .card[data-id]')];
+            const names = cards.map(c => (c.querySelector('.cardText') || {}).textContent || '');
+            return on && on.textContent === label && cards.length === n && !names.some(x => x.startsWith(unwanted)) && cards.every(c => getComputedStyle(c).display !== 'none');
+        }""", arg=[label, unwanted, expected], timeout=60000)
+        found[label] = expected
+    shot(page, 'search-friend')
+    page.locator('.federation-origin-tab', has_text='All').first.click()
+    page.wait_for_function("document.querySelector('.federation-origin-tab[aria-selected=true]').textContent === 'All'", timeout=60000)
+    qa.check(not errors, 'Page errors on the home or search page: ' + '; '.join(errors[:3]))
+    page.context.close()
+    print(f'UI PASS: home rows by server: Recently Added shows {seen[friend]} titles under the friend and {seen["This server"]} under This server, none hidden in the page; apps get the same narrowed rows at full length; search finds {found["This server"]} and {found[friend]} with none hidden', flush=True)
 
 
 def stage_download(browser, lab):
@@ -162,7 +254,7 @@ def stage_offline(browser, lab):
     print(f'UI PASS: friend offline: the server lists {own} titles (count and page), no card hidden in the browser; all {everything} are back when it returns', flush=True)
 
 
-STAGES = {'tabs': stage_tabs, 'download': stage_download, 'plugin': stage_plugin, 'offline': stage_offline}
+STAGES = {'tabs': stage_tabs, 'home': stage_home, 'download': stage_download, 'plugin': stage_plugin, 'offline': stage_offline}
 
 
 def register(name, fn, before='offline'):

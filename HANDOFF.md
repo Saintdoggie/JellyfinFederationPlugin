@@ -7,14 +7,15 @@ release goes out or a piece of work stops half way.
 
 ## State right now (2026-11-16)
 
-- `master` = **0.0.228** (released 2026-11-16). 0.0.225 to 0.0.227 went out on
+- `master` = **0.0.229** (released 2026-11-16). 0.0.225 to 0.0.229 went out on
   2026-11-15/16.
 - No work is half done. Nothing is installed on any live server by these releases:
-  installing is the owner's call (see "Rules that are easy to break").
-- 0.0.228 closed queue item 1 (themes) and three sign-in bugs the theme check
-  exposed (`loadSession`/`watchSession`, `getToken`, `resolveAdminState` in
-  `Web/client/federation-badge.js`). What the theme check does not open yet is
-  listed in `TODO.md` under 0.0.228.
+  installing is the owner's call (see "Rules that are easy to break"). The owner
+  installed 0.0.228 on the home server on 2026-11-16 and reported the server tabs
+  still wrong there; 0.0.229 holds the fix (page position), not yet seen on that server.
+- 0.0.228 closed queue item 1 (themes) and the sign-in bugs the theme check exposed.
+  0.0.229 closed queue item 3 (experience). Queue item 2 (apps and platforms) is
+  next; it is the hard one, start with `DIRECT-PLAY.md`.
 - Next up: the queue below, top first.
 
 ## What the owner asked for (2026-11-15) and where each item is
@@ -27,7 +28,7 @@ release goes out or a piece of work stops half way.
 | "A plugin page for the plugin page" | Done in 0.0.227, read as the plugin's page under Dashboard → Plugins | `Services/FederationPluginPageFilter.cs` |
 | Bug fixes | 0.0.227 has three (below); keep looking | "How bugs were found" |
 | Injected web additions work across all themes | Done in 0.0.228 (9 themes measured in Chrome) | `scripts/federation_theme_smoke.py` |
-| Major: better experience | Queue item 3 | `TODO.md` "Queue" |
+| Major: better experience | Done in 0.0.229 (home rows, search, tabs at once, copy-play labels) | `TODO.md` 0.0.229 |
 | Major: better federation, platform and app compatibility | Queue item 2 | `TODO.md` "Queue" |
 
 Two of the owner's sentences were read, not confirmed. If the owner says the
@@ -87,6 +88,21 @@ Things that will waste your time if you do not know them:
   `window.ApiClient` does not exist yet when `federation-badge.js` runs. Anything
   that needs the signed-in person belongs in `loadSession()` (run again by
   `watchSession()` when the token appears or changes), not at the top level.
+- **jellyfin-web keeps a library's page position**, in the open page's state and
+  in `localStorage` (`movies - <library id>`, field `StartIndex`), across visits.
+  A tab is another list: `setOriginFilter` calls `firstPageOfEveryLibrary()` when
+  the tab changes. Anything new that changes what a library list holds must do the
+  same, and must be tried on a library of several pages (stage `tabs` sets
+  `libraryPageSize` to 5 for that; the lab's 16 titles fit one default page).
+- **jellyfin-web keeps answers across page loads** (an IndexedDB store named
+  `keyval-store`). A reload of the home page asks the server for nothing while the
+  kept answer counts as fresh, so "reload the page" does not refresh a row.
+  `reloadLibraryItems()` marks the kept answers stale first, then asks the rows to
+  refresh. Playwright sees no `/Items/Latest` request on a second load for the same
+  reason.
+- **Jellyfin ignores `ids` on a search** (`/Items?searchTerm=`), and the home rows'
+  endpoints take no id list at all. `FederationLocalOnlyItemsFilter` narrows those
+  answers after Jellyfin has produced them (`AnswerHomeRowAsync`, `HomeRowRule`).
 - **jellyfin-web keeps the theme in the browser** (`localStorage["<user id>-appTheme"]`),
   not in the server's display preferences. `fb.signed_in_page(..., local={'appTheme': x})`
   sets it; the theme check fails if the theme's stylesheet is not on the page.
