@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.225",
+        "changelog": "0.0.225: The Video row is now one dropdown for every server's copy, labelled resolution, bitrate, codec and abbreviated server (LOCAL for your own copy). A linked server's better copy stays first. Picking a copy keeps Jellyfin's native audio, subtitle and exact media-source selection flow.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-16T04:06:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.225/Jellyfin.Federation.zip",
+        "checksum": "05075fc6802dc5279bba15a661536f16"
+      },
+      {
         "version": "0.0.224",
         "changelog": "Library server tabs are answered by the server (full pages, right counts, titles you own that the server also has) and sit above the grid; a title you own lists other servers' copies in its version list, a linked server's clearly better copy first; a picked copy plays from its server when the device plays it as stored.",
         "targetAbi": "12.0.0.0",

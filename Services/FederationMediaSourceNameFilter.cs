@@ -142,7 +142,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             var all = entry.GetSourcesSnapshot();
-            own.Name = FederationMediaSourceProvider.PrimarySourceName(server.Name, all.Length);
+            own.Name = CopyLabel(own.MediaStreams, own.Bitrate, server.Name);
             if (!addAlternates || all.Length < 2)
             {
                 return null;
@@ -232,15 +232,17 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (ownCount == 1)
             {
-                own.Name = OwnCopyName;
+                own.Name = CopyLabel(own.MediaStreams, own.Bitrate, OwnCopyName);
             }
 
-            list.InsertRange(0, leading.OrderByDescending(s => s.MediaStreams?.Where(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video).Max(m => m.Width) ?? 0));
+            list.InsertRange(0, leading
+                .OrderByDescending(s => s.MediaStreams?.Where(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video).Max(m => m.Width) ?? 0)
+                .ThenByDescending(s => s.MediaStreams?.Where(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video).Max(m => m.BitRate) ?? s.Bitrate ?? 0));
             return list;
         }
 
-        /// <summary>The label of the own file in a version list that also holds other servers' copies.</summary>
-        internal const string OwnCopyName = "This server";
+        /// <summary>The server abbreviation of the own file in a list with other servers' copies.</summary>
+        internal const string OwnCopyName = "LOCAL";
 
         /// <summary>
         /// A description of another server's copy built from what the catalog already knows about it. Its id is the same
@@ -265,33 +267,60 @@ namespace Jellyfin.Plugin.Federation.Services
             };
 
         /// <summary>
-        /// "server", "server (2160p · 54.3 GB)" when the same server has several copies (so they can be told apart),
-        /// with ", offline" added while that server is down.
+        /// The same complete quality label for every copy: resolution, bitrate, video codec, then a short server
+        /// name. <paramref name="needsDetail"/> remains for callers compiled against the older helper; details are
+        /// no longer confined to duplicate copies on one server because every choice must be comparable.
         /// </summary>
         internal static string AlternateName(FederatedSource source, string serverName, bool offline, bool needsDetail)
         {
+            var name = CopyLabel(source.MediaStreams, source.Bitrate, serverName);
+            return offline ? name + " · offline" : name;
+        }
+
+        /// <summary>Formats a source without exposing its path, address, credential, or raw server metadata.</summary>
+        internal static string CopyLabel(IEnumerable<MediaBrowser.Model.Entities.MediaStream>? streams, long? fileBitrate, string serverName)
+        {
+            var video = streams?
+                .Where(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video)
+                .OrderByDescending(m => m.Height ?? 0)
+                .ThenByDescending(m => m.Width ?? 0)
+                .FirstOrDefault();
             var parts = new List<string>();
-            if (needsDetail)
+            if (video?.Height is > 0)
             {
-                var height = source.MediaStreams?.FirstOrDefault(m => m.Type == MediaBrowser.Model.Entities.MediaStreamType.Video)?.Height;
-                if (height > 0)
-                {
-                    parts.Add(height + "p");
-                }
-
-                if (source.Size > 0)
-                {
-                    parts.Add((source.Size.Value / 1_073_741_824d).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " GB");
-                }
+                parts.Add(video.Height.Value + "p");
             }
 
-            var detail = string.Join(" · ", parts);
-            if (offline)
+            var bitrate = video?.BitRate is > 0 ? video.BitRate.Value : fileBitrate;
+            if (bitrate is > 0)
             {
-                detail = detail.Length > 0 ? detail + ", offline" : "offline";
+                parts.Add((bitrate.Value / 1_000_000d).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " Mbps");
             }
 
-            return detail.Length > 0 ? $"{serverName} ({detail})" : serverName;
+            if (!string.IsNullOrWhiteSpace(video?.Codec))
+            {
+                parts.Add(video.Codec.Trim().ToUpperInvariant());
+            }
+
+            parts.Add(ServerAbbreviation(serverName));
+            return string.Join(" · ", parts);
+        }
+
+        /// <summary>Multi-word names become initials; useful one-word names such as VPS stay intact.</summary>
+        internal static string ServerAbbreviation(string serverName)
+        {
+            var words = (serverName ?? string.Empty).Trim().Split(new[] { ' ', '-', '_', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0)
+            {
+                return "SERVER";
+            }
+
+            if (words.Length == 1)
+            {
+                return words[0].ToUpperInvariant();
+            }
+
+            return string.Concat(words.Select(word => word.FirstOrDefault(char.IsLetterOrDigit)).Where(initial => initial != '\0')).ToUpperInvariant();
         }
     }
 }

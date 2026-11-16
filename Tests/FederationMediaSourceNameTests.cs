@@ -26,13 +26,13 @@ public class FederationMediaSourceNameTests
             Size = 12345,
             Bitrate = 8_000_000,
             RunTimeTicks = 99,
-            MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = 2160 } },
+            MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = 2160, BitRate = 8_000_000, Codec = "hevc" } },
         };
 
         var alternate = FederationMediaSourceNameFilter.BuildAlternate(source, "zander", 5);
 
         Assert.Equal(FederationMediaSourceProvider.BuildSourceId(source), alternate.Id);
-        Assert.Equal("zander", alternate.Name);
+        Assert.Equal("2160p · 8 Mbps · HEVC · ZANDER", alternate.Name);
         Assert.Equal("mkv", alternate.Container);
         Assert.Equal(99, alternate.RunTimeTicks);
         Assert.Equal(2160, Assert.Single(alternate.MediaStreams).Height);
@@ -62,25 +62,39 @@ public class FederationMediaSourceNameTests
         ServerId = "s",
         RemoteItemId = Guid.NewGuid(),
         Size = bytes,
-        MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = height } },
+        Bitrate = 8_000_000,
+        MediaStreams = new[] { new MediaStream { Type = MediaStreamType.Video, Height = height, Codec = "hevc" } },
     };
 
     [Fact]
-    public void AlternateName_OnlyServer_IsJustTheServerName()
-        => Assert.Equal("plex-source", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: false, needsDetail: false));
+    public void AlternateName_AlwaysListsQualityThenCodecThenServerAbbreviation()
+        => Assert.Equal("1080p · 8 Mbps · HEVC · PS", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: false, needsDetail: false));
 
     [Fact]
-    public void AlternateName_SeveralCopiesOnOneServer_AddsResolutionAndSize()
-        => Assert.Equal("plex-source (2160p · 54.3 GB)", FederationMediaSourceNameFilter.AlternateName(Copy(2160, 58_300_000_000), "plex-source", offline: false, needsDetail: true));
+    public void AlternateName_UsesVideoBitrateAndFractionalMbps()
+    {
+        var source = Copy(2160, 58_300_000_000);
+        source.Bitrate = 52_000_000;
+        source.MediaStreams![0].BitRate = 45_200_000;
+        Assert.Equal("2160p · 45.2 Mbps · HEVC · VPS", FederationMediaSourceNameFilter.AlternateName(source, "vps", offline: false, needsDetail: true));
+    }
 
     [Fact]
     public void AlternateName_OfflineServer_IsMarked()
     {
-        Assert.Equal("plex-source (offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1), "plex-source", offline: true, needsDetail: false));
-        Assert.Equal("plex-source (1080p · 1 GB, offline)", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: true, needsDetail: true));
+        Assert.Equal("1080p · 8 Mbps · HEVC · PS · offline", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1), "plex-source", offline: true, needsDetail: false));
+        Assert.Equal("1080p · 8 Mbps · HEVC · PS · offline", FederationMediaSourceNameFilter.AlternateName(Copy(1080, 1_073_741_824), "plex-source", offline: true, needsDetail: true));
     }
 
     [Fact]
-    public void AlternateName_MissingDetails_FallsBackToServerName()
-        => Assert.Equal("plex-source", FederationMediaSourceNameFilter.AlternateName(new FederatedSource(), "plex-source", offline: false, needsDetail: true));
+    public void AlternateName_MissingDetails_FallsBackToServerAbbreviation()
+        => Assert.Equal("PS", FederationMediaSourceNameFilter.AlternateName(new FederatedSource(), "plex-source", offline: false, needsDetail: true));
+
+    [Fact]
+    public void ServerAbbreviation_KeepsShortNamesAndUsesInitialsForLongNames()
+    {
+        Assert.Equal("VPS", FederationMediaSourceNameFilter.ServerAbbreviation("vps"));
+        Assert.Equal("NETFLIX++", FederationMediaSourceNameFilter.ServerAbbreviation("netflix++"));
+        Assert.Equal("IJ", FederationMediaSourceNameFilter.ServerAbbreviation("Inspired Jellyfin"));
+    }
 }

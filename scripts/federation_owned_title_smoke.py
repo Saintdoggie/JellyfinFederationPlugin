@@ -24,6 +24,63 @@ from federation_handoff_smoke import container_log
 from federation_peer_smoke import no_redirect
 
 
+def browser_video_picker(base, item_id, expected):
+    """Exercise the actual jellyfin-web DOM when explicitly requested by the QA runner."""
+    from playwright.sync_api import sync_playwright
+
+    import federation_browser
+    selected = expected[1]
+    with sync_playwright() as playwright:
+        browser = federation_browser.launch(playwright)
+        diagnostic = os.environ.get('FEDERATION_QA_DIAGNOSTIC')
+        phase = 'sign in'
+        errors, item_responses, page = [], [], None
+        try:
+            page, _, errors = federation_browser.signed_in_page(browser, base, 'qa-viewer')
+            page.on('response', lambda response: item_responses.append(
+                {'status': response.status, 'path': response.url.split('?', 1)[0].replace(base, '')})
+                if ('/Items/' in response.url or '/Users/' in response.url) and len(item_responses) < 40 else None)
+            phase = 'open item details'
+            federation_browser.go(page, base, '#/details?id=' + item_id)
+            phase = 'wait for enriched Video options'
+            page.wait_for_function("""expected => {
+                const video = document.querySelector('.itemDetailPage .selectVideo');
+                return video && video.dataset.federationCopyPicker === '1'
+                    && Array.from(video.options).map(o => o.textContent).join('|') === expected.join('|');
+            }""", arg=[source['Name'] for source in expected], timeout=45000)
+            source_hidden = page.locator('.itemDetailPage .selectSourceContainer').evaluate(
+                "element => getComputedStyle(element).display === 'none'")
+            qa.check(source_hidden, 'The live browser still shows a separate Version row')
+            qa.check(page.locator('.itemDetailPage .selectVideo').is_enabled(), 'The live Video dropdown is disabled')
+            screenshot = os.environ.get('FEDERATION_QA_SCREENSHOT')
+            if screenshot:
+                page.screenshot(path=screenshot, full_page=True)
+            page.locator('.itemDetailPage .selectVideo').select_option(selected['Id'])
+            page.wait_for_function("id => document.querySelector('.itemDetailPage .selectSource').value === id",
+                                   arg=selected['Id'], timeout=15000)
+            page.wait_for_function("""expected => {
+                const video = document.querySelector('.itemDetailPage .selectVideo');
+                return video && !video.disabled && video.value === expected;
+            }""", arg=selected['Id'], timeout=15000)
+            print('OWNED PASS: real Chrome item page: one enabled Video picker, exact labels, native source selection', flush=True)
+        except Exception:
+            if diagnostic and page is not None:
+                import json
+                state = page.evaluate("""() => ({
+                    url: location.href, readyState: document.readyState,
+                    visiblePages: Array.from(document.querySelectorAll('.page:not(.hide)')).map(p => p.id || p.className),
+                    sourceExists: !!document.querySelector('.selectSource'),
+                    videoExists: !!document.querySelector('.selectVideo'),
+                    sourceOptions: Array.from(document.querySelectorAll('.selectSource option')).map(o => o.textContent),
+                    videoOptions: Array.from(document.querySelectorAll('.selectVideo option')).map(o => o.textContent)
+                })""")
+                Path(diagnostic + '.json').write_text(json.dumps({'phase': phase, 'page': state, 'errors': errors, 'itemResponses': item_responses}, indent=2) + '\n')
+                page.screenshot(path=diagnostic, full_page=True)
+            raise
+        finally:
+            browser.close()
+
+
 def smoke():
     work = Path(tempfile.mkdtemp(prefix='federation-owned-qa-')); os.chmod(work, 0o700)
     suffix = secrets.token_hex(5)
@@ -161,10 +218,16 @@ def smoke():
         friend_name = qa.request(base, '/Plugins/Federation/Configuration', admin)['RemoteServers'][0]['Name']
         listed = next(m for m in movies(base, viewer) if m['Id'] == own['Id'])['MediaSources']
         qa.check(len(listed) == 2, f'The version list holds {len(listed)} entries, expected the own file and the friend copy')
-        qa.check(listed[0]['Id'].replace('-', '') == own_id and listed[0]['Name'] == 'This server', f'The own file is not first as "This server": {listed[0]["Name"]}')
-        qa.check(listed[1]['Name'].startswith(friend_name) and listed[1]['Protocol'] == 'Http', f'The friend copy is not listed under its server: {listed[1]["Name"]}')
+        friend_words = friend_name.replace('-', ' ').replace('_', ' ').split()
+        friend_abbreviation = (friend_name if len(friend_words) == 1 else ''.join(w[0] for w in friend_words)).upper()
+        qa.check(listed[0]['Id'].replace('-', '') == own_id and listed[0]['Name'].endswith(' · LOCAL'),
+                 f'The own file is not first with a LOCAL quality label: {listed[0]["Name"]}')
+        qa.check(all('p · ' in source['Name'] and ' Mbps · ' in source['Name'] for source in listed),
+                 f'A copy is missing resolution/bitrate: {[source["Name"] for source in listed]}')
+        qa.check(listed[1]['Name'].endswith(' · ' + friend_abbreviation) and listed[1]['Protocol'] == 'Http',
+                 f'The friend copy is not listed under its server: {listed[1]["Name"]}')
         pick = listed[1]['Id']
-        print(f'OWNED PASS: version list: "This server", then "{listed[1]["Name"]}"', flush=True)
+        print(f'OWNED PASS: version list: "{listed[0]["Name"]}", then "{listed[1]["Name"]}"', flush=True)
 
         stage = 'a copy picked in the version list plays from the friend when the device plays it as stored'
         def negotiate_pick(video_codecs):
@@ -219,6 +282,9 @@ def smoke():
         qa.check(labels['HEVC, AAC, in MKV']['players'][chrome] == 'no', 'Chrome was not flagged for the HEVC file')
         qa.check(labels['H.264, AAC, in MKV']['players'][chrome] == 'plays', 'Chrome was flagged for the H.264 MKV')
         print('OWNED PASS: support report: own HEVC file and friend H.264 copy, both checked against each player', flush=True)
+        if os.environ.get('FEDERATION_QA_BROWSER'):
+            stage = 'real Chrome: the owned title offers one enabled Video picker and changes the native source'
+            browser_video_picker(base, own['Id'], listed)
     except Exception as e:
         detail = str(e) if isinstance(e, (RuntimeError, KeyError, StopIteration)) else f'{type(e).__name__}: {e}'
         raise RuntimeError(f'{stage}: {detail}. Private fixture retained at {work}; do not publish logs.') from None

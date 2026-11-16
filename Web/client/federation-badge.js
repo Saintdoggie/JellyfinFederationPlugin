@@ -2464,6 +2464,77 @@
     applyOriginVisibility();
   }
 
+  // On an enriched item the separate Version list and disabled Video row describe
+  // the same choice. Present that choice once, in Video, as resolution / bitrate /
+  // codec / server. Keep Jellyfin's native selectSource in sync: its change handler
+  // refreshes audio and subtitles, and play uses its value as mediaSourceId.
+  function syncVideoCopyPickers() {
+    document.querySelectorAll('.trackSelections').forEach(function (form) {
+      var source = form.querySelector('.selectSource');
+      var video = form.querySelector('.selectVideo');
+      if (!source || !video) {
+        return;
+      }
+
+      var options = Array.prototype.slice.call(source.options || []);
+      var enriched = options.length > 1 && options.some(function (option) {
+        // Federation labels begin with the known resolution. Titles merely
+        // containing a middle dot must not turn a native version picker over.
+        return /^\d+p · /.test(option.textContent || '');
+      });
+      var sourceContainer = form.querySelector('.selectSourceContainer');
+      if (!enriched) {
+        if (video.getAttribute('data-federation-copy-picker') === '1') {
+          video.removeAttribute('data-federation-copy-picker');
+          video.__federationCopyValues = null;
+          if (sourceContainer && options.length < 2) {
+            sourceContainer.classList.add('hide');
+          }
+        }
+
+        return;
+      }
+
+      video.setAttribute('data-federation-copy-picker', '1');
+      if (sourceContainer) {
+        sourceContainer.classList.add('hide');
+      }
+
+      var values = options.map(function (option) { return option.value; });
+      var unchanged = video.__federationCopyValues
+        && video.__federationCopyValues.join('\n') === values.join('\n')
+        && video.options.length === options.length
+        && video.value === source.value
+        && !video.disabled;
+      if (!unchanged) {
+        video.innerHTML = '';
+        options.forEach(function (sourceOption) {
+          var option = document.createElement('option');
+          option.value = sourceOption.value;
+          option.textContent = sourceOption.textContent;
+          video.appendChild(option);
+        });
+        video.value = source.value;
+        video.__federationCopyValues = values;
+      }
+
+      video.removeAttribute('disabled');
+      if (!video.__federationCopyPickerBound) {
+        video.__federationCopyPickerBound = true;
+        video.addEventListener('change', function () {
+          if (video.getAttribute('data-federation-copy-picker') !== '1') {
+            return;
+          }
+
+          source.value = video.value;
+          if (source.value === video.value) {
+            source.dispatchEvent(new window.Event('change', { bubbles: true }));
+          }
+        });
+      }
+    });
+  }
+
   function scan() {
     if (!clientSettingsLoaded) {
       return;
@@ -2471,6 +2542,7 @@
 
     injectStyle();
     hookPlaybackOverlay();
+    syncVideoCopyPickers();
     document.querySelectorAll(CARD_SELECTOR).forEach(badgeCard);
     badgeDetailPage();
     refreshDownloadRingsOnCards();

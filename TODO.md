@@ -1,5 +1,15 @@
 # Jellyfin Federation — remaining work
 
+## 0.0.225 — one Video dropdown for every server's copy
+
+- [x] Every copy is labelled resolution · bitrate · codec · abbreviated server (`LOCAL` for this server), rather than a bare server name or file size. Offline copies keep their offline warning.
+- [x] A linked server's clearly better copy stays at the front; multiple leading linked copies sort by width, then video bitrate. The existing 4K-over-1080p comparison is unchanged.
+- [x] On enriched jellyfin-web item pages, the separate Version row is folded into an enabled Video row. Changing Video updates the native source selector and therefore its `mediaSourceId`, Audio and Subtitles flow; ordinary local version controls stay unchanged.
+- [x] Full automated gate on the edited files: 2,103 plugin tests and 165 web tests; Release plugin build with zero warnings.
+- [x] Disposable owned-title two-server fixture passed all 10 stages against the rebuilt Release DLL: real quality/server labels, exact selected-copy streaming and seek, incompatible-copy fallback and full source attribution. An earlier run correctly rejected a stale pre-change DLL.
+- [x] Real Chrome on the two-server fixture: one enabled Video dropdown with the exact labels, no Version row, and a pick moves the native source (`browser_video_picker` in `scripts/federation_owned_title_smoke.py`, run with `FEDERATION_QA_BROWSER=1`). Browser stages sign in through `scripts/federation_browser.py`: the sign-in form leaves a headless browser on the sign-in page on Jellyfin 12.4's web client, plugin or not.
+- [ ] Not looked at on the owner's live library.
+
 ## 0.0.224 — server tabs that work, and one card per title with every server's copy
 
 - [x] Library server tabs (All / This server / each server): the server now answers the tab, so every page is full and the count is that server's count. Before, newer library pages asked through XMLHttpRequest, which the tab did not catch: the browser got an ordinary page of the whole library and could only hide cards on it ("1-100 of 742" with one card).

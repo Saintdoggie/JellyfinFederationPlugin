@@ -116,6 +116,85 @@ test('badge styling is solid and crisp, with no gradients', () => {
   assert.equal(badgeScript.slice(0, badgeScript.indexOf('.federation-download-ring')).includes('gradient'), false);
 });
 
+test('federated copies use one Video dropdown and keep native audio, subtitles and mediaSourceId wiring', async () => {
+  const { dom } = makeWindow(false);
+  await settle();
+  await settle();
+  const doc = dom.window.document;
+  const best = '33333333333333333333333333333333';
+  const lower = '44444444444444444444444444444444';
+  const form = doc.createElement('form');
+  form.className = 'trackSelections';
+  form.innerHTML = '<div class="selectSourceContainer"><select class="selectSource">'
+    + '<option value="' + best + '">2160p · 45.2 Mbps · HEVC · VPS</option>'
+    + '<option value="' + lower + '">1080p · 8 Mbps · H264 · LOCAL</option>'
+    + '</select></div>'
+    + '<div class="selectVideoContainer"><select class="selectVideo" disabled><option>2160p HEVC SDR</option></select></div>'
+    + '<select class="selectAudio"><option>English - Dolby Digital+ - 5.1</option></select>'
+    + '<select class="selectSubtitles"><option>Off</option></select>';
+  doc.body.appendChild(form);
+  const source = form.querySelector('.selectSource');
+  const video = form.querySelector('.selectVideo');
+  const audio = form.querySelector('.selectAudio');
+  const subtitles = form.querySelector('.selectSubtitles');
+  let sourceChanges = 0;
+  source.addEventListener('change', () => {
+    sourceChanges += 1;
+    // This is jellyfin-web's native selectSource contract: all track lists are
+    // rebuilt for the selected source before PlaybackInfo sends its id.
+    audio.innerHTML = '<option>Commentary</option>';
+    subtitles.innerHTML = '<option>English</option>';
+    video.innerHTML = '<option>' + (source.value === best ? '2160p HEVC' : '1080p H264') + '</option>';
+    video.setAttribute('disabled', 'disabled');
+  });
+  await settle();
+  await settle();
+
+  assert.ok(form.querySelector('.selectSourceContainer').classList.contains('hide'), 'the duplicate Version row is hidden');
+  assert.equal(video.disabled, false);
+  assert.deepEqual(Array.from(video.options, option => option.textContent), [
+    '2160p · 45.2 Mbps · HEVC · VPS',
+    '1080p · 8 Mbps · H264 · LOCAL'
+  ], 'the higher-quality linked copy is first');
+  assert.equal(video.value, best);
+  assert.equal(video.getAttribute('data-federation-copy-picker'), '1');
+
+  video.value = lower;
+  video.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await settle();
+  await settle();
+  assert.equal(sourceChanges, 1, 'one selection crosses the native boundary once');
+  assert.equal(source.value, lower, 'Jellyfin receives the exact lower-copy mediaSourceId');
+  assert.equal(audio.textContent, 'Commentary');
+  assert.equal(subtitles.textContent, 'English');
+  assert.equal(video.value, lower, 'the re-render preserves the visible copy choice');
+  assert.equal(video.options.length, 2, 'the Video choices survive the native track refresh');
+  assert.equal(video.disabled, false);
+  dom.window.close();
+});
+
+test('ordinary local native version pickers stay unchanged', async () => {
+  const { dom } = makeWindow(false);
+  await settle();
+  await settle();
+  const doc = dom.window.document;
+  const form = doc.createElement('form');
+  form.className = 'trackSelections';
+  form.innerHTML = '<div class="selectSourceContainer"><select class="selectSource">'
+    + '<option value="44444444444444444444444444444444">The Movie</option>'
+    + '<option value="55555555555555555555555555555555">The Movie - Extended</option></select></div>'
+    + '<select class="selectVideo" disabled><option>1080p H264</option></select>';
+  doc.body.appendChild(form);
+  await settle();
+  await settle();
+  const video = form.querySelector('.selectVideo');
+  assert.equal(video.getAttribute('data-federation-copy-picker'), null);
+  assert.equal(video.disabled, true);
+  assert.equal(video.options.length, 1);
+  assert.equal(form.querySelector('.selectSourceContainer').classList.contains('hide'), false);
+  dom.window.close();
+});
+
 test('cloud badge is anchored to artwork rather than the outer card', async () => {
   const { dom } = makeWindow(false);
   await settle();
