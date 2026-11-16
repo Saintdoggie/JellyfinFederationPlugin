@@ -102,6 +102,7 @@ def one_theme(browser, lab, label, friend_title, shared_title, library_id):
     base = lab['receiver']['base']
     page, _, errors = fb.signed_in_page(browser, base, 'qa-admin', lab['receiver']['password'])
     findings, gradients = [], []
+    step = ['library page']
     try:
         ui.library_grid(page, base, library_id, 1)
         page.wait_for_function("name => [...document.querySelectorAll('.federation-origin-tab')].some(t => t.textContent === name)", arg=lab['friend_name'], timeout=45000)
@@ -114,24 +115,31 @@ def one_theme(browser, lab, label, friend_title, shared_title, library_id):
         ui.shot(page, f'theme-{label}-library')
         page.locator('.federation-origin-tab', has_text='All').first.click()
 
+        step[0] = 'page of a title owned here with a copy elsewhere'
         fb.go(page, base, '#/details?id=' + shared_title)
         page.wait_for_selector('.itemDetailPage:not(.hide) .selectVideo[data-federation-copy-picker="1"]', timeout=45000)
         gradients += measure(page, 'title page (own title, copies)', findings)['gradients']
 
+        step[0] = 'page of a friend title'
         fb.go(page, base, '#/details?id=' + friend_title)
         page.wait_for_selector('.itemDetailPage:not(.hide) .btnMoreCommands', timeout=45000)
         page.wait_for_timeout(1500)
         gradients += measure(page, 'title page (friend title)', findings)['gradients']
+        step[0] = 'the "..." menu on a friend title'
         page.locator('.itemDetailPage:not(.hide) .btnMoreCommands').first.click()
         page.wait_for_selector('.federation-actionsheet-item', timeout=20000)
         page.wait_for_timeout(600)
         gradients += measure(page, '"..." menu', findings)['gradients']
         ui.shot(page, f'theme-{label}-menu')
+        step[0] = 'the download dialog'
         page.locator('.federation-actionsheet-item', has_text='Download').first.click()
         page.wait_for_selector('.federation-dest', timeout=20000)
         page.wait_for_timeout(500)
         gradients += measure(page, 'download dialog', findings)['gradients']
         ui.shot(page, f'theme-{label}-dialog')
+    except Exception as error:
+        ui.shot(page, f'theme-{label}-failed')
+        raise RuntimeError(f'{label}: {step[0]}: {str(error).splitlines()[0][:200]}') from None
     finally:
         page.context.close()
     return findings, sorted(set(gradients)), errors

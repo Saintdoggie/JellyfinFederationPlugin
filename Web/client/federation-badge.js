@@ -1228,8 +1228,9 @@
   ];
 
   function findDetailPoster() {
+    var scope = detailScope();
     for (var i = 0; i < DETAIL_POSTER_SELECTORS.length; i++) {
-      var el = document.querySelector(DETAIL_POSTER_SELECTORS[i]);
+      var el = scope.querySelector(DETAIL_POSTER_SELECTORS[i]);
       if (el) {
         return el;
       }
@@ -1809,10 +1810,22 @@
     }
   }
 
+  // The title page on show. jellyfin-web keeps the page it came from in the
+  // document, hidden: going from one title to another (More Like This, a cast
+  // member's other work) leaves two title pages, and the first match in the
+  // document is the hidden one. The name tag and the "..." entries then went to
+  // a page nobody sees.
+  function detailScope() {
+    return document.querySelector('.itemDetailPage:not(.hide)')
+      || document.querySelector('.page:not(.hide)')
+      || document;
+  }
+
   function injectSourceTag(rawId, srv) {
     var label = srv ? ('Streamed from ' + srv) : 'Streamed from another server';
     var name = srv || 'Another server';
-    var info = document.querySelector('.itemMiscInfo-primary') || document.querySelector('.itemMiscInfo');
+    var scope = detailScope();
+    var info = scope.querySelector('.itemMiscInfo-primary') || scope.querySelector('.itemMiscInfo');
     if (!info) {
       return;
     }
@@ -1975,16 +1988,18 @@
   var currentItemIsFederated = false;
 
   function bindMoreCommandsMenu() {
-    var btn = document.querySelector('.btnMoreCommands');
-    if (!btn || btn.dataset.federationBound) {
-      return;
-    }
-
-    btn.dataset.federationBound = 'true';
-    btn.addEventListener('click', function () {
-      if (currentItemId) {
-        injectActionSheetItems(currentItemId, currentItemIsFederated);
+    // Every title page in the document, shown or kept: each has its own button.
+    document.querySelectorAll('.btnMoreCommands').forEach(function (btn) {
+      if (btn.dataset.federationBound) {
+        return;
       }
+
+      btn.dataset.federationBound = 'true';
+      btn.addEventListener('click', function () {
+        if (currentItemId) {
+          injectActionSheetItems(currentItemId, currentItemIsFederated);
+        }
+      });
     });
   }
 
@@ -2016,7 +2031,8 @@
     // page (has the runtime/year/rating info line every playable item shows),
     // not a Person/Studio/Genre page or anything else that happens to carry a
     // guid in its URL but isn't one of this server's own shareable items.
-    var isMediaPage = !!(document.querySelector('.itemMiscInfo-primary') || document.querySelector('.itemMiscInfo'));
+    var detail = detailScope();
+    var isMediaPage = !!(detail.querySelector('.itemMiscInfo-primary') || detail.querySelector('.itemMiscInfo'));
     if (!isMediaPage) {
       currentItemId = null;
       return;

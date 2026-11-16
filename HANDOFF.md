@@ -9,7 +9,16 @@ release goes out or a piece of work stops half way.
 
 - `master` = **0.0.227** (released). 0.0.225, 0.0.226 and 0.0.227 all went out on
   2026-11-15/16.
-- No work is half done. Nothing is installed on any live server by these releases:
+- **Half done (branch `work/0.0.227`, commit after 0.0.227, not released):** the theme
+  check `scripts/federation_theme_smoke.py` (stage `themes` of `federation_ui_smoke.py`;
+  community stylesheets go in a folder named by `FEDERATION_QA_THEME_CSS`, none are in
+  the repo) and a fix in `Web/client/federation-badge.js` (`detailScope`: title-page
+  additions go to the page on show, not a hidden earlier one). The check has not passed
+  yet: on the lab, a friend title's page shows no server name tag and the "..." menu has
+  none of the plugin's entries (`.federation-actionsheet-item`), even on a first visit.
+  Not yet known whether that is the check's assumption (Jellyfin's own Download entry
+  is there) or a real bug (`federatedIds` not holding the id in `badgeDetailPage`).
+  Find that out first; web tests (184) pass with the fix. Nothing is installed on any live server by these releases:
   installing is the owner's call (see "Rules that are easy to break").
 - Next up: the queue below, top first.
 
