@@ -414,6 +414,11 @@
     // buttons then look like the theme's. Anything fainter becomes black or white.
     var accentText = readableOn(accent, sample.accentText, 2.5);
     var accentStrong = ensureContrast(accent, surface, 3);
+    // The chosen server tab writes in the accent on a wash of the accent. That
+    // pairing needs its own colour: "strong" is only promised against the bare
+    // surface, and on a light theme it read at under 3:1 on the wash.
+    var accentSoft = { r: accent.r, g: accent.g, b: accent.b, a: dark ? 0.16 : 0.12 };
+    var accentOnSoft = ensureContrast(accent, composite(accentSoft, surface), 4.5);
 
     var border = firstColor(sample.border);
     var danger = opaqueColor(sample.danger, THEME_FALLBACK.danger);
@@ -462,7 +467,8 @@
       accent: colorCss(accent),
       'accent-text': colorCss(accentText),
       'accent-strong': colorCss(accentStrong),
-      'accent-soft': colorCss(accent, dark ? 0.16 : 0.12),
+      'accent-soft': colorCss(accentSoft, accentSoft.a),
+      'accent-on-soft': colorCss(accentOnSoft),
       border: border ? colorCss(border) : colorCss(text, 0.16),
       hover: colorCss(text, 0.08),
       placeholder: colorCss(text, 0.07),
@@ -831,10 +837,10 @@
       '.federation-origin-filter{display:flex;flex-wrap:nowrap;align-items:center;gap:.5em;box-sizing:border-box;width:100%;margin:0;padding-top:.3em;padding-bottom:1em;overflow-x:auto;scrollbar-width:none;font-family:var(--fed-font);}',
       '.federation-origin-filter::-webkit-scrollbar{display:none;}',
       '.federation-origin-filter[data-empty="1"]{display:none;}',
-      '.federation-origin-label{flex:0 0 auto;margin-inline-end:.25em;font-size:.78em;letter-spacing:.08em;text-transform:uppercase;opacity:.55;}',
+      '.federation-origin-label{flex:0 0 auto;margin-inline-end:.25em;font-size:.78em;letter-spacing:.08em;text-transform:uppercase;color:var(--fed-text-muted);}',
       '.federation-origin-tab{flex:0 0 auto;box-sizing:border-box;border:1px solid transparent;background:var(--fed-hover);color:inherit;font:inherit;font-size:.92em;line-height:1.2;white-space:nowrap;padding:.5em 1.05em;border-radius:var(--fed-radius-pill);cursor:pointer;opacity:.8;transition:opacity .12s ease,background-color .12s ease,border-color .12s ease;}',
       '.federation-origin-tab:hover{opacity:1;}',
-      '.federation-origin-tab[aria-selected="true"]{opacity:1;font-weight:600;color:var(--fed-accent-strong);background:var(--fed-accent-soft);border-color:var(--fed-accent-strong);}',
+      '.federation-origin-tab[aria-selected="true"]{opacity:1;font-weight:600;color:var(--fed-accent-on-soft);background:var(--fed-accent-soft);border-color:var(--fed-accent-on-soft);}',
       '.federation-origin-tab:focus-visible{outline:2px solid var(--fed-accent-strong);outline-offset:2px;}',
       '@media(prefers-reduced-motion:reduce){.federation-origin-tab{transition:none;}}',
       '.card.federation-origin-hidden,.listItem.federation-origin-hidden{display:none!important;}',
@@ -935,15 +941,32 @@
   // enabling admin-only polling/actions, otherwise every non-admin browser
   // sends a forbidden /Downloads request every three seconds indefinitely.
   function resolveAdminState() {
+    function apply(user) {
+      currentUserIsAdmin = !!(user && user.Policy && user.Policy.IsAdministrator);
+    }
+
+    // On a fresh page load this runs before jellyfin-web has made ApiClient (the
+    // stored session is already there). Ask the server directly then; otherwise
+    // an administrator stayed an ordinary viewer until the page was reloaded.
+    function askServer() {
+      if (!getToken()) {
+        apply(null);
+        return Promise.resolve();
+      }
+
+      return federationFetch('/Users/Me', { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(apply)
+        .catch(function () { /* a viewer remains non-admin */ });
+    }
+
     try {
       if (window.ApiClient && typeof window.ApiClient.getCurrentUser === 'function') {
-        return Promise.resolve(window.ApiClient.getCurrentUser()).then(function (user) {
-          currentUserIsAdmin = !!(user && user.Policy && user.Policy.IsAdministrator);
-        }).catch(function () { /* a viewer remains non-admin */ });
+        return Promise.resolve(window.ApiClient.getCurrentUser()).then(apply).catch(askServer);
       }
-    } catch (e) { /* a viewer remains non-admin */ }
+    } catch (e) { /* ask the server */ }
 
-    return Promise.resolve();
+    return askServer();
   }
 
   function refreshFederatedIds() {
@@ -1319,8 +1342,14 @@
       var origin = window.location.origin.replace(/\/+$/, '');
       for (var i = 0; i < servers.length; i++) {
         var s = servers[i];
-        if (s && s.AccessToken && s.Url && String(s.Url).replace(/\/+$/, '') === origin) {
-          return s.AccessToken;
+        if (!s || !s.AccessToken) { continue; }
+        // jellyfin-web stores the address under ManualAddress, LocalAddress or
+        // RemoteAddress (never "Url", which this used to look for alone).
+        var addresses = [s.Url, s.ManualAddress, s.LocalAddress, s.RemoteAddress];
+        for (var a = 0; a < addresses.length; a++) {
+          if (addresses[a] && String(addresses[a]).replace(/\/+$/, '').toLowerCase().indexOf(origin.toLowerCase()) === 0) {
+            return s.AccessToken;
+          }
         }
       }
     } catch (e) { /* no credentials available */ }
@@ -1901,11 +1930,14 @@
   // can both run more than once in edge cases.
   function injectActionSheetItems(rawId, isFederated) {
     var attempts = 0;
+    var startedAt = Date.now();
     function tryInject() {
       var scroller = document.querySelector('.actionSheetScroller');
       if (!scroller) {
+        // By the clock, not by frames: 20 frames is a third of a second, and
+        // jellyfin-web asks the server about the title before it draws the menu.
         attempts++;
-        if (attempts < 20) {
+        if (Date.now() - startedAt < 5000 && attempts < 600) {
           requestAnimationFrame(tryInject);
         }
 
@@ -3641,15 +3673,45 @@
   // its first page unfiltered, so the selected tab only sometimes applied.
   hookOriginQueries();
 
-  Promise.all([refreshFederatedIds(), refreshClientSettings(), resolveAdminState()]).then(function () {
-    if (currentUserIsAdmin) {
-      refreshSharingDisabledIds();
-      resumeActiveDownloads();
-      refreshDownloadsList();
+  // Everything that depends on who is signed in. The script starts before
+  // jellyfin-web has a session on a fresh page load, and stays loaded across
+  // sign-out and sign-in: the first catalogue request was refused (no token)
+  // and not asked again for 30 seconds, and a person who signed in after the
+  // script started was never recognised as an administrator. So this runs at
+  // start and again whenever the token appears or changes.
+  var sessionToken = '';
+  function loadSession() {
+    sessionToken = getToken() || '';
+    return Promise.all([refreshFederatedIds(), refreshClientSettings(), resolveAdminState()]).then(function () {
+      if (currentUserIsAdmin) {
+        refreshSharingDisabledIds();
+        resumeActiveDownloads();
+        refreshDownloadsList();
+      }
+
+      scheduleScan();
+    });
+  }
+
+  function watchSession() {
+    var token = getToken() || '';
+    if (token === sessionToken) {
+      return;
     }
 
-    scheduleScan();
-  });
+    if (!token) {
+      // Signed out: nothing of the last person's stays.
+      sessionToken = '';
+      currentUserIsAdmin = false;
+      federatedIds = new Map();
+      unavailableIds = new Set();
+      return;
+    }
+
+    loadSession();
+  }
+
+  loadSession();
   setInterval(refreshFederatedIds, 30 * 1000);
   setInterval(refreshClientSettings, 5 * 60 * 1000);
   setInterval(refreshSharingDisabledIds, 5 * 60 * 1000);
@@ -3660,6 +3722,7 @@
   // not reliably fire DOM mutations synchronously with a route change - this
   // catches detail-page navigation the MutationObserver below might miss.
   setInterval(scheduleScan, 1500);
+  setInterval(watchSession, 1000);
 
   var observer = new MutationObserver(scheduleScan);
   observer.observe(document.body, { childList: true, subtree: true });

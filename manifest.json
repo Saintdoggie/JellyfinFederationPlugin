@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.228.0",
+        "changelog": "0.0.228: the web additions read on every theme (stock and community); friends' titles are marked as soon as the page opens instead of up to 30 seconds later; an administrator who signs in is recognised without a reload; the menu entries arrive on a slow menu.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-16T14:24:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.228/Jellyfin.Federation.zip",
+        "checksum": "c2c99b216e5995f64afc7f9b7886d33a"
+      },
+      {
         "version": "0.0.227.0",
         "changelog": "0.0.227: Downloads from a friend your server only knows by a private address (LAN, Tailscale, a local name) now come through your server instead of sending the device to that address; players are not sent there either unless they are on the same network. Titles of an offline server are left out by the server, so library pages stay full. A friend's catalogue request no longer fails on a large library. The plugin's page under Dashboard, Plugins shows its logo, version notes and repository.",
         "targetAbi": "12.0.0.0",

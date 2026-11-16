@@ -26,7 +26,7 @@ def launch(playwright):
     return playwright.chromium.launch(executable_path=chrome_path(), headless=True, args=['--no-sandbox'])
 
 
-def signed_in_page(browser, base, username, password='', viewport=None, path='#/home'):
+def signed_in_page(browser, base, username, password='', viewport=None, path='#/home', local=None):
     """Returns (page, user id, page errors list). The page is on `path`, settled."""
     header = {'Authorization': f'MediaBrowser Client="Jellyfin Web", Device="Chrome", DeviceId="{DEVICE_ID}", Version="12.4.0"'}
     auth = qa.request(base, '/Users/AuthenticateByName', header, {'Username': username, 'Pw': password})
@@ -38,6 +38,9 @@ def signed_in_page(browser, base, username, password='', viewport=None, path='#/
     context.add_init_script(
         "try{localStorage.setItem('jellyfin_credentials', %s);localStorage.setItem('_deviceId2', %s);}catch(e){}"
         % (json.dumps(json.dumps(credentials)), json.dumps(DEVICE_ID)))
+    # Settings jellyfin-web keeps in this browser only (the theme is one): "<user id>-<name>".
+    for name, value in (local or {}).items():
+        context.add_init_script("try{localStorage.setItem(%s, %s);}catch(e){}" % (json.dumps(auth['User']['Id'] + '-' + name), json.dumps(value)))
     page = context.new_page()
     errors = []
     page.on('pageerror', lambda error: errors.append(error.name + ': ' + error.message))

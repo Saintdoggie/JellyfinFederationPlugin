@@ -7,19 +7,14 @@ release goes out or a piece of work stops half way.
 
 ## State right now (2026-11-16)
 
-- `master` = **0.0.227** (released). 0.0.225, 0.0.226 and 0.0.227 all went out on
+- `master` = **0.0.228** (released 2026-11-16). 0.0.225 to 0.0.227 went out on
   2026-11-15/16.
-- **Half done (branch `work/0.0.227`, commit after 0.0.227, not released):** the theme
-  check `scripts/federation_theme_smoke.py` (stage `themes` of `federation_ui_smoke.py`;
-  community stylesheets go in a folder named by `FEDERATION_QA_THEME_CSS`, none are in
-  the repo) and a fix in `Web/client/federation-badge.js` (`detailScope`: title-page
-  additions go to the page on show, not a hidden earlier one). The check has not passed
-  yet: on the lab, a friend title's page shows no server name tag and the "..." menu has
-  none of the plugin's entries (`.federation-actionsheet-item`), even on a first visit.
-  Not yet known whether that is the check's assumption (Jellyfin's own Download entry
-  is there) or a real bug (`federatedIds` not holding the id in `badgeDetailPage`).
-  Find that out first; web tests (184) pass with the fix. Nothing is installed on any live server by these releases:
+- No work is half done. Nothing is installed on any live server by these releases:
   installing is the owner's call (see "Rules that are easy to break").
+- 0.0.228 closed queue item 1 (themes) and three sign-in bugs the theme check
+  exposed (`loadSession`/`watchSession`, `getToken`, `resolveAdminState` in
+  `Web/client/federation-badge.js`). What the theme check does not open yet is
+  listed in `TODO.md` under 0.0.228.
 - Next up: the queue below, top first.
 
 ## What the owner asked for (2026-11-15) and where each item is
@@ -31,7 +26,7 @@ release goes out or a piece of work stops half way.
 | Server view "condensed": no empty space where a title was | Done in 0.0.227 (offline servers' titles left out by the server) | `FederationLocalOnlyItemsFilter.UnavailableItemIds` |
 | "A plugin page for the plugin page" | Done in 0.0.227, read as the plugin's page under Dashboard → Plugins | `Services/FederationPluginPageFilter.cs` |
 | Bug fixes | 0.0.227 has three (below); keep looking | "How bugs were found" |
-| Injected web additions work across all themes | Queue item 1 | `TODO.md` "Queue" |
+| Injected web additions work across all themes | Done in 0.0.228 (9 themes measured in Chrome) | `scripts/federation_theme_smoke.py` |
 | Major: better experience | Queue item 3 | `TODO.md` "Queue" |
 | Major: better federation, platform and app compatibility | Queue item 2 | `TODO.md` "Queue" |
 
@@ -88,6 +83,17 @@ Things that will waste your time if you do not know them:
 - **The checks set `FEDERATION_PLAYERS_REACH_PRIVATE=1`** on their containers,
   because the servers know each other by container name (a private name). The UI
   lab does not, so it shows the real default.
+- **The script starts before jellyfin-web has a session.** On a fresh page load
+  `window.ApiClient` does not exist yet when `federation-badge.js` runs. Anything
+  that needs the signed-in person belongs in `loadSession()` (run again by
+  `watchSession()` when the token appears or changes), not at the top level.
+- **jellyfin-web keeps the theme in the browser** (`localStorage["<user id>-appTheme"]`),
+  not in the server's display preferences. `fb.signed_in_page(..., local={'appTheme': x})`
+  sets it; the theme check fails if the theme's stylesheet is not on the page.
+- The theme check wants community stylesheets in a folder named by
+  `FEDERATION_QA_THEME_CSS` (ElegantFin, Scyfin, Zesty were used; fetch their
+  released `.css` yourself, they are not in the repository). Without it only the six
+  stock themes run.
 - `federation_ui_lab.py --hold` keeps two servers up for looking at things by
   hand; `FEDERATION_QA_KEEP=1` keeps them after a failure. Remove what you keep.
 - Old stopped `fdl-*` containers and a `fed-ui-preview` container on the owner's

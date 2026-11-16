@@ -9,7 +9,8 @@ piece of text the plugin added against what is painted behind it:
 
   library page   server tabs (plain and chosen), source badges on cards
   title page     the server name tag, the Video dropdown, the plugin's entries in the "..." menu
-  dialog         "Download to this server"
+  dialog         "Download to this server" (its submit button is the theme's own
+                 button and is not judged; nor is a gradient the theme itself paints)
 
 It fails on text under 3:1 against its background, on any gradient the plugin
 painted, and when the plugin's colour tokens were not derived for the theme.
@@ -39,17 +40,26 @@ MEASURE = r"""() => {
   const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
   // What is painted behind an element: its ancestors' colours, nearest first, down to the first solid one.
   const behind = el => {
-    const layers = []; let picture = false; let solid = false;
+    const layers = []; let picture = false; let solid = false; let ends = null;
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
       const cs = getComputedStyle(n);
       const c = parse(cs.backgroundColor);
       if (c && c.a > 0) { layers.push(c); if (c.a >= 0.999) { solid = true; break; } }
-      if (cs.backgroundImage && cs.backgroundImage !== 'none') { picture = true; break; }
+      if (cs.backgroundImage && cs.backgroundImage !== 'none') {
+        // A theme's gradient is measured at every colour it names; a real picture cannot be.
+        const stops = /url\(/.test(cs.backgroundImage) ? [] : (cs.backgroundImage.match(/rgba?\([^)]+\)/g) || []).map(parse).filter(c => c && c.a > 0);
+        if (stops.length) { ends = stops; } else { picture = true; }
+        break;
+      }
     }
     let base = { r: 255, g: 255, b: 255, a: 1 };
-    if (!solid && !picture) { const root = parse(getComputedStyle(document.documentElement).backgroundColor); if (root && root.a > 0) base = over(root, base, root.a); }
-    for (let i = layers.length - 1; i >= 0; i--) base = over(layers[i], base, layers[i].a);
-    return { color: base, picture: picture && !solid };
+    if (!solid && !picture && !ends) { const root = parse(getComputedStyle(document.documentElement).backgroundColor); if (root && root.a > 0) base = over(root, base, root.a); }
+    const bases = (ends || [null]).map(end => {
+      let b = end ? over(end, base, end.a) : base;
+      for (let i = layers.length - 1; i >= 0; i--) b = over(layers[i], b, layers[i].a);
+      return b;
+    });
+    return { colors: bases, picture: picture && !solid };
   };
   const visible = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.05; };
   const own = el => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 0);
@@ -60,7 +70,15 @@ MEASURE = r"""() => {
   document.querySelectorAll('[class*="federation-"], [class*="federation-"] *, select[data-federation-copy-picker]').forEach(el => {
     if (!visible(el) || el.closest('.federation-theme-probe')) return;
     const cs = getComputedStyle(el);
-    if (/gradient/i.test(cs.backgroundImage) && String(el.className).includes('federation-')) out.gradients.push(String(el.className).slice(0, 80));
+    if (/gradient/i.test(cs.backgroundImage) && String(el.className).includes('federation-')) {
+      // Only a gradient the plugin's own rules paint: with the plugin's class names
+      // taken off, one that stays is the theme's (Apple TV paints every dialog header).
+      const kept = el.className; el.className = kept.split(' ').filter(c => !c.includes('federation-')).join(' ');
+      const themes = /gradient/i.test(getComputedStyle(el).backgroundImage); el.className = kept;
+      if (!themes) out.gradients.push(String(kept).slice(0, 80));
+    }
+    // The theme's own submit button, drawn by the theme like every other one of its buttons.
+    if (el.classList.contains('button-submit')) return;
     const isSelect = el.tagName === 'SELECT';
     if (!own(el) && !isSelect) return;
     const text = parse(cs.color); if (!text) return;
@@ -68,21 +86,19 @@ MEASURE = r"""() => {
     let opacity = 1; for (let n = el; n && n.nodeType === 1 && mine(n); n = n.parentElement) opacity *= Number(getComputedStyle(n).opacity);
     const under = behind(el.parentElement || el);
     const ownBg = parse(cs.backgroundColor);
-    let bg = under.color;
-    if (ownBg && ownBg.a > 0) bg = over(ownBg, under.color, ownBg.a * opacity);
-    const shown = over(text, bg, Math.min(1, text.a * opacity));
+    // The lowest figure over every colour that can be behind the text.
+    let lowest = Infinity;
+    under.colors.forEach(base => {
+      let bg = base;
+      if (ownBg && ownBg.a > 0) bg = over(ownBg, base, ownBg.a * opacity);
+      const shown = over(text, bg, Math.min(1, text.a * opacity));
+      lowest = Math.min(lowest, ratio(shown, bg));
+    });
     out.texts.push({ what: (isSelect ? 'select ' : '') + String(el.className).split(' ').filter(c => c.includes('federation-'))[0] || el.tagName.toLowerCase(),
-      text: (el.textContent || el.value || '').trim().slice(0, 28), ratio: Math.round(ratio(shown, bg) * 100) / 100, picture: under.picture && !(ownBg && ownBg.a >= 0.999) });
+      text: (el.textContent || el.value || '').trim().slice(0, 28), ratio: Math.round(lowest * 100) / 100, picture: under.picture && !(ownBg && ownBg.a >= 0.999) });
   });
   return out;
 }"""
-
-
-def set_theme(base, headers, user_id, theme):
-    path = f'/DisplayPreferences/usersettings?userId={user_id}&client=emby'
-    prefs = qa.request(base, path, headers)
-    prefs.setdefault('CustomPrefs', {})['appTheme'] = theme
-    qa.request(base, path, headers, prefs, expected=204)
 
 
 def set_custom_css(base, admin, css):
@@ -98,12 +114,16 @@ def measure(page, where, findings):
     return result
 
 
-def one_theme(browser, lab, label, friend_title, shared_title, library_id):
+def one_theme(browser, lab, label, theme, friend_title, shared_title, library_id):
     base = lab['receiver']['base']
-    page, _, errors = fb.signed_in_page(browser, base, 'qa-admin', lab['receiver']['password'])
+    # jellyfin-web keeps the chosen theme in the browser, not on the server.
+    page, _, errors = fb.signed_in_page(browser, base, 'qa-admin', lab['receiver']['password'], local={'appTheme': theme})
     findings, gradients = [], []
-    step = ['library page']
+    step = ['applying the theme']
     try:
+        applied = page.evaluate("() => [...document.querySelectorAll('link[rel=stylesheet], script[src], style[id]')].map(e => (e.href || e.src || e.id || '')).filter(u => /theme/i.test(u)).join(' ')")
+        qa.check(('/' + theme + '/') in applied or (theme + '.') in applied, f'the {theme} theme was not applied (found: {applied[-160:] or "nothing"})')
+        step[0] = 'library page'
         ui.library_grid(page, base, library_id, 1)
         page.wait_for_function("name => [...document.querySelectorAll('.federation-origin-tab')].some(t => t.textContent === name)", arg=lab['friend_name'], timeout=45000)
         page.locator('.federation-origin-tab', has_text=lab['friend_name']).first.click()
@@ -160,15 +180,15 @@ def stage_themes(browser, lab):
     folder = os.environ.get('FEDERATION_QA_THEME_CSS')
     community = sorted(Path(folder).glob('*.css')) if folder else []
     runs = [(theme, theme, '') for theme in STOCK] + [(css.stem, 'dark', css.read_text(errors='replace')) for css in community if css.stat().st_size > 500]
-    problems, notes, checked = [], [], 0
+    problems, notes, checked, detail = [], [], 0, []
     try:
         for label, theme, css in runs:
-            set_theme(base, admin, admin_id, theme)
             set_custom_css(base, admin, css)
-            findings, gradients, errors = one_theme(browser, lab, label, friend_title, shared_title, library_id)
+            findings, gradients, errors = one_theme(browser, lab, label, theme, friend_title, shared_title, library_id)
             measured = [f for f in findings if not f['picture']]
             checked += len(measured)
             qa.check(len(measured) >= 8, f'{label}: only {len(measured)} pieces of the plugin text could be measured; the pages did not draw as expected')
+            detail += [f'{label}\t{f["where"]}\t{f["what"]}\t{f["text"]}\t{f["ratio"]}\t{"picture" if f["picture"] else ""}' for f in findings]
             for f in measured:
                 line = f'{label}: {f["where"]}: {f["what"]} "{f["text"]}" {f["ratio"]}:1'
                 if f['ratio'] < FAIL_UNDER:
@@ -180,11 +200,12 @@ def stage_themes(browser, lab):
             worst = min((f['ratio'] for f in measured), default=0)
             print(f'UI: theme {label}: {len(measured)} texts measured, lowest {worst}:1' + (f', {len(findings) - len(measured)} over a picture not measured' if len(findings) != len(measured) else ''), flush=True)
     finally:
-        set_theme(base, admin, admin_id, 'dark')
         set_custom_css(base, admin, '')
         settings = qa.request(base, '/Plugins/Federation/Configuration', admin)
         settings['ShowFederatedCloudBadges'] = bool(badges_before)
         qa.request(base, '/Plugins/Federation/Configuration', admin, settings)
+    if os.environ.get('FEDERATION_QA_THEME_DETAIL'):
+        Path(os.environ['FEDERATION_QA_THEME_DETAIL']).write_text('\n'.join(detail))
     for note in sorted(set(notes))[:40]:
         print('UI NOTE (readable, under 4.5:1): ' + note, flush=True)
     qa.check(not problems, f'{len(set(problems))} theme problem(s): ' + ' | '.join(sorted(set(problems))[:12]))

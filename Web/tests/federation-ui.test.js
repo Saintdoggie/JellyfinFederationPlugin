@@ -3005,3 +3005,85 @@ test('Link section shows each state, escapes names and keeps a typed code across
   assert.equal(root.querySelector('[data-link-pill]').textContent, 'Linked');
   dom.window.close();
 });
+
+test('a session that starts after the script is picked up at once: catalogue asked again and the administrator recognised', async () => {
+  const dom = new JSDOM(
+    '<!doctype html><html><head></head><body>'
+      + '<div class="itemMiscInfo-primary"></div><button class="btnMoreCommands"></button>'
+      + '</body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#!/details?id=' + itemId }
+  );
+  let token = null;
+  const catalogCalls = [];
+  const intervals = [];
+  dom.window.ApiClient = {
+    getCurrentUser: () => (token ? Promise.resolve({ Policy: { IsAdministrator: true } }) : Promise.reject(new Error('signed out'))),
+    accessToken: () => token
+  };
+  dom.window.fetch = (url, options) => {
+    const u = String(url);
+    let data = {};
+    if (u.includes('ClientCatalog')) {
+      catalogCalls.push((options.headers || {}).Authorization || '');
+      if (!token) return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+      data = { items: { [itemId]: 'Friend' }, unavailableIds: [] };
+    }
+    if (u.includes('ClientSettings')) data = { showFederatedCloudBadges: true };
+    if (u.includes('DisabledIds') || u.endsWith('/Downloads')) data = [];
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+  };
+  dom.window.setInterval = (callback) => { intervals.push(callback); return intervals.length; };
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  await settleMany();
+  assert.equal(catalogCalls.length, 1);
+  assert.equal(dom.window.document.querySelector('.federation-source-tag'), null, 'nothing is known before sign-in');
+
+  // The same tick with no change asks for nothing more.
+  intervals.forEach((run) => { if (/watchSession/.test(run.name)) run(); });
+  await settleMany();
+  assert.equal(catalogCalls.length, 1);
+
+  token = 'fresh-token';
+  intervals.forEach((run) => { if (/watchSession/.test(run.name)) run(); });
+  await settleMany();
+  assert.equal(catalogCalls.length, 2, 'the catalogue is asked for as soon as there is a token, not 30 seconds later');
+  assert.equal(catalogCalls[1], 'MediaBrowser Token="fresh-token"');
+  assert.ok(dom.window.document.querySelector('.federation-source-tag'), 'the friend title gets its server name');
+
+  // Administrator entries in the "..." menu, which draws after a wait longer than 20 frames.
+  dom.window.document.querySelector('.btnMoreCommands').click();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const sheet = dom.window.document.createElement('div');
+  sheet.className = 'actionSheetScroller';
+  dom.window.document.body.appendChild(sheet);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.ok(sheet.querySelector('.federation-actionsheet-item'), 'the menu entries arrive on a slow menu');
+  assert.match(sheet.textContent, /Download to this server|server/i);
+
+  token = null;
+  intervals.forEach((run) => { if (/watchSession/.test(run.name)) run(); });
+  dom.window.close();
+});
+
+test('the stored-session fallback reads the address fields jellyfin-web really writes', async () => {
+  const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>',
+    { runScripts: 'outside-only', url: 'http://localhost/web/index.html#/home' });
+  dom.window.localStorage.setItem('jellyfin_credentials', JSON.stringify({ Servers: [
+    { ManualAddress: 'http://elsewhere.example', AccessToken: 'other' },
+    { ManualAddress: 'http://localhost', AccessToken: 'stored-token' }] }));
+  const seen = [];
+  const asked = [];
+  dom.window.fetch = (url, options) => {
+    asked.push(String(url));
+    if (String(url).includes('ClientCatalog')) seen.push((options.headers || {}).Authorization || '');
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  };
+  dom.window.setInterval = () => 1;
+  dom.window.requestAnimationFrame = (callback) => dom.window.setTimeout(callback, 0);
+  dom.window.eval(badgeScript);
+  await settleMany();
+  assert.equal(seen[0], 'MediaBrowser Token="stored-token"');
+  assert.ok(asked.some((u) => u.endsWith('/Users/Me')), 'with no ApiClient yet, the server is asked who this is');
+  dom.window.close();
+});

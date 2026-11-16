@@ -85,6 +85,7 @@ for (const [name, sample] of Object.entries(themes)) {
     assert.ok(ratio(t, over(t, tokens['text-muted'], tokens.surface), tokens.surface) >= 4.5, 'muted text on surface');
     assert.ok(ratio(t, tokens['accent-text'], tokens.accent) >= 2.5, 'text on the accent');
     assert.ok(ratio(t, tokens['accent-strong'], tokens.surface) >= 3, 'accent used as text or an outline');
+    assert.ok(ratio(t, tokens['accent-on-soft'], over(t, tokens['accent-soft'], tokens.surface)) >= 4.5, 'the chosen tab: accent text on the accent wash');
     assert.ok(ratio(t, tokens['toast-text'], tokens['toast-surface']) >= 4.5, 'toast text');
     assert.ok(ratio(t, tokens['danger-text'], tokens['surface-raised']) >= 4.5, 'error text');
 
