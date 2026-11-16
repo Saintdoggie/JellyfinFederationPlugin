@@ -173,6 +173,7 @@ public class FederationHttpTests : IDisposable
             "PlexMetadataSourceService.SharedHttpClient",
             "PlexCompanionEndpoint.SharedHttp",
             "FederationController.InternalJsonHttpClient",
+            "FederationController.InternalListHttpClient",
             "FederationRemoteTranscodeGateway.Loopback",
             "TailscaleService.HttpClient",
         };

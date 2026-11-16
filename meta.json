@@ -5,9 +5,9 @@
   "overview": "The Jellyfin Federation Plugin allows you to create a unified media library by aggregating content from multiple remote Jellyfin servers. Stream content from any server without file synchronization.",
   "owner": "Angablade",
   "category": "General",
-  "version": "0.0.226",
+  "version": "0.0.227",
   "changelog": "Video copies are one dropdown showing resolution, bitrate, codec and abbreviated server; linked better copies lead. Picking a copy keeps Jellyfin's native audio/subtitle and media-source selection flow.",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-11-16T04:08:00Z",
+  "timestamp": "2026-11-16T04:33:00Z",
   "imageUrl": "https://raw.githubusercontent.com/Saintdoggie/JellyfinFederationPlugin/master/logo.png"
 }

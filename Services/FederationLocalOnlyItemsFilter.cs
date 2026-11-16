@@ -43,6 +43,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
         private static readonly BaseItemKind[] DefaultKinds = { BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.MusicAlbum };
         private static readonly TimeSpan MemoLife = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan UnavailableLife = TimeSpan.FromSeconds(10);
         private static readonly ConcurrentDictionary<string, (DateTime AtUtc, Guid[] Ids)> Memo = new(StringComparer.OrdinalIgnoreCase);
 
         private readonly ILibraryManager _library;
@@ -65,7 +66,11 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <summary>Test seam: the catalogue, when no federation manager is given.</summary>
         internal FederationItemCache? CacheOverride { get; set; }
 
-        internal static void ResetMemo() => Memo.Clear();
+        internal static void ResetMemo()
+        {
+            Memo.Clear();
+            _unavailableMemo = default;
+        }
 
         /// <inheritdoc />
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -112,7 +117,73 @@ namespace Jellyfin.Plugin.Federation.Services
                 }
             }
 
+            // Titles whose every server is offline are left out by the server, so a
+            // page is full and the count is right. The browser used to hide their
+            // cards after the page had been filled, which left short pages.
+            if (IsItemsQuery(context) && context.ActionArguments.ContainsKey("excludeItemIds"))
+            {
+                try
+                {
+                    var unavailable = UnavailableItemIds();
+                    if (unavailable.Length > 0)
+                    {
+                        context.ActionArguments["excludeItemIds"] = MergeExcluded(
+                            context.ActionArguments.TryGetValue("excludeItemIds", out var existing) ? existing as Guid[] : null,
+                            unavailable);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Federation] Could not leave offline servers' titles out of a library query");
+                }
+            }
+
             await next().ConfigureAwait(false);
+        }
+
+        /// <summary>Test seam: whether a server is known to be offline.</summary>
+        internal Func<string, bool> IsOffline { get; set; } = id => FederationItemPersistenceService.AvailabilityOverride?.IsOffline(id) == true;
+
+        /// <summary>Test seam: the library id of a catalogue entry.</summary>
+        internal Func<FederatedCacheEntry, Guid>? ItemIdOf { get; set; }
+
+        private static (DateTime AtUtc, Guid[] Ids) _unavailableMemo;
+
+        /// <summary>
+        /// Library ids of the titles nobody can play right now: every server that
+        /// holds one is switched off or known to be offline (a server not checked
+        /// yet hides nothing). Remembered for a few seconds.
+        /// </summary>
+        internal Guid[] UnavailableItemIds()
+        {
+            var now = DateTime.UtcNow;
+            var memo = _unavailableMemo;
+            if (memo.Ids != null && now - memo.AtUtc < UnavailableLife)
+            {
+                return memo.Ids;
+            }
+
+            var config = Settings();
+            var cache = CacheOverride ?? _federation?.Cache;
+            var idOf = ItemIdOf ?? (_federation == null ? null : new Func<FederatedCacheEntry, Guid>(_federation.ComputeItemId));
+            if (config == null || cache == null || idOf == null)
+            {
+                return Array.Empty<Guid>();
+            }
+
+            var servers = (config.RemoteServers ?? new List<Configuration.RemoteServer>())
+                .Where(s => !string.IsNullOrEmpty(s.Id))
+                .GroupBy(s => s.Id, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Enabled && !IsOffline(g.Key), StringComparer.OrdinalIgnoreCase);
+            var ids = servers.Values.All(live => live)
+                ? Array.Empty<Guid>()
+                : cache.GetAllEntries()
+                    .Where(entry => !entry.GetSourcesSnapshot().Any(source => servers.TryGetValue(source.ServerId, out var live) && live))
+                    .Select(idOf)
+                    .Distinct()
+                    .ToArray();
+            _unavailableMemo = (now, ids);
+            return ids;
         }
 
         /// <summary>True when an ExcludeItemTags value (comma or pipe separated) names the federated tag.</summary>

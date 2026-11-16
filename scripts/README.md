@@ -88,6 +88,19 @@ JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_standby_smoke.py  # th
 JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_party_smoke.py    # watch parties across two servers (scripted SyncPlay players)
 ```
 
+Real Chrome against two servers (needs Python Playwright and Chrome or Chromium):
+
+```sh
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_ui_smoke.py   # server tabs full, download relayed, the plugin's dashboard page, friend offline
+JELLYFIN_TEST_IMAGE=<image id> python3 scripts/federation_ui_lab.py --hold   # keep the two servers up to look by hand; details in a private file it names
+python3 scripts/federation_ui_smoke.py --lab <that lab.json> tabs plugin     # run chosen stages against the held lab
+```
+
+`scripts/federation_browser.py` gives the browser stages a signed-in page. The other
+checks start their servers with `FEDERATION_PLAYERS_REACH_PRIVATE=1`, because servers
+that know each other by container name would otherwise (correctly) never send a
+player to one another; the UI lab leaves it off.
+
 Each creates two disposable Jellyfin containers on a private network, makes them friends and
 removes everything afterwards. The handoff check proves the owner converts, segments come from
 the owner without any receiver credential, the receiver runs no ffmpeg, subtitles come from the

@@ -121,17 +121,33 @@ namespace Jellyfin.Plugin.Federation.Services
         /// friend on https is fine for an http app (that is an upgrade). A friend
         /// only known by an http address is tried on https first when the app used
         /// https (<paramref name="httpsBase"/>, the same host once seen reachable).
+        /// A friend this server only knows by a private address (LAN, Tailscale, a
+        /// local name), or one set to Proxy (<paramref name="relayOnly"/>), is
+        /// never handed to the app: the file goes through this server.
         /// </summary>
         /// <returns>The route, the base address to redirect to, and the reason for a relay.</returns>
         public static (DeviceDownloadRoute Route, string BaseUrl, string? Reason) Decide(
             bool friendNamesFile,
             string friendBaseUrl,
             string requestScheme,
-            string? httpsBase = null)
+            string? httpsBase = null,
+            bool relayOnly = false)
         {
             if (!friendNamesFile)
             {
                 return (DeviceDownloadRoute.Relay, friendBaseUrl, "the friend runs an older Federation plugin that can't send a named file to a device");
+            }
+
+            if (relayOnly)
+            {
+                return (DeviceDownloadRoute.Relay, friendBaseUrl, "this server is set to carry this friend's video itself");
+            }
+
+            // A LAN, Tailscale or local-name address only this server can open: a
+            // device somewhere else would be shown it and get no answer.
+            if (!PlayerReach.DownloadMayUse(friendBaseUrl))
+            {
+                return (DeviceDownloadRoute.Relay, friendBaseUrl, "this server knows the friend by a private address a device elsewhere cannot open");
             }
 
             if (!Uri.TryCreate(friendBaseUrl, UriKind.Absolute, out var friend))

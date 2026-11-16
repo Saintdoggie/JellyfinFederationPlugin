@@ -589,7 +589,12 @@ namespace Jellyfin.Plugin.Federation.Services
                         // Native apps that can fetch the original directly avoid a
                         // conversion; browser and known Android raw-HTTP paths keep
                         // the container-aware Direct Stream/transcode route.
-                        SupportsDirectPlay = !mustConvert && NativeClientCapabilities.SupportsRawHttpDirectPlay(_httpContextAccessor.HttpContext?.Request, nativeIdentity.Client, nativeIdentity.Device),
+                        SupportsDirectPlay = !mustConvert
+                            && NativeClientCapabilities.SupportsRawHttpDirectPlay(_httpContextAccessor.HttpContext?.Request, nativeIdentity.Client, nativeIdentity.Device)
+                            // A friend's own address the device cannot open (LAN, Tailscale)
+                            // is not offered to fetch from; the play goes through this server.
+                            && (candidate.Server.StreamingMode != StreamingMode.Direct
+                                || PlayerReach.PlayerCanOpen(candidate.Path, _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress)),
                         SupportsDirectStream = !mustConvert,
 
                         // Enabled so a client that cannot direct-play the remote's
@@ -844,7 +849,8 @@ namespace Jellyfin.Plugin.Federation.Services
                                 FederationPlaybackProfileFilter.Get(context),
                                 advertised.MediaStreams ?? new List<MediaStream>(),
                                 authorization?.User?.AudioLanguagePreference).ToList(),
-                            SupportsDirectPlay = NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, nativeIdentity.Client, nativeIdentity.Device),
+                            SupportsDirectPlay = NativeClientCapabilities.SupportsRawHttpDirectPlay(context.Request, nativeIdentity.Client, nativeIdentity.Device)
+                                && (!direct || PlayerReach.PlayerCanOpen(sourcePath, context.Connection.RemoteIpAddress)),
                             SupportsDirectStream = true,
                             SupportsTranscoding = false,
                             SupportsProbing = false,

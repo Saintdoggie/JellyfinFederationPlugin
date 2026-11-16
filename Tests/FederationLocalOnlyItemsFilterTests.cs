@@ -170,6 +170,61 @@ public class FederationLocalOnlyItemsFilterTests
         Assert.Empty((Guid[])other.ActionArguments["ids"]!);
     }
 
+    /// <summary>
+    /// Titles of an offline server used to be hidden by the browser after the page
+    /// had been filled, which left short pages. The server leaves them out.
+    /// </summary>
+    [Fact]
+    public void OfflineServersTitles_AreLeftOutOfLibraryQueries_ButNotUncheckedOnes()
+    {
+        FederationLocalOnlyItemsFilter.ResetMemo();
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "federation-offline-test-" + Guid.NewGuid() + ".json");
+        var cache = new FederationItemCache(NullLogger<FederationItemCache>.Instance);
+        cache.Initialize(path);
+        MediaBrowser.Model.Dto.BaseItemDto Dto(string name, string imdb) => new()
+        {
+            Name = name,
+            Type = Jellyfin.Data.Enums.BaseItemKind.Movie,
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["imdb"] = imdb }
+        };
+        var onlyOffline = cache.UpsertByProviderId("Movies", "imdb", "tt1", Dto("Only on the offline one", "tt1"), "down", Guid.NewGuid(), 0, "Movie");
+        var both = cache.UpsertByProviderId("Movies", "imdb", "tt2", Dto("On both", "tt2"), "down", Guid.NewGuid(), 0, "Movie");
+        cache.UpsertByProviderId("Movies", "imdb", "tt2", Dto("On both", "tt2"), "up", Guid.NewGuid(), 1, "Movie");
+        var onlyOff = cache.UpsertByProviderId("Movies", "imdb", "tt3", Dto("On the switched-off one", "tt3"), "off", Guid.NewGuid(), 0, "Movie");
+        var unchecked_ = cache.UpsertByProviderId("Movies", "imdb", "tt4", Dto("Not checked yet", "tt4"), "new", Guid.NewGuid(), 0, "Movie");
+        var ids = new Dictionary<FederatedCacheEntry, Guid>
+        {
+            [onlyOffline] = Guid.NewGuid(), [both] = Guid.NewGuid(), [onlyOff] = Guid.NewGuid(), [unchecked_] = Guid.NewGuid()
+        };
+        var config = new Jellyfin.Plugin.Federation.Configuration.PluginConfiguration
+        {
+            RemoteServers = new List<Jellyfin.Plugin.Federation.Configuration.RemoteServer>
+            {
+                new() { Id = "down", Name = "Down", Enabled = true },
+                new() { Id = "up", Name = "Up", Enabled = true },
+                new() { Id = "off", Name = "Off", Enabled = false },
+                new() { Id = "new", Name = "New", Enabled = true }
+            }
+        };
+        var filter = new FederationLocalOnlyItemsFilter(new Mock<ILibraryManager>().Object, NullLogger<FederationLocalOnlyItemsFilter>.Instance)
+        {
+            CacheOverride = cache,
+            Settings = () => config,
+            IsOffline = id => id == "down",
+            ItemIdOf = entry => ids[entry]
+        };
+
+        Assert.Equal(new[] { ids[onlyOffline], ids[onlyOff] }.OrderBy(g => g), filter.UnavailableItemIds().OrderBy(g => g));
+
+        // Everybody up: nothing is added to any query.
+        FederationLocalOnlyItemsFilter.ResetMemo();
+        config.RemoteServers[2].Enabled = true;
+        filter.IsOffline = _ => false;
+        Assert.Empty(filter.UnavailableItemIds());
+        FederationLocalOnlyItemsFilter.ResetMemo();
+        try { System.IO.File.Delete(path); } catch (System.IO.IOException) { }
+    }
+
     private static async Task<(ActionExecutingContext Context, bool NextCalled)> RunAsync(
         string action,
         string query,

@@ -13,11 +13,14 @@ if cmd == 'prepare':
     s = re.sub(r'"changelog": "%s:.*?",\n' % re.escape(old), lambda m: '"changelog": %s,\n' % json.dumps(ch, ensure_ascii=False), s, flags=re.S)
     s = re.sub(r'"timestamp": "[^"]+"', '"timestamp": "%s"' % ts, s); json.loads(s); open('meta.json','w').write(s)
     m = open('manifest.json').read()
-    i = m.index('      {\n        "version": "%s"' % old)
-    entry = '      {\n        "version": "%s",\n        "changelog": %s,\n        "targetAbi": "12.0.0.0",\n        "timestamp": "%s",\n        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/%s/Jellyfin.Federation.zip",\n        "checksum": "CHECKSUM_PENDING"\n      },\n' % (new, json.dumps(ch, ensure_ascii=False), ts, new)
+    # Since 0.0.227 the manifest writes versions with four parts ("0.0.227.0"): Jellyfin
+    # reports an installed plugin that way, and the dashboard's plugin page compares the
+    # two as text to mark the installed version and name its repository.
+    i = min(x for x in (m.find('      {\n        "version": "%s"' % old), m.find('      {\n        "version": "%s.0"' % old)) if x >= 0)
+    entry = '      {\n        "version": "%s",\n        "changelog": %s,\n        "targetAbi": "12.0.0.0",\n        "timestamp": "%s",\n        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/%s/Jellyfin.Federation.zip",\n        "checksum": "CHECKSUM_PENDING"\n      },\n' % (new + '.0', json.dumps(ch, ensure_ascii=False), ts, new)
     m = m[:i] + entry + m[i:]; json.loads(m); open('manifest.json','w').write(m); print('prepared', new, ts)
 elif cmd == 'checksum':
     md5 = hashlib.md5(open(sys.argv[3],'rb').read()).hexdigest()
     m = open('manifest.json').read(); assert m.count('CHECKSUM_PENDING') == 1
-    m = m.replace('CHECKSUM_PENDING', md5); d = json.loads(m); assert d[0]['versions'][0]['version'] == sys.argv[2]
+    m = m.replace('CHECKSUM_PENDING', md5); d = json.loads(m); assert d[0]['versions'][0]['version'] == sys.argv[2] + '.0'
     open('manifest.json','w').write(m); print(md5)

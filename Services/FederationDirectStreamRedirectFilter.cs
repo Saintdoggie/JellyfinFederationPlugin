@@ -97,7 +97,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// must stay with Jellyfin: only a remote Http source on a peer's
         /// DirectStream gateway, and only when the redirect keeps the request's
         /// scheme (ExoPlayer, for one, refuses cross-protocol redirects by default).
+        /// A friend known by a private address is only given to a player on the
+        /// same network (<see cref="PlayerReach.PlayerCanOpen"/>).
         /// </summary>
+        internal static string? RedirectTarget(MediaSourceInfo? source, string requestScheme, System.Net.IPAddress? client)
+            => RedirectTarget(source, requestScheme) is { } target && PlayerReach.PlayerCanOpen(target, client) ? target : null;
+
+        /// <summary>The scheme and gateway part of the rule, without the player's address.</summary>
         internal static string? RedirectTarget(MediaSourceInfo? source, string requestScheme)
         {
             if (source is not { IsRemote: true, Protocol: MediaProtocol.Http }
@@ -191,7 +197,7 @@ namespace Jellyfin.Plugin.Federation.Services
             var source = string.IsNullOrEmpty(requested)
                 ? sources.FirstOrDefault()
                 : sources.FirstOrDefault(s => string.Equals(s.Id, requested, StringComparison.OrdinalIgnoreCase));
-            var target = RedirectTarget(source, RequestScheme(context.HttpContext.Request));
+            var target = RedirectTarget(source, RequestScheme(context.HttpContext.Request), context.HttpContext.Connection.RemoteIpAddress);
             return (target, ObservedRoute(source, target));
         }
     }

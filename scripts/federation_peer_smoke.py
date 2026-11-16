@@ -56,7 +56,7 @@ def smoke():
             # current receiver against a friend that hasn't updated yet.
             shutil.copy(OLD_SOURCE if (number == 0 and OLD_SOURCE) else qa.REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
             created.append(name)
-            qa.run(['podman', 'run', '-d', '--name', name, '--network', network, '--security-opt', 'label=disable',
+            qa.run(['podman', 'run', '-d', '--name', name, '--network', network, '--security-opt', 'label=disable', '-e', 'FEDERATION_PLAYERS_REACH_PRIVATE=1',
                 '-p', '127.0.0.1::8096', '-v', f'{config}:/config', '-v', f'{media}:/media:ro', qa.JELLYFIN_IMAGE])
             base = 'http://' + qa.run(['podman', 'port', name, '8096/tcp'])
             qa.wait_for(lambda: qa.request(base, '/Startup/User'), 'Jellyfin did not start')
@@ -257,6 +257,14 @@ def smoke():
             qa.check(not qa.request(base, '/Plugins/Federation/FriendFavorites', viewer)['sections'], 'Older friend produced a favorites row')
             print('PEER PASS (older friend): downloads work (named, relayed or direct by the friend\'s version), the friend\'s refusal passed on; no favorites row, no errors', flush=True)
         else:
+            # The friend is still set to Proxy from the playback stage: since 0.0.227
+            # its file comes through this server, like its video.
+            status, relayed_headers, relayed = no_redirect(base, f'/Items/{item_id}/Download', viewer)
+            qa.check(status == 200 and relayed == payload and 'attachment' in (relayed_headers.get('Content-Disposition') or ''),
+                     f'Download from a Proxy friend answered HTTP {status}, expected the file through this server')
+            current = qa.request(base, '/Plugins/Federation/Configuration', admin)
+            current['RemoteServers'][0]['StreamingMode'] = 'Direct'
+            qa.request(base, '/Plugins/Federation/Configuration', admin, current)
             status, located, _ = no_redirect(base, f'/Items/{item_id}/Download', viewer)
             qa.check(status == 302, f'Device download answered HTTP {status}, expected a redirect to the friend')
             location = located.get('Location') or located.get('location')
@@ -297,6 +305,9 @@ def smoke():
                 {'AllowDownloads':True,'AllowBulkDownloads':False})['success'], 'Friend download restore failed')
             qa.wait_for(lambda: (refreshed() and can_download(viewer, viewer_id)) or None, 'Download did not come back')
             qa.request(source_base, f'/Plugins/Federation/DirectStream/{native["Id"]}?token=forged&download=true', {}, expected=403, raw=True)
+            current = qa.request(base, '/Plugins/Federation/Configuration', admin)
+            current['RemoteServers'][0]['StreamingMode'] = 'Proxy'
+            qa.request(base, '/Plugins/Federation/Configuration', admin, current)
             print('PEER PASS: any viewer downloads a friend title in their app: straight from the friend (named file, no credential, resumable), untrusted scheme headers ignored, refused with a reason when the friend turns it off per viewer or for everyone', flush=True)
             stage = 'friends\' favorites'
             source_admin_id = qa.request(source_base, '/Users/Me', source_admin)['Id']
@@ -317,7 +328,8 @@ def smoke():
             qa.check(local in favorite_ids(admin), 'Hiding from the viewer removed the favorite for the admin')
             # A title only some viewers may see has no shared path (Jellyfin calls it Virtual).
             qa.check(can_download(admin, admin_id), 'Download not offered on a title other viewers are blocked from')
-            qa.check(no_redirect(base, f'/Items/{item_id}/Download', admin)[0] == 302, 'Admin download of a per-viewer title failed')
+            # The friend is set to Proxy here, so the file comes through this server (200), not by redirect.
+            qa.check(no_redirect(base, f'/Items/{item_id}/Download', {**admin, 'Range': 'bytes=0-99'})[0] in (200, 206), 'Admin download of a per-viewer title failed')
             qa.check(qa.request(source_base, f'/Plugins/Federation/Friends/{source_friend}/RemoteUserRule', source_admin,
                 {'RemoteUserId':viewer_id,'Mode':'AllLibraries'})['success'], 'Viewer restore failed')
             qa.wait_for(lambda: viewer_sees() == (1, 1, 1) or None, 'Unblocked viewer did not get the title back')
@@ -436,15 +448,20 @@ def smoke():
         snapshot = json.loads(cache.read_text())
         qa.run(['podman','stop','-t','2',names[0]])
         for _ in range(2): qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
-        # Since 0.0.184 titles already in the library stay listed while their
-        # server is offline (they come back without churn); playback fails fast.
-        qa.check(movies(base, admin) and movies(base, viewer), 'Offline source titles were dropped from the library')
+        # Since 0.0.184 titles already in the library are kept while their server
+        # is offline (they come back without churn). Since 0.0.227 library lists
+        # leave them out on the server, so pages stay full in every app.
+        qa.wait_for(lambda: not movies(base, viewer), 'Offline source titles are still listed', 40)
+        qa.check(qa.request(base, f'/Items/{item_id}?userId={viewer_id}', viewer)['Id'] == item_id, 'Offline source titles were dropped from the library')
         refreshed()
         qa.check(json.loads(cache.read_text())==snapshot, 'Outage erased cached catalog')
         qa.run(['podman','start',names[0]])
         qa.wait_for(lambda: qa.request(source_base, '/System/Info/Public'), 'Source restart failed')
-        qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
-        recovered = qa.wait_for(lambda: movies(base, viewer), 'Source titles did not return')
+        def listed_again():
+            # Lists leave the titles out until a check has seen the server again.
+            qa.request(base, '/Plugins/Federation/Availability/Rescan', admin, {})
+            return movies(base, viewer)
+        recovered = qa.wait_for(listed_again, 'Source titles did not return')
         qa.check(recovered[0]['Id']==item_id, 'Recovery changed identity')
         # Titles stay listed while offline (0.0.184), so wait for a playable source.
         def playable_again():

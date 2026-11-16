@@ -1,5 +1,37 @@
 # Jellyfin Federation — remaining work
 
+Takeover notes and the owner's current requests: `HANDOFF.md`.
+
+## Queue (owner's request of 2026-11-15, after 0.0.227)
+
+Hardest and most useful first. Each is its own release.
+
+1. **Web additions on every theme.** 0.0.220 made every colour a `--fed-*` token; what is missing is proof on every surface. Add a `themes` stage to `scripts/federation_ui_smoke.py`: for each stock theme and the community ones (ElegantFin, Zesty, Scyfin) apply the theme on the lab, then measure contrast of text on its background for the server tabs, badges, action-sheet entries, the Video dropdown, the download picker, the friends' rows and the player overlay, and fail on any fixed colour or unreadable text. Fix what it finds. The settings page (`Web/admin/configPage.html`) sits inside the dashboard, which has its own light/dark scheme: check it there too.
+2. **Apps and platforms.** (a) Android phone app direct from the owning server (needs a source shape its player accepts; copy play is the route, see `DIRECT-PLAY.md` steps 4-8). (b) A friend's separate subtitle file burned in on this server fails (ffmpeg gets a placeholder path). (c) A picked copy of an owned title is not copy-played by its server. (d) Friends reached through a link are not covered by the linked rule. (e) Players handed a private address inside a converted (hand-off) playlist: `PlayerReach` is applied to downloads, redirects and direct-play offers only.
+3. **Experience.** (a) Home rows and search still hide other servers' cards in the browser under a server tab; answer them on the server like the library pages. (b) Copy plays are labelled "friend converts" in Playback Info and the dashboard. (c) The server tabs appear a moment after the grid (they wait for the catalogue call); draw them from the last known list at once.
+
+## 0.0.227 — downloads and players never get a private address; full pages; catalogue requests that finish; the plugin's dashboard page
+
+- [x] **Download without a private address.** A device that downloads a friend's title was redirected to the friend's address exactly as this server knows it. When that is a LAN or Tailscale address or a local name, the device was shown an address it cannot open. Such a friend's file now comes through this server (`DeviceDownload.Decide`, `PlayerReach.IsPrivateAddress`), and so does one from a friend set to Proxy, which used to be ignored for downloads.
+- [x] **Players too.** A direct-play request is not redirected to a private address, and apps are not offered it to fetch from, unless the player is plainly on the same network (both on Tailscale, or the same IPv4 /24): `PlayerReach.PlayerCanOpen`, used in `FederationDirectStreamRedirectFilter.RedirectTarget` and the two `SupportsDirectPlay` offers in `FederationMediaSourceProvider`. `FEDERATION_PLAYERS_REACH_PRIVATE=1` in the server's environment restores the old behaviour for a server whose every viewer is local; the container checks set it because their servers know each other by container name.
+- [x] **Full pages.** Titles whose every server is offline or switched off are left out of `/Items` library queries by the server (`FederationLocalOnlyItemsFilter.UnavailableItemIds`, into the query's own `excludeItemIds`), so pages are full, the count is right, and apps get the same list as the web client. The browser used to hide those cards after the page was filled. The titles stay in the library and return with the server.
+- [x] **Fix: a server not checked yet hid its titles.** `ClientCatalog` treated "not checked yet" as offline, so after a restart friends' titles were hidden in the web client until the first check. Only "known offline" hides now.
+- [x] **Fix: a friend's catalogue request failed forever on a large library.** `Peer/Items` lists every id of a library in one internal read with a 30 second limit; on a large library and a busy disk it was cut off, answered as an unhandled error, and started from nothing on the friend's next try. Seen on the owner's home server: 364 failures in three days, one per minute. The read now runs once per list in the background with a 10 minute limit; a request waits 20 seconds, then gets the last complete list or "try again in 30 seconds" (`GetStableItemOrderAsync`, `LoadStableOrderAsync`). A timed-out internal read is a warning and a 503, not an unhandled error.
+- [x] **The plugin's page under Dashboard → Plugins.** It had no logo and "Repository: Unknown", and on a hand-copied install an error banner and no notes. `Services/FederationPluginPageFilter.cs` answers the three requests the page makes for this plugin when Jellyfin has nothing (logo built into the plugin, installed version with its notes). The manifest now writes versions with four parts so the page recognises the installed version from a repository install.
+- [x] `scripts/federation_ui_smoke.py` (real Chrome, two servers): server tabs full with no hidden card, download relayed, plugin page complete, friend offline leaves full pages and returns. `scripts/federation_peer_smoke.py` now expects offline titles to be left out of lists and kept by id.
+- [ ] Not reproduced on the owner's servers: which of their servers handed out a private address. Their home server knows its friends by https names.
+- [ ] Not measured on the owner's home server: how long the full list of its largest library takes. If it is over 10 minutes the catalogue request still fails (it now says so in the log: "Could not list this server's titles for friends").
+- [ ] A converted play handed off to a friend (HLS playlist with the friend's address) still carries a private address when that is all this server knows; see Queue 2(e).
+- [ ] The plugin page fix for the installed version needs the new four-part manifest version; older versions listed in the manifest keep three parts and are not marked "Installed".
+- [ ] Jellyfin's trickplay task still logs an error for every friend title (it tries every video; a friend's title has no local file). Not something the plugin controls.
+
+How the home server's log was read (addresses masked, nothing copied out):
+
+```sh
+grep -E "\[(ERR|WRN)\]" log_YYYYMMDD.log | grep -i federation \
+  | sed -E 's/^\[[^]]+\] //; s/[0-9a-f]{32}/<id>/g; s#https?://[^ "]+#<url>#g; s/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -30
+```
+
 ## 0.0.226 — Windows servers: direct link and pairing
 
 Asked for on 2026-11-15: friends who run Jellyfin on Windows must be able to use the direct link. Design notes: `docs/DIRECT-LINK.md` "Windows servers", `docs/PAIRING.md` "Windows and two fixes".

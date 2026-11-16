@@ -118,6 +118,8 @@ namespace Jellyfin.Plugin.Federation.Configuration
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederatedPartyFilter>());
             serviceCollection.AddTransient<FederationLocalOnlyItemsFilter>();
             serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationLocalOnlyItemsFilter>());
+            serviceCollection.AddTransient<FederationPluginPageFilter>();
+            serviceCollection.Configure<Microsoft.AspNetCore.Mvc.MvcOptions>(options => options.Filters.AddService<FederationPluginPageFilter>());
             serviceCollection.AddSingleton<FederationMetadataProvider>();
             serviceCollection.AddSingleton<FederationMediaSourceProvider>();
             serviceCollection.AddSingleton<FederationRefreshTask>();

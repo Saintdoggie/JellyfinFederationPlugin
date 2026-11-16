@@ -750,17 +750,22 @@ namespace Jellyfin.Plugin.Federation.Api
                     continue;
                 }
 
-                var primary = entry.GetSourcesSnapshot().FirstOrDefault(source =>
-                    config?.RemoteServers?.Any(server => server.Id == source.ServerId && server.Enabled) == true
-                    && _availability.GetAvailability(source.ServerId)?.Reachability == ServerReachability.Online);
+                // Hidden only when every server holding it is switched off or known
+                // to be offline. A server not checked yet (just after a restart)
+                // hides nothing: its titles used to vanish until the first check.
+                var live = entry.GetSourcesSnapshot()
+                    .Where(source => config?.RemoteServers?.Any(server => server.Id == source.ServerId && server.Enabled) == true
+                        && !_availability.IsOffline(source.ServerId))
+                    .ToList();
+                var primary = live.FirstOrDefault(source => _availability.GetAvailability(source.ServerId)?.Reachability == ServerReachability.Online)
+                    ?? live.FirstOrDefault();
                 if (primary == null)
                 {
                     unavailableIds.Add(id);
                     continue;
                 }
-                var server = primary == null
-                    ? null
-                    : config?.RemoteServers?.FirstOrDefault(s => s.Id == primary.ServerId);
+
+                var server = config?.RemoteServers?.FirstOrDefault(s => s.Id == primary.ServerId);
                 items[id] = server?.Name ?? string.Empty;
             }
 
@@ -4394,6 +4399,17 @@ namespace Jellyfin.Plugin.Federation.Api
         // relaying large media bodies, not small JSON responses.
         private static readonly System.Net.Http.HttpClient InternalJsonHttpClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 
+        // The full list of a library's ids can take minutes on a large library and a busy disk.
+        private static readonly System.Net.Http.HttpClient InternalListHttpClient = new System.Net.Http.HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<StableOrder?>>> StableOrderLoads = new(StringComparer.Ordinal);
+
+        /// <summary>How long a friend's request waits for the list before it is told to try again.</summary>
+        internal static TimeSpan StableOrderWait { get; set; } = TimeSpan.FromSeconds(20);
+
+        private static readonly TimeSpan StableOrderReadLimit = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan StableOrderMinimumAge = TimeSpan.FromSeconds(45);
+        private static readonly TimeSpan StableOrderStaleLimit = TimeSpan.FromHours(6);
+
         /// <summary>
         /// Resolves which local user id this server's own internal loopback
         /// fetches (below) should query as - preferring an administrator, so a
@@ -4461,7 +4477,8 @@ namespace Jellyfin.Plugin.Federation.Api
         {
             var key = $"{userId:N}|{mediaType}|{parentId}";
             var now = DateTime.UtcNow;
-            if (!fresh && StableOrders.TryGetValue(key, out var cached) && now - cached.Created < StableOrderLifetime)
+            var hasCached = StableOrders.TryGetValue(key, out var cached);
+            if (hasCached && now - cached.Created < (fresh ? StableOrderMinimumAge : StableOrderLifetime))
             {
                 return cached.Order;
             }
@@ -4477,31 +4494,82 @@ namespace Jellyfin.Plugin.Federation.Api
                 query.Add($"ParentId={Uri.EscapeDataString(parentId)}");
             }
 
-            var json = await FetchInternalJsonAsync($"/Users/{userId:N}/Items?{string.Join("&", query)}", cancellationToken).ConfigureAwait(false);
-            if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+            // One read per list at a time, with its own time limit, and not tied to
+            // the request that started it. A big library on a busy disk can take
+            // longer than a friend waits; the read used to be cut off at 30 seconds
+            // and started from nothing on every retry, so it never finished and the
+            // friend could not sync at all. Now it finishes in the background and
+            // the friend's next try finds the list ready.
+            var path = $"/Users/{userId:N}/Items?{string.Join("&", query)}";
+            var load = StableOrderLoads.GetOrAdd(key, _ => new Lazy<Task<StableOrder?>>(() => LoadStableOrderAsync(key, path))).Value;
+            var finished = await Task.WhenAny(load, Task.Delay(StableOrderWait, cancellationToken)).ConfigureAwait(false);
+            if (finished == load)
             {
-                return null;
-            }
-
-            var etags = new Dictionary<Guid, string>(items.Count);
-            foreach (var node in items)
-            {
-                if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var id))
+                var loaded = await load.ConfigureAwait(false);
+                if (loaded != null)
                 {
-                    etags[id] = node["Etag"]?.GetValue<string>() ?? string.Empty;
+                    return loaded;
                 }
             }
 
-            var order = new StableOrder(
-                etags.Keys.OrderBy(id => id).ToList(),
-                etags.Where(pair => pair.Value.Length > 0).ToDictionary(pair => pair.Key, pair => pair.Value));
-            foreach (var stale in StableOrders.Where(pair => now - pair.Value.Created >= StableOrderLifetime).Select(pair => pair.Key).ToList())
-            {
-                StableOrders.TryRemove(stale, out _);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
 
-            StableOrders[key] = (now, order);
-            return order;
+            // Still reading (or the read failed): the last complete list is better
+            // than no answer. It is always the newest one ever served, so it can
+            // only lack the newest titles, never make a friend drop one.
+            return hasCached && now - cached.Created < StableOrderStaleLimit ? cached.Order : null;
+        }
+
+        private async Task<StableOrder?> LoadStableOrderAsync(string key, string path)
+        {
+            // Off the asking request's thread and lifetime.
+            await Task.Yield();
+            try
+            {
+                using var limit = new CancellationTokenSource(StableOrderReadLimit);
+                var started = DateTime.UtcNow;
+                var json = await FetchInternalJsonAsync(path, limit.Token, InternalListHttpClient).ConfigureAwait(false);
+                if (json?["Items"] is not System.Text.Json.Nodes.JsonArray items)
+                {
+                    return null;
+                }
+
+                var etags = new Dictionary<Guid, string>(items.Count);
+                foreach (var node in items)
+                {
+                    if (node != null && Guid.TryParse(node["Id"]?.GetValue<string>(), out var id))
+                    {
+                        etags[id] = node["Etag"]?.GetValue<string>() ?? string.Empty;
+                    }
+                }
+
+                var order = new StableOrder(
+                    etags.Keys.OrderBy(id => id).ToList(),
+                    etags.Where(pair => pair.Value.Length > 0).ToDictionary(pair => pair.Key, pair => pair.Value));
+                var now = DateTime.UtcNow;
+                foreach (var stale in StableOrders.Where(pair => now - pair.Value.Created >= StableOrderStaleLimit).Select(pair => pair.Key).ToList())
+                {
+                    StableOrders.TryRemove(stale, out _);
+                }
+
+                StableOrders[key] = (now, order);
+                var took = now - started;
+                if (took > StableOrderWait)
+                {
+                    _logger.LogInformation("[Federation] Listing {Count} titles for friends took {Seconds:F0} s; friends that asked meanwhile were told to try again", order.Ids.Count, took.TotalSeconds);
+                }
+
+                return order;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("[Federation] Could not list this server's titles for friends: {Reason}", ex is OperationCanceledException ? "reading the library took too long" : ex.Message);
+                return null;
+            }
+            finally
+            {
+                StableOrderLoads.TryRemove(key, out _);
+            }
         }
 
         /// <summary>
@@ -4514,9 +4582,10 @@ namespace Jellyfin.Plugin.Federation.Api
         /// anything reaches a friend - Jellyfin's native per-user permission
         /// system plays no role in what a friend can see under this model.
         /// </summary>
-        private async Task<System.Text.Json.Nodes.JsonObject?> FetchInternalJsonAsync(string path, CancellationToken cancellationToken)
+        private async Task<System.Text.Json.Nodes.JsonObject?> FetchInternalJsonAsync(string path, CancellationToken cancellationToken, System.Net.Http.HttpClient? client = null)
         {
             var localUrl = _federationManager.GetInternalPlaybackBaseUrl();
+            client ??= InternalJsonHttpClient;
             System.Net.Http.HttpResponseMessage? response = null;
             try
             {
@@ -4528,7 +4597,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"{localUrl}{path}");
                     request.Headers.Authorization = JellyfinAuthorization.Create(internalRelayKey);
                     response?.Dispose();
-                    response = await InternalJsonHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                     if (response.StatusCode != System.Net.HttpStatusCode.Unauthorized)
                     {
                         break;
@@ -4543,6 +4612,14 @@ namespace Jellyfin.Plugin.Federation.Api
 
                 var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 return System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The client's own time limit, not the caller going away: this
+                // server's library answered too slowly. Callers answer "try again"
+                // instead of an unhandled error in the log for every friend request.
+                _logger.LogWarning("[Federation] Reading this server's own library timed out after {Seconds} s", (int)client.Timeout.TotalSeconds);
+                return null;
             }
             finally
             {
@@ -4772,6 +4849,8 @@ namespace Jellyfin.Plugin.Federation.Api
                 stable = await GetStableItemOrderAsync(userId.Value, mediaType, parentId, rawCursor == 0 && remainingSkip == 0, cancellationToken).ConfigureAwait(false);
                 if (stable == null)
                 {
+                    // Usually still being read (see GetStableItemOrderAsync): ready on the next try.
+                    Response.Headers.RetryAfter = "30";
                     return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The local catalog could not be read. Retry the sync." });
                 }
             }

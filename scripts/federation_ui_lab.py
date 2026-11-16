@@ -83,8 +83,14 @@ class Lab:
         friend, receiver = self.servers
         base, admin = receiver['base'], receiver['admin']
         for server, count in zip(self.servers, (len(FRIEND_ONLY + SHARED), len(HERE_ONLY + SHARED))):
-            qa.wait_for(lambda: len([m for m in self.movies(server['base'], server['admin']) if m.get('ProviderIds', {}).get('Imdb')]) == count or None,
-                        'A server did not scan its titles', 240)
+            tries = [0]
+            def scanned():
+                tries[0] += 1
+                if tries[0] % 45 == 0:
+                    # The scan started with the library sometimes ends before it saw the files.
+                    qa.request(server['base'], '/Library/Refresh', server['admin'], data={}, expected=204)
+                return len([m for m in self.movies(server['base'], server['admin']) if m.get('ProviderIds', {}).get('Imdb')]) == count or None
+            qa.wait_for(scanned, 'A server did not scan its titles', 300)
         qa.check(qa.request(base, '/Plugins/Federation/Friends/Send', admin, {'Url': friend['host']})['success'], 'Friend request failed')
         pending = qa.request(friend['base'], '/Plugins/Federation/Friends', friend['admin'])['incoming'][0]['Id']
         qa.check(qa.request(friend['base'], f'/Plugins/Federation/Friends/{pending}/Accept', friend['admin'], {})['success'], 'Friend accept failed')
@@ -108,11 +114,22 @@ class Lab:
         qa.wait_for(refreshed, 'The friend catalogue did not arrive', 240)
         return self
 
+    def describe(self):
+        """What a browser stage needs. Holds the generated admin passwords: keep it private."""
+        friend, receiver = self.servers
+        return {'friend': {k: friend[k] for k in ('base', 'password', 'name')},
+            'receiver': {k: receiver[k] for k in ('base', 'password', 'name', 'viewer_id')},
+            'friend_name': self.friend_name, 'friend_id': self.friend_id, 'viewer': 'qa-viewer', 'admin': 'qa-admin',
+            'counts': {'friend_only': len(FRIEND_ONLY), 'here_only': len(HERE_ONLY), 'shared': len(SHARED)}}
+
     @staticmethod
     def movies(url, headers):
         return qa.request(url, '/Items?Recursive=true&IncludeItemTypes=Movie&Fields=ProviderIds,Tags', headers)['Items']
 
     def down(self):
+        if os.environ.get('FEDERATION_QA_KEEP') == '1':
+            print('LAB KEPT (FEDERATION_QA_KEEP=1):', ' '.join(self.created), self.network, flush=True)
+            return
         for name in reversed(self.created):
             try:
                 qa.run(['podman', 'rm', '-f', '-t', '2', name])
@@ -129,9 +146,7 @@ def main():
     try:
         lab.up(dedup='--no-dedup' not in sys.argv)
         note = lab.work / 'lab.json'
-        note.write_text(json.dumps({'friend': {k: lab.servers[0][k] for k in ('base', 'password')},
-            'receiver': {k: lab.servers[1][k] for k in ('base', 'password', 'viewer_id')},
-            'friend_name': lab.friend_name, 'viewer': 'qa-viewer (no password)', 'admin': 'qa-admin'}, indent=1))
+        note.write_text(json.dumps(lab.describe(), indent=1))
         os.chmod(note, 0o600)
         print('LAB UP: details in', note, flush=True)
         if '--hold' in sys.argv:

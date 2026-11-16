@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.227.0",
+        "changelog": "0.0.227: Downloads from a friend your server only knows by a private address (LAN, Tailscale, a local name) now come through your server instead of sending the device to that address; players are not sent there either unless they are on the same network. Titles of an offline server are left out by the server, so library pages stay full. A friend's catalogue request no longer fails on a large library. The plugin's page under Dashboard, Plugins shows its logo, version notes and repository.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-16T04:33:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.227/Jellyfin.Federation.zip",
+        "checksum": "a0c22c2e53f2fd87cf2ef2461da3c863"
+      },
+      {
         "version": "0.0.226",
         "changelog": "0.0.226: Windows servers can use the direct link. The link key now loads on Windows, and a friend can dial in with Windows Firewall on and no rule added. Two pairing fixes (clock a second behind, confirming in either order); pairing itself stays locked for review.",
         "targetAbi": "12.0.0.0",

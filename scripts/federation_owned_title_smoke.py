@@ -108,7 +108,7 @@ def smoke():
             plugin = config / 'plugins/Federation'; plugin.mkdir(parents=True)
             shutil.copy(qa.REPO / 'bin/Release/net10.0/Jellyfin.Plugin.Federation.dll', plugin)
             created.append(name)
-            qa.run(['podman', 'run', '-d', '--name', name, '--network', network, '--security-opt', 'label=disable',
+            qa.run(['podman', 'run', '-d', '--name', name, '--network', network, '--security-opt', 'label=disable', '-e', 'FEDERATION_PLAYERS_REACH_PRIVATE=1',
                 '-p', '127.0.0.1::8096', '-v', f'{config}:/config', '-v', f'{work / ("media-" + name)}:/media:ro', qa.JELLYFIN_IMAGE])
             base = 'http://' + qa.run(['podman', 'port', name, '8096/tcp'])
             qa.wait_for(lambda: qa.request(base, '/Startup/User'), 'Jellyfin did not start')
