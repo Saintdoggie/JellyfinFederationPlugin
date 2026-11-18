@@ -1281,6 +1281,7 @@ namespace Jellyfin.Plugin.Federation.Services
                     PeerTranscodeCapability.RecordQualityLadder(_server.Id, result.QualityLadder == true);
                     PeerTranscodeCapability.RecordSubtitles(_server.Id, result.Subtitles == true);
                     PeerTranscodeCapability.RecordCopyPlay(_server.Id, result.CopyPlay == true);
+                    PeerTranscodeCapability.RecordSoundOnly(_server.Id, result.SoundOnly == true);
                 }
 
                 if (purpose != FederationTokenPurpose.Playback
@@ -2695,6 +2696,13 @@ namespace Jellyfin.Plugin.Federation.Services
         /// for us (0.0.223+). Older friends leave it unset.
         /// </summary>
         public bool? CopyPlay { get; set; }
+
+        /// <summary>
+        /// Whether the friend also re-encodes just the sound of a copy play when the
+        /// device plays none of the file's tracks, copying the picture (set only when
+        /// its admin allowed it). Older friends leave it unset.
+        /// </summary>
+        public bool? SoundOnly { get; set; }
     }
 
     internal sealed class DownloadTokenErrorResponse

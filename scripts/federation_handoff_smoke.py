@@ -438,6 +438,57 @@ def smoke():
                  'A play that needs re-encoding was sent to an owner that converts nothing')
         print('HANDOFF PASS: copy play: a must-convert play stayed on the receiving server', flush=True)
 
+        stage = 'sound-only conversion: an owner that converts no video encodes just the sound, picture copied, with its admin\'s consent'
+        # A device that plays the picture but none of the file's sound (a browser
+        # without AC-3/DTS, for example). Without the owner's consent the play stays
+        # on this server; with it, the owner copies the picture and encodes only the
+        # sound, and this server still does no work and carries no bytes.
+        # The player takes the picture, not the MKV wrapper and not the file's AAC;
+        # it plays MP3 sound in an HLS playlist, so the sound has to be encoded.
+        sound_profile = {**profile, 'DirectPlayProfiles': [{'Type':'Video','Container':'mp4','VideoCodec':codecs('Video'),'AudioCodec':'opus'}],
+                         'TranscodingProfiles': [{**profile['TranscodingProfiles'][0], 'AudioCodec': 'mp3', 'MaxAudioChannels': '2'}]}
+        def sound_source():
+            info = qa.request(base, f'/Items/{item_id}/PlaybackInfo?userId={viewer_id}', viewer,
+                {'UserId': viewer_id, 'MaxStreamingBitrate': 120000000, 'EnableDirectPlay': True, 'EnableDirectStream': True,
+                 'EnableTranscoding': True, 'DeviceProfile': sound_profile})
+            return info['MediaSources'][0]
+        no_consent = sound_source()
+        qa.check('AudioCodecNotSupported' in (no_consent.get('TranscodingUrl') or ''), 'The test profile did not make the sound the reason: ' + json.dumps({k: no_consent.get(k) for k in ('SupportsDirectPlay', 'SupportsDirectStream', 'SupportsTranscoding', 'Container', 'IsRemote', 'TranscodeReasons')}) + ' ' + re.sub(r'(?i)api_?key=[0-9a-f]+', 'key=x', no_consent.get('TranscodingUrl') or '')[-260:])
+        _, no_consent_master = qa.request(base, no_consent['TranscodingUrl'], None, raw=True)
+        qa.check('HandoffPlaylist' not in no_consent_master.decode() and source_host not in no_consent_master.decode(),
+                 'A sound-only play was sent to an owner whose admin had not allowed it')
+        qa.check(qa.request(source_base, '/Plugins/Federation/Settings/RemoteTranscode', source_admin, {'AllowSoundOnlyConversion': True})['success'], 'Allowing sound-only conversion failed')
+        owner_logs, here_logs = set(ffmpeg_logs(source_config)), set(ffmpeg_logs(config))
+        def sound_master():
+            # The receiver learns the owner's new answer with its next playback token.
+            source = sound_source()
+            _, master = qa.request(base, source['TranscodingUrl'], None, raw=True)
+            master = master.decode()
+            return (source, master) if source_host in urllib.parse.unquote(master) else None
+        sound_play, sound_master_text = qa.wait_for(sound_master, 'The sound-only play was not sent to the owner after its admin allowed it', seconds=90)
+        qa.check(viewer_token not in sound_master_text and 'api_key' not in sound_master_text, 'A credential reached the sound-only playlist')
+        sound_variant_url = next(l for l in sound_master_text.splitlines() if l and not l.startswith('#'))
+        _, sound_variant = qa.request(base, sound_variant_url, None, raw=True)
+        sound_segments = [l for l in sound_variant.decode().splitlines() if l and not l.startswith('#')]
+        _, sound_first = qa.request(on_source(sound_segments[0]), '', None, raw=True)
+        qa.check(len(sound_first) > 10000, 'First sound-only segment is empty')
+        new_owner = [p for p in ffmpeg_logs(source_config) if p not in owner_logs]
+        qa.check(new_owner, 'The owner started no ffmpeg for the sound-only play')
+        # The owner's run for this play: the one that encodes the sound.
+        sound_logs = [p for p in new_owner if '-codec:a:0 libmp3lame' in p.read_text(errors='replace')]
+        qa.check(sound_logs, 'The owner did not encode the sound for the sound-only play')
+        command = sound_logs[-1].read_text(errors='replace')
+        qa.check('-codec:v:0 copy' in command and 'Stream #0:0 -> #0:0 (copy)' in command, 'The owner did not copy the picture in a sound-only play')
+        qa.check('-codec:v:0 libx264' not in command and '(h264 (native) ->' not in command and '(hevc (native) ->' not in command, 'The owner encoded the picture in a sound-only play')
+        qa.check('(aac (native) -> mp3 (libmp3lame))' in command, 'The owner did not encode the sound')
+        qa.check(set(ffmpeg_logs(config)) == here_logs, 'The receiving server ran ffmpeg for a sound-only play')
+        # A request that would encode the picture is still refused, consent or not.
+        _, still_must_convert = negotiate(viewer, bitrate=2400000)
+        _, still_master = qa.request(base, still_must_convert['TranscodingUrl'], None, raw=True)
+        qa.check('HandoffPlaylist' not in still_master.decode() and source_host not in still_master.decode(), 'A play that needs the picture encoded was sent to a sound-only owner')
+        qa.request(source_base, '/Plugins/Federation/Settings/RemoteTranscode', source_admin, {'AllowSoundOnlyConversion': False})
+        print(f'HANDOFF PASS: sound-only conversion: with consent the owner copied the picture and encoded only the sound ({len(sound_first)} byte first segment); without it the play stayed here; a picture conversion is still refused; receiver ran no ffmpeg', flush=True)
+
         stage = 'quality ladder when the receiver converts'
         local_levels = [l for l in master.splitlines() if l and not l.startswith('#')]
         qa.check(len(local_levels) >= 2 and all('FedRung=' in l for l in local_levels[1:]) and 'FedRung=' not in local_levels[0],

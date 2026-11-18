@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.Federation.Services
         private static readonly ConcurrentDictionary<string, bool> Subtitles = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly ConcurrentDictionary<string, bool> CopyPlays = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, bool> SoundOnlys = new(StringComparer.OrdinalIgnoreCase);
 
         internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
@@ -123,8 +124,22 @@ namespace Jellyfin.Plugin.Federation.Services
         public static bool ServesCopyPlay(string? serverId)
             => !string.IsNullOrEmpty(serverId) && CopyPlays.TryGetValue(serverId, out var supported) && supported;
 
+        /// <summary>Records whether the friend re-encodes only the sound of a copy play (see <see cref="PlaybackTokenResponse.SoundOnly"/>).</summary>
+        public static void RecordSoundOnly(string? serverId, bool supported)
+        {
+            if (!string.IsNullOrEmpty(serverId))
+            {
+                SoundOnlys[serverId] = supported;
+            }
+        }
+
+        /// <summary>Whether the friend answers a copy play that needs only its sound converted by encoding that sound and copying the picture.</summary>
+        public static bool ServesSoundOnly(string? serverId)
+            => !string.IsNullOrEmpty(serverId) && SoundOnlys.TryGetValue(serverId, out var supported) && supported;
+
         internal static void Reset()
         {
+            SoundOnlys.Clear();
             CopyPlays.Clear();
             Subtitles.Clear();
             State.Clear();

@@ -27,6 +27,24 @@ namespace Jellyfin.Plugin.Federation.Services
             "ContainerNotSupported", "DirectPlayError", "VideoCodecTagNotSupported"
         };
 
+        // Reasons that concern only the sound. With the owner's consent (sound-only
+        // conversion) they are answered by re-encoding the sound track alone to a
+        // codec the device plays, while the picture is copied. The video reasons
+        // above never pass: the picture is never re-encoded.
+        private static readonly HashSet<string> SoundOnlyReasons = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "AudioCodecNotSupported", "AudioBitrateNotSupported", "AudioChannelsNotSupported",
+            "AudioProfileNotSupported", "AudioSampleRateNotSupported", "AudioBitDepthNotSupported"
+        };
+
+        // Sound limits that matter only when the sound is re-encoded: kept when the
+        // sound-only tier answers the request, dropped from a pure copy play.
+        private static readonly HashSet<string> SoundEncodingKeys = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "AudioBitRate", "MaxAudioChannels", "TranscodingMaxAudioChannels", "AudioChannels",
+            "AudioSampleRate", "MaxAudioBitDepth", "EnableAudioVbrEncoding"
+        };
+
         // Limits that only make sense when encoding; left in, Jellyfin would
         // read them as a wish to shrink the picture.
         private static readonly HashSet<string> EncodingOnlyKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -49,6 +67,21 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="capMbps">The bitrate ceiling towards that server (0 or less: none).</param>
         /// <param name="streams">The file's tracks, when known.</param>
         internal static bool Fits(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceBitrate, double capMbps, IEnumerable<MediaStream>? streams = null)
+            => Fits(query, sourceBitrate, capMbps, streams, soundOnly: false);
+
+        /// <summary>
+        /// <see cref="Fits(IEnumerable{KeyValuePair{string, StringValues}}, long?, double, IEnumerable{MediaStream}?)"/>
+        /// where the server holding the file allows sound-only conversion
+        /// (<paramref name="soundOnly"/>): a request whose only reasons are about
+        /// the sound also fits, because the owner copies the picture and re-encodes
+        /// just the sound. A reason about the picture still does not fit.
+        /// </summary>
+        /// <param name="query">The player's request.</param>
+        /// <param name="sourceBitrate">The file's bitrate, when known.</param>
+        /// <param name="capMbps">The bitrate ceiling towards that server (0 or less: none).</param>
+        /// <param name="streams">The file's tracks, when known.</param>
+        /// <param name="soundOnly">Whether the owner re-encodes sound for this caller.</param>
+        internal static bool Fits(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceBitrate, double capMbps, IEnumerable<MediaStream>? streams, bool soundOnly)
         {
             var reasons = RemoteMediaPath.QueryValue(query, "TranscodeReasons");
             if (string.IsNullOrWhiteSpace(reasons))
@@ -60,7 +93,7 @@ namespace Jellyfin.Plugin.Federation.Services
 
             foreach (var reason in reasons.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (WrapperOnlyReasons.Contains(reason))
+                if (WrapperOnlyReasons.Contains(reason) || (soundOnly && SoundOnlyReasons.Contains(reason)))
                 {
                     continue;
                 }
@@ -76,7 +109,7 @@ namespace Jellyfin.Plugin.Federation.Services
             }
 
             if (IsFalse(RemoteMediaPath.QueryValue(query, "AllowVideoStreamCopy"))
-                || IsFalse(RemoteMediaPath.QueryValue(query, "AllowAudioStreamCopy")))
+                || (!soundOnly && IsFalse(RemoteMediaPath.QueryValue(query, "AllowAudioStreamCopy"))))
             {
                 return false;
             }
@@ -98,9 +131,31 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="query">The friend's request.</param>
         /// <param name="streams">The file's tracks, when known.</param>
         internal static bool OwnerAccepts(IEnumerable<KeyValuePair<string, StringValues>> query, IEnumerable<MediaStream>? streams)
-            => (Is(RemoteMediaPath.QueryValue(query, "VideoCodec") ?? string.Empty, "copy")
-                    && Is(RemoteMediaPath.QueryValue(query, "AudioCodec") ?? string.Empty, "copy"))
-                || Fits(query, null, 0, streams);
+            => OwnerAccepts(query, streams, soundOnly: false);
+
+        /// <summary>
+        /// The owner's own check, where this owner may re-encode sound
+        /// (<paramref name="soundOnly"/>). A link naming the picture as copy is
+        /// accepted whatever it says about sound: the picture cannot be encoded,
+        /// and sound is the only thing left that can be.
+        /// </summary>
+        /// <param name="query">The friend's request.</param>
+        /// <param name="streams">The file's tracks, when known.</param>
+        /// <param name="soundOnly">Whether this owner re-encodes sound for the caller.</param>
+        internal static bool OwnerAccepts(IEnumerable<KeyValuePair<string, StringValues>> query, IEnumerable<MediaStream>? streams, bool soundOnly)
+            => Is(RemoteMediaPath.QueryValue(query, "VideoCodec") ?? string.Empty, "copy")
+                    && (soundOnly || Is(RemoteMediaPath.QueryValue(query, "AudioCodec") ?? string.Empty, "copy"))
+                || Fits(query, null, 0, streams, soundOnly);
+
+        /// <summary>
+        /// Whether answering this request takes a sound re-encode: the request lists
+        /// sound reasons that a pure copy cannot satisfy.
+        /// </summary>
+        /// <param name="query">The request.</param>
+        internal static bool NeedsSoundConversion(IEnumerable<KeyValuePair<string, StringValues>> query)
+            => (RemoteMediaPath.QueryValue(query, "TranscodeReasons") ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(reason => SoundOnlyReasons.Contains(reason));
 
         /// <summary>
         /// The owner's rewrite: the same request, unable to start an encoder.
@@ -109,11 +164,29 @@ namespace Jellyfin.Plugin.Federation.Services
         /// </summary>
         /// <param name="query">The friend's request.</param>
         internal static string ForceCopy(IEnumerable<KeyValuePair<string, StringValues>> query)
+            => ForceCopy(query, soundOnly: false);
+
+        /// <summary>
+        /// The owner's rewrite where it may re-encode sound (<paramref name="soundOnly"/>):
+        /// when the request needs the sound converted, the picture is named as copy
+        /// and the sound is left as the player asked (a codec it plays, its channel
+        /// and bitrate limits), so only the sound track is encoded. Otherwise the
+        /// same as <see cref="ForceCopy(IEnumerable{KeyValuePair{string, StringValues}})"/>.
+        /// </summary>
+        /// <param name="query">The friend's request.</param>
+        /// <param name="soundOnly">Whether this owner re-encodes sound for the caller.</param>
+        internal static string ForceCopy(IEnumerable<KeyValuePair<string, StringValues>> query, bool soundOnly)
         {
             var pairs = query as IReadOnlyCollection<KeyValuePair<string, StringValues>> ?? query.ToList();
+            var convertSound = soundOnly && NeedsSoundConversion(pairs) && !Is(RemoteMediaPath.QueryValue(pairs, "AudioCodec") ?? "copy", "copy");
             var burnIn = BurnsInSubtitle(pairs);
             var filtered = RemoteMediaPath.FilterQuery(pairs, (name, value) =>
             {
+                if (convertSound && (SoundEncodingKeys.Contains(name) || Is(name, "AudioCodec") || Is(name, "AllowAudioStreamCopy")))
+                {
+                    return value;
+                }
+
                 if (EncodingOnlyKeys.Contains(name)
                     || name.Contains("-level", StringComparison.OrdinalIgnoreCase)
                     || name.Contains("-profile", StringComparison.OrdinalIgnoreCase)
@@ -135,7 +208,8 @@ namespace Jellyfin.Plugin.Federation.Services
                 return value;
             });
 
-            return filtered + (filtered.Length == 0 ? "?" : "&") + "VideoCodec=copy&AudioCodec=copy&AllowVideoStreamCopy=true&AllowAudioStreamCopy=true";
+            return filtered + (filtered.Length == 0 ? "?" : "&")
+                + (convertSound ? "VideoCodec=copy&AllowVideoStreamCopy=true" : "VideoCodec=copy&AudioCodec=copy&AllowVideoStreamCopy=true&AllowAudioStreamCopy=true");
         }
 
         // Sound a streaming playlist can carry unchanged, per segment kind.

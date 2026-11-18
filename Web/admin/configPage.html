@@ -902,6 +902,8 @@
                                         <p class="fieldDescription">With "Nothing", friends' viewers are refused, your own viewers direct play or use another server's copy, and a friend can still convert for your viewers. "Not for friends' viewers" is the same as turning off "Convert my titles for friends' viewers" below. A conversion already running is not interrupted.</p>
                                     </details>
                                 </div>
+                                <label class="fed-check-label"><input type="checkbox" id="fedChkAllowSoundOnly" class="emby-checkbox fed-check" /> Allow sound-only conversion for friends and linked servers</label>
+                                <p class="fieldDescription">Some devices (a browser, for example) cannot play a film's TrueHD or DTS sound. When this is on and no other sound track in the same language plays, this server copies the picture untouched and re-encodes only the sound to a track the device plays. That takes about 2-3% of one CPU core for a film and works on a small server. Video is never converted by this switch. Off by default: without it, such a film is refused with an explanation.</p>
                                 <label class="fed-check-label"><input type="checkbox" id="fedChkUseFriendsTranscoders" class="emby-checkbox fed-check" /> Let a friend's server convert its own titles for my viewers</label>
                                 <p class="fieldDescription">The friend converts its copy and sends it straight to the player. The video never passes through this server.</p>
                                 <details class="fed-more">
@@ -1744,6 +1746,7 @@
                             q('#fedChkUseFriendsTranscoders').checked = res.UseFriendsTranscoders !== false;
                             q('#fedChkEnableRemoteTranscodeForFriends').checked = res.EnableRemoteTranscodeForFriends !== false;
                             q('#fedSelLocalTranscodeRestriction').value = String(res.LocalTranscodeRestriction || 0);
+                            q('#fedChkAllowSoundOnly').checked = res.AllowSoundOnlyConversion === true;
                             q('#fedTranscodeAutoNote').hidden = !res.ConversionBlockedByHardware;
                             q('#fedChkShareConversionLogs').checked = res.ShareConversionLogsWithFriends !== false;
                             q('#fedNumMaxRemoteTranscodes').value = res.MaxRemoteTranscodesPerFriend || 0;
@@ -1767,6 +1770,7 @@
                                 UseFriendsTranscoders: q('#fedChkUseFriendsTranscoders').checked,
                                 EnableRemoteTranscodeForFriends: q('#fedChkEnableRemoteTranscodeForFriends').checked,
                                 LocalTranscodeRestriction: parseInt(q('#fedSelLocalTranscodeRestriction').value, 10) || 0,
+                                AllowSoundOnlyConversion: q('#fedChkAllowSoundOnly').checked,
                                 ShareConversionLogsWithFriends: q('#fedChkShareConversionLogs').checked,
                                 MaxRemoteTranscodesPerFriend: isNaN(max) || max < 0 ? 0 : Math.min(max, 100)
                             })

@@ -44,6 +44,24 @@ the release checklist; `AGENTS.md` describes the code. No personal data here: us
      `RememberAudioSelections`) and uses it before the plugin's `IsDefault` flags,
      even after a failed try, so one TrueHD play left TrueHD as the default for
      every device. Test: `DevicePlayFitTests`.
+  3. **Sound-only conversion** (`PluginConfiguration.AllowSoundOnlyConversion`, off
+     by default; Settings -> Who converts -> "Allow sound-only conversion for
+     friends and linked servers"). A server that converts no video (a small VPS)
+     may still re-encode just the *sound* for a device that plays none of the
+     file's tracks (TrueHD/DTS in a browser): the picture stays `-c copy`, only
+     the sound is encoded (about 2-3% of one core per film). The owner advertises
+     it as `soundOnly` in the playback token answer; the receiver records it
+     (`PeerTranscodeCapability.ServesSoundOnly`) and passes it to
+     `CopyPlay.Fits(..., soundOnly)`, which then also accepts `Audio*NotSupported`
+     reasons. The owner's gateway re-checks with `OwnerAccepts(query, streams,
+     soundOnly)` and rewrites with `ForceCopy(query, soundOnly)`: `VideoCodec=copy`
+     always, the sound wishes (`AudioCodec`, `AudioBitrate`, channel limit) kept
+     when the request needs them. A reason about the picture never passes, with or
+     without consent. Without consent the play is refused as before (the
+     "ask": the admin's switch; the refusal text is where to offer it). Tests:
+     `CopyPlayTests`; smoke stage "sound-only conversion" in
+     `scripts/federation_handoff_smoke.py` (owner log shows picture `(copy)`,
+     sound `aac -> mp3 (libmp3lame)`, receiver runs no ffmpeg).
 - **Still open from that work:** (a) apps echo the remembered track back as their
   own pick (`AudioStreamIndex` in the play request), so the swap does not reach
   them; fix where the plugin would refuse (`FederationRemoteTranscodeFilter`

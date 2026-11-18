@@ -633,7 +633,7 @@ namespace Jellyfin.Plugin.Federation.Services
                 copyPlay = ownerServesIt
                     && path.IsPlaylistOrSegment
                     && PeerTranscodeCapability.ServesCopyPlay(server.Id)
-                    && CopyPlay.Fits(request.Query, source.Bitrate, _federationManager.GetEffectiveWanCapMbps(server) ?? 0, source.MediaStreams);
+                    && CopyPlay.Fits(request.Query, source.Bitrate, _federationManager.GetEffectiveWanCapMbps(server) ?? 0, source.MediaStreams, PeerTranscodeCapability.ServesSoundOnly(server.Id));
                 if (ownerServesIt && path.Kind == RemoteMediaKind.HlsMaster && !copyPlay)
                 {
                     _logger.LogInformation(

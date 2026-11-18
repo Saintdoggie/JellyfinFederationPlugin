@@ -517,6 +517,17 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public LocalTranscodeRestriction LocalTranscodeRestriction { get; set; } = LocalTranscodeRestriction.None;
 
         /// <summary>
+        /// Gets or sets whether this server may re-encode only the sound of a title for
+        /// a friend or linked server whose device cannot play any of the file's sound
+        /// tracks (TrueHD or DTS in a browser, for example), while the picture is
+        /// copied untouched. Off by default. It is light (a film's sound is about 2-3%
+        /// of one CPU core) and is a different thing from converting video, which
+        /// <see cref="LocalTranscodeRestriction"/> governs. Managed by
+        /// <c>Settings/RemoteTranscode</c>, preserved by the main Save.
+        /// </summary>
+        public bool AllowSoundOnlyConversion { get; set; }
+
+        /// <summary>
         /// Gets or sets whether this server opens direct links with friends: an
         /// encrypted UDP connection straight between the two servers, punched
         /// through both home routers, so a friend's video doesn't have to go

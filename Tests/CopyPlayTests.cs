@@ -40,6 +40,67 @@ public class CopyPlayTests
     public void Only_wrapper_reasons_make_a_copy_play(string query, bool fits)
         => Assert.Equal(fits, CopyPlay.Fits(RemoteMediaPath.ParseQuery(query), 8_000_000, 0, H264Aac));
 
+    [Theory]
+    [InlineData("TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported", false, true)]
+    [InlineData("TranscodeReasons=AudioCodecNotSupported,AudioChannelsNotSupported&AudioCodec=aac", false, true)]
+    [InlineData("TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported&AllowAudioStreamCopy=false", false, true)]
+    [InlineData("TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported,VideoCodecNotSupported", false, false)]
+    [InlineData("TranscodeReasons=AudioCodecNotSupported,VideoLevelNotSupported", false, false)]
+    [InlineData("TranscodeReasons=AudioCodecNotSupported&AllowVideoStreamCopy=false", false, false)]
+    [InlineData("TranscodeReasons=AudioCodecNotSupported&SubtitleStreamIndex=2&SubtitleMethod=Encode", false, false)]
+    public void Sound_only_conversion_accepts_sound_reasons_and_never_a_picture_reason(string query, bool withoutConsent, bool withConsent)
+    {
+        var parsed = RemoteMediaPath.ParseQuery(query);
+
+        // TrueHD 7.1 only: the "false sound reason" rule cannot save it.
+        Assert.Equal(withoutConsent, CopyPlay.Fits(parsed, null, 0, HevcDts));
+        Assert.Equal(withConsent, CopyPlay.Fits(parsed, null, 0, HevcDts, soundOnly: true));
+    }
+
+    [Fact]
+    public void The_owner_rewrite_for_sound_only_copies_the_picture_and_keeps_the_sound_wishes()
+    {
+        var rewritten = CopyPlay.ForceCopy(RemoteMediaPath.ParseQuery(
+            "DeviceId=d&MediaSourceId=abc&VideoCodec=h264&AudioCodec=aac,mp3&VideoBitrate=2000000&MaxWidth=1280&MaxHeight=720&h264-level=41"
+            + "&AudioBitrate=384000&TranscodingMaxAudioChannels=6&AllowVideoStreamCopy=false&AllowAudioStreamCopy=false"
+            + "&TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported&PlaySessionId=p&api_key=secret"), soundOnly: true);
+        var query = RemoteMediaPath.ParseQuery(rewritten);
+
+        // The picture can never be encoded.
+        Assert.Equal("copy", RemoteMediaPath.QueryValue(query, "VideoCodec"));
+        Assert.Equal("true", RemoteMediaPath.QueryValue(query, "AllowVideoStreamCopy"));
+        Assert.Null(RemoteMediaPath.QueryValue(query, "VideoBitrate"));
+        Assert.Null(RemoteMediaPath.QueryValue(query, "MaxWidth"));
+        Assert.DoesNotContain("h264-level", rewritten);
+
+        // The sound is encoded to what the player plays.
+        Assert.Equal("aac,mp3", RemoteMediaPath.QueryValue(query, "AudioCodec"));
+        Assert.Equal("384000", RemoteMediaPath.QueryValue(query, "AudioBitrate"));
+        Assert.Equal("6", RemoteMediaPath.QueryValue(query, "TranscodingMaxAudioChannels"));
+    }
+
+    [Fact]
+    public void Sound_only_rewrite_is_a_plain_copy_when_the_sound_needs_no_conversion()
+    {
+        var rewritten = CopyPlay.ForceCopy(RemoteMediaPath.ParseQuery("AudioCodec=aac&TranscodeReasons=ContainerNotSupported&AudioBitrate=128000"), soundOnly: true);
+        var query = RemoteMediaPath.ParseQuery(rewritten);
+
+        Assert.Equal("copy", RemoteMediaPath.QueryValue(query, "VideoCodec"));
+        Assert.Equal("copy", RemoteMediaPath.QueryValue(query, "AudioCodec"));
+        Assert.Null(RemoteMediaPath.QueryValue(query, "AudioBitrate"));
+    }
+
+    [Fact]
+    public void The_owner_takes_a_picture_copy_with_sound_encoding_only_with_consent()
+    {
+        var link = RemoteMediaPath.ParseQuery("VideoCodec=copy&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported");
+
+        Assert.False(CopyPlay.OwnerAccepts(link, HevcDts));
+        Assert.True(CopyPlay.OwnerAccepts(link, HevcDts, soundOnly: true));
+        // Never a request that encodes the picture, consent or not.
+        Assert.False(CopyPlay.OwnerAccepts(RemoteMediaPath.ParseQuery("VideoCodec=h264&AudioCodec=aac&TranscodeReasons=VideoCodecNotSupported"), HevcDts, soundOnly: true));
+    }
+
     [Fact]
     public void A_file_over_the_connection_limit_is_not_a_copy_play()
     {

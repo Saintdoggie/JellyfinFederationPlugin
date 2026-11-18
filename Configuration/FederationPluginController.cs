@@ -516,6 +516,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.GloballyExcludedItemIds = existing.GloballyExcludedItemIds;
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
                     config.LocalTranscodeRestriction = existing.LocalTranscodeRestriction;
+                    config.AllowSoundOnlyConversion = existing.AllowSoundOnlyConversion;
                     config.DirectLinkOptIn = existing.DirectLinkOptIn;
                     config.PairingOptIn = existing.PairingOptIn;
                     config.PairingPortFirst = existing.PairingPortFirst;
@@ -1654,6 +1655,7 @@ namespace Jellyfin.Plugin.Federation.Api
             {
                 config.EnableRemoteTranscodeForFriends,
                 config.LocalTranscodeRestriction,
+                config.AllowSoundOnlyConversion,
                 ConversionBlockedByHardware = TranscodePolicy.BlockedByHardware(config),
                 config.MaxRemoteTranscodesPerFriend,
                 config.UseFriendsTranscoders,
@@ -1700,6 +1702,11 @@ namespace Jellyfin.Plugin.Federation.Api
                 }
 
                 config.LocalTranscodeRestriction = body.LocalTranscodeRestriction.Value;
+            }
+
+            if (body.AllowSoundOnlyConversion.HasValue)
+            {
+                config.AllowSoundOnlyConversion = body.AllowSoundOnlyConversion.Value;
             }
 
             if (body.UseFriendsTranscoders.HasValue)
@@ -3760,7 +3767,13 @@ namespace Jellyfin.Plugin.Federation.Api
                 // Tells the friend this token opens Peer/Play for a copy play
                 // (Services.CopyPlay): the title as a streaming playlist with
                 // picture and sound copied, whether or not this server converts.
-                copyPlay = purpose == FederationTokenPurpose.Playback
+                copyPlay = purpose == FederationTokenPurpose.Playback,
+
+                // Tells the friend this server also re-encodes just the sound of a
+                // copy play when its device plays none of the file's tracks (the
+                // picture stays a copy). Only when the admin allowed it.
+                soundOnly = purpose == FederationTokenPurpose.Playback
+                    && Plugin.Instance?.Configuration?.AllowSoundOnlyConversion == true
             });
         }
 
@@ -4137,7 +4150,11 @@ namespace Jellyfin.Plugin.Federation.Api
             var copyOnly = owner != null
                 && path.IsPlaylistOrSegment
                 && !(owner.AllowRemoteTranscode && Services.TranscodePolicy.FriendsMayConvertHere(config));
-            if (copyOnly && !Services.CopyPlay.OwnerAccepts(Request.Query, _libraryManager.GetItemById(path.MediaSourceId ?? path.ItemId)?.GetMediaStreams()))
+            // Where this server may re-encode sound alone, a copy play whose device
+            // plays none of the file's sound tracks is answered with the picture
+            // copied and only the sound encoded. The picture is never encoded.
+            var soundOnly = copyOnly && config?.AllowSoundOnlyConversion == true;
+            if (copyOnly && !Services.CopyPlay.OwnerAccepts(Request.Query, _libraryManager.GetItemById(path.MediaSourceId ?? path.ItemId)?.GetMediaStreams(), soundOnly))
             {
                 // It needs an encoder and this server runs none for this friend:
                 // refused as it always was, so the friend's server deals with it.
@@ -4202,7 +4219,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "No local user available to serve this request" });
             }
 
-            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct, copyOnly)).ConfigureAwait(false);
+            await RelayWithDataLimitAsync(owner, cancellationToken, ct => _remoteTranscodeGateway.RelayAsync(HttpContext, path, token, internalRelayKey, _federationManager.GetInternalPlaybackBaseUrl(), internalUserId, ct, copyOnly, soundOnly)).ConfigureAwait(false);
             return new EmptyResult();
         }
 
@@ -7470,6 +7487,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets how much conversion this server itself may do (null = unchanged).</summary>
         public LocalTranscodeRestriction? LocalTranscodeRestriction { get; set; }
+
+        /// <summary>Gets or sets whether this server re-encodes only the sound for a device that plays none of a file's tracks (null = unchanged).</summary>
+        public bool? AllowSoundOnlyConversion { get; set; }
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool? UseFriendsTranscoders { get; set; }
