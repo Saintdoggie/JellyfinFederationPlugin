@@ -517,6 +517,7 @@ namespace Jellyfin.Plugin.Federation.Api
                     config.EnableRemoteTranscodeForFriends = existing.EnableRemoteTranscodeForFriends;
                     config.LocalTranscodeRestriction = existing.LocalTranscodeRestriction;
                     config.AllowSoundOnlyConversion = existing.AllowSoundOnlyConversion;
+                    config.AllowPlayWithoutBurnedSubtitle = existing.AllowPlayWithoutBurnedSubtitle;
                     config.DirectLinkOptIn = existing.DirectLinkOptIn;
                     config.PairingOptIn = existing.PairingOptIn;
                     config.PairingPortFirst = existing.PairingPortFirst;
@@ -1656,6 +1657,7 @@ namespace Jellyfin.Plugin.Federation.Api
                 config.EnableRemoteTranscodeForFriends,
                 config.LocalTranscodeRestriction,
                 config.AllowSoundOnlyConversion,
+                config.AllowPlayWithoutBurnedSubtitle,
                 ConversionBlockedByHardware = TranscodePolicy.BlockedByHardware(config),
                 config.MaxRemoteTranscodesPerFriend,
                 config.UseFriendsTranscoders,
@@ -1707,6 +1709,11 @@ namespace Jellyfin.Plugin.Federation.Api
             if (body.AllowSoundOnlyConversion.HasValue)
             {
                 config.AllowSoundOnlyConversion = body.AllowSoundOnlyConversion.Value;
+            }
+
+            if (body.AllowPlayWithoutBurnedSubtitle.HasValue)
+            {
+                config.AllowPlayWithoutBurnedSubtitle = body.AllowPlayWithoutBurnedSubtitle.Value;
             }
 
             if (body.UseFriendsTranscoders.HasValue)
@@ -7490,6 +7497,9 @@ namespace Jellyfin.Plugin.Federation.Api
 
         /// <summary>Gets or sets whether this server re-encodes only the sound for a device that plays none of a file's tracks (null = unchanged).</summary>
         public bool? AllowSoundOnlyConversion { get; set; }
+
+        /// <summary>Gets or sets whether a picture subtitle that would need burning in is left out so the film plays (null = unchanged).</summary>
+        public bool? AllowPlayWithoutBurnedSubtitle { get; set; }
 
         /// <summary>Gets or sets whether we hand conversion of friends' titles to them.</summary>
         public bool? UseFriendsTranscoders { get; set; }

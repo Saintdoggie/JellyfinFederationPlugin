@@ -62,6 +62,22 @@ the release checklist; `AGENTS.md` describes the code. No personal data here: us
      `CopyPlayTests`; smoke stage "sound-only conversion" in
      `scripts/federation_handoff_smoke.py` (owner log shows picture `(copy)`,
      sound `aac -> mp3 (libmp3lame)`, receiver runs no ffmpeg).
+  4. **Dolby Vision range and picture subtitles (0.0.231).** (a) `CopyPlay.Fits` now
+     lets `VideoRangeTypeNotSupported` through when the file's picture is Dolby
+     Vision with a plain base layer (`DOVIWithEL` = profile 7, `DOVIWithHDR10`,
+     `DOVIWithHDR10Plus`, `DOVIWithELHDR10Plus`, `DOVIWithHLG`, `DOVIWithSDR`;
+     `HasPlayableBaseLayer`); profile 5 (`DOVI`) and `DOVIInvalid` still refuse. A
+     browser that lists HDR10 plays the base layer. Checked on the home server with
+     a profile 8 file: the owner-style rewrite (`VideoCodec=copy`, range/level keys
+     dropped) gives HEVC Main 10 PQ, tag `hvc1`, no Dolby Vision box, sound AAC.
+     Profile 7 (extra layer) was NOT checked: the only such files are on the 4K box.
+     (b) `AllowPlayWithoutBurnedSubtitle` (off by default, Settings -> Who converts):
+     the viewer's server leaves a picture subtitle that would need burning in out
+     of the request it forwards (`CopyPlay.Fits(..., dropBurnedSubtitle)` and the
+     query filter in `FederationRemoteTranscodeFilter.ResolveAsync`), and the
+     `SubtitleCodecNotSupported` reason passes then. The film plays without that
+     subtitle. Proper fix still open: turn PGS into a text subtitle (OCR on the
+     Windows PC, cached) so it is shown without burning.
 - **Still open from that work:** (a) apps echo the remembered track back as their
   own pick (`AudioStreamIndex` in the play request), so the swap does not reach
   them; fix where the plugin would refuse (`FederationRemoteTranscodeFilter`

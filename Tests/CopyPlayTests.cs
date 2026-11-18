@@ -1,4 +1,5 @@
 using System;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Federation.Configuration;
 using Jellyfin.Plugin.Federation.Services;
 using MediaBrowser.Model.Entities;
@@ -99,6 +100,80 @@ public class CopyPlayTests
         Assert.True(CopyPlay.OwnerAccepts(link, HevcDts, soundOnly: true));
         // Never a request that encodes the picture, consent or not.
         Assert.False(CopyPlay.OwnerAccepts(RemoteMediaPath.ParseQuery("VideoCodec=h264&AudioCodec=aac&TranscodeReasons=VideoCodecNotSupported"), HevcDts, soundOnly: true));
+    }
+
+    // MediaStream.VideoRangeType is worked out by Jellyfin from the colour and
+    // Dolby Vision fields, so a test sets those and checks the result it gets.
+    private static MediaStream[] Film(VideoRangeType range)
+    {
+        var video = new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Index = 0, Height = 2160, Profile = "Main 10", ColorSpace = "bt2020nc", ColorTransfer = "smpte2084", ColorPrimaries = "bt2020" };
+        switch (range)
+        {
+            case VideoRangeType.DOVIWithEL:
+                video.DvProfile = 7; video.DvLevel = 6; video.RpuPresentFlag = 1; video.ElPresentFlag = 1; video.BlPresentFlag = 1; video.DvBlSignalCompatibilityId = 6;
+                break;
+            case VideoRangeType.DOVIWithHDR10:
+                video.DvProfile = 8; video.DvLevel = 6; video.RpuPresentFlag = 1; video.ElPresentFlag = 0; video.BlPresentFlag = 1; video.DvBlSignalCompatibilityId = 1;
+                break;
+            case VideoRangeType.DOVIWithSDR:
+                video.DvProfile = 8; video.DvLevel = 6; video.RpuPresentFlag = 1; video.ElPresentFlag = 0; video.BlPresentFlag = 1; video.DvBlSignalCompatibilityId = 2;
+                video.ColorTransfer = "bt709"; video.ColorSpace = "bt709"; video.ColorPrimaries = "bt709";
+                break;
+            case VideoRangeType.DOVI:
+                video.DvProfile = 5; video.DvLevel = 6; video.RpuPresentFlag = 1; video.ElPresentFlag = 0; video.BlPresentFlag = 1; video.DvBlSignalCompatibilityId = 0;
+                break;
+        }
+
+        Assert.Equal(range, video.VideoRangeType);
+        return new[] { video, new MediaStream { Type = MediaStreamType.Audio, Codec = "truehd", Index = 1, Channels = 8, IsDefault = true } };
+    }
+
+    [Theory]
+    [InlineData(VideoRangeType.DOVIWithEL, true)]
+    [InlineData(VideoRangeType.DOVIWithHDR10, true)]
+    [InlineData(VideoRangeType.DOVIWithSDR, true)]
+    [InlineData(VideoRangeType.DOVI, false)] // profile 5: the base layer looks wrong without Dolby Vision
+    public void A_range_reason_passes_only_for_a_Dolby_Vision_picture_with_a_playable_base_layer(VideoRangeType range, bool fits)
+    {
+        var query = RemoteMediaPath.ParseQuery("TranscodeReasons=ContainerNotSupported,VideoRangeTypeNotSupported");
+
+        Assert.Equal(fits, CopyPlay.Fits(query, null, 0, Film(range)));
+    }
+
+    [Fact]
+    public void A_range_reason_without_known_tracks_does_not_pass()
+        => Assert.False(CopyPlay.Fits(RemoteMediaPath.ParseQuery("TranscodeReasons=VideoRangeTypeNotSupported"), null, 0, null));
+
+    [Fact]
+    public void A_range_reason_never_hides_a_picture_codec_reason()
+        => Assert.False(CopyPlay.Fits(RemoteMediaPath.ParseQuery("TranscodeReasons=VideoRangeTypeNotSupported,VideoCodecNotSupported"), null, 0, Film(VideoRangeType.DOVIWithEL)));
+
+    [Fact]
+    public void A_burned_in_subtitle_is_left_out_only_when_the_admin_allowed_it()
+    {
+        var query = RemoteMediaPath.ParseQuery("TranscodeReasons=ContainerNotSupported,SubtitleCodecNotSupported&SubtitleStreamIndex=3&SubtitleMethod=Encode");
+
+        Assert.False(CopyPlay.Fits(query, null, 0, HevcDts, soundOnly: false, dropBurnedSubtitle: false, out var keptWithout));
+        Assert.False(keptWithout);
+        Assert.True(CopyPlay.Fits(query, null, 0, HevcDts, soundOnly: false, dropBurnedSubtitle: true, out var dropped));
+        Assert.True(dropped);
+    }
+
+    [Fact]
+    public void Leaving_the_subtitle_out_does_not_excuse_a_picture_reason()
+    {
+        var query = RemoteMediaPath.ParseQuery("TranscodeReasons=VideoCodecNotSupported&SubtitleStreamIndex=3&SubtitleMethod=Encode");
+
+        Assert.False(CopyPlay.Fits(query, null, 0, HevcDts, soundOnly: true, dropBurnedSubtitle: true, out _));
+    }
+
+    [Fact]
+    public void A_play_without_a_burned_subtitle_reports_nothing_dropped()
+    {
+        var query = RemoteMediaPath.ParseQuery("TranscodeReasons=ContainerNotSupported");
+
+        Assert.True(CopyPlay.Fits(query, null, 0, HevcDts, soundOnly: false, dropBurnedSubtitle: true, out var dropped));
+        Assert.False(dropped);
     }
 
     [Fact]

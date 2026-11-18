@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.231.0",
+        "changelog": "0.0.231: more 4K films play in a browser from a server that converts nothing. A Dolby Vision film (profile 7 and 8) is now copied untouched and the browser plays its HDR10 base picture instead of the film being refused over its range. A new switch, off by default, lets a film play without a picture subtitle (PGS, DVD) that would have to be burned into the picture. Together with 0.0.230's sound-only conversion, a film like a 4K Dolby Vision remux with TrueHD sound can play in Chrome from a small server.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-18T17:20:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.231/Jellyfin.Federation.zip",
+        "checksum": "134edd3068190ed0f8b21bcd92781e43"
+      },
+      {
         "version": "0.0.230.0",
         "changelog": "0.0.230: a film now plays from a server that converts nothing (a small VPS) on more TVs and apps, and an administrator can allow sound-only conversion. A server that cannot convert video was refusing HEVC files over a harmless label difference (hev1 vs hvc1), and a sound track the viewer once tried and failed on (TrueHD, 7.1) became the default for every device. The plugin now picks a same-language sound track the device reports it plays, and a new switch, off by default, lets a server that converts no video re-encode just the sound (picture copied) for a device that plays none of the file's tracks, such as a browser.",
         "targetAbi": "12.0.0.0",

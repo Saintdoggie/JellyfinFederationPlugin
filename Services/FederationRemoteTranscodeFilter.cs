@@ -626,6 +626,7 @@ namespace Jellyfin.Plugin.Federation.Services
             // re-encoding, for a player that cannot take the plain file.
             var subtitlesOnly = false;
             var copyPlay = false;
+            var dropSubtitle = false;
             if (!FederationMediaSourceProvider.UsesRemoteTranscode(server))
             {
                 var ownerServesIt = forced == null && FederationMediaSourceProvider.IsPeerDirect(server);
@@ -633,7 +634,14 @@ namespace Jellyfin.Plugin.Federation.Services
                 copyPlay = ownerServesIt
                     && path.IsPlaylistOrSegment
                     && PeerTranscodeCapability.ServesCopyPlay(server.Id)
-                    && CopyPlay.Fits(request.Query, source.Bitrate, _federationManager.GetEffectiveWanCapMbps(server) ?? 0, source.MediaStreams, PeerTranscodeCapability.ServesSoundOnly(server.Id));
+                    && CopyPlay.Fits(
+                        request.Query,
+                        source.Bitrate,
+                        _federationManager.GetEffectiveWanCapMbps(server) ?? 0,
+                        source.MediaStreams,
+                        PeerTranscodeCapability.ServesSoundOnly(server.Id),
+                        Plugin.Instance?.Configuration?.AllowPlayWithoutBurnedSubtitle == true,
+                        out dropSubtitle);
                 if (ownerServesIt && path.Kind == RemoteMediaKind.HlsMaster && !copyPlay)
                 {
                     _logger.LogInformation(
@@ -756,9 +764,11 @@ namespace Jellyfin.Plugin.Federation.Services
 
             var remoteMediaSourceId = Guid.TryParse(grant.RemoteMediaSourceId, out var grantedSourceId) ? grantedSourceId : source.RemoteItemId;
             var query = RemoteMediaPath.FilterQuery(request.Query, (name, value) =>
-                audioIndex.HasValue && string.Equals(name, "AudioStreamIndex", StringComparison.OrdinalIgnoreCase)
-                    ? audioIndex.Value.ToString(CultureInfo.InvariantCulture)
-                    : RewriteQueryValue(name, value, remoteMediaSourceId, cap, request.Query));
+                copyPlay && dropSubtitle && CopyPlay.IsSubtitleChoice(name)
+                    ? null
+                    : audioIndex.HasValue && string.Equals(name, "AudioStreamIndex", StringComparison.OrdinalIgnoreCase)
+                        ? audioIndex.Value.ToString(CultureInfo.InvariantCulture)
+                        : RewriteQueryValue(name, value, remoteMediaSourceId, cap, request.Query));
             if (path.Kind is RemoteMediaKind.HlsMaster or RemoteMediaKind.HlsVariant or RemoteMediaKind.Stream)
             {
                 query = HandheldClientLimits.WithResolution(query, request.Query, handheld);

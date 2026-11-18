@@ -528,6 +528,14 @@ namespace Jellyfin.Plugin.Federation.Configuration
         public bool AllowSoundOnlyConversion { get; set; }
 
         /// <summary>
+        /// Gets or sets whether a friend's film whose chosen subtitle is a picture
+        /// subtitle (PGS, DVD) that the viewer's device cannot show plays without that
+        /// subtitle, instead of being refused because it would have to be drawn into
+        /// the picture (which needs a server that converts video). Off by default.
+        /// </summary>
+        public bool AllowPlayWithoutBurnedSubtitle { get; set; }
+
+        /// <summary>
         /// Gets or sets whether this server opens direct links with friends: an
         /// encrypted UDP connection straight between the two servers, punched
         /// through both home routers, so a friend's video doesn't have to go

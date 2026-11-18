@@ -37,6 +37,23 @@ namespace Jellyfin.Plugin.Federation.Services
             "AudioProfileNotSupported", "AudioSampleRateNotSupported", "AudioBitDepthNotSupported"
         };
 
+        // Reasons about the picture's range (HDR10, Dolby Vision ...). They pass only
+        // when the file's Dolby Vision picture has a base layer the device plays
+        // as plain HDR10, HLG or SDR (see HasPlayableBaseLayer).
+        private static readonly HashSet<string> RangeReasons = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "VideoRangeTypeNotSupported", "VideoRangeNotSupported"
+        };
+
+        // Dolby Vision kinds whose base layer is an ordinary picture: a device that
+        // does not know Dolby Vision plays the base and ignores the extra layer.
+        // Profile 5 ("DOVI") is not here: its base layer looks wrong without the
+        // Dolby Vision conversion.
+        private static readonly HashSet<string> DolbyVisionWithPlainBase = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "DOVIWithEL", "DOVIWithELHDR10Plus", "DOVIWithHDR10", "DOVIWithHDR10Plus", "DOVIWithHLG", "DOVIWithSDR"
+        };
+
         // Sound limits that matter only when the sound is re-encoded: kept when the
         // sound-only tier answers the request, dropped from a pure copy play.
         private static readonly HashSet<string> SoundEncodingKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -70,6 +87,14 @@ namespace Jellyfin.Plugin.Federation.Services
             => Fits(query, sourceBitrate, capMbps, streams, soundOnly: false);
 
         /// <summary>
+        /// <see cref="Fits(IEnumerable{KeyValuePair{string, StringValues}}, long?, double, IEnumerable{MediaStream}?, bool)"/>
+        /// where this server also leaves out a picture subtitle that would have to be
+        /// burned in (<paramref name="dropBurnedSubtitle"/>): the play fits without it.
+        /// </summary>
+        internal static bool Fits(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceBitrate, double capMbps, IEnumerable<MediaStream>? streams, bool soundOnly, bool dropBurnedSubtitle)
+            => Fits(query, sourceBitrate, capMbps, streams, soundOnly, dropBurnedSubtitle, out _);
+
+        /// <summary>
         /// <see cref="Fits(IEnumerable{KeyValuePair{string, StringValues}}, long?, double, IEnumerable{MediaStream}?)"/>
         /// where the server holding the file allows sound-only conversion
         /// (<paramref name="soundOnly"/>): a request whose only reasons are about
@@ -82,7 +107,19 @@ namespace Jellyfin.Plugin.Federation.Services
         /// <param name="streams">The file's tracks, when known.</param>
         /// <param name="soundOnly">Whether the owner re-encodes sound for this caller.</param>
         internal static bool Fits(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceBitrate, double capMbps, IEnumerable<MediaStream>? streams, bool soundOnly)
+            => Fits(query, sourceBitrate, capMbps, streams, soundOnly, dropBurnedSubtitle: false, out _);
+
+        /// <summary>The full check; <paramref name="subtitleDropped"/> is true when the play fits only because its burned-in subtitle is left out.</summary>
+        /// <param name="query">The player's request.</param>
+        /// <param name="sourceBitrate">The file's bitrate, when known.</param>
+        /// <param name="capMbps">The bitrate ceiling towards that server (0 or less: none).</param>
+        /// <param name="streams">The file's tracks, when known.</param>
+        /// <param name="soundOnly">Whether the owner re-encodes sound for this caller.</param>
+        /// <param name="dropBurnedSubtitle">Whether a subtitle that needs burning in may be left out.</param>
+        /// <param name="subtitleDropped">Whether the subtitle has to be left out.</param>
+        internal static bool Fits(IEnumerable<KeyValuePair<string, StringValues>> query, long? sourceBitrate, double capMbps, IEnumerable<MediaStream>? streams, bool soundOnly, bool dropBurnedSubtitle, out bool subtitleDropped)
         {
+            subtitleDropped = false;
             var reasons = RemoteMediaPath.QueryValue(query, "TranscodeReasons");
             if (string.IsNullOrWhiteSpace(reasons))
             {
@@ -93,7 +130,10 @@ namespace Jellyfin.Plugin.Federation.Services
 
             foreach (var reason in reasons.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (WrapperOnlyReasons.Contains(reason) || (soundOnly && SoundOnlyReasons.Contains(reason)))
+                if (WrapperOnlyReasons.Contains(reason)
+                    || (soundOnly && SoundOnlyReasons.Contains(reason))
+                    || (RangeReasons.Contains(reason) && HasPlayableBaseLayer(streams))
+                    || (dropBurnedSubtitle && Is(reason, "SubtitleCodecNotSupported") && BurnsInSubtitle(query)))
                 {
                     continue;
                 }
@@ -116,7 +156,12 @@ namespace Jellyfin.Plugin.Federation.Services
 
             if (BurnsInSubtitle(query))
             {
-                return false;
+                if (!dropBurnedSubtitle)
+                {
+                    return false;
+                }
+
+                subtitleDropped = true;
             }
 
             // Too big for the connection: somebody has to shrink it.
@@ -239,6 +284,24 @@ namespace Jellyfin.Plugin.Federation.Services
                 && carried.Contains(s.Codec, StringComparer.OrdinalIgnoreCase)
                 && (s.Channels ?? 2) <= maxChannels);
         }
+
+        /// <summary>
+        /// Whether the file's picture is Dolby Vision with a base layer a device that
+        /// does not know Dolby Vision plays as an ordinary picture (profile 7 with its
+        /// extra layer, profile 8). Unknown tracks: no.
+        /// </summary>
+        /// <param name="streams">The file's tracks, when known.</param>
+        internal static bool HasPlayableBaseLayer(IEnumerable<MediaStream>? streams)
+            => streams?.FirstOrDefault(s => s.Type == MediaStreamType.Video) is { } video
+                && DolbyVisionWithPlainBase.Contains(video.VideoRangeType.ToString());
+
+        /// <summary>Whether the request has a picture subtitle that would have to be drawn into the picture.</summary>
+        /// <param name="query">The player's request.</param>
+        internal static bool NeedsBurnedSubtitle(IEnumerable<KeyValuePair<string, StringValues>> query) => BurnsInSubtitle(query);
+
+        /// <summary>Whether a query name belongs to the burned-in subtitle choice (left out when that subtitle is dropped).</summary>
+        /// <param name="name">The query name.</param>
+        internal static bool IsSubtitleChoice(string name) => Is(name, "SubtitleStreamIndex") || Is(name, "SubtitleMethod");
 
         private static bool BurnsInSubtitle(IEnumerable<KeyValuePair<string, StringValues>> query)
             => int.TryParse(RemoteMediaPath.QueryValue(query, "SubtitleStreamIndex"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
