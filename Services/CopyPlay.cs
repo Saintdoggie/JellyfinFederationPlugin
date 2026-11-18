@@ -18,9 +18,13 @@ namespace Jellyfin.Plugin.Federation.Services
     {
         // Jellyfin's reasons that mean "the file is fine, only the way it is
         // handed over is not". Every other reason needs an encoder.
+        // VideoCodecTagNotSupported is the label inside the file's header (HEVC
+        // stored as "hev1" where Apple's players want "hvc1", or Dolby Vision's
+        // "dvh1"). Jellyfin's streaming-playlist code rewrites that label while
+        // it copies the picture (-tag:v:0 hvc1 / dvh1), so no encoder is needed.
         private static readonly HashSet<string> WrapperOnlyReasons = new(StringComparer.OrdinalIgnoreCase)
         {
-            "ContainerNotSupported", "DirectPlayError"
+            "ContainerNotSupported", "DirectPlayError", "VideoCodecTagNotSupported"
         };
 
         // Limits that only make sense when encoding; left in, Jellyfin would
