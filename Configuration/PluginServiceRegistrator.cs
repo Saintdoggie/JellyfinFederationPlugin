@@ -164,7 +164,9 @@ namespace Jellyfin.Plugin.Federation.Configuration
             var implementationType = original.ImplementationType;
             serviceCollection.Remove(original);
             serviceCollection.AddSingleton<IMediaSourceManager>(sp =>
-                new FederationMediaSourceManager((IMediaSourceManager)ActivatorUtilities.CreateInstance(sp, implementationType)));
+                new FederationMediaSourceManager(
+                    (IMediaSourceManager)ActivatorUtilities.CreateInstance(sp, implementationType),
+                    sp.GetService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
             return true;
         }
 

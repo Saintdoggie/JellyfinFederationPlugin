@@ -32,14 +32,17 @@ namespace Jellyfin.Plugin.Federation.Services
     public sealed class FederationMediaSourceManager : IMediaSourceManager
     {
         private readonly IMediaSourceManager _inner;
+        private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FederationMediaSourceManager"/> class.
         /// </summary>
         /// <param name="inner">Jellyfin's own manager that every call is forwarded to.</param>
-        public FederationMediaSourceManager(IMediaSourceManager inner)
+        /// <param name="httpContextAccessor">Reads what the player said it plays; optional.</param>
+        public FederationMediaSourceManager(IMediaSourceManager inner, Microsoft.AspNetCore.Http.IHttpContextAccessor httpContextAccessor = null)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            _httpContextAccessor = httpContextAccessor;
         }
 
         /// <inheritdoc />
@@ -47,8 +50,43 @@ namespace Jellyfin.Plugin.Federation.Services
         {
             var sources = await _inner.GetPlaybackMediaSources(item, user, allowMediaProbe, enablePathSubstitution, cancellationToken).ConfigureAwait(false);
             sources = PreferProviderSources(item, sources);
+            UsePlayableDefaultSound(item, sources, FederationPlaybackProfileFilter.Get(_httpContextAccessor?.HttpContext));
             Tune(item, sources);
             return sources;
+        }
+
+        /// <summary>
+        /// Jellyfin picks each source's default sound track after the provider has
+        /// run, and prefers the track a viewer used last time (remembered for every
+        /// device, even after a failed try) over the provider's choice. For a
+        /// federated title that left a TV holding a TrueHD track it cannot play next
+        /// to a 5.1 AC-3 one it can. Decided by what the device reported it plays:
+        /// when the default track does not and another in the same language does,
+        /// that one becomes the default. A track named in the play request is set by
+        /// Jellyfin after this, so the viewer's own pick still wins.
+        /// </summary>
+        internal static void UsePlayableDefaultSound(BaseItem item, IEnumerable<MediaSourceInfo> sources, MediaBrowser.Model.Dlna.DeviceProfile profile)
+        {
+            if (profile == null || sources == null || item == null || FederationLibraryManager.GetFederationKey(item) == null)
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var source in sources)
+                {
+                    var better = DevicePlayFit.PlayableAlternativeTo(profile, source?.MediaStreams, source?.DefaultAudioStreamIndex);
+                    if (better != null)
+                    {
+                        source.DefaultAudioStreamIndex = better;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // A better default is an improvement; playback must never depend on it.
+            }
         }
 
         /// <inheritdoc />

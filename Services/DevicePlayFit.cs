@@ -158,17 +158,50 @@ namespace Jellyfin.Plugin.Federation.Services
                 return null;
             }
 
-            var video = streams!.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            var language = string.IsNullOrWhiteSpace(preferredLanguage) ? DefaultLanguage : preferredLanguage!;
+            var usual = PickAudio(audioStreams, language).Stream;
+            return usual == null ? null : PlayableSameLanguage(profile!, streams!, audioStreams, playProfiles, usual);
+        }
+
+        /// <summary>
+        /// The sound track to use instead of the one Jellyfin chose as the default
+        /// (<paramref name="currentIndex"/>) when the device cannot play that one and
+        /// another track in the same language can. Jellyfin's choice includes the
+        /// track a viewer used last time, which is remembered for every device: one
+        /// try with TrueHD would otherwise hand TrueHD to a TV that cannot take it,
+        /// again and again. Null leaves the default alone: the device said nothing
+        /// about what it plays, the default track plays, or nothing else would.
+        /// </summary>
+        /// <param name="profile">What the player said it plays.</param>
+        /// <param name="streams">The copy's streams.</param>
+        /// <param name="currentIndex">The default sound track Jellyfin chose.</param>
+        internal static int? PlayableAlternativeTo(DeviceProfile? profile, IReadOnlyList<MediaStream>? streams, int? currentIndex)
+        {
+            var audioStreams = streams?.Where(s => s.Type == MediaStreamType.Audio).ToList() ?? new List<MediaStream>();
+            var playProfiles = profile?.DirectPlayProfiles?.Where(p => p != null && p.Type == DlnaProfileType.Video).ToList();
+            if (currentIndex == null || audioStreams.Count < 2 || playProfiles == null || playProfiles.Count == 0)
+            {
+                return null;
+            }
+
+            var current = audioStreams.FirstOrDefault(s => s.Index == currentIndex.Value);
+            return current == null ? null : PlayableSameLanguage(profile!, streams!, audioStreams, playProfiles, current);
+        }
+
+        // The best track in the same language as "usual" that this device plays,
+        // or null when "usual" plays itself (or nothing else does). Commentary
+        // tracks are never chosen; more channels first, then the file's order.
+        private static int? PlayableSameLanguage(DeviceProfile profile, IReadOnlyList<MediaStream> streams, List<MediaStream> audioStreams, List<DirectPlayProfile> playProfiles, MediaStream usual)
+        {
+            var video = streams.FirstOrDefault(s => s.Type == MediaStreamType.Video);
             bool Plays(MediaStream track)
                 => !string.IsNullOrWhiteSpace(track.Codec)
                     && playProfiles.Any(p => !string.IsNullOrWhiteSpace(p.AudioCodec)
                         && (video == null || Lists(p.VideoCodec, video.Codec))
                         && Lists(p.AudioCodec, track.Codec))
-                    && AudioConditionsPass(profile!, track);
+                    && AudioConditionsPass(profile, track);
 
-            var language = string.IsNullOrWhiteSpace(preferredLanguage) ? DefaultLanguage : preferredLanguage!;
-            var usual = PickAudio(audioStreams, language).Stream;
-            if (usual == null || string.IsNullOrWhiteSpace(usual.Codec) || Plays(usual))
+            if (string.IsNullOrWhiteSpace(usual.Codec) || Plays(usual))
             {
                 return null;
             }

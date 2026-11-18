@@ -45,6 +45,64 @@ public class DevicePlayFitTests
             new MediaStream { Type = MediaStreamType.Audio, Codec = audio, Language = language, Channels = channels, IsDefault = true }
         };
 
+    // A TV that takes Dolby Digital but reports no TrueHD (the usual setup).
+    private static DeviceProfile TvWithoutTrueHd() => new()
+    {
+        DirectPlayProfiles = new[]
+        {
+            new DirectPlayProfile { Type = DlnaProfileType.Video, Container = "mkv,mp4", VideoCodec = "hevc,h264", AudioCodec = "aac,ac3,eac3,mp3" }
+        }
+    };
+
+    private static MediaStream[] TrueHdBesideAc3(string trueHdLanguage = "eng", string ac3Language = "eng") => new[]
+    {
+        new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Index = 0 },
+        new MediaStream { Type = MediaStreamType.Audio, Codec = "truehd", Index = 1, Channels = 8, Language = trueHdLanguage, IsDefault = true },
+        new MediaStream { Type = MediaStreamType.Audio, Codec = "ac3", Index = 2, Channels = 6, Language = ac3Language }
+    };
+
+    [Fact]
+    public void A_remembered_or_default_track_the_device_cannot_play_is_replaced_by_one_it_can()
+    {
+        // Godzilla vs. Kong: Jellyfin offers track 1 (TrueHD 7.1) because it was used last time.
+        Assert.Equal(2, DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), TrueHdBesideAc3(), 1));
+    }
+
+    [Fact]
+    public void A_default_track_the_device_plays_is_left_alone()
+    {
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), TrueHdBesideAc3(), 2));
+        var trueHdOk = TvWithoutTrueHd();
+        trueHdOk.DirectPlayProfiles![0].AudioCodec = "aac,ac3,eac3,truehd";
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(trueHdOk, TrueHdBesideAc3(), 1));
+    }
+
+    [Fact]
+    public void Another_language_or_nothing_playable_or_no_profile_changes_nothing()
+    {
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), TrueHdBesideAc3(ac3Language: "jpn"), 1));
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(null, TrueHdBesideAc3(), 1));
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), TrueHdBesideAc3(), null));
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), TrueHdBesideAc3(), 9));
+        var onlyOne = TrueHdBesideAc3().Take(2).ToArray();
+        Assert.Null(DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), onlyOne, 1));
+    }
+
+    [Fact]
+    public void The_better_track_has_the_most_channels_and_is_never_commentary()
+    {
+        var streams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Codec = "hevc", Index = 0 },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "truehd", Index = 1, Channels = 8, Language = "eng", IsDefault = true },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "ac3", Index = 2, Channels = 2, Language = "eng" },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "ac3", Index = 3, Channels = 6, Language = "eng" },
+            new MediaStream { Type = MediaStreamType.Audio, Codec = "ac3", Index = 4, Channels = 6, Language = "eng", Title = "Director's Commentary" }
+        };
+
+        Assert.Equal(3, DevicePlayFit.PlayableAlternativeTo(TvWithoutTrueHd(), streams, 1));
+    }
+
     [Fact]
     public void H264AacInMp4_PlaysAsStored()
     {
