@@ -9,6 +9,7 @@ Hardest and most useful first. Each is its own release.
 1. ~~Web additions on every theme.~~ Done in 0.0.228; what is left of it is listed there.
 2. **Apps and platforms.** (a) Android phone app direct from the owning server (needs a source shape its player accepts; copy play is the route, see `DIRECT-PLAY.md` steps 4-8). (b) A friend's separate subtitle file burned in on this server fails (ffmpeg gets a placeholder path). (c) A picked copy of an owned title is not copy-played by its server. (d) Friends reached through a link are not covered by the linked rule. (e) Players handed a private address inside a converted (hand-off) playlist: `PlayerReach` is applied to downloads, redirects and direct-play offers only.
 3. ~~Experience.~~ Done in 0.0.229.
+4. **0.0.230 (copy plays on weak servers, sound-only conversion).** Released from `work/copy-play-codec-tag`; notes in `DIRECT-PLAY.md`. Still open from it: a title whose only blocker is a PGS burn-in plays without that subtitle; apps that echo the remembered sound track back; the http-to-https redirect gap; the stale listing after a Radarr upgrade. Another session's unreleased work was also numbered 0.0.230 in `~/Documents/jf-w-225` (uncommitted); it must rebase onto this and take 0.0.231.
 
 ## 0.0.229 — a tab opens at its first page; home rows and search by server; tabs at once; copy plays called what they are
 

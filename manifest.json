@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.0.230.0",
+        "changelog": "0.0.230: a film now plays from a server that converts nothing (a small VPS) on more TVs and apps, and an administrator can allow sound-only conversion. A server that cannot convert video was refusing HEVC files over a harmless label difference (hev1 vs hvc1), and a sound track the viewer once tried and failed on (TrueHD, 7.1) became the default for every device. The plugin now picks a same-language sound track the device reports it plays, and a new switch, off by default, lets a server that converts no video re-encode just the sound (picture copied) for a device that plays none of the file's tracks, such as a browser.",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-11-18T16:33:00Z",
+        "sourceUrl": "https://github.com/Saintdoggie/JellyfinFederationPlugin/releases/download/0.0.230/Jellyfin.Federation.zip",
+        "checksum": "6c8c748b4e6cd5b59017ad640e92262b"
+      },
+      {
         "version": "0.0.229.0",
         "changelog": "0.0.229: a server tab chosen from a later page of a library now opens at its first page (it showed a late slice of the list, or nothing); under a server tab the home rows and search are answered by the server (full rows, nothing hidden in the page, apps get the same); the server tabs are drawn with the page; a title a friend sends unconverted is no longer described as converted.",
         "targetAbi": "12.0.0.0",
