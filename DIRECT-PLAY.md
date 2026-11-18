@@ -30,6 +30,36 @@ the release checklist; `AGENTS.md` describes the code. No personal data here: us
 - **0.0.223 is not installed on the owner's live servers** as of 2026-11-12
   evening (someone was watching; ask before any restart).
 - **Known and unfixed:** see "Open problems".
+- **Branch `work/copy-play-codec-tag` (2026-11-18, after 0.0.229, unreleased):**
+  two fixes found by replaying real apps' play requests as a real user against a
+  live server (a Quick Connect session; an API key cannot reach the handoff paths).
+  1. `CopyPlay.WrapperOnlyReasons` now includes `VideoCodecTagNotSupported`
+     (HEVC `hev1` vs `hvc1`, Dolby Vision `dvh1`): Jellyfin's HLS code rewrites that
+     label while copying, so it is not a conversion. Before, a plain HEVC mkv on a
+     server that cannot convert was never a copy play.
+  2. `FederationMediaSourceManager.UsePlayableDefaultSound` sets the source's
+     `DefaultAudioStreamIndex` to a same-language track the device's reported
+     profile plays, when Jellyfin's default does not. Cause: Jellyfin saves the
+     sound track a viewer used last (`UserData.AudioStreamIndex`, every user has
+     `RememberAudioSelections`) and uses it before the plugin's `IsDefault` flags,
+     even after a failed try, so one TrueHD play left TrueHD as the default for
+     every device. Test: `DevicePlayFitTests`.
+- **Still open from that work:** (a) apps echo the remembered track back as their
+  own pick (`AudioStreamIndex` in the play request), so the swap does not reach
+  them; fix where the plugin would refuse (`FederationRemoteTranscodeFilter`
+  `LocalRefusal`): use the playable same-language track and copy-play. (b) A
+  bitmap subtitle (PGS) that only a burn-in could show makes `CopyPlay.Fits` fail
+  and the play is refused; play without that subtitle instead. (c)
+  `FederationDirectStreamRedirectFilter` redirects only when the player's scheme
+  equals the friend's (ExoPlayer refuses cross-scheme redirects); clients that
+  follow them (Swiftfin, Infuse, mpv-based) are relayed through this server when
+  this server is reached over http and the friend over https. (d) A listing can
+  name a file a Radarr upgrade has since replaced (404 until the next sync).
+  (e) Android TV's real profile is in `jellyfin-androidtv`
+  `util/profile/deviceProfile.kt` (PGS embedded on, ASS/SSA burn-in unless libass
+  is on, DTS/TrueHD/AC3 only with pass-through); Swiftfin's in
+  `Shared/Extensions/JellyfinAPI/DeviceProfile.swift` (native AVPlayer: mp4/m4v/mov
+  only). Use them when replaying an app.
 
 ## The rules, in the owner's words (2026-11-12)
 
